@@ -9,7 +9,7 @@ Provider trait + per-provider streaming clients (anthropic, openai-completions/r
 No agent loop, no tool execution, no session state, no UI. Receives/returns `pa-types` messages.
 
 ## Public API
-`Provider` trait, `ProviderRegistry`, model lookup/resolution, faux provider. Per-provider internals are `pub(crate)`.
+`Provider` trait, `ProviderRegistry`, model lookup/resolution, faux provider, and `models_fork` (this fork's built-in provider catalog overlay: muse, codebuddy, genspark; merged by `pa-core`'s `ModelRegistry` after the upstream catalog chain resolves). Per-provider internals are `pub(crate)`.
 
 ## Depends on
 pa-types (one-way).

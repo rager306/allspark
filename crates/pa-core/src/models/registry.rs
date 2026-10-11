@@ -550,6 +550,10 @@ impl ModelRegistry {
         self.catalog
             .resolve(credentials)
             .into_iter()
+            // The fork's providers ride the built-in set (the remote catalog never
+            // carries them); models.json overrides below apply to them like any
+            // other provider.
+            .chain(pa_ai::models_fork::fork_provider_models())
             .map(|mut model| {
                 if let Some(provider_override) = custom.provider_overrides.get(&model.provider) {
                     if provider_override.base_url.is_some() {

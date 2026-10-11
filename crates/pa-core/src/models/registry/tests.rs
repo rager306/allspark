@@ -130,6 +130,38 @@ fn models_json_custom_models_and_auth_header() {
 }
 
 #[test]
+fn fork_providers_join_the_built_in_catalog() {
+    let registry = ModelRegistry::in_memory(auth_with(&serde_json::json!({})));
+    let all = registry.get_all();
+    assert!(all
+        .iter()
+        .any(|m| m.provider == "muse" && m.id == "muse-spark-1.3"));
+    assert!(all
+        .iter()
+        .any(|m| m.provider == "codebuddy" && m.id == "glm-5.2"));
+}
+
+#[test]
+fn models_json_provider_overrides_reach_fork_providers() {
+    let dir = tempfile::tempdir().unwrap();
+    let models_path = dir.path().join("models.json");
+    std::fs::write(
+        &models_path,
+        r#"{ "providers": { "codebuddy": { "baseUrl": "http://127.0.0.1:20128/v1" } } }"#,
+    )
+    .unwrap();
+    let registry = ModelRegistry::create(auth_with(&serde_json::json!({})), &models_path);
+    assert!(registry.get_error().is_none());
+    let glm = registry
+        .get_all()
+        .iter()
+        .find(|m| m.provider == "codebuddy" && m.id == "glm-5.2")
+        .expect("fork codebuddy model present")
+        .clone();
+    assert_eq!(glm.base_url, "http://127.0.0.1:20128/v1");
+}
+
+#[test]
 fn models_json_error_keeps_built_ins() {
     let dir = tempfile::tempdir().unwrap();
     let models_path = dir.path().join("models.json");

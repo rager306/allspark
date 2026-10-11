@@ -8,6 +8,8 @@ pub fn get_api_key_env_vars(provider: &str) -> Option<Vec<&'static str>> {
         "github-copilot" => Some(vec!["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]),
         // ANTHROPIC_OAUTH_TOKEN takes precedence over ANTHROPIC_API_KEY.
         "anthropic" => Some(vec!["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]),
+        // Genspark's own CLI exports GSK_API_KEY.
+        "genspark" => Some(vec!["GENSPARK_API_KEY", "GSK_API_KEY"]),
         other => {
             let env_var = match other {
                 "openai" => "OPENAI_API_KEY",
@@ -32,6 +34,8 @@ pub fn get_api_key_env_vars(provider: &str) -> Option<Vec<&'static str>> {
                 "kimi-coding" => "KIMI_API_KEY",
                 "cloudflare-workers-ai" | "cloudflare-ai-gateway" => "CLOUDFLARE_API_KEY",
                 "xiaomi" => "XIAOMI_API_KEY",
+                "muse" => "MUSE_API_KEY",
+                "codebuddy" => "CODEBUDDY_API_KEY",
                 "xiaomi-token-plan-cn" => "XIAOMI_TOKEN_PLAN_CN_API_KEY",
                 "xiaomi-token-plan-ams" => "XIAOMI_TOKEN_PLAN_AMS_API_KEY",
                 "xiaomi-token-plan-sgp" => "XIAOMI_TOKEN_PLAN_SGP_API_KEY",

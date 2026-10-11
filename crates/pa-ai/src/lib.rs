@@ -9,6 +9,7 @@
 
 pub mod env_api_keys;
 pub mod models;
+pub mod models_fork;
 pub mod models_generated;
 pub mod oauth;
 pub mod registry;
