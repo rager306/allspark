@@ -329,10 +329,9 @@ async fn run_stream(
 
     if response.status >= 400 {
         let body = response.read_all_text().await.unwrap_or_default();
-        return Err(ProviderError::from_http_status_body(
-            response.status,
-            &body,
-            response.headers.clone(),
+        return Err(crate::provider_errors::normalize_provider_http_error(
+            &model.provider,
+            ProviderError::from_http_status_body(response.status, &body, response.headers.clone()),
         ));
     }
 

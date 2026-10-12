@@ -104,8 +104,9 @@ const EFFORT_LOW_MEDIUM_HIGH: &[(ModelThinkingLevel, Option<&str>)] = &[
     (ModelThinkingLevel::Max, None),
 ];
 
-/// Muse Spark thinking is always on: `off`/`max` are unsupported (`none`
-/// effort returns 400), the range is `minimal`..=`xhigh`.
+/// Muse Spark thinking is always on: `off` is unsupported (`none` effort
+/// returns 400). The range is `minimal`..=`max` (verified live against
+/// `api.meta.ai`).
 const MUSE_THINKING_LEVELS: &[(ModelThinkingLevel, Option<&str>)] = &[
     (ModelThinkingLevel::Off, None),
     (ModelThinkingLevel::Minimal, Some("minimal")),
@@ -113,7 +114,7 @@ const MUSE_THINKING_LEVELS: &[(ModelThinkingLevel, Option<&str>)] = &[
     (ModelThinkingLevel::Medium, Some("medium")),
     (ModelThinkingLevel::High, Some("high")),
     (ModelThinkingLevel::Xhigh, Some("xhigh")),
-    (ModelThinkingLevel::Max, None),
+    (ModelThinkingLevel::Max, Some("max")),
 ];
 
 static FORK_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
@@ -768,7 +769,10 @@ mod tests {
                 .as_ref()
                 .expect("muse thinking map");
             assert_eq!(map.get(&ModelThinkingLevel::Off), Some(&None));
-            assert_eq!(map.get(&ModelThinkingLevel::Max), Some(&None));
+            assert_eq!(
+                map.get(&ModelThinkingLevel::Max),
+                Some(&Some("max".to_string()))
+            );
             assert_eq!(
                 map.get(&ModelThinkingLevel::Minimal),
                 Some(&Some("minimal".to_string()))

@@ -618,10 +618,12 @@ async fn run_stream(
     // message.
     if !(200..300).contains(&response.status) {
         let body = response.read_all_text().await.unwrap_or_default();
-        return Err(openai_http_error(
-            response.status,
-            &body,
-            response.headers.clone(),
+        // The fork's providers (codebuddy, genspark) carry non-OpenAI error
+        // envelopes; normalize them into the canonical shape the shared
+        // classifier reads. Every other provider passes through untouched.
+        return Err(crate::provider_errors::normalize_provider_http_error(
+            &model.provider,
+            openai_http_error(response.status, &body, response.headers.clone()),
         ));
     }
 

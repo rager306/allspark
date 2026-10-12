@@ -12,6 +12,7 @@ pub mod models;
 pub mod models_fork;
 pub mod models_generated;
 pub mod oauth;
+pub mod provider_errors;
 pub mod registry;
 pub mod types;
 
