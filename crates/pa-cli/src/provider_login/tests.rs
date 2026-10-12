@@ -98,6 +98,7 @@ fn the_status_indicator_maps_the_ts_labels() {
 #[test]
 fn the_display_names_match_the_ts_map() {
     assert_eq!(display_name("openai"), "OpenAI");
+    assert_eq!(display_name("codebuddy"), "CodeBuddy (IDE) (code-plan)");
     assert_eq!(display_name("google"), "Google Gemini");
     assert_eq!(display_name("prime-inference"), "Prime Inference");
     assert_eq!(display_name("a-custom-provider"), "a-custom-provider");

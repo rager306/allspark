@@ -16,8 +16,9 @@ use pa_tui::provider_auth::{
 };
 
 /// The subscription login providers (every flow ported).
-const SUBSCRIPTION_PROVIDERS: [(&str, &str); 6] = [
+const SUBSCRIPTION_PROVIDERS: [(&str, &str); 7] = [
     ("anthropic", "Anthropic (Claude Pro/Max)"),
+    ("codebuddy", "CodeBuddy (IDE) (code-plan)"),
     ("github-copilot", "GitHub Copilot"),
     ("genspark", "Genspark (GenCode) (code-plan)"),
     ("muse", "Muse (Muse Code) (code-plan)"),
@@ -33,7 +34,7 @@ const BUILT_IN_PROVIDER_DISPLAY_NAMES: &[(&str, &str)] = &[
     ("cerebras", "Cerebras"),
     ("cloudflare-ai-gateway", "Cloudflare AI Gateway"),
     ("cloudflare-workers-ai", "Cloudflare Workers AI"),
-    ("codebuddy", "CodeBuddy (IDE)"),
+    ("codebuddy", "CodeBuddy (IDE) (code-plan)"),
     ("deepseek", "DeepSeek"),
     ("fireworks", "Fireworks"),
     ("genspark", "Genspark (GenCode) (code-plan)"),
@@ -633,6 +634,31 @@ fn login_blocking_on_panel(
                 },
                 |runtime| {
                     runtime.block_on(crate::subscription_login::run_github_copilot_login(
+                        &agent_dir,
+                        &provider_row.name,
+                        &pa_ai::oauth::ReqwestProviderHttp::new(),
+                        &crate::subscription_login::PanelSubscriptionLoginUi::new(
+                            panel,
+                            &provider_row.id,
+                        ),
+                    ))
+                },
+            );
+    }
+    // The CodeBuddy IDE plan login.
+    if provider_row.id == pa_core::auth::CODEBUDDY_PROVIDER_ID {
+        return tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_or_else(
+                |error: std::io::Error| {
+                    ProviderAuthOutcome::Error(format!(
+                        "Failed to login to {}: {error}",
+                        provider_row.name
+                    ))
+                },
+                |runtime| {
+                    runtime.block_on(crate::subscription_login::run_codebuddy_login(
                         &agent_dir,
                         &provider_row.name,
                         &pa_ai::oauth::ReqwestProviderHttp::new(),

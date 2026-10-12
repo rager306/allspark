@@ -21,7 +21,10 @@ pub use anthropic::{
     LOGIN_CANCELLED as ANTHROPIC_LOGIN_CANCELLED,
 };
 pub use callback::CodexCallbackServer;
-pub use codebuddy::{refresh_codebuddy_token, CodeBuddyCredentials, CODEBUDDY_REFRESH_URL};
+pub use codebuddy::{
+    login_codebuddy, refresh_codebuddy_token, CodeBuddyCredentials, CODEBUDDY_REFRESH_URL,
+    LOGIN_CANCELLED as CODEBUDDY_LOGIN_CANCELLED,
+};
 pub use genspark::{
     login_genspark, GensparkCredentials, LOGIN_CANCELLED as GENSPARK_LOGIN_CANCELLED,
 };

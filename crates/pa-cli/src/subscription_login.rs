@@ -8,14 +8,14 @@ use std::path::Path;
 use std::pin::Pin;
 
 use pa_ai::oauth::{
-    login_anthropic, login_genspark, login_github_copilot, login_muse, login_xai,
-    AnthropicCredentials, GensparkCredentials, MuseCredentials, OAuthLoginUi, OAuthPrompt,
-    ProviderHttp, ANTHROPIC_LOGIN_CANCELLED, COPILOT_LOGIN_CANCELLED, GENSPARK_LOGIN_CANCELLED,
-    MUSE_LOGIN_CANCELLED, XAI_LOGIN_CANCELLED,
+    login_anthropic, login_codebuddy, login_genspark, login_github_copilot, login_muse, login_xai,
+    AnthropicCredentials, CodeBuddyCredentials, GensparkCredentials, MuseCredentials, OAuthLoginUi,
+    OAuthPrompt, ProviderHttp, ANTHROPIC_LOGIN_CANCELLED, CODEBUDDY_LOGIN_CANCELLED,
+    COPILOT_LOGIN_CANCELLED, GENSPARK_LOGIN_CANCELLED, MUSE_LOGIN_CANCELLED, XAI_LOGIN_CANCELLED,
 };
 use pa_core::auth::{
-    AuthCredential, AuthStorage, ANTHROPIC_PROVIDER_ID, GITHUB_COPILOT_PROVIDER_ID,
-    MUSE_PROVIDER_ID, XAI_PROVIDER_ID,
+    AuthCredential, AuthStorage, ANTHROPIC_PROVIDER_ID, CODEBUDDY_PROVIDER_ID,
+    GITHUB_COPILOT_PROVIDER_ID, MUSE_PROVIDER_ID, XAI_PROVIDER_ID,
 };
 use pa_tui::auth_panel::{AuthPanelHandle, PastePromptTone, PasteStyle};
 use pa_tui::provider_auth::ProviderAuthOutcome;
@@ -148,6 +148,67 @@ fn store_anthropic_login(
         AuthCredential::Oauth {
             access: credentials.access,
             refresh: Some(credentials.refresh),
+            expires: credentials.expires,
+            account_id: None,
+            enterprise_url: None,
+            endpoint: None,
+            token_endpoint: None,
+            client_id: None,
+            resource: None,
+            issuer: None,
+            audience_mode: None,
+        },
+    );
+    if let Some(error) = auth.drain_errors().pop() {
+        return ProviderAuthOutcome::Error(format!(
+            "Failed to login to {provider_name}: could not save the login: {error}"
+        ));
+    }
+    login_status(agent_dir, provider_name)
+}
+
+/// Run the CodeBuddy device flow, store the credential, and report the status.
+pub(crate) async fn run_codebuddy_login(
+    agent_dir: &Path,
+    provider_name: &str,
+    http: &dyn ProviderHttp,
+    ui: &dyn OAuthLoginUi,
+) -> ProviderAuthOutcome {
+    let credentials = match login_codebuddy(http, ui).await {
+        Ok(credentials) => credentials,
+        Err(message) if message == CODEBUDDY_LOGIN_CANCELLED => {
+            return ProviderAuthOutcome::Cancelled;
+        }
+        Err(message) => {
+            return ProviderAuthOutcome::Error(format!(
+                "Failed to login to {provider_name}: {message}"
+            ));
+        }
+    };
+    if ui.is_cancelled() {
+        return ProviderAuthOutcome::Cancelled;
+    }
+    store_codebuddy_login(agent_dir, provider_name, credentials)
+}
+
+/// Store the CodeBuddy plugin OAuth credential. Login requires a refresh token
+/// because the provider rotates it during the existing refresh flow.
+fn store_codebuddy_login(
+    agent_dir: &Path,
+    provider_name: &str,
+    credentials: CodeBuddyCredentials,
+) -> ProviderAuthOutcome {
+    let Some(refresh) = credentials.refresh else {
+        return ProviderAuthOutcome::Error(format!(
+            "Failed to login to {provider_name}: CodeBuddy login response is missing refreshToken"
+        ));
+    };
+    let mut auth = AuthStorage::create(agent_dir);
+    auth.set(
+        CODEBUDDY_PROVIDER_ID,
+        AuthCredential::Oauth {
+            access: credentials.access,
+            refresh: Some(refresh),
             expires: credentials.expires,
             account_id: None,
             enterprise_url: None,
@@ -528,6 +589,28 @@ mod tests {
             )
     }
 
+    /// The CodeBuddy happy flow's scripted endpoints.
+    fn codebuddy_http() -> ScriptedHttp {
+        ScriptedHttp::new()
+            .queue(
+                "https://www.codebuddy.ai/v2/plugin/auth/state?platform=ide",
+                vec![ScriptedHttp::entry(
+                    200,
+                    r#"{"code":0,"msg":"OK","data":{"state":"28117873-7c32-49dc-87ec-a161c92b209a","authUrl":"https://www.codebuddy.ai/login?platform=ide&state=28117873-7c32-49dc-87ec-a161c92b209a"}}"#,
+                )],
+            )
+            .queue(
+                "https://www.codebuddy.ai/v2/plugin/auth/token?state=28117873-7c32-49dc-87ec-a161c92b209a",
+                vec![
+                    ScriptedHttp::entry(200, r#"{"code":11217,"msg":"PENDING"}"#),
+                    ScriptedHttp::entry(
+                        200,
+                        r#"{"code":0,"msg":"OK","data":{"accessToken":"codebuddy-access","refreshToken":"codebuddy-refresh","expiresIn":3600}}"#,
+                    ),
+                ],
+            )
+    }
+
     /// The Muse happy flow's scripted endpoints: device auth, token polling, then key mint.
     fn muse_http() -> ScriptedHttp {
         ScriptedHttp::new()
@@ -593,6 +676,51 @@ mod tests {
         assert_eq!(
             auth.get_api_key("github-copilot"),
             Some("copilot-token".to_string())
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_codebuddy_login_stores_the_credential_and_reports_the_ts_status() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let agent = agent_dir(&dir);
+        let http = codebuddy_http();
+        let ui = ScriptedUi::new();
+        let before_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(i64::MAX, |elapsed| elapsed.as_millis() as i64);
+        match run_codebuddy_login(&agent, "CodeBuddy (IDE) (code-plan)", &http, &ui).await {
+            ProviderAuthOutcome::Status(message) => {
+                assert_eq!(
+                    message,
+                    format!(
+                        "Logged in to CodeBuddy (IDE) (code-plan). Credentials saved to {}",
+                        agent.join("auth.json").display()
+                    )
+                );
+            }
+            other => panic!("expected the logged-in status, got {other:?}"),
+        }
+        let document: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(agent.join("auth.json")).unwrap())
+                .unwrap();
+        let stored = &document["codebuddy"];
+        assert_eq!(stored["type"], "oauth");
+        assert_eq!(stored["access"], "codebuddy-access");
+        assert_eq!(stored["refresh"], "codebuddy-refresh");
+        // CodeBuddy reports the final absolute lifetime; unlike xAI, it does not use a skew.
+        let expires = stored["expires"].as_i64().expect("the expiry is numeric");
+        let after_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        assert!(
+            expires >= before_ms + 3_600_000 && expires <= after_ms + 3_600_000,
+            "the expiry lands one hour out: {expires} vs {before_ms}..{after_ms}"
+        );
+        let mut auth = AuthStorage::create(&agent);
+        assert_eq!(
+            auth.get_api_key("codebuddy"),
+            Some("codebuddy-access".to_string())
         );
     }
 
@@ -783,6 +911,15 @@ mod tests {
                     .to_string()
             )
         );
+        let http = ScriptedHttp::new();
+        let ui = ScriptedUi::new();
+        assert_eq!(
+            run_codebuddy_login(&agent, "CodeBuddy (IDE) (code-plan)", &http, &ui).await,
+            ProviderAuthOutcome::Error(
+                "Failed to login to CodeBuddy (IDE) (code-plan): CodeBuddy OAuth request failed. Check your connection and try again."
+                    .to_string()
+            )
+        );
         let http = ScriptedHttp::new().queue(
             "https://auth.meta.com/oidc/device/authorization/",
             vec![ScriptedHttp::entry(400, r#"{"error":"bad_request"}"#)],
@@ -797,7 +934,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn the_stored_credentials_round_trip_and_refresh() {
         let dir = tempfile::tempdir().expect("temp dir");
         let agent = agent_dir(&dir);
@@ -822,5 +959,37 @@ mod tests {
             )),
         );
         assert_eq!(expired.get_api_key("xai"), Some("grok-access".to_string()));
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let agent = agent_dir(&dir);
+        let http = codebuddy_http();
+        let ui = ScriptedUi::new();
+        run_codebuddy_login(&agent, "CodeBuddy (IDE) (code-plan)", &http, &ui).await;
+        let mut auth = AuthStorage::create(&agent);
+        assert_eq!(
+            auth.get_api_key("codebuddy"),
+            Some("codebuddy-access".to_string())
+        );
+        let mut data = auth.get_all();
+        if let Some(document) = data.0.get_mut("codebuddy") {
+            document["expires"] = serde_json::json!(1);
+        }
+        let mut expired = AuthStorage::in_memory_without_env(
+            &data,
+            Arc::new(pa_core::auth::ProviderOAuth::with_transports(
+                Arc::new(pa_ai::oauth::ReqwestCodexHttp::new()),
+                Arc::new(ScriptedHttp::new().queue(
+                    pa_ai::oauth::CODEBUDDY_REFRESH_URL,
+                    vec![ScriptedHttp::entry(
+                        200,
+                        r#"{"code":0,"msg":"OK","data":{"accessToken":"codebuddy-fresh","refreshToken":"codebuddy-rotated","expiresIn":3600}}"#,
+                    )],
+                )),
+            )),
+        );
+        assert_eq!(
+            expired.get_api_key("codebuddy"),
+            Some("codebuddy-fresh".to_string())
+        );
     }
 }
