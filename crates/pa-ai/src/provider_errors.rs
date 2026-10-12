@@ -48,17 +48,71 @@ pub fn normalize_provider_http_error(provider: &str, error: ProviderError) -> Pr
     let Ok(parsed) = serde_json::from_str::<Value>(body) else {
         return ProviderError::Http(http);
     };
-    // Already canonical (`error.{type,message}`): leave the shared path alone.
+    // Already canonical (`error.{type,message}`): leave the shared path alone —
+    // except a relayed 5xx whose only clue is the message text (see
+    // `recover_relayed_upstream_status`).
     if parsed.get("error").is_some_and(Value::is_object) {
-        return ProviderError::Http(http);
+        return recover_relayed_upstream_status(ProviderError::Http(http));
     }
 
-    match provider {
+    let normalized = match provider {
         "codebuddy" => normalize_codebuddy(http, &parsed),
         "genspark" => normalize_genspark(http, &parsed),
         // Muse speaks the canonical Anthropic/Responses envelopes.
         _ => ProviderError::Http(http),
+    };
+    recover_relayed_upstream_status(normalized)
+}
+
+/// A relayed 5xx (a router in front of the provider turning an upstream 429
+/// into a synthetic 503) keeps the real status only in the message text. The
+/// shared classifier reads `error.type`/`error.code`, so without this the
+/// failure lands as a server error and never reaches the quota-park seam.
+/// Re-derive the canonical `type` from the embedded status/phrasing.
+fn recover_relayed_upstream_status(error: ProviderError) -> ProviderError {
+    let ProviderError::Http(mut http) = error else {
+        return error;
+    };
+    let Some(status) = http.status else {
+        return ProviderError::Http(http);
+    };
+    if status < 500 {
+        return ProviderError::Http(http);
     }
+    let Some(message) = http
+        .body
+        .as_deref()
+        .and_then(extract_message_text)
+        .or_else(|| Some(http.message.clone()))
+    else {
+        return ProviderError::Http(http);
+    };
+    let embedded = embedded_upstream_status(&message);
+    let is_limit = embedded == Some(429) || (embedded.is_none() && is_rate_limit_text(&message));
+    if !is_limit {
+        return ProviderError::Http(http);
+    }
+    let canonical = json!({
+        "error": {
+            "type": "rate_limit_exceeded",
+            "message": message,
+        }
+    })
+    .to_string();
+    http.body = Some(canonical);
+    ProviderError::Http(http)
+}
+
+/// The human text of a canonical error body (`error.message`, else `message`,
+/// else `detail`).
+fn extract_message_text(body: &str) -> Option<String> {
+    let parsed = serde_json::from_str::<Value>(body).ok()?;
+    let node = parsed.get("error").unwrap_or(&parsed);
+    node.get("message")
+        .or_else(|| parsed.get("message"))
+        .or_else(|| parsed.get("detail"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 /// `CodeBuddy`: `{"code":11102,"msg":"model [...] not found","displayMsg":{...}}`.
@@ -297,6 +351,43 @@ pub fn stream_failure_from_error_frame(provider: &str, frame: &Value) -> StreamF
     }
 }
 
+/// A gateway relaying an upstream failure inside a 5xx envelope: 9router turns
+/// a real upstream 429 into a synthetic 503 with `[429]` (or `[provider/model]
+/// [429]`) inside the message text and a `Retry-After` header, so the shared
+/// classifier — which reads only `error.type`/`error.code` — would call it a
+/// server error and skip the quota-park seam (9router #4663). Recover the
+/// embedded upstream status from the message.
+fn embedded_upstream_status(message: &str) -> Option<u16> {
+    // The relayed shape: `[provider/model] [429]: ...`. Take the last bracket
+    // group that is a 3-digit HTTP status so a model id like `[1m]` is skipped.
+    let mut status = None;
+    let bytes = message.as_bytes();
+    let mut index = 0;
+    while index + 3 <= bytes.len() {
+        if bytes[index] == b'[' {
+            let rest = &message[index + 1..];
+            if let Some(close) = rest.find(']') {
+                if let Ok(code) = rest[..close].parse::<u16>() {
+                    if (400..=599).contains(&code) {
+                        status = Some(code);
+                    }
+                }
+                index += close + 2;
+                continue;
+            }
+        }
+        index += 1;
+    }
+    status
+}
+
+/// Rate-limit phrasings a relayed envelope carries when it does not embed a
+/// numeric status (`too many requests`, `rate limit`).
+fn is_rate_limit_text(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    lower.contains("too many requests") || lower.contains("rate limit")
+}
+
 /// Credit/balance exhaustion markers gateways use in `error.type`/`error.code`
 /// without an HTTP 402 (`LiteLLM`, and the fork gateways that mirror it).
 fn is_payment_signal(provider_error_type: &str) -> bool {
@@ -408,6 +499,47 @@ mod tests {
         assert_eq!(
             extract_stream_failure_info(&error).kind,
             StreamFailureKind::PaymentRequired
+        );
+    }
+
+    #[test]
+    fn a_relayed_upstream_429_in_a_5xx_envelope_classifies_as_rate_limit() {
+        // 9router relays a real upstream 429 as a synthetic 503, keeping the
+        // status only in the message text (9router #4663).
+        let body = serde_json::json!({
+            "error": {
+                "message": "[codebuddy-intl/deepseek-v4.1-flash] [429]: {\"code\":14003,\"msg\":\"too many requests\"} (reset after 2s)"
+            }
+        })
+        .to_string();
+        let error = normalize_provider_http_error("codebuddy", http_error(503, &body));
+        let info = extract_stream_failure_info(&error);
+        assert_eq!(info.kind, StreamFailureKind::RateLimit);
+    }
+
+    #[test]
+    fn a_relayed_rate_limit_phrase_without_a_status_classifies_as_rate_limit() {
+        let body = serde_json::json!({
+            "error": { "message": "upstream said too many requests, slow down" }
+        })
+        .to_string();
+        let error = normalize_provider_http_error("genspark", http_error(502, &body));
+        assert_eq!(
+            extract_stream_failure_info(&error).kind,
+            StreamFailureKind::RateLimit
+        );
+    }
+
+    #[test]
+    fn a_genuine_5xx_without_a_rate_limit_marker_stays_a_server_error() {
+        let body = serde_json::json!({
+            "error": { "message": "upstream connection reset by peer" }
+        })
+        .to_string();
+        let error = normalize_provider_http_error("codebuddy", http_error(502, &body));
+        assert_eq!(
+            extract_stream_failure_info(&error).kind,
+            StreamFailureKind::ServerError
         );
     }
 
