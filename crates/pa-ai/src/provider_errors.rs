@@ -16,9 +16,14 @@
 //! the body carries a reset time), so one call site per fork provider keeps the
 //! shared classification, retry and failover machinery intact.
 
+use std::collections::HashMap;
+
 use serde_json::{json, Value};
 
-use crate::utils_inner::stream_failure::{ProviderError, ProviderHttpError};
+use crate::utils_inner::stream_failure::{
+    classify_stream_failure, ProviderError, ProviderHttpError, StreamFailureError,
+    StreamFailureInfo, StreamFailureKind,
+};
 
 /// The providers this module normalizes.
 #[must_use]
@@ -226,10 +231,99 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
+/// Classify a mid-stream `{"error":...}` SSE frame (an HTTP 200 stream that
+/// fails *after* it starts: quota exhausted, overload, an upstream `LiteLLM`
+/// error). Returns the structured failure the stream must terminate with.
+///
+/// The fork's `genspark` (`LiteLLM`) and `codebuddy` gateways both surface
+/// quota/limit failures as in-stream frames, so a silent ignore would let the
+/// turn settle as a `stream_drop` instead of a classified rate limit.
+#[must_use]
+pub fn stream_failure_from_error_frame(provider: &str, frame: &Value) -> StreamFailureError {
+    // The frame may nest the error (`{"error":{...}}`) or carry it at the top
+    // level with the provider's own fields (`{"code":6004,"msg":...}`).
+    let normalized = if is_fork_provider(provider) && frame.get("error").is_none() {
+        let http = ProviderHttpError {
+            message: String::new(),
+            status: None,
+            body: Some(frame.to_string()),
+            headers: HashMap::new(),
+            request_id: None,
+            sdk_name: None,
+            retry_after_ms: None,
+            provider_error_type: None,
+        };
+        match normalize_provider_http_error(provider, ProviderError::Http(http)) {
+            ProviderError::Http(updated) => {
+                serde_json::from_str::<Value>(updated.body.as_deref().unwrap_or(""))
+                    .unwrap_or(Value::Null)
+            }
+            _ => frame.clone(),
+        }
+    } else {
+        frame.clone()
+    };
+    let error = normalized.get("error").unwrap_or(&normalized);
+    let provider_error_type = error
+        .get("type")
+        .and_then(Value::as_str)
+        .or_else(|| error.get("code").and_then(Value::as_str))
+        .map(str::to_string);
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .or_else(|| normalized.get("detail").and_then(Value::as_str))
+        .map_or_else(|| "Provider error frame".to_string(), str::to_string);
+    let retry_after_ms = if is_fork_provider(provider) {
+        retry_after_from_error_frame(provider, frame)
+    } else {
+        None
+    };
+    // A credits/balance exhaustion signal (LiteLLM and friends) with no HTTP
+    // status: the shared classifier only maps these through a 402, so pin the
+    // payment kind here — a drained wallet never refills inside a retry ladder.
+    let kind = match provider_error_type.as_deref() {
+        Some(kind) if is_payment_signal(kind) => StreamFailureKind::PaymentRequired,
+        other => classify_stream_failure(other, None),
+    };
+    StreamFailureError {
+        message,
+        info: StreamFailureInfo {
+            kind,
+            provider_error_type,
+            retry_after_ms,
+            ..StreamFailureInfo::unknown()
+        },
+    }
+}
+
+/// Credit/balance exhaustion markers gateways use in `error.type`/`error.code`
+/// without an HTTP 402 (`LiteLLM`, and the fork gateways that mirror it).
+fn is_payment_signal(provider_error_type: &str) -> bool {
+    let kind = provider_error_type.to_lowercase();
+    kind.contains("insufficient_credits")
+        || kind.contains("insufficient_balance")
+        || kind.contains("insufficient_funds")
+        || kind.contains("insufficient_quota")
+        || kind.contains("quota_exceeded")
+        || kind.contains("credit_limit")
+        || kind.contains("billing_hard_limit")
+        || kind.contains("out_of_credits")
+        || kind.contains("payment_required")
+}
+
+/// The wait a mid-stream error frame carries, when the provider's envelope
+/// embeds one (`CodeBuddy`'s 6004 reset stamp).
+fn retry_after_from_error_frame(provider: &str, frame: &Value) -> Option<u64> {
+    if provider != "codebuddy" {
+        return None;
+    }
+    let msg = frame.get("msg").and_then(Value::as_str)?;
+    parse_reset_stamp_ms(msg)
+}
+
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::*;
     use crate::utils_inner::stream_failure::{extract_stream_failure_info, StreamFailureKind};
 
@@ -326,6 +420,53 @@ mod tests {
         let fork_body = r#"{"code":11102,"msg":"x"}"#;
         let error = normalize_provider_http_error("openai", http_error(400, fork_body));
         assert_eq!(body_of(&error), fork_body);
+    }
+
+    #[test]
+    fn mid_stream_error_frame_classifies_genspark_litellm_failures() {
+        // A LiteLLM in-stream error frame (HTTP 200 already sent).
+        let frame = serde_json::json!({
+            "error": {"message": "Rate limit exceeded", "type": "rate_limit_error"}
+        });
+        let failure = stream_failure_from_error_frame("genspark", &frame);
+        assert_eq!(failure.info.kind, StreamFailureKind::RateLimit);
+        assert_eq!(
+            failure.info.provider_error_type.as_deref(),
+            Some("rate_limit_error")
+        );
+        assert_eq!(failure.message, "Rate limit exceeded");
+    }
+
+    #[test]
+    fn mid_stream_error_frame_reads_a_codebuddy_failure_envelope() {
+        // CodeBuddy's own envelope as an in-stream frame: numeric `code` plus
+        // `msg`, with the 6004 reset stamp.
+        let frame = serde_json::json!({
+            "code": 6004,
+            "msg": "超出频率限制 frequency limit, resets 2035-10-13 00:00:00 UTC+8"
+        });
+        let failure = stream_failure_from_error_frame("codebuddy", &frame);
+        assert_eq!(failure.info.kind, StreamFailureKind::RateLimit);
+        assert!(failure.info.retry_after_ms.is_some_and(|wait| wait > 0));
+    }
+
+    #[test]
+    fn mid_stream_credit_exhaustion_is_a_payment_failure() {
+        let frame = serde_json::json!({
+            "error": {"message": "Budget exceeded for this account", "type": "insufficient_credits"}
+        });
+        let failure = stream_failure_from_error_frame("genspark", &frame);
+        assert_eq!(failure.info.kind, StreamFailureKind::PaymentRequired);
+    }
+
+    #[test]
+    fn mid_stream_error_frame_for_other_providers_stays_generic() {
+        let frame = serde_json::json!({
+            "error": {"message": "boom", "type": "server_error"}
+        });
+        let failure = stream_failure_from_error_frame("openai", &frame);
+        assert_eq!(failure.info.kind, StreamFailureKind::ServerError);
+        assert_eq!(failure.info.retry_after_ms, None);
     }
 
     #[test]

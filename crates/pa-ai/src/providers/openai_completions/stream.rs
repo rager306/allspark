@@ -454,6 +454,23 @@ fn settle_partial_tool_calls(state: &mut StreamingState) {
     }
 }
 
+/// A parsed SSE chunk that carries a provider error frame (`{"error":...}` at
+/// the top level, or a fork gateway's in-stream failure envelope) must end the
+/// stream as a classified failure, not be silently ignored — otherwise the
+/// turn settles as an unclassified `stream_drop`. Healthy chunks return `None`.
+fn mid_stream_error(model: &Model, chunk: &Value) -> Option<ProviderError> {
+    let carries_error = chunk.get("error").is_some_and(serde_json::Value::is_object)
+        || (crate::provider_errors::is_fork_provider(&model.provider)
+            && chunk.get("code").is_some_and(|code| !code.is_null())
+            && chunk.get("choices").is_none());
+    if !carries_error {
+        return None;
+    }
+    Some(ProviderError::StreamFailure(
+        crate::provider_errors::stream_failure_from_error_frame(&model.provider, chunk),
+    ))
+}
+
 fn error_to_message(error: &ProviderError) -> String {
     let mut message = match error {
         ProviderError::StreamFailure(failure) => failure.message.clone(),
@@ -654,6 +671,12 @@ async fn run_stream(
                 break;
             }
             if let Some(chunk) = parse_sse_event_data(event) {
+                if let Some(error) = mid_stream_error(model, &chunk) {
+                    encode_reasoning_details_signature(&mut state);
+                    settle_partial_tool_calls(&mut state);
+                    *output = state.output;
+                    return Err(error);
+                }
                 handle_chunk(&chunk, model, cache_write_cost, &mut state, writer);
             }
         }
@@ -667,6 +690,12 @@ async fn run_stream(
                 continue;
             }
             if let Some(chunk) = parse_sse_event_data(&event) {
+                if let Some(error) = mid_stream_error(model, &chunk) {
+                    encode_reasoning_details_signature(&mut state);
+                    settle_partial_tool_calls(&mut state);
+                    *output = state.output;
+                    return Err(error);
+                }
                 handle_chunk(&chunk, model, cache_write_cost, &mut state, writer);
             }
         }
