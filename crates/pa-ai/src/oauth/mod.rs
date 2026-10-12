@@ -1,5 +1,5 @@
 //! The subscription OAuth flows: Codex, Anthropic, GitHub Copilot, xAI, and
-//! the fork's Genspark, Muse and CodeBuddy providers. Transport-agnostic: the
+//! the fork's `Genspark`, `Muse` and `CodeBuddy` providers. Transport-agnostic: the
 //! Codex flow issues its token requests through [`CodexHttp`], the others
 //! through [`ProviderHttp`]; tests script the endpoints.
 
