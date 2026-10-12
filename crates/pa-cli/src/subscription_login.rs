@@ -1,16 +1,16 @@
 //! The subscription logins (TS `showLoginDialog` over the `anthropic`,
-//! `githubCopilot`, and `xai` providers), rendered through the inline auth
-//! panel. Cancellation (#2770): each flow checks the cancel flag between poll
-//! steps and before the credential write.
+//! `githubCopilot`, `xai`, and `genspark` providers), rendered through the
+//! inline auth panel. Cancellation (#2770): each flow checks the cancel flag
+//! between poll steps and before the credential write.
 
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
 
 use pa_ai::oauth::{
-    login_anthropic, login_github_copilot, login_xai, AnthropicCredentials, OAuthLoginUi,
-    OAuthPrompt, ProviderHttp, ANTHROPIC_LOGIN_CANCELLED, COPILOT_LOGIN_CANCELLED,
-    XAI_LOGIN_CANCELLED,
+    login_anthropic, login_genspark, login_github_copilot, login_xai, AnthropicCredentials,
+    OAuthLoginUi, OAuthPrompt, ProviderHttp, ANTHROPIC_LOGIN_CANCELLED, COPILOT_LOGIN_CANCELLED,
+    GENSPARK_LOGIN_CANCELLED, XAI_LOGIN_CANCELLED,
 };
 use pa_core::auth::{
     AuthCredential, AuthStorage, ANTHROPIC_PROVIDER_ID, GITHUB_COPILOT_PROVIDER_ID, XAI_PROVIDER_ID,
@@ -22,6 +22,9 @@ use pa_tui::provider_auth::ProviderAuthOutcome;
 const MANUAL_INPUT_PROMPT: &str = "Paste redirect URL below, or complete login in browser:";
 /// `showWaiting` for the Copilot device flow.
 const COPILOT_WAITING: &str = "Waiting for browser authentication...";
+/// The Genspark model provider's auth-store slot; the device flow returns the
+/// same long-lived API key a manual key paste would store.
+const GENSPARK_PROVIDER_ID: &str = "genspark";
 
 /// The inline auth panel as the subscription logins' surface: the browser URL
 /// block (the flow opens the browser), the prompts, the progress lines, and the
@@ -209,6 +212,42 @@ pub(crate) async fn run_github_copilot_login(
     login_status(agent_dir, provider_name)
 }
 
+pub(crate) async fn run_genspark_login(
+    agent_dir: &Path,
+    provider_name: &str,
+    http: &dyn ProviderHttp,
+    ui: &dyn OAuthLoginUi,
+) -> ProviderAuthOutcome {
+    let credentials = match login_genspark(http, ui).await {
+        Ok(credentials) => credentials,
+        Err(message) if message == GENSPARK_LOGIN_CANCELLED => {
+            return ProviderAuthOutcome::Cancelled;
+        }
+        Err(message) => {
+            return ProviderAuthOutcome::Error(format!(
+                "Failed to login to {provider_name}: {message}"
+            ));
+        }
+    };
+    if ui.is_cancelled() {
+        return ProviderAuthOutcome::Cancelled;
+    }
+    let mut auth = AuthStorage::create(agent_dir);
+    auth.set(
+        GENSPARK_PROVIDER_ID,
+        AuthCredential::ApiKey {
+            key: credentials.api_key,
+            prime_team: None,
+        },
+    );
+    if let Some(error) = auth.drain_errors().pop() {
+        return ProviderAuthOutcome::Error(format!(
+            "Failed to login to {provider_name}: could not save the login: {error}"
+        ));
+    }
+    login_status(agent_dir, provider_name)
+}
+
 pub(crate) async fn run_xai_login(
     agent_dir: &Path,
     provider_name: &str,
@@ -319,9 +358,11 @@ mod tests {
         }
     }
 
-    /// A scripted surface: the prompt answer and a shared cancel flag.
+    /// A scripted surface: the prompt answer, auth URL capture, and a shared cancel flag.
     struct ScriptedUi {
         prompt: String,
+        auth_url: std::sync::Mutex<Option<String>>,
+        auth_instructions: std::sync::Mutex<Option<String>>,
         cancelled: Arc<AtomicBool>,
     }
 
@@ -329,6 +370,8 @@ mod tests {
         fn new() -> Self {
             ScriptedUi {
                 prompt: String::new(),
+                auth_url: std::sync::Mutex::new(None),
+                auth_instructions: std::sync::Mutex::new(None),
                 cancelled: Arc::new(AtomicBool::new(false)),
             }
         }
@@ -341,10 +384,20 @@ mod tests {
         fn flag(&self) -> Arc<AtomicBool> {
             Arc::clone(&self.cancelled)
         }
+
+        fn captured_auth(&self) -> (String, Option<String>) {
+            (
+                self.auth_url.lock().unwrap().clone().expect("the auth url"),
+                self.auth_instructions.lock().unwrap().clone(),
+            )
+        }
     }
 
     impl OAuthLoginUi for ScriptedUi {
-        fn on_auth(&self, _url: &str, _instructions: Option<&str>) {}
+        fn on_auth(&self, url: &str, instructions: Option<&str>) {
+            *self.auth_url.lock().unwrap() = Some(url.to_string());
+            *self.auth_instructions.lock().unwrap() = instructions.map(str::to_string);
+        }
 
         fn on_prompt(
             &self,
@@ -408,6 +461,25 @@ mod tests {
             )
     }
 
+    /// The Genspark happy flow's scripted endpoints.
+    fn genspark_http() -> ScriptedHttp {
+        ScriptedHttp::new()
+            .queue(
+                "https://www.genspark.ai/api/cli_auth/device_code",
+                vec![ScriptedHttp::entry(
+                    200,
+                    r#"{"device_code":"dev-1","auth_url":"https://www.genspark.ai/api/cli_auth/verify?code=abc123","expires_in":600,"poll_interval":0.001}"#,
+                )],
+            )
+            .queue(
+                "https://www.genspark.ai/api/cli_auth/token?code=dev-1",
+                vec![
+                    ScriptedHttp::entry(200, r#"{"status":"pending"}"#),
+                    ScriptedHttp::entry(200, r#"{"status":"approved","api_key":"gsk-test"}"#),
+                ],
+            )
+    }
+
     fn agent_dir(dir: &tempfile::TempDir) -> std::path::PathBuf {
         let agent = dir.path().join("agent");
         std::fs::create_dir_all(&agent).expect("agent dir");
@@ -448,6 +520,41 @@ mod tests {
             auth.get_api_key("github-copilot"),
             Some("copilot-token".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn the_genspark_login_stores_the_api_key_and_reports_the_status() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let agent = agent_dir(&dir);
+        let http = genspark_http();
+        let ui = ScriptedUi::new();
+        match run_genspark_login(&agent, "Genspark (GenCode) (code-plan)", &http, &ui).await {
+            ProviderAuthOutcome::Status(message) => {
+                assert_eq!(
+                    message,
+                    format!(
+                        "Logged in to Genspark (GenCode) (code-plan). Credentials saved to {}",
+                        agent.join("auth.json").display()
+                    )
+                );
+            }
+            other => panic!("expected the logged-in status, got {other:?}"),
+        }
+        let (url, instructions) = ui.captured_auth();
+        assert_eq!(
+            url,
+            "https://www.genspark.ai/api/cli_auth/verify?code=abc123"
+        );
+        assert_eq!(instructions, None);
+        let document: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(agent.join("auth.json")).unwrap())
+                .unwrap();
+        let stored = &document["genspark"];
+        assert_eq!(stored["type"], "api_key");
+        assert_eq!(stored["key"], "gsk-test");
+        assert!(stored.get("primeTeam").is_none());
+        let mut auth = AuthStorage::create(&agent);
+        assert_eq!(auth.get_api_key("genspark"), Some("gsk-test".to_string()));
     }
 
     #[tokio::test]
