@@ -47,6 +47,10 @@ struct ForkModel {
     /// The OpenAI-completions compat overrides for this entry, `None` for the
     /// detected defaults.
     supports_developer_role: Option<bool>,
+    /// `Some(MaxTokens)` when the gateway only reads the legacy `max_tokens`
+    /// field and ignores `max_completion_tokens` (the `CodeBuddy` gateways
+    /// silently drop the completion-tokens form).
+    max_tokens_field: Option<crate::types::MaxTokensField>,
 }
 
 /// The IDE headers the `CodeBuddy` gateway requires on every chat request.
@@ -141,6 +145,7 @@ static FORK_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
                     ModelCompat::from_kind(CompatKind::OpenAiCompletions(Box::new(
                         OpenAiCompletionsCompat {
                             supports_developer_role: Some(flag),
+                            max_tokens_field: raw.max_tokens_field,
                             ..OpenAiCompletionsCompat::default()
                         },
                     )))
@@ -186,6 +191,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 131_072,
         headers: &[("x-api-version", "1.0.0")],
         supports_developer_role: None,
+        max_tokens_field: None,
     },
     ForkModel {
         provider: "muse",
@@ -201,6 +207,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 131_072,
         headers: &[("x-api-version", "1.0.0")],
         supports_developer_role: None,
+        max_tokens_field: None,
     },
     ForkModel {
         provider: "muse",
@@ -216,6 +223,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 131_072,
         headers: &[("x-api-version", "1.0.0")],
         supports_developer_role: None,
+        max_tokens_field: None,
     },
     ForkModel {
         provider: "muse",
@@ -231,6 +239,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 131_072,
         headers: &[("x-api-version", "1.0.0")],
         supports_developer_role: None,
+        max_tokens_field: None,
     },
     ForkModel {
         provider: "muse",
@@ -246,6 +255,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 131_072,
         headers: &[("x-api-version", "1.0.0")],
         supports_developer_role: None,
+        max_tokens_field: None,
     },
     // --- CodeBuddy (codebuddy.ai IDE plan) -------------------------------------
     // Subscription credits: no per-token list price, so cost stays zero.
@@ -264,6 +274,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 131_072,
         headers: CODEBUDDY_HEADERS,
         supports_developer_role: Some(false),
+        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
     },
     ForkModel {
         provider: "codebuddy",
@@ -279,6 +290,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 128_000,
         headers: CODEBUDDY_HEADERS,
         supports_developer_role: Some(false),
+        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
     },
     ForkModel {
         provider: "codebuddy",
@@ -294,6 +306,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 128_000,
         headers: CODEBUDDY_HEADERS,
         supports_developer_role: Some(false),
+        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
     },
     ForkModel {
         provider: "codebuddy",
@@ -309,6 +322,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 128_000,
         headers: CODEBUDDY_HEADERS,
         supports_developer_role: Some(false),
+        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
     },
     ForkModel {
         provider: "codebuddy",
@@ -324,6 +338,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 128_000,
         headers: CODEBUDDY_HEADERS,
         supports_developer_role: Some(false),
+        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
     },
     ForkModel {
         provider: "codebuddy",
@@ -339,6 +354,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 128_000,
         headers: CODEBUDDY_HEADERS,
         supports_developer_role: Some(false),
+        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
     },
     ForkModel {
         provider: "codebuddy",
@@ -354,6 +370,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 131_072,
         headers: CODEBUDDY_HEADERS,
         supports_developer_role: Some(false),
+        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
     },
     ForkModel {
         provider: "codebuddy",
@@ -369,6 +386,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 131_072,
         headers: CODEBUDDY_HEADERS,
         supports_developer_role: Some(false),
+        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
     },
     ForkModel {
         provider: "codebuddy",
@@ -384,6 +402,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 262_144,
         headers: CODEBUDDY_HEADERS,
         supports_developer_role: Some(false),
+        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
     },
     ForkModel {
         provider: "codebuddy",
@@ -399,6 +418,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 262_144,
         headers: CODEBUDDY_HEADERS,
         supports_developer_role: Some(false),
+        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
     },
     ForkModel {
         provider: "codebuddy",
@@ -414,6 +434,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 262_144,
         headers: CODEBUDDY_HEADERS,
         supports_developer_role: Some(false),
+        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
     },
     ForkModel {
         provider: "codebuddy",
@@ -429,6 +450,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 262_144,
         headers: CODEBUDDY_HEADERS,
         supports_developer_role: Some(false),
+        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
     },
     ForkModel {
         provider: "codebuddy",
@@ -444,6 +466,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 384_000,
         headers: CODEBUDDY_HEADERS,
         supports_developer_role: Some(false),
+        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
     },
     ForkModel {
         provider: "codebuddy",
@@ -459,6 +482,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 384_000,
         headers: CODEBUDDY_HEADERS,
         supports_developer_role: Some(false),
+        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
     },
     ForkModel {
         provider: "codebuddy",
@@ -474,6 +498,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 64_000,
         headers: CODEBUDDY_HEADERS,
         supports_developer_role: Some(false),
+        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
     },
     // --- Genspark (genspark.ai agents/GenCode, LiteLLM proxy) ------------------
     // Credits-priced: costs are credit prices converted at the Plus rate
@@ -494,6 +519,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 128_000,
         headers: &[],
         supports_developer_role: None,
+        max_tokens_field: None,
     },
     ForkModel {
         provider: "genspark",
@@ -509,6 +535,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 128_000,
         headers: &[],
         supports_developer_role: None,
+        max_tokens_field: None,
     },
     ForkModel {
         provider: "genspark",
@@ -524,6 +551,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 128_000,
         headers: &[],
         supports_developer_role: None,
+        max_tokens_field: None,
     },
     ForkModel {
         provider: "genspark",
@@ -539,6 +567,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 128_000,
         headers: &[],
         supports_developer_role: None,
+        max_tokens_field: None,
     },
     ForkModel {
         provider: "genspark",
@@ -554,6 +583,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 128_000,
         headers: &[],
         supports_developer_role: None,
+        max_tokens_field: None,
     },
     ForkModel {
         provider: "genspark",
@@ -569,6 +599,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 128_000,
         headers: &[],
         supports_developer_role: None,
+        max_tokens_field: None,
     },
     ForkModel {
         provider: "genspark",
@@ -584,6 +615,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 128_000,
         headers: &[],
         supports_developer_role: None,
+        max_tokens_field: None,
     },
     ForkModel {
         provider: "genspark",
@@ -599,6 +631,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 128_000,
         headers: &[],
         supports_developer_role: None,
+        max_tokens_field: None,
     },
     ForkModel {
         provider: "genspark",
@@ -614,6 +647,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 128_000,
         headers: &[],
         supports_developer_role: None,
+        max_tokens_field: None,
     },
     ForkModel {
         provider: "genspark",
@@ -629,6 +663,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 128_000,
         headers: &[],
         supports_developer_role: None,
+        max_tokens_field: None,
     },
     ForkModel {
         provider: "genspark",
@@ -644,6 +679,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 128_000,
         headers: &[],
         supports_developer_role: None,
+        max_tokens_field: None,
     },
     ForkModel {
         provider: "genspark",
@@ -659,6 +695,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 131_072,
         headers: &[],
         supports_developer_role: None,
+        max_tokens_field: None,
     },
     ForkModel {
         provider: "genspark",
@@ -674,6 +711,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 32_768,
         headers: &[],
         supports_developer_role: None,
+        max_tokens_field: None,
     },
     ForkModel {
         provider: "genspark",
@@ -689,6 +727,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 32_768,
         headers: &[],
         supports_developer_role: None,
+        max_tokens_field: None,
     },
     ForkModel {
         provider: "genspark",
@@ -704,6 +743,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 32_768,
         headers: &[],
         supports_developer_role: None,
+        max_tokens_field: None,
     },
     ForkModel {
         provider: "genspark",
@@ -719,6 +759,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         max_tokens: 65_536,
         headers: &[],
         supports_developer_role: None,
+        max_tokens_field: None,
     },
 ];
 
@@ -819,6 +860,12 @@ mod tests {
                 panic!("codebuddy model {} carries a compat object", model.id);
             };
             assert_eq!(compat.supports_developer_role, Some(false));
+            // The gateway only reads the legacy `max_tokens` form; a
+            // `max_completion_tokens` field is silently dropped.
+            assert_eq!(
+                compat.max_tokens_field,
+                Some(crate::types::MaxTokensField::MaxTokens)
+            );
         }
     }
 }
