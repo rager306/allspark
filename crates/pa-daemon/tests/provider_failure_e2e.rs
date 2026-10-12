@@ -1149,3 +1149,118 @@ fn provider_failure_recovered_by_retry_settles_the_turn() {
         "no bare agent_end frames: {agent_ends:?}"
     );
 }
+
+/// The #4713 e2e: a payment failure on the primary re-routes to the next
+/// provider serving the same model id, with no quick-retry spent on the dead
+/// wallet — the credits never refill inside the ladder.
+#[test]
+fn payment_failure_reroutes_to_the_next_provider() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let agent_dir = dir.path().join("agent");
+    let session_dir = agent_dir.join("sessions");
+    std::fs::create_dir_all(&session_dir).expect("session dir");
+    // The dead wallet: always 402.
+    let dead = FailingMock::start_with_rejection(
+        usize::MAX,
+        "never reached",
+        MockRejection::PaymentRequired,
+    );
+    // The healthy sibling serving the same model id.
+    let live = FailingMock::start_with_rejection(
+        0,
+        "recovered on the sibling",
+        MockRejection::ServerError,
+    );
+    std::fs::write(
+        agent_dir.join("models.json"),
+        json!({
+            "providers": {
+                "dead-wallet": {
+                    "api": "openai-completions",
+                    "baseUrl": dead.url(),
+                    "apiKey": "sk-dead",
+                    "models": [{ "id": "shared-1", "name": "Shared 1", "api": "openai-completions", "contextWindow": 128_000, "maxTokens": 4096 }]
+                },
+                "live-wallet": {
+                    "api": "openai-completions",
+                    "baseUrl": live.url(),
+                    "apiKey": "sk-live",
+                    "models": [{ "id": "shared-1", "name": "Shared 1", "api": "openai-completions", "contextWindow": 128_000, "maxTokens": 4096 }]
+                }
+            }
+        })
+        .to_string(),
+    )
+    .expect("write models.json");
+    std::fs::write(
+        agent_dir.join("settings.json"),
+        json!({ "retry": { "enabled": true, "maxRetries": 2, "baseDelayMs": 50 } }).to_string(),
+    )
+    .expect("write settings.json");
+    let socket = dir.path().join("payment.sock");
+    let _supervisor = spawn_supervisor(&socket, &agent_dir);
+    let mut client = Client::connect(&socket);
+    client.send_command(
+        "c1",
+        &json!({
+            "type": "create",
+            "config": {
+                "cwd": dir.path().to_string_lossy(),
+                "sessionDir": session_dir.to_string_lossy(),
+                "provider": "dead-wallet",
+                "model": "shared-1",
+            },
+        }),
+    );
+    let created = client.request("c1");
+    assert_eq!(created["success"], true, "create failed: {created}");
+    let session_id = created["data"]["id"]
+        .as_str()
+        .or_else(|| created["data"]["sessionId"].as_str())
+        .expect("session id")
+        .to_string();
+    client.send_command(
+        "a1",
+        &json!({ "type": "attach", "activeSessionId": session_id }),
+    );
+    let _ = client.request("a1");
+
+    client.send_command(
+        "p1",
+        &json!({ "type": "prompt_and_wait", "activeSessionId": session_id, "message": "hi" }),
+    );
+    let done = client.request("p1");
+    client.drain_events(Duration::from_secs(1));
+    assert_eq!(done["success"], true, "the sibling must answer: {done}");
+
+    // Exactly one request on the dead wallet: no quick retry on it.
+    assert_eq!(dead.count(), 1, "the dead wallet is hit once, then skipped");
+    assert!(live.count() >= 1, "the sibling serves the turn");
+
+    let types = event_types(&client.events);
+    let starts: Vec<&Value> = client
+        .events
+        .iter()
+        .filter(|event| event.get("type").and_then(Value::as_str) == Some("auto_retry_start"))
+        .collect();
+    assert_eq!(starts.len(), 1, "one re-route, events: {types:?}");
+    assert_eq!(starts[0]["delayMs"], 0, "the re-route is immediate");
+    assert!(
+        starts[0]["errorMessage"]
+            .as_str()
+            .expect("error message")
+            .contains("Insufficient balance"),
+        "the payment error rides the re-route: {}",
+        starts[0]["errorMessage"]
+    );
+    let end = client
+        .events
+        .iter()
+        .rev()
+        .find(|event| event.get("type").and_then(Value::as_str) == Some("auto_retry_end"))
+        .expect("auto_retry_end");
+    assert_eq!(
+        end["success"], true,
+        "the sibling recovered the turn: {end}"
+    );
+}
