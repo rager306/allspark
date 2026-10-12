@@ -146,8 +146,10 @@ pub fn is_permanent_provider_failure_kind(
 ) -> bool {
     match kind {
         Some("invalid_request") if status == Some(404) => false,
-        // A payment failure never refills mid-ladder, so it settles on
-        // the first attempt (the disclosure row still fires).
+        // A payment failure never refills mid-ladder, so the plain
+        // retry loops settle it on the first attempt (the disclosure
+        // row still fires); the failover chain intercepts it first to
+        // re-route (#4713).
         Some("invalid_request" | "refusal" | "permission" | "safety" | "payment_required") => true,
         Some("auth") => retries_performed > 0,
         _ => false,

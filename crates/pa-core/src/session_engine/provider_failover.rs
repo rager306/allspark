@@ -1,7 +1,8 @@
 //! Provider failover: keeps a turn alive across configured providers serving the same model — a
-//! spent per-provider retry budget re-routes to the next provider in catalog order; the decision
-//! logic is pure, the caller owns the sleep/switch. Divergence (operator ruling 2026-09-23): retry
-//! waits carry ±20% jitter (TS has none).
+//! spent per-provider retry budget (or a payment failure, #4713, which spends it at once) re-routes
+//! to the next provider in catalog order; the decision logic is pure, the caller owns the
+//! sleep/switch. Divergence (operator ruling 2026-09-23): retry waits carry ±20% jitter (TS has
+//! none).
 
 use std::future::Future;
 
@@ -79,7 +80,9 @@ pub fn failover_retry_delay(
 /// Drive one turn through the provider-failover chain. With failover disabled or no candidates this
 /// is exactly [`run_turn_with_auto_retry`] under `quick_policy`; otherwise each provider gets
 /// `failover.max_retries` quick retries, and a spent budget switches to the next candidate
-/// immediately. `switch` re-binds the session to a provider; `restore` hands the primary back and
+/// immediately. A payment failure (#4713) spends the budget at once: the re-route fires without one
+/// quick retry on the spent provider, and with no candidate left it settles like any permanent
+/// failure. `switch` re-binds the session to a provider; `restore` hands the primary back and
 /// returns its `"provider/model-id"`.
 ///
 /// # Errors
@@ -160,6 +163,13 @@ where
             }
             return Ok(with_stop_reason_aborted(message));
         }
+        // #4713: a payment failure re-routes while another provider
+        // still serves the model — the credits never refill on this
+        // one, so the quick-retry ladder below is dead weight. Without
+        // a candidate it stays the permanent failure it always was.
+        let payment_reroute = provider_stream_failure_kind(&message).as_deref()
+            == Some("payment_required")
+            && candidate_index < candidates.len();
         // Permanent and deterministic failures never walk the chain: a
         // rejected request fails the same way on every provider.
         let non_retryable = is_agent_lifecycle_failure(&message)
@@ -168,11 +178,11 @@ where
             // `_isRetryableError`): the recovery owns it.
             || is_context_overflow_failure(&message, context_window)
             || is_unsupported_tool_failure(&message)
-            || is_permanent_provider_failure_kind(
+            || (is_permanent_provider_failure_kind(
                 provider_stream_failure_kind(&message).as_deref(),
                 total_retries,
                 provider_stream_failure_status(&message),
-            );
+            ) && !payment_reroute);
         if non_retryable {
             if switched {
                 let _ = restore().await?;
@@ -212,7 +222,10 @@ where
             .await?;
             return Ok(message);
         }
-        if retries_on_provider > failover.max_retries {
+        // #4713: a payment failure spends the provider's budget at
+        // once — the re-route fires without a single quick wait.
+        let reroute_now = payment_reroute || retries_on_provider > failover.max_retries;
+        if reroute_now {
             let Some(next) = candidates.get(candidate_index) else {
                 if switched {
                     let _ = restore().await?;
@@ -734,6 +747,165 @@ mod tests {
                 final_error: Some("bad request".to_string()),
                 restored_model: None,
             }]
+        );
+    }
+
+    /// #4713: credits exhausted on the primary re-route at once — no
+    /// quick-retry budget spent on the dead provider, the backup's
+    /// success restores the primary.
+    #[tokio::test]
+    async fn payment_failure_switches_immediately_and_succeeds() {
+        let candidates = vec![model("backup-a"), model("backup-b")];
+        let script = vec![
+            error_message(Some("payment_required"), Some(402), "insufficient credits"),
+            ok_message("recovered on backup"),
+        ];
+        let harness = drive(&fast_failover(), &candidates, script).await;
+        assert_eq!(harness.attempts, 2);
+        assert_eq!(harness.switches, vec!["backup-a/glm-5.3"]);
+        assert_eq!(
+            harness.restores,
+            vec![Some("primary/glm-5.3".to_string()); 1]
+        );
+        // The re-route is immediate: not one quick wait on the primary.
+        assert!(harness.waits.is_empty(), "waits: {:?}", harness.waits);
+        assert_eq!(
+            harness.events.as_slice(),
+            &[
+                AutoRetryEvent::Start {
+                    attempt: 1,
+                    max_attempts: 2,
+                    delay_ms: 0,
+                    error_message: "insufficient credits".to_string(),
+                    reason: RetryStartReason::Backup {
+                        backup_model: "backup-a/glm-5.3".to_string(),
+                    },
+                },
+                AutoRetryEvent::End {
+                    success: true,
+                    attempt: 1,
+                    final_error: None,
+                    restored_model: Some("primary/glm-5.3".to_string()),
+                },
+            ]
+        );
+    }
+
+    /// #4713: the credit walk ends where the candidates do — each spent
+    /// provider is skipped once, the last failure settles permanently.
+    #[tokio::test]
+    async fn payment_failure_walks_the_chain_until_candidates_run_out() {
+        let candidates = vec![model("backup-a"), model("backup-b")];
+        let script = vec![
+            error_message(
+                Some("payment_required"),
+                Some(402),
+                "primary out of credits",
+            ),
+            error_message(
+                Some("payment_required"),
+                Some(402),
+                "backup-a out of credits",
+            ),
+            error_message(
+                Some("payment_required"),
+                Some(402),
+                "backup-b out of credits",
+            ),
+        ];
+        let harness = drive(&fast_failover(), &candidates, script).await;
+        assert_eq!(harness.attempts, 3);
+        assert_eq!(
+            harness.switches,
+            vec!["backup-a/glm-5.3", "backup-b/glm-5.3"]
+        );
+        assert_eq!(
+            harness.restores,
+            vec![Some("primary/glm-5.3".to_string()); 1]
+        );
+        assert!(harness.waits.is_empty(), "waits: {:?}", harness.waits);
+        let end = harness.events.last().expect("end event");
+        assert_eq!(
+            end,
+            &AutoRetryEvent::End {
+                success: false,
+                attempt: 2,
+                final_error: Some("backup-b out of credits".to_string()),
+                restored_model: None,
+            }
+        );
+    }
+
+    /// #4713 (the no-route arms): with no candidate, or failover
+    /// disabled, a payment failure settles on the first attempt — the
+    /// same provider is never retried.
+    #[tokio::test]
+    async fn payment_failure_without_a_route_settles_without_retrying() {
+        let candidates = vec![model("backup-a")];
+        let mut disabled = fast_failover();
+        disabled.enabled = false;
+        for (failover, candidates) in [
+            (&disabled, candidates.as_slice()),
+            (&fast_failover(), [].as_slice()),
+        ] {
+            let script = vec![error_message(
+                Some("payment_required"),
+                Some(402),
+                "insufficient credits",
+            )];
+            let harness = drive(failover, candidates, script).await;
+            assert_eq!(harness.attempts, 1);
+            assert!(harness.waits.is_empty(), "waits: {:?}", harness.waits);
+            assert_eq!(harness.switches, Vec::<String>::new());
+            assert_eq!(
+                harness.events.as_slice(),
+                &[AutoRetryEvent::End {
+                    success: false,
+                    attempt: 0,
+                    final_error: Some("insufficient credits".to_string()),
+                    restored_model: None,
+                }]
+            );
+        }
+    }
+
+    /// #4713: the credit walk is still an episode —
+    /// [`MAX_TOTAL_PROVIDER_RETRIES`] binds it even with candidates left.
+    #[tokio::test]
+    async fn a_payment_walk_stops_at_the_episode_cap() {
+        let candidates: Vec<Model> = (1..=10)
+            .map(|index| model(&format!("backup-{index}")))
+            .collect();
+        let script: Vec<AssistantMessage> = (0..12)
+            .map(|index| {
+                error_message(
+                    Some("payment_required"),
+                    Some(402),
+                    &format!("out of credits {index}"),
+                )
+            })
+            .collect();
+        let harness = drive(&fast_failover(), &candidates, script).await;
+        assert_eq!(harness.attempts, 1 + MAX_TOTAL_PROVIDER_RETRIES as usize);
+        assert_eq!(harness.switches.len(), MAX_TOTAL_PROVIDER_RETRIES as usize);
+        assert!(harness.waits.is_empty(), "waits: {:?}", harness.waits);
+        assert!(
+            harness.events.iter().all(|event| !matches!(
+                event,
+                AutoRetryEvent::Start { attempt, .. } if *attempt > MAX_TOTAL_PROVIDER_RETRIES
+            )),
+            "no attempt exceeds the episode cap: {:?}",
+            harness.events
+        );
+        let end = harness.events.last().expect("end event");
+        assert_eq!(
+            end,
+            &AutoRetryEvent::End {
+                success: false,
+                attempt: MAX_TOTAL_PROVIDER_RETRIES,
+                final_error: Some("out of credits 8".to_string()),
+                restored_model: None,
+            }
         );
     }
 
