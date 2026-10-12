@@ -155,6 +155,13 @@ async fn login_options_list_providers_only() {
             < rows.iter().position(|row| row.id == "anthropic"),
         "prime-inference sorts before the other api-key rows"
     );
+    // A provider with a subscription flow must render exactly one row: the
+    // fork's providers (genspark, and later codebuddy/muse) are in the model
+    // catalog, so without the de-dup they would also appear as api-key rows.
+    for (id, _) in SUBSCRIPTION_PROVIDERS {
+        let count = rows.iter().filter(|row| row.id == id).count();
+        assert_eq!(count, 1, "provider {id} renders exactly one /login row");
+    }
 }
 
 /// Port of the TS #2645 warning detection: the ban-risk warning is

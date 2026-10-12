@@ -363,7 +363,16 @@ impl ProviderAuth {
                 .collect();
             providers.sort();
             providers.dedup();
+            // A provider with a subscription/terminal flow (its row already
+            // emitted above) must not also appear as a pasted-API-key row: the
+            // fork's providers are in the catalog, so `is_api_key_login_provider`
+            // would otherwise list them twice.
+            let subscription_ids: std::collections::HashSet<&str> =
+                SUBSCRIPTION_PROVIDERS.iter().map(|(id, _)| *id).collect();
             for provider_id in providers {
+                if subscription_ids.contains(provider_id.as_str()) {
+                    continue;
+                }
                 if !is_api_key_login_provider(&provider_id, &built_in_provider_ids) {
                     continue;
                 }
