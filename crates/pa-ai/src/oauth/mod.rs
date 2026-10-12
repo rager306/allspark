@@ -6,6 +6,7 @@
 mod anthropic;
 mod anthropic_callback;
 mod callback;
+mod codebuddy;
 mod github_copilot;
 mod openai_codex;
 mod pkce;
@@ -18,6 +19,7 @@ pub use anthropic::{
     LOGIN_CANCELLED as ANTHROPIC_LOGIN_CANCELLED,
 };
 pub use callback::CodexCallbackServer;
+pub use codebuddy::{refresh_codebuddy_token, CodeBuddyCredentials, CODEBUDDY_REFRESH_URL};
 pub use github_copilot::{
     get_github_copilot_base_url, login_github_copilot, refresh_github_copilot_token,
     CopilotCredentials, LOGIN_CANCELLED as COPILOT_LOGIN_CANCELLED,

@@ -5,8 +5,9 @@
 use std::sync::Arc;
 
 use pa_ai::oauth::{
-    refresh_anthropic_token, refresh_github_copilot_token, refresh_openai_codex_token,
-    refresh_xai_token, CodexHttp, ProviderHttp, ReqwestCodexHttp, ReqwestProviderHttp,
+    refresh_anthropic_token, refresh_codebuddy_token, refresh_github_copilot_token,
+    refresh_openai_codex_token, refresh_xai_token, CodexHttp, ProviderHttp, ReqwestCodexHttp,
+    ReqwestProviderHttp,
 };
 
 use crate::auth::types::{AuthCredential, AuthStorageData};
@@ -17,6 +18,9 @@ pub const OPENAI_CODEX_PROVIDER_ID: &str = "openai-codex";
 /// The Anthropic (Claude Pro/Max) subscription provider id.
 pub const ANTHROPIC_PROVIDER_ID: &str = "anthropic";
 pub const GITHUB_COPILOT_PROVIDER_ID: &str = "github-copilot";
+/// The `CodeBuddy` (codebuddy.ai IDE/CLI plan) provider id: the fork's built-in
+/// provider; its OAuth access token refreshes at the plugin endpoint.
+pub const CODEBUDDY_PROVIDER_ID: &str = "codebuddy";
 /// The xAI (Grok) subscription provider id.
 pub const XAI_PROVIDER_ID: &str = "xai";
 
@@ -167,7 +171,30 @@ impl ProviderOAuth {
                             audience_mode: None,
                         })
                     }
-                    // The match arms cover the four subscription ids;
+                    CODEBUDDY_PROVIDER_ID => {
+                        // The refresh token rotates on every call; a missing
+                        // rotation keeps the previous one.
+                        let credentials = runtime
+                            .block_on(refresh_codebuddy_token(
+                                provider_http.as_ref(),
+                                &refresh_token,
+                            ))
+                            .ok()?;
+                        Some(AuthCredential::Oauth {
+                            access: credentials.access,
+                            refresh: Some(credentials.refresh.unwrap_or(refresh_token)),
+                            expires: credentials.expires,
+                            account_id: None,
+                            enterprise_url: None,
+                            endpoint: None,
+                            token_endpoint: None,
+                            client_id: None,
+                            resource: None,
+                            issuer: None,
+                            audience_mode: None,
+                        })
+                    }
+                    // The match arms cover the subscription ids;
                     // `refresh` never dispatches another.
                     _ => None,
                 };
@@ -194,6 +221,7 @@ impl crate::auth::OAuthIntegration for ProviderOAuth {
                 | ANTHROPIC_PROVIDER_ID
                 | GITHUB_COPILOT_PROVIDER_ID
                 | XAI_PROVIDER_ID
+                | CODEBUDDY_PROVIDER_ID
         ) {
             return None;
         }
@@ -363,6 +391,23 @@ mod tests {
                 .to_string(),
             },
         );
+        // CodeBuddy's plugin endpoint answers its own envelope.
+        providers.insert(
+            pa_ai::oauth::CODEBUDDY_REFRESH_URL.to_string(),
+            ProviderHttpResponse {
+                status: 200,
+                body: serde_json::json!({
+                    "code": 0,
+                    "msg": "OK",
+                    "data": {
+                        "accessToken": "codebuddy-access",
+                        "refreshToken": "codebuddy-refresh",
+                        "expiresIn": 3600,
+                    },
+                })
+                .to_string(),
+            },
+        );
         std::sync::Arc::new(ProviderOAuth::with_transports(
             std::sync::Arc::new(ScriptedHttp(codex)),
             std::sync::Arc::new(ScriptedProviderHttp(providers)),
@@ -470,6 +515,28 @@ mod tests {
             panic!("the stored credential is OAuth");
         };
         assert_eq!(refresh.as_deref(), Some("grok-refresh"));
+        assert!(expires > 1, "the fresh expiry landed");
+    }
+
+    #[test]
+    fn an_expired_codebuddy_credential_refreshes_and_resolves() {
+        let mut auth = storage_with_credential(
+            CODEBUDDY_PROVIDER_ID,
+            &expired_credential(CODEBUDDY_PROVIDER_ID),
+        );
+        let api_key = auth
+            .get_api_key(CODEBUDDY_PROVIDER_ID)
+            .expect("the refreshed access token resolves");
+        assert_eq!(api_key, "codebuddy-access");
+        let stored = auth.get_all().credential(CODEBUDDY_PROVIDER_ID).unwrap();
+        let AuthCredential::Oauth {
+            refresh, expires, ..
+        } = stored
+        else {
+            panic!("the stored credential is OAuth");
+        };
+        // The endpoint rotates the refresh token; the new one is stored.
+        assert_eq!(refresh.as_deref(), Some("codebuddy-refresh"));
         assert!(expires > 1, "the fresh expiry landed");
     }
 
