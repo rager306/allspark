@@ -100,6 +100,88 @@ fn header_values(head: &str, name: &str) -> Vec<String> {
         .collect()
 }
 
+/// Serve one SSE response for the provider's POST and hand the full captured
+/// request (head and body) back to the caller: the `CodeBuddy` pins read the
+/// outbound `messages` array off the wire.
+async fn serve_sse_capturing_request(
+    body: String,
+) -> (SocketAddr, tokio::sync::oneshot::Receiver<String>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (request_tx, request_rx) = tokio::sync::oneshot::channel::<String>();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut captured = String::new();
+        let mut buffer = [0u8; 8192];
+        loop {
+            let Some(head_end) = captured.find("\r\n\r\n") else {
+                let read = socket.read(&mut buffer).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                captured.push_str(&String::from_utf8_lossy(&buffer[..read]));
+                continue;
+            };
+            let content_length: usize = captured[..head_end]
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(key, _)| key.trim().eq_ignore_ascii_case("content-length"))
+                .and_then(|(_, value)| value.trim().parse().ok())
+                .unwrap_or(0);
+            if captured.len() >= head_end + 4 + content_length {
+                break;
+            }
+            let read = socket.read(&mut buffer).await.unwrap();
+            if read == 0 {
+                break;
+            }
+            captured.push_str(&String::from_utf8_lossy(&buffer[..read]));
+        }
+        let _ = request_tx.send(captured);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+    });
+    (addr, request_rx)
+}
+
+/// Stream the provider against the mock to completion and return the parsed
+/// JSON request body it put on the wire.
+async fn stream_capture_request_body(model: Value) -> Value {
+    let (addr, request_rx) = serve_sse_capturing_request(tier_sse()).await;
+    let mut model = model;
+    model["baseUrl"] = json!(format!("http://{addr}"));
+    let model: Model = serde_json::from_value(model).unwrap();
+    let options = OpenAICompletionsOptions::from_base(crate::types::StreamOptions {
+        api_key: Some("test".into()),
+        ..Default::default()
+    });
+    let mut reader = stream_openai_completions(
+        &model,
+        &Context {
+            system_prompt: None,
+            messages: vec![],
+            tools: None,
+        },
+        Some(&options),
+    );
+    loop {
+        let event = reader.next_event().await.unwrap();
+        if let AssistantMessageEvent::Done { .. } = event {
+            break;
+        }
+        if let AssistantMessageEvent::Error { error, .. } = event {
+            panic!("stream failed: {:?}", error.error_message);
+        }
+    }
+    let captured = request_rx.await.unwrap();
+    let body = captured.split_once("\r\n\r\n").map_or("", |(_, body)| body);
+    serde_json::from_str(body).expect("the request body is JSON")
+}
+
 /// The chat/completions POST carries exactly one
 /// `content-type: application/json` label; a strict OpenAI-compatible
 /// frontend 400s without it.
@@ -131,5 +213,24 @@ async fn wire_caller_content_type_override_wins() {
         header_values(&head, "content-type"),
         vec!["application/vnd.api+json"],
         "the wire head: {head}"
+    );
+}
+
+/// The `CodeBuddy` gateway pin: the gateway answers 400 (envelope code
+/// 11128, "first message is not system prompt") when the first message is
+/// not a system prompt, so even a caller without a system prompt ships a
+/// leading `system` message on the wire.
+#[tokio::test]
+async fn codebuddy_ships_a_leading_system_message_on_the_wire() {
+    let body =
+        stream_capture_request_body(completions_model("glm-5.2", "codebuddy", 1.0, 1.0)).await;
+    let messages = body["messages"].as_array().expect("messages on the wire");
+    let first = &messages[0];
+    assert_eq!(first["role"], json!("system"));
+    assert!(
+        first["content"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty()),
+        "the wire messages: {messages:?}"
     );
 }

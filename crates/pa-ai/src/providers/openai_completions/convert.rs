@@ -24,8 +24,20 @@ pub fn convert_messages(model: &Model, context: &Context, compat: &ResolvedCompa
             Some(normalize_tool_call_id(id, model))
         });
 
-    if let Some(system_prompt) = &context.system_prompt {
-        let use_developer_role = model.reasoning && compat.supports_developer_role;
+    // The `CodeBuddy` gateway answers 400 (envelope code 11128, "first
+    // message is not system prompt") when the chat body carries no leading
+    // system message, so a caller without a system prompt still ships a
+    // minimal stand-in for that provider. Every other provider keeps the
+    // bare conversation.
+    let system_prompt = context
+        .system_prompt
+        .as_deref()
+        .or_else(|| (model.provider == "codebuddy").then_some(CODEBUDDY_LEADING_SYSTEM));
+    if let Some(system_prompt) = system_prompt {
+        // The injected stand-in always rides as `system`: the gateway
+        // rejects the `developer` role outright.
+        let use_developer_role =
+            context.system_prompt.is_some() && model.reasoning && compat.supports_developer_role;
         let role = if use_developer_role {
             "developer"
         } else {
@@ -359,6 +371,10 @@ pub fn convert_messages(model: &Model, context: &Context, compat: &ResolvedCompa
     params
 }
 
+/// The minimal leading system message the `CodeBuddy` gateway requires when
+/// the caller carries no system prompt of its own.
+const CODEBUDDY_LEADING_SYSTEM: &str = "You are a helpful assistant.";
+
 /// Normalize a tool call ID for providers that reject long/pipe-separated IDs.
 pub fn normalize_tool_call_id(id: &str, model: &Model) -> String {
     if id.contains('|') {
@@ -528,7 +544,7 @@ pub(crate) fn map_stop_reason(reason: &str) -> (StopReason, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ModelCost, ModelInput};
+    use crate::types::{Message, ModelCost, ModelInput, UserMessage};
     use pa_types::JsNumber;
 
     fn model(provider: &str, input: f64, output: f64) -> Model {
@@ -630,5 +646,93 @@ mod tests {
         let model = model("zai", 0.5, 0.5);
         let usage = parse_chunk_usage(&raw_usage(0.07, ByokBilling::NotByok), &model, None);
         assert!((usage.cost.total.as_f64() - 0.05).abs() < 1e-9);
+    }
+
+    fn user_message(content: UserMessageContent) -> Message {
+        Message::User(UserMessage {
+            content,
+            timestamp: 0,
+            rest: Map::default(),
+        })
+    }
+
+    fn convert_without_tools(model: &Model, context: &Context) -> Vec<Value> {
+        convert_messages(
+            model,
+            context,
+            &crate::providers::openai_completions::detect_compat(model),
+        )
+    }
+
+    /// The `CodeBuddy` gateway contract: the gateway answers 400 (envelope
+    /// code 11128, "first message is not system prompt") when the first
+    /// message is not a system prompt, so a caller without a system prompt
+    /// still ships a minimal leading system message.
+    #[test]
+    fn codebuddy_without_a_system_prompt_ships_a_leading_system_message() {
+        let model = model("codebuddy", 0.5, 0.5);
+        let context = Context {
+            system_prompt: None,
+            messages: vec![user_message(UserMessageContent::Text("hi".into()))],
+            tools: None,
+        };
+        let params = convert_without_tools(&model, &context);
+        assert_eq!(params[0]["role"], json!("system"));
+        assert_eq!(params[0]["content"], json!("You are a helpful assistant."));
+        assert_eq!(params[1]["role"], json!("user"));
+        assert_eq!(params[1]["content"], json!("hi"));
+    }
+
+    /// The injection is `CodeBuddy`-only: every other provider keeps the
+    /// bare conversation when the caller has no system prompt.
+    #[test]
+    fn other_providers_keep_the_bare_conversation_without_a_system_prompt() {
+        let model = model("openai", 0.5, 0.5);
+        let context = Context {
+            system_prompt: None,
+            messages: vec![user_message(UserMessageContent::Text("hi".into()))],
+            tools: None,
+        };
+        let params = convert_without_tools(&model, &context);
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0]["role"], json!("user"));
+    }
+
+    /// The `CodeBuddy` gateway accepts user content as a plain string: a
+    /// text-only user message rides that way (verified live).
+    #[test]
+    fn user_text_rides_as_a_plain_string() {
+        let model = model("codebuddy", 0.5, 0.5);
+        let context = Context {
+            system_prompt: Some("sys".into()),
+            messages: vec![user_message(UserMessageContent::Text("hi".into()))],
+            tools: None,
+        };
+        let params = convert_without_tools(&model, &context);
+        assert_eq!(params[1]["content"], json!("hi"));
+    }
+
+    /// The `CodeBuddy` gateway also accepts user content as text parts
+    /// (`[{"type":"text","text":...}]`): block-shaped input keeps that wire
+    /// form (verified live).
+    #[test]
+    fn user_blocks_ride_as_text_parts() {
+        let model = model("codebuddy", 0.5, 0.5);
+        let context = Context {
+            system_prompt: Some("sys".into()),
+            messages: vec![user_message(UserMessageContent::Blocks(vec![
+                UserOrToolContent::Text(TextContent {
+                    text: "hi".into(),
+                    text_signature: None,
+                    rest: Map::default(),
+                }),
+            ]))],
+            tools: None,
+        };
+        let params = convert_without_tools(&model, &context);
+        assert_eq!(
+            params[1]["content"],
+            json!([{ "type": "text", "text": "hi" }])
+        );
     }
 }

@@ -965,4 +965,27 @@ mod tests {
         assert!((message.usage.cost.input.as_f64() - 0.1015).abs() < 1e-9);
         assert!((message.usage.cost.output.as_f64() - 0.1015).abs() < 1e-9);
     }
+
+    /// The duplicated-terminal-marker pin: `CodeBuddy` never sends a second
+    /// `[DONE]` (verified live), but a gateway that does must not break the
+    /// parse — the first marker ends the stream and any bytes after it are
+    /// dropped (a held-open body past `[DONE]` never EOFs).
+    #[tokio::test]
+    async fn a_duplicated_done_marker_does_not_break_the_stream() {
+        let model = completions_model("glm-5.2", "codebuddy", 1.0, 1.0);
+        let message = stream_final_message(
+            model,
+            format!("{TIERED_CONTENT_CHUNK}{USAGE_CHUNK}{DONE}{DONE}"),
+        )
+        .await;
+        assert_eq!(message.stop_reason, StopReason::Stop);
+        assert_eq!(
+            message.content,
+            vec![AssistantContent::Text(TextContent {
+                text: "Hi".into(),
+                text_signature: None,
+                rest: Map::default(),
+            })]
+        );
+    }
 }
