@@ -293,3 +293,23 @@ async fn the_done_marker_ends_a_stream_whose_body_stays_open() {
         .iter()
         .any(|block| matches!(block, AssistantContent::ToolCall(call) if call.name == "ipython")));
 }
+
+/// `CodeBuddy`-style chunks carry `"finish_reason":""` on every content chunk and
+/// only the final chunk carries the real reason. An empty reason is not a
+/// terminal signal: it must not mark the turn errored (the turn used to settle
+/// with a bogus `"Provider finish_reason: "` error message).
+#[tokio::test]
+async fn an_empty_finish_reason_is_not_a_terminal_signal() {
+    let body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"1, 2, 3\"},\"finish_reason\":\"\"}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n",
+    )
+    .to_string();
+    let (_types, event) = stream_events(body).await;
+    let AssistantMessageEvent::Done { message, .. } = event else {
+        panic!("a stream with a real stop reason must terminate as Done");
+    };
+    assert_eq!(message.stop_reason, StopReason::Stop);
+    assert_eq!(message.error_message, None);
+}

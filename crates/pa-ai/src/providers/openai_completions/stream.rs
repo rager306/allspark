@@ -251,12 +251,18 @@ fn handle_chunk(
         }
     }
 
+    // An empty `finish_reason` is not a terminal signal: CodeBuddy (and other
+    // gateways) put `""` on every content chunk and only the final chunk carries
+    // the real reason. Treating it as a value would mark the turn errored
+    // ("Provider finish_reason: ") on the first chunk.
     if let Some(finish_reason) = choice.get("finish_reason").and_then(|value| value.as_str()) {
-        state.saw_finish_reason = true;
-        let (stop_reason, error_message) = map_stop_reason(finish_reason);
-        state.output.stop_reason = stop_reason;
-        if error_message.is_some() {
-            state.output.error_message = error_message;
+        if !finish_reason.is_empty() {
+            state.saw_finish_reason = true;
+            let (stop_reason, error_message) = map_stop_reason(finish_reason);
+            state.output.stop_reason = stop_reason;
+            if error_message.is_some() {
+                state.output.error_message = error_message;
+            }
         }
     }
 
