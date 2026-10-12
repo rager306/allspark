@@ -298,6 +298,23 @@ async fn the_done_marker_ends_a_stream_whose_body_stays_open() {
 /// only the final chunk carries the real reason. An empty reason is not a
 /// terminal signal: it must not mark the turn errored (the turn used to settle
 /// with a bogus `"Provider finish_reason: "` error message).
+/// A valid empty completion: the stop signal plus the `[DONE]` marker with no
+/// content blocks. A turn that ends cleanly with no text and no tool call is a
+/// normal stop — `Anthropic` documents empty `end_turn` completions — never an
+/// error or a drop (`OmniRoute` #16072: treating it as a failure burns the whole
+/// combo on an otherwise-correct answer).
+#[tokio::test]
+async fn a_valid_empty_completion_is_not_a_drop() {
+    let body = format!("{FINISH}{DONE}");
+    let (event_types, terminal) = stream_events(body).await;
+    let AssistantMessageEvent::Done { message, .. } = terminal else {
+        panic!("a valid empty completion must complete: {event_types:?}");
+    };
+    assert_eq!(message.stop_reason, StopReason::Stop);
+    assert_eq!(message.error_message, None);
+    assert_eq!(message.content, Vec::new());
+}
+
 #[tokio::test]
 async fn an_empty_finish_reason_is_not_a_terminal_signal() {
     let body = concat!(
