@@ -1,19 +1,21 @@
 //! The subscription logins (TS `showLoginDialog` over the `anthropic`,
-//! `githubCopilot`, `xai`, and `genspark` providers), rendered through the
-//! inline auth panel. Cancellation (#2770): each flow checks the cancel flag
-//! between poll steps and before the credential write.
+//! `githubCopilot`, `xai`, and the fork's `genspark`/`muse` providers),
+//! rendered through the inline auth panel. Cancellation (#2770): each flow
+//! checks the cancel flag between poll steps and before the credential write.
 
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
 
 use pa_ai::oauth::{
-    login_anthropic, login_genspark, login_github_copilot, login_xai, AnthropicCredentials,
-    OAuthLoginUi, OAuthPrompt, ProviderHttp, ANTHROPIC_LOGIN_CANCELLED, COPILOT_LOGIN_CANCELLED,
-    GENSPARK_LOGIN_CANCELLED, XAI_LOGIN_CANCELLED,
+    login_anthropic, login_genspark, login_github_copilot, login_muse, login_xai,
+    AnthropicCredentials, GensparkCredentials, MuseCredentials, OAuthLoginUi, OAuthPrompt,
+    ProviderHttp, ANTHROPIC_LOGIN_CANCELLED, COPILOT_LOGIN_CANCELLED, GENSPARK_LOGIN_CANCELLED,
+    MUSE_LOGIN_CANCELLED, XAI_LOGIN_CANCELLED,
 };
 use pa_core::auth::{
-    AuthCredential, AuthStorage, ANTHROPIC_PROVIDER_ID, GITHUB_COPILOT_PROVIDER_ID, XAI_PROVIDER_ID,
+    AuthCredential, AuthStorage, ANTHROPIC_PROVIDER_ID, GITHUB_COPILOT_PROVIDER_ID,
+    MUSE_PROVIDER_ID, XAI_PROVIDER_ID,
 };
 use pa_tui::auth_panel::{AuthPanelHandle, PastePromptTone, PasteStyle};
 use pa_tui::provider_auth::ProviderAuthOutcome;
@@ -293,6 +295,52 @@ pub(crate) async fn run_xai_login(
     login_status(agent_dir, provider_name)
 }
 
+/// The Muse flow mints the durable `LLM|...` key after device auth; the short-lived Meta access
+/// token is never stored, so the auth store carries the same `ApiKey` shape as a pasted Muse key.
+pub(crate) async fn run_muse_login(
+    agent_dir: &Path,
+    provider_name: &str,
+    http: &dyn ProviderHttp,
+    ui: &dyn OAuthLoginUi,
+) -> ProviderAuthOutcome {
+    let credentials = match login_muse(http, ui).await {
+        Ok(credentials) => credentials,
+        Err(message) if message == MUSE_LOGIN_CANCELLED => {
+            return ProviderAuthOutcome::Cancelled;
+        }
+        Err(message) => {
+            return ProviderAuthOutcome::Error(format!(
+                "Failed to login to {provider_name}: {message}"
+            ));
+        }
+    };
+    if ui.is_cancelled() {
+        return ProviderAuthOutcome::Cancelled;
+    }
+    store_muse_login(agent_dir, provider_name, credentials)
+}
+
+fn store_muse_login(
+    agent_dir: &Path,
+    provider_name: &str,
+    credentials: MuseCredentials,
+) -> ProviderAuthOutcome {
+    let mut auth = AuthStorage::create(agent_dir);
+    auth.set(
+        MUSE_PROVIDER_ID,
+        AuthCredential::ApiKey {
+            key: credentials.api_key,
+            prime_team: None,
+        },
+    );
+    if let Some(error) = auth.drain_errors().pop() {
+        return ProviderAuthOutcome::Error(format!(
+            "Failed to login to {provider_name}: could not save the login: {error}"
+        ));
+    }
+    login_status(agent_dir, provider_name)
+}
+
 /// The oauth status row.
 fn login_status(agent_dir: &Path, provider_name: &str) -> ProviderAuthOutcome {
     ProviderAuthOutcome::Status(format!(
@@ -306,7 +354,7 @@ mod tests {
     use super::*;
     use std::collections::{HashMap, VecDeque};
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use pa_ai::oauth::ProviderHttpResponse;
 
@@ -358,7 +406,7 @@ mod tests {
         }
     }
 
-    /// A scripted surface: the prompt answer, auth URL capture, and a shared cancel flag.
+    /// A scripted surface: the prompt answer, captured auth block, and a shared cancel flag.
     struct ScriptedUi {
         prompt: String,
         auth_url: std::sync::Mutex<Option<String>>,
@@ -477,6 +525,32 @@ mod tests {
                     ScriptedHttp::entry(200, r#"{"status":"pending"}"#),
                     ScriptedHttp::entry(200, r#"{"status":"approved","api_key":"gsk-test"}"#),
                 ],
+            )
+    }
+
+    /// The Muse happy flow's scripted endpoints: device auth, token polling, then key mint.
+    fn muse_http() -> ScriptedHttp {
+        ScriptedHttp::new()
+            .queue(
+                "https://auth.meta.com/oidc/device/authorization/",
+                vec![ScriptedHttp::entry(
+                    200,
+                    r#"{"device_code":"dev-1","user_code":"META-1234","verification_uri":"https://auth.meta.com/oauth/device/","interval":0,"expires_in":600}"#,
+                )],
+            )
+            .queue(
+                "https://auth.meta.com/oidc/device/token/",
+                vec![
+                    ScriptedHttp::entry(400, r#"{"error":"authorization_pending"}"#),
+                    ScriptedHttp::entry(200, r#"{"access_token":"meta-access"}"#),
+                ],
+            )
+            .queue(
+                "https://api.meta.ai/muse-code/key",
+                vec![ScriptedHttp::entry(
+                    200,
+                    r#"{"api_key":"LLM|muse-key","is_subs_active":true}"#,
+                )],
             )
     }
 
@@ -599,6 +673,37 @@ mod tests {
         assert_eq!(auth.get_api_key("xai"), Some("grok-access".to_string()));
     }
 
+    #[tokio::test]
+    async fn the_muse_login_stores_the_minted_key_and_reports_the_status() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let agent = agent_dir(&dir);
+        let http = muse_http();
+        let ui = ScriptedUi::new();
+        match run_muse_login(&agent, "Muse (Muse Code) (code-plan)", &http, &ui).await {
+            ProviderAuthOutcome::Status(message) => {
+                assert_eq!(
+                    message,
+                    format!(
+                        "Logged in to Muse (Muse Code) (code-plan). Credentials saved to {}",
+                        agent.join("auth.json").display()
+                    )
+                );
+            }
+            other => panic!("expected the logged-in status, got {other:?}"),
+        }
+        let (url, instructions) = ui.captured_auth();
+        assert_eq!(url, "https://auth.meta.com/oauth/device/");
+        assert_eq!(instructions.as_deref(), Some("Enter code: META-1234"));
+        let document: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(agent.join("auth.json")).unwrap())
+                .unwrap();
+        let stored = &document["muse"];
+        assert_eq!(stored["type"], "api_key");
+        assert_eq!(stored["key"], "LLM|muse-key");
+        let mut auth = AuthStorage::create(&agent);
+        assert_eq!(auth.get_api_key("muse"), Some("LLM|muse-key".to_string()));
+    }
+
     /// The Anthropic login's store step: the credential's wire shape
     /// under the provider id (the flow is covered in pa-ai).
     #[test]
@@ -675,6 +780,18 @@ mod tests {
             run_xai_login(&agent, "xAI (Grok)", &http, &ui).await,
             ProviderAuthOutcome::Error(
                 "Failed to login to xAI (Grok): xAI OAuth request failed. Check your connection and try again."
+                    .to_string()
+            )
+        );
+        let http = ScriptedHttp::new().queue(
+            "https://auth.meta.com/oidc/device/authorization/",
+            vec![ScriptedHttp::entry(400, r#"{"error":"bad_request"}"#)],
+        );
+        let ui = ScriptedUi::new();
+        assert_eq!(
+            run_muse_login(&agent, "Muse (Muse Code) (code-plan)", &http, &ui).await,
+            ProviderAuthOutcome::Error(
+                "Failed to login to Muse (Muse Code) (code-plan): Muse OAuth device authorization failed (HTTP 400)"
                     .to_string()
             )
         );

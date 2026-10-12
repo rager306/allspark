@@ -1,6 +1,7 @@
 //! The built-in subscription providers' OAuth integration: the stored `openai-codex`, `anthropic`,
-//! `github-copilot`, and `xai` credentials refresh at their token endpoints when they expire; every
-//! other provider serves its access token until expiry.
+//! `github-copilot`, and `xai` credentials refresh at their token endpoints when they expire. Muse
+//! stores its minted long-lived key as an API key, so it has no refresh arm here; every other
+//! provider serves its access token until expiry.
 
 use std::sync::Arc;
 
@@ -23,6 +24,9 @@ pub const GITHUB_COPILOT_PROVIDER_ID: &str = "github-copilot";
 pub const CODEBUDDY_PROVIDER_ID: &str = "codebuddy";
 /// The xAI (Grok) subscription provider id.
 pub const XAI_PROVIDER_ID: &str = "xai";
+/// The Muse Code provider id. Muse stores the minted long-lived key as an API key, so it has no
+/// refresh arm here.
+pub const MUSE_PROVIDER_ID: &str = "muse";
 
 /// The AI library's oauth registry as the auth storage's default
 /// integration.

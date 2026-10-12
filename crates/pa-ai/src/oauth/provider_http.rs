@@ -1,5 +1,5 @@
 //! The shared HTTP transport seam for the Anthropic, GitHub Copilot,
-//! and xAI flows (the Codex flow keeps its own narrower `CodexHttp`).
+//! Muse, and xAI flows (the Codex flow keeps its own narrower `CodexHttp`).
 //! Dyn-dispatch on purpose: the product plugs in a reqwest client,
 //! tests script the responses.
 

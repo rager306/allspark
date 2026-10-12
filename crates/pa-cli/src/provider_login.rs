@@ -16,10 +16,11 @@ use pa_tui::provider_auth::{
 };
 
 /// The subscription login providers (every flow ported).
-const SUBSCRIPTION_PROVIDERS: [(&str, &str); 5] = [
+const SUBSCRIPTION_PROVIDERS: [(&str, &str); 6] = [
     ("anthropic", "Anthropic (Claude Pro/Max)"),
     ("github-copilot", "GitHub Copilot"),
     ("genspark", "Genspark (GenCode) (code-plan)"),
+    ("muse", "Muse (Muse Code) (code-plan)"),
     ("openai-codex", "ChatGPT Plus/Pro (Codex Subscription)"),
     ("xai", "xAI (Grok)"),
 ];
@@ -46,7 +47,7 @@ const BUILT_IN_PROVIDER_DISPLAY_NAMES: &[(&str, &str)] = &[
     ("minimax-cn", "MiniMax (China)"),
     ("moonshotai", "Moonshot AI"),
     ("moonshotai-cn", "Moonshot AI (China)"),
-    ("muse", "Muse (Muse Code)"),
+    ("muse", "Muse (Muse Code) (code-plan)"),
     ("opencode", "OpenCode Zen"),
     ("opencode-go", "OpenCode Go"),
     ("openai", "OpenAI"),
@@ -335,11 +336,21 @@ impl ProviderAuth {
             // panel.
             for (id, name) in SUBSCRIPTION_PROVIDERS {
                 let (credential, status) = provider.credential_status(id);
+                // Muse's terminal flow stores the minted long-lived key as `ApiKey`, so its
+                // code-plan row treats that stored shape as configured instead of mismatched. Env
+                // and models.json keys still belong to the api-key row.
+                let status_auth_type = if id == pa_core::auth::MUSE_PROVIDER_ID
+                    && matches!(credential, Some(AuthCredential::ApiKey { .. }))
+                {
+                    AuthType::ApiKey
+                } else {
+                    AuthType::Oauth
+                };
                 rows.push(ProviderRow {
                     id: id.to_string(),
                     name: name.to_string(),
                     auth_type: AuthType::Oauth,
-                    status: status_indicator(credential.as_ref(), &status, AuthType::Oauth),
+                    status: status_indicator(credential.as_ref(), &status, status_auth_type),
                     flow: AuthFlow::TerminalFlow,
                     configured: status.configured,
                     available: true,
@@ -647,6 +658,31 @@ fn login_blocking_on_panel(
                 },
                 |runtime| {
                     runtime.block_on(crate::subscription_login::run_genspark_login(
+                        &agent_dir,
+                        &provider_row.name,
+                        &pa_ai::oauth::ReqwestProviderHttp::new(),
+                        &crate::subscription_login::PanelSubscriptionLoginUi::new(
+                            panel,
+                            &provider_row.id,
+                        ),
+                    ))
+                },
+            );
+    }
+    // The Muse Code login mints a durable API key through Meta's device flow.
+    if provider_row.id == pa_core::auth::MUSE_PROVIDER_ID {
+        return tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_or_else(
+                |error: std::io::Error| {
+                    ProviderAuthOutcome::Error(format!(
+                        "Failed to login to {}: {error}",
+                        provider_row.name
+                    ))
+                },
+                |runtime| {
+                    runtime.block_on(crate::subscription_login::run_muse_login(
                         &agent_dir,
                         &provider_row.name,
                         &pa_ai::oauth::ReqwestProviderHttp::new(),
