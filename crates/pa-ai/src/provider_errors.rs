@@ -351,6 +351,107 @@ pub fn stream_failure_from_error_frame(provider: &str, frame: &Value) -> StreamF
     }
 }
 
+/// Recover a server-requested wait from an error *message* when the response
+/// carried no `Retry-After` header. Some providers report the reset only in the
+/// body text (`zai` `1308`: "Usage limit reached for 5 hour. Your limit will
+/// reset at 2026-10-12 19:10:00"), which the shared classifier reads for the
+/// kind but not for the wait — so the quota-park seam never sees a reset time
+/// and the session gives up instead of parking until the window rolls over.
+///
+/// Applies to every provider (a non-2xx error body is the only input), rewriting
+/// the wait onto the error when a reset stamp parses. A body with no stamp is
+/// untouched.
+#[must_use]
+pub fn recover_reset_wait_from_message(error: ProviderError) -> ProviderError {
+    let ProviderError::Http(mut http) = error else {
+        return error;
+    };
+    if http.retry_after_ms.is_some() {
+        return ProviderError::Http(http);
+    }
+    // Only a rate-limit-class failure parks; do not invent a wait elsewhere.
+    let is_rate_limit = http.status == Some(429)
+        || http.body.as_deref().is_some_and(|body| {
+            let lowered = body.to_lowercase();
+            lowered.contains("rate limit")
+                || lowered.contains("usage limit")
+                || lowered.contains("too many requests")
+        });
+    if !is_rate_limit {
+        return ProviderError::Http(http);
+    }
+    let Some(message) = http
+        .body
+        .as_deref()
+        .and_then(extract_message_text)
+        .or_else(|| Some(http.message.clone()))
+    else {
+        return ProviderError::Http(http);
+    };
+    let Some(wait_ms) = reset_wait_ms(&message) else {
+        return ProviderError::Http(http);
+    };
+    let seconds = wait_ms.div_ceil(1000);
+    http.headers
+        .insert("retry-after".to_string(), seconds.to_string());
+    http.retry_after_ms = Some(wait_ms);
+    ProviderError::Http(http)
+}
+
+/// Parse a "reset at `YYYY-MM-DD HH:MM:SS`" stamp from an error message into a
+/// millisecond wait from now.
+///
+/// The stamp carries no timezone. `zai` reports it in Beijing time (UTC+8): the
+/// message states a five-hour window, and the observed stamp sat ~1h ahead of
+/// UTC+8 (and ~9h ahead of UTC — impossible inside a five-hour window). So the
+/// UTC+8 reading is tried first, and the candidate whose wait fits a plausible
+/// window (positive and at most `MAX_PLAUSIBLE_WINDOW_MS`) wins; a stamp that
+/// only reads as a sane wait in UTC falls back to UTC.
+fn reset_wait_ms(message: &str) -> Option<u64> {
+    const MAX_PLAUSIBLE_WINDOW_MS: u64 = 6 * 60 * 60 * 1000;
+    let (year, month, day, hour, minute, second) = find_stamp(message)?;
+    let epoch_seconds =
+        days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second;
+    #[allow(clippy::cast_possible_wrap)]
+    let now_seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64;
+    // UTC+8 first (zai's reported zone), then UTC.
+    let candidates = [epoch_seconds - 8 * 3600, epoch_seconds];
+    let mut best: Option<u64> = None;
+    for candidate in candidates {
+        let wait_seconds = candidate - now_seconds;
+        if wait_seconds <= 0 {
+            continue;
+        }
+        #[allow(clippy::cast_sign_loss)]
+        let wait_ms = (wait_seconds as u64) * 1000;
+        if wait_ms <= MAX_PLAUSIBLE_WINDOW_MS {
+            return Some(wait_ms);
+        }
+        best = Some(best.map_or(wait_ms, |current: u64| current.min(wait_ms)));
+    }
+    best
+}
+
+/// Find a `YYYY-MM-DD HH:MM:SS` stamp in `message`, returning its parts.
+fn find_stamp(message: &str) -> Option<(i64, i64, i64, i64, i64, i64)> {
+    let bytes = message.as_bytes();
+    let mut index = 0;
+    while index + 19 <= bytes.len() {
+        if is_stamp_at(message, index) {
+            let stamp = &message[index..index + 19];
+            let (date, time) = stamp.split_once(' ')?;
+            let (year, month, day) = parse_date(date)?;
+            let (hour, minute, second) = parse_time(time)?;
+            return Some((year, month, day, hour, minute, second));
+        }
+        index += 1;
+    }
+    None
+}
+
 /// A gateway relaying an upstream failure inside a 5xx envelope: 9router turns
 /// a real upstream 429 into a synthetic 503 with `[429]` (or `[provider/model]
 /// [429]`) inside the message text and a `Retry-After` header, so the shared
@@ -540,6 +641,41 @@ mod tests {
         assert_eq!(
             extract_stream_failure_info(&error).kind,
             StreamFailureKind::ServerError
+        );
+    }
+
+    #[test]
+    fn a_zai_reset_stamp_becomes_a_retry_wait() {
+        // zai reports the reset only in the body text, in Beijing time.
+        let body = r#"{"error":{"code":"1308","message":"Usage limit reached for 5 hour. Your limit will reset at 2035-10-12 19:10:00"}}"#;
+        let error = recover_reset_wait_from_message(http_error(429, body));
+        let info = extract_stream_failure_info(&error);
+        assert_eq!(info.kind, StreamFailureKind::RateLimit);
+        assert!(
+            info.retry_after_ms.is_some_and(|wait| wait > 0),
+            "the reset stamp must yield a wait: {info:?}"
+        );
+    }
+
+    #[test]
+    fn a_non_rate_limit_error_gets_no_invented_wait() {
+        // A 400 invalid-request body mentioning a timestamp must not park.
+        let body = r#"{"error":{"message":"bad request at 2035-10-12 19:10:00"}}"#;
+        let error = recover_reset_wait_from_message(http_error(400, body));
+        assert_eq!(extract_stream_failure_info(&error).retry_after_ms, None);
+    }
+
+    #[test]
+    fn an_existing_retry_after_header_wins() {
+        let body = r#"{"error":{"message":"rate limit; reset at 2035-10-12 19:10:00"}}"#;
+        let mut error = http_error(429, body);
+        if let ProviderError::Http(http) = &mut error {
+            http.retry_after_ms = Some(1234);
+        }
+        let error = recover_reset_wait_from_message(error);
+        assert_eq!(
+            extract_stream_failure_info(&error).retry_after_ms,
+            Some(1234)
         );
     }
 

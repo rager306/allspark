@@ -644,9 +644,13 @@ async fn run_stream(
         // The fork's providers (codebuddy, genspark) carry non-OpenAI error
         // envelopes; normalize them into the canonical shape the shared
         // classifier reads. Every other provider passes through untouched.
-        return Err(crate::provider_errors::normalize_provider_http_error(
-            &model.provider,
-            openai_http_error(response.status, &body, response.headers.clone()),
+        // Then, for every provider, recover a reset wait reported only in the
+        // body text (zai's `1308`) so the quota-park seam sees it.
+        return Err(crate::provider_errors::recover_reset_wait_from_message(
+            crate::provider_errors::normalize_provider_http_error(
+                &model.provider,
+                openai_http_error(response.status, &body, response.headers.clone()),
+            ),
         ));
     }
 
