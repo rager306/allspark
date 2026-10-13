@@ -20,16 +20,17 @@ allow() {
 fail=0
 check() {
     label="$1"; pattern="$2"
-    hits=$(grep -rIn -- "$pattern" crates prime-agent-runtime --include='*.rs' --include='*.py' --include='*.toml' 2>/dev/null | allow | wc -l)
+    hits=$(grep -rIn -- "$pattern" crates prime-agent-runtime install-rust.sh install.ps1 skills --include='*.rs' --include='*.py' --include='*.toml' --include='*.sh' --include='*.ps1' --include='*.md' 2>/dev/null | allow | wc -l)
     if [ "$hits" -gt 0 ]; then
         echo "IDENTITY LEAK [$label]: $hits site(s)"
-        grep -rIn -- "$pattern" crates prime-agent-runtime --include='*.rs' --include='*.py' --include='*.toml' 2>/dev/null | allow | head -5
+        grep -rIn -- "$pattern" crates prime-agent-runtime install-rust.sh install.ps1 skills --include='*.rs' --include='*.py' --include='*.toml' --include='*.sh' --include='*.ps1' --include='*.md' 2>/dev/null | allow | head -5
         fail=1
     fi
 }
 
 check 'env'          'PRIME_AGENT_'
 check 'env-pi'       '"PI_[A-Z]'
+check 'env-scripts'  'PRIME_AGENT_'
 check 'config-dir'   '\.prime/agent'
 check 'socket'       '/tmp/prime-agent-'
 check 'install-path' 'share/prime-agent'

@@ -2,13 +2,13 @@
 # install-rust.sh — one-command installer for the Rust build of Prime Agent.
 #
 # THE KEYWORD TAKEOVER: the Rust port installs under the product keyword
-# PRIME-AGENT — the launcher lands at ~/.local/bin/prime-agent, the payload
-# at ~/.local/share/prime-agent/, and users type `prime-agent`. The old
-# prime-agent-rust layout (a TS-safe side-by-side name) is migrated: the
+# PRIME-AGENT — the launcher lands at ~/.local/bin/allspark, the payload
+# at ~/.local/share/allspark/, and users type `allspark`. The old
+# allspark-rust layout (a TS-safe side-by-side name) is migrated: the
 # share tree moves to the new name with a one-generation .old rollback, and
-# this script's own launcher replaces the prime-agent-rust one it wrote in
+# this script's own launcher replaces the allspark-rust one it wrote in
 # past installs. The FILENAME stays install-rust.sh deliberately: the
-# curl|sh URL and the update entry points (`prime-agent update`, the TUI
+# curl|sh URL and the update entry points (`allspark update`, the TUI
 # /update — both exec this script with --update) already point at it, and
 # the filename is invisible to users; the command they type is what
 # changed.
@@ -29,7 +29,7 @@
 #      working prime-agent if the install aborts mid-way. The probed
 #      candidates: the TS daemon's default socket
 #      (${TMPDIR:-/tmp}/prime-agent-$(id -u)/daemon.sock),
-#      PRIME_AGENT_DAEMON_SOCKET when a profile exported it (the
+#      ALLSPARK_DAEMON_SOCKET when a profile exported it (the
 #      non-default socket the first field install had), and this
 #      product's own pinned rust socket. The daemon that answers a
 #      candidate is classified by IDENTITY first — a hello whose
@@ -48,7 +48,7 @@
 #      DRIVING this very install (the internal supervisor-socket
 #      variable a daemon exports to its workers) is never probed at all
 #      — the suite that killed the fleet daemon twice ran exactly that
-#      shape — unless PRIME_AGENT_STOP_LIVE_DAEMON=1 overrides for a
+#      shape — unless ALLSPARK_STOP_LIVE_DAEMON=1 overrides for a
 #      deliberate in-daemon update (--force does not); an operator shell
 #      never carries the internal variable, so the field contract is
 #      unchanged.
@@ -72,30 +72,30 @@
 #   2. THE TS FILES ARE PRESERVED, NOT DELETED (the pi_agent_rust
 #      `legacy-pi` precedent: rollback stays possible). What the TS
 #      installer actually created, researched from its install.sh: a
-#      managed root at ${XDG_DATA_HOME:-~/.local/share}/prime-agent
-#      (marked by .managed = prime-agent-native-v1, holding releases/<v>/
-#      trees and its own bin/prime-agent symlink), a public
-#      ~/.local/bin/prime-agent symlink into it, an optional global npm
+#      managed root at ${XDG_DATA_HOME:-~/.local/share}/allspark
+#      (marked by .managed = allspark-native-v1, holding releases/<v>/
+#      trees and its own bin/allspark symlink), a public
+#      ~/.local/bin/allspark symlink into it, an optional global npm
 #      package, and an optional standalone node at
-#      ~/.local/share/prime-agent-node. The takeover:
+#      ~/.local/share/allspark-node. The takeover:
 #        - a TS managed root occupying THIS script's target
-#          ($PREFIX/share/prime-agent) moves to
-#          $PREFIX/share/prime-agent-legacy (kept verbatim; rollback =
+#          ($PREFIX/share/allspark) moves to
+#          $PREFIX/share/allspark-legacy (kept verbatim; rollback =
 #          rename back and re-link the public bin symlink);
-#        - the public ~/.local/bin/prime-agent is REPLACED by this
+#        - the public ~/.local/bin/allspark is REPLACED by this
 #          script's launcher (the keyword is ours now);
-#        - the TS npm package is uninstalled (exact package `prime-agent`
+#        - the TS npm package is uninstalled (exact package `allspark`
 #          only; the restore command is printed with the recorded version);
 #        - the standalone node dir is LEFT in place (it is a runtime, not
 #          the product binary/package — the user can remove it by hand).
 #   3. WHY DAEMON CONFLICTS ARE GONE AFTER THIS INSTALL: the launcher
 #      pins a rust-only daemon socket
-#      (${TMPDIR:-/tmp}/prime-agent-rust-$(id -u)/daemon.sock) — a
+#      (${TMPDIR:-/tmp}/allspark-rust-$(id -u)/daemon.sock) — a
 #      different path than the TS daemon's own — so BY DEFAULT this CLI
 #      and the TS daemon never meet (each product's default socket is its
 #      own), and the install-time stop-when-idle above retires a TS daemon
 #      cleanly instead of orphaning one. Explicit overrides can still point
-#      anywhere (--daemon-socket > PRIME_AGENT_DAEMON_SOCKET > the pinned
+#      anywhere (--daemon-socket > ALLSPARK_DAEMON_SOCKET > the pinned
 #      default — the product's documented contract; a foreign-schema daemon
 #      behind an override reads as stale, the same behavior in both
 #      products). Default pin + clean stop: out of the box, the two
@@ -104,7 +104,7 @@
 #      install time), a fresh install's FIRST session works out of the
 #      box, online or offline.
 #
-# THE SHARED STORE IS NEVER TOUCHED: ~/.prime/agent/ (sessions, leases,
+# THE SHARED STORE IS NEVER TOUCHED: ~/.allspark/ (sessions, leases,
 # config) is read and written by BOTH products by design — the same
 # sessions appear in either — and this installer never creates, renames,
 # migrates, or deletes anything under it. guard_preserved() aborts the
@@ -112,17 +112,17 @@
 # falls under the store.
 #
 # Config (env with defaults):
-#   PRIME_AGENT_DOWNLOAD_BASE_URL  the R2-backed download base (default:
+#   ALLSPARK_DOWNLOAD_BASE_URL  the R2-backed download base (default:
 #                                  the official domain, the same base the
 #                                  release pipeline renders into the
 #                                  published copy of this script)
-#   PRIME_AGENT_RELEASE_CHANNEL   stable | beta (default: stable)
-#   PRIME_AGENT_VERSION           pin an exact version instead of reading
+#   ALLSPARK_RELEASE_CHANNEL   stable | beta (default: stable)
+#   ALLSPARK_VERSION           pin an exact version instead of reading
 #                                  the channel pointer
-#   PRIME_AGENT_RUST_PREFIX       install prefix (default: ~/.local; the
-#                                  launcher lands at $PREFIX/bin/prime-agent,
-#                                  the payload at $PREFIX/share/prime-agent/)
-#   PRIME_AGENT_UV_BIN_DIR         uv install dir (default: ~/.local/bin)
+#   ALLSPARK_RUST_PREFIX       install prefix (default: ~/.local; the
+#                                  launcher lands at $PREFIX/bin/allspark,
+#                                  the payload at $PREFIX/share/allspark/)
+#   ALLSPARK_UV_BIN_DIR         uv install dir (default: ~/.local/bin)
 #
 # THE CHANNEL (the R2 form, the TS install.sh parity): the script reads
 # the channel pointer (<base>/stable or <base>/beta) for the version,
@@ -139,7 +139,7 @@
 # takeover steps as no-ops when there is nothing left to take over).
 # install-rust.sh --rollback republishes that kept generation, and
 # install-rust.sh --archive <path> publishes a local release archive
-# instead of a channel download (`prime-agent update --rollback` and
+# instead of a channel download (`allspark update --rollback` and
 # `--archive` run the copy of this script bundled into the binary).
 #
 # PREREQUISITES: curl + sh (+ the network for the download). The installer
@@ -160,26 +160,26 @@ set -eu
 # the raw repo copy installs out of the box too.
 DOWNLOAD_BASE_URL_DEFAULT="https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev"
 RELEASE_CHANNEL_DEFAULT="stable"
-BASE_URL="${PRIME_AGENT_DOWNLOAD_BASE_URL:-$DOWNLOAD_BASE_URL_DEFAULT}"
-CHANNEL="${PRIME_AGENT_RELEASE_CHANNEL:-$RELEASE_CHANNEL_DEFAULT}"
-PREFIX="${PRIME_AGENT_RUST_PREFIX:-$HOME/.local}"
+BASE_URL="${ALLSPARK_DOWNLOAD_BASE_URL:-$DOWNLOAD_BASE_URL_DEFAULT}"
+CHANNEL="${ALLSPARK_RELEASE_CHANNEL:-$RELEASE_CHANNEL_DEFAULT}"
+PREFIX="${ALLSPARK_RUST_PREFIX:-$HOME/.local}"
 
 die() { echo "install-rust.sh: $1" >&2; exit 1; }
 
 usage() {
   cat <<'USAGE'
-install-rust.sh — install the Rust build of Prime Agent under the prime-agent keyword.
+install-rust.sh — install the Rust build of Prime Agent under the allspark keyword.
 
-The launcher lands at $PRIME_AGENT_RUST_PREFIX/bin/prime-agent and the payload at
-$PRIME_AGENT_RUST_PREFIX/share/prime-agent/ (default prefix ~/.local). The installed
+The launcher lands at $ALLSPARK_RUST_PREFIX/bin/allspark and the payload at
+$ALLSPARK_RUST_PREFIX/share/allspark/ (default prefix ~/.local). The installed
 TypeScript product is taken over: its daemon is stopped with its own shutdown request,
-its native install is preserved under share/prime-agent-legacy, and its npm package is
-uninstalled (the restore command is printed). ~/.prime/agent (the shared session store)
+its native install is preserved under share/allspark-legacy, and its npm package is
+uninstalled (the restore command is printed). ~/.allspark (the shared session store)
 is never touched. Both the default and --update install the channel's current version.
 
 Needs curl + sh (+ the network): the installer bootstraps its own Python via
 uv — no system python3 required. It also pre-warms the Python kernel (uv +
-`prime-agent --prime-agent-bootstrap`); offline, that step degrades to a
+`allspark --allspark-bootstrap`); offline, that step degrades to a
 warning and the first session bootstraps the kernel itself — it needs the
 network once.
 
@@ -191,10 +191,10 @@ Options:
               (from a pipe: curl -fsSL <url>/install.sh | sh -s -- --force)
   --verbose   the detail also goes to stdout, not just fd 3 (no animation)
   --rollback  restore the previous version the last install kept
-              (share/prime-agent.old.*); the replaced version is kept in
+              (share/allspark.old.*); the replaced version is kept in
               its place, so a second --rollback undoes the first
   --archive <path>
-              install a local prime-agent-<version>-<platform>.tar.gz
+              install a local allspark-<version>-<platform>.tar.gz
               release archive instead of downloading from the channel
 Output:
   stderr      the title, one line per step, warnings with the command that
@@ -205,20 +205,20 @@ Output:
               leaves it closed
 
 Environment:
-  PRIME_AGENT_DOWNLOAD_BASE_URL  the R2-backed download base (the official
+  ALLSPARK_DOWNLOAD_BASE_URL  the R2-backed download base (the official
                                  domain by default)
-  PRIME_AGENT_RELEASE_CHANNEL    stable | beta (stable by default)
-  PRIME_AGENT_VERSION            pin an exact version (skips the channel
+  ALLSPARK_RELEASE_CHANNEL    stable | beta (stable by default)
+  ALLSPARK_VERSION            pin an exact version (skips the channel
                                  pointer read; the manifest + SHA256SUMS
                                  checks still run)
-  PRIME_AGENT_RUST_PREFIX        install prefix (~/.local by default)
-  PRIME_AGENT_UV_BIN_DIR         uv install dir (~/.local/bin by default)
-  PRIME_AGENT_RUST_VERBOSE       1 = the --verbose output mode
-  PRIME_AGENT_ROLLBACK_CHECK     1 = with --rollback, print the resolved
+  ALLSPARK_RUST_PREFIX        install prefix (~/.local by default)
+  ALLSPARK_UV_BIN_DIR         uv install dir (~/.local/bin by default)
+  ALLSPARK_RUST_VERBOSE       1 = the --verbose output mode
+  ALLSPARK_ROLLBACK_CHECK     1 = with --rollback, print the resolved
                                  rollback source and exit without touching
                                  the payload (the update command's
                                  synchronous pre-flight)
-  PRIME_AGENT_ARCHIVE_CHECK      1 = with --archive, validate the archive
+  ALLSPARK_ARCHIVE_CHECK      1 = with --archive, validate the archive
                                  (its name, tar, payload, and version) and
                                  exit without publishing (the same
                                  pre-flight for the archive route)
@@ -227,12 +227,12 @@ USAGE
 
 # --- arguments ---------------------------------------------------------------
 # No positional arguments. --update is the documented alias the update entry
-# points (`prime-agent update`, the TUI /update) exec — identical to the default
+# points (`allspark update`, the TUI /update) exec — identical to the default
 # run because the flow is idempotent by construction. --verbose folds the fd-3
-# progress detail onto stdout (PRIME_AGENT_RUST_VERBOSE=1 does the same).
+# progress detail onto stdout (ALLSPARK_RUST_VERBOSE=1 does the same).
 # --rollback and --archive pick the payload source (MODE); the default is the
 # channel download.
-VERBOSE="${PRIME_AGENT_RUST_VERBOSE:-0}"
+VERBOSE="${ALLSPARK_RUST_VERBOSE:-0}"
 FORCE=0
 MODE="channel"
 ARCHIVE=""
@@ -255,20 +255,20 @@ elif [ -x /c/Windows/System32/tasklist.exe ]; then
 fi
 # THE HANDOFF PARENT WAIT: the Windows update command spawns THIS script
 # and exits precisely so its own payload image stops locking
-# <prefix>/share/prime-agent for the publish below — but a fast child
+# <prefix>/share/allspark for the publish below — but a fast child
 # could reach that rename while the parent still lives. The handoff sets
 # the parent's pid here; the payload touch happens many steps below, and
 # this bounded wait (the parent is normally gone in milliseconds) makes
 # the release-before-publish ordering explicit instead of incidental.
 # tasklist carries the liveness question to Windows the same way the
 # publication lock does (the MSYS kill cannot see a native pid).
-if [ -n "${PRIME_AGENT_INSTALLER_PARENT_PID:-}" ] && [ -n "$TASKLIST" ]; then
+if [ -n "${ALLSPARK_INSTALLER_PARENT_PID:-}" ] && [ -n "$TASKLIST" ]; then
   parent_waits=0
   while MSYS2_ARG_CONV_EXCL='*' "$TASKLIST" \
-          /FI "PID eq ${PRIME_AGENT_INSTALLER_PARENT_PID}" 2>/dev/null \
-        | grep -qw "${PRIME_AGENT_INSTALLER_PARENT_PID}"; do
+          /FI "PID eq ${ALLSPARK_INSTALLER_PARENT_PID}" 2>/dev/null \
+        | grep -qw "${ALLSPARK_INSTALLER_PARENT_PID}"; do
     parent_waits=$((parent_waits + 1))
-    [ "$parent_waits" -gt 300 ] && die "the prime-agent process that started this installer (pid ${PRIME_AGENT_INSTALLER_PARENT_PID}) is still running after 30s; the payload it holds cannot be replaced while it lives — stop that process and re-run"
+    [ "$parent_waits" -gt 300 ] && die "the allspark process that started this installer (pid ${ALLSPARK_INSTALLER_PARENT_PID}) is still running after 30s; the payload it holds cannot be replaced while it lives — stop that process and re-run"
     sleep 0.1 2>/dev/null || sleep 1
   done
 fi
@@ -342,7 +342,7 @@ if [ "$VERBOSE" = 1 ] && [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
 fi
 say() { printf '%s%s%s\n' "$SAY_DIM" "$*" "$SAY_RESET" >&3; }
 
-# The program text is awk, not shell: its "$PRIME_AGENT_UI_DIR" expands later.
+# The program text is awk, not shell: its "$ALLSPARK_UI_DIR" expands later.
 # shellcheck disable=SC2016
 banner_awk='# BANNER_AWK_BEGIN
 # The installer banner: the TUI first-run splash (crates/pa-tui/src/
@@ -437,7 +437,7 @@ function compose(   n, line, label, detail, ppath, total, got, cmd, filled, bar,
     if (ppath != "") {
       # The path never enters the command text: the shell expands the
       # environment variable itself (a TMPDIR with shell syntax stays data).
-      got = 0; cmd = "{ wc -c < \"$PRIME_AGENT_UI_DIR/ui-progress\"; } 2>/dev/null"
+      got = 0; cmd = "{ wc -c < \"$ALLSPARK_UI_DIR/ui-progress\"; } 2>/dev/null"
       cmd | getline got; close(cmd); got += 0
       if (total + 0 > 0) {
         filled = int(got * 20 / total); if (filled > 20) filled = 20
@@ -489,7 +489,7 @@ BEGIN {
     exit
   }
   split("⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏", SPIN, " ")
-  uidir = ENVIRON["PRIME_AGENT_UI_DIR"]
+  uidir = ENVIRON["ALLSPARK_UI_DIR"]
   activef = uidir "/ui-active"; logf = uidir "/ui-log"; brandf = uidir "/ui-brand"; stopf = uidir "/ui-stop"
   TH = height + 0; if (TH < 5) TH = 24
   frame = 0; existing = 1; cur = 0; pn = 0
@@ -545,7 +545,7 @@ if [ "$UI_ANIM" = 1 ]; then
   if [ "$UI_COLOR" = 1 ] && [ "$ui_width" -ge 40 ]; then ui_banner=1; fi
   # The paths ride the environment, never -v (which rewrites backslashes)
   # and never a command string.
-  PRIME_AGENT_UI_DIR="$dl" awk -v banner="$ui_banner" -v color="$UI_COLOR" \
+  ALLSPARK_UI_DIR="$dl" awk -v banner="$ui_banner" -v color="$UI_COLOR" \
     -v width="$ui_width" -v height="$ui_rows" -v ppid="$$" "$banner_awk" >&2 &
   ui_pid=$!
 fi
@@ -668,7 +668,7 @@ migrated_note=""
 # The pre-flights' exits sit far from the run's own success-path sweep
 # below, and a refused check dies before the full trap is armed — so with
 # either check knob set this run's every exit also cleans the staging.
-if [ "${PRIME_AGENT_ROLLBACK_CHECK:-}" = "1" ] || [ "${PRIME_AGENT_ARCHIVE_CHECK:-}" = "1" ]; then
+if [ "${ALLSPARK_ROLLBACK_CHECK:-}" = "1" ] || [ "${ALLSPARK_ARCHIVE_CHECK:-}" = "1" ]; then
   # The stage rides too (an abort during the archive check's extraction
   # must leave no staged tree under the prefix); `stage` is initialized
   # before the traps, so the sweep targets only what THIS script assigns.
@@ -795,10 +795,10 @@ under Git Bash/MSYS2/Cygwin — uname MINGW*_NT*/MSYS_NT*/CYGWIN_NT* — or
 through install.ps1 in PowerShell)"
     ;;
 esac
-# The staged binary name: the MSVC build ships prime-agent.exe; the
+# The staged binary name: the MSVC build ships allspark.exe; the
 # extraction check, the launcher, and the manifest row all name it.
 if [ "$WINDOWS" = "yes" ]; then
-  BINARY_NAME="prime-agent.exe"
+  BINARY_NAME="allspark.exe"
 else
   BINARY_NAME="prime-agent"
 fi
@@ -853,8 +853,8 @@ if [ "$MODE" = channel ]; then
 case "$BASE_URL" in
   https://*) ;;
   *)
-    if [ "${PRIME_AGENT_ALLOW_HTTP:-}" = "1" ]; then
-      note "! PRIME_AGENT_ALLOW_HTTP=1: the download base ${BASE_URL} is not https,"
+    if [ "${ALLSPARK_ALLOW_HTTP:-}" = "1" ]; then
+      note "! ALLSPARK_ALLOW_HTTP=1: the download base ${BASE_URL} is not https,"
       note "  so the download is plaintext. Use it only for a local channel you control."
     else
       die "the download base URL must be an https URL: ${BASE_URL}"
@@ -877,8 +877,8 @@ read_channel_version() {
 # resolved (below the Python bootstrap).
 if [ "$MODE" = channel ]; then
 VERSION_PINNED="no"
-if [ -n "${PRIME_AGENT_VERSION:-}" ]; then
-  VERSION="${PRIME_AGENT_VERSION#v}"
+if [ -n "${ALLSPARK_VERSION:-}" ]; then
+  VERSION="${ALLSPARK_VERSION#v}"
   VERSION_PINNED="yes"
 else
   # THE RETRY (the publish's consistency window): the channel pointers
@@ -899,7 +899,7 @@ fi
 case "$VERSION" in
   ""|v)
     die "could not resolve the latest ${CHANNEL} version from ${BASE_URL}/${CHANNEL}
-(set PRIME_AGENT_VERSION to pin an exact version, or check the network)"
+(set ALLSPARK_VERSION to pin an exact version, or check the network)"
     ;;
   *[!0-9A-Za-z.-]*)
     die "invalid version from the ${CHANNEL} channel pointer: ${VERSION}"
@@ -914,7 +914,7 @@ elif [ "$MODE" = archive ]; then
 # comes from the name. The channel download and its checksum checks are
 # skipped: the operator named the payload (the tarball must still contain an
 # executable payload binary, checked at extraction). On Windows a drive-letter
-# path (the C:\... form `prime-agent update --archive` passes) goes to the
+# path (the C:\... form `allspark update --archive` passes) goes to the
 # POSIX form first: the name below splits on /, and tar reads C: as a host.
   if [ "$WINDOWS" = "yes" ] && command -v cygpath >/dev/null 2>&1; then
     archive_posix="$(cygpath -u "$ARCHIVE")" || die "could not resolve the archive path ${ARCHIVE}"
@@ -924,7 +924,7 @@ elif [ "$MODE" = archive ]; then
   archive_name="${ARCHIVE##*/}"
   case "$archive_name" in
     prime-agent-?*-"${CHANNEL_PLATFORM}".tar.gz) ;;
-    *) die "${archive_name} is not a ${CHANNEL_PLATFORM} release archive (expected prime-agent-<version>-${CHANNEL_PLATFORM}.tar.gz)" ;;
+    *) die "${archive_name} is not a ${CHANNEL_PLATFORM} release archive (expected allspark-<version>-${CHANNEL_PLATFORM}.tar.gz)" ;;
   esac
   VERSION="${archive_name#prime-agent-}"
   VERSION="${VERSION%-"${CHANNEL_PLATFORM}".tar.gz}"
@@ -953,7 +953,7 @@ fi
 # prefix — so the store guard still runs before the FIRST PREFIX-DERIVED
 # write, which is the invariant that matters. THE STORE-ALIAS FALLBACK:
 # ~/.local/bin can still resolve INSIDE the shared session store (the
-# alias shape: a user symlinked ~/.local into ~/.prime/agent), which
+# alias shape: a user symlinked ~/.local into ~/.allspark), which
 # would put the astral installer's write under the store before the
 # guard runs — so when the default target resolves there, uv goes to
 # THIS install's prefix bin dir instead (the payload-adjacent fallback)
@@ -991,7 +991,7 @@ physical_path() {
     printf '%s/%s' "$(physical_path "$phys_parent")" "$phys_base"
   fi
 }
-uv_store_root="$(physical_path "${HOME}/.prime/agent")"
+uv_store_root="$(physical_path "${HOME}/.allspark")"
 uv_default_root="$(physical_path "${HOME}/.local")"
 # The store-alias detection runs FIRST so the discovery guards below can
 # read it in every branch (a uv found INSIDE the shared store must never
@@ -1035,28 +1035,28 @@ if [ "$WINDOWS" = "yes" ]; then
     uv_path_candidates="$uv_path_candidates uv$uv_path_ext"
   done
 fi
-# THE UV TARGET KNOB (the ps1's own PRIME_AGENT_UV_BIN_DIR): an operator-
+# THE UV TARGET KNOB (the ps1's own ALLSPARK_UV_BIN_DIR): an operator-
 # set dir wins (a packaged install keeps uv inside its own tree, the e2e
 # harnesses point it at their scratch dir so a run never touches the
 # shared ~/.local/bin). The Windows C:\ spelling reaches this script
-# through the env - it normalizes exactly like PRIME_AGENT_RUST_PREFIX
+# through the env - it normalizes exactly like ALLSPARK_RUST_PREFIX
 # (cygpath); a POSIX spelling passes through untouched. A RELATIVE knob
 # is refused (the reviewer's finding): a relative target would ride PATH
 # guidance into every later shell, which resolves it from its own working
 # directory - an absolute target is the only honest contract.
-if [ -n "${PRIME_AGENT_UV_BIN_DIR:-}" ]; then
-  uv_bin_dir="${PRIME_AGENT_UV_BIN_DIR}"
+if [ -n "${ALLSPARK_UV_BIN_DIR:-}" ]; then
+  uv_bin_dir="${ALLSPARK_UV_BIN_DIR}"
   if [ "$WINDOWS" = "yes" ] && command -v cygpath >/dev/null 2>&1; then
-    uv_bin_dir="$(cygpath -u "$uv_bin_dir")" || die "PRIME_AGENT_UV_BIN_DIR could not be resolved to a POSIX path: ${PRIME_AGENT_UV_BIN_DIR}"
+    uv_bin_dir="$(cygpath -u "$uv_bin_dir")" || die "ALLSPARK_UV_BIN_DIR could not be resolved to a POSIX path: ${ALLSPARK_UV_BIN_DIR}"
   fi
   case "$uv_bin_dir" in
     /*) ;;
-    *) die "PRIME_AGENT_UV_BIN_DIR must be an absolute path: ${PRIME_AGENT_UV_BIN_DIR}" ;;
+    *) die "ALLSPARK_UV_BIN_DIR must be an absolute path: ${ALLSPARK_UV_BIN_DIR}" ;;
   esac
   # THE PATH SEPARATOR (the reviewer's finding): a target containing a
   # colon would corrupt every PATH export and prepend that carries it.
   case "$uv_bin_dir" in
-    *:*) die "PRIME_AGENT_UV_BIN_DIR must not contain a colon: ${PRIME_AGENT_UV_BIN_DIR}" ;;
+    *:*) die "ALLSPARK_UV_BIN_DIR must not contain a colon: ${ALLSPARK_UV_BIN_DIR}" ;;
   esac
 else
   uv_bin_dir="${HOME}/.local/bin"
@@ -1070,7 +1070,7 @@ fi
 # astral install runs BEFORE the guard does): the computed target must
 # itself resolve OUTSIDE the shared store. The default prefix under the
 # alias shape IS the store (~/.local is the alias), and a
-# PRIME_AGENT_RUST_PREFIX pointing into the store (refused by the guard
+# ALLSPARK_RUST_PREFIX pointing into the store (refused by the guard
 # only later) must not become the uv target either. With no safe target,
 # uv is NOT installed from here — a skipped uv beats a write under the
 # shared store; the system-python fallback carries the install, and a
@@ -1082,7 +1082,7 @@ case "${uv_target_root}/" in
 esac
 if [ "$uv_target_unsafe" = "yes" ]; then
   note "warning: the uv target ${uv_bin_dir} resolves inside the shared session"
-  note "  store (a PRIME_AGENT_RUST_PREFIX pointing into the store, or the"
+  note "  store (a ALLSPARK_RUST_PREFIX pointing into the store, or the"
   note "  default prefix under the ~/.local alias); uv is NOT installed from"
   note "  here — the store is never written by this installer"
   uv_bin_dir=""
@@ -1233,10 +1233,10 @@ python3 required), or install python3 yourself and re-run"
 fi
 
 # --- the preserve invariant: guard the shared store ---------------------------
-# ~/.prime/agent is shared by both products BY DESIGN (sessions, leases,
+# ~/.allspark is shared by both products BY DESIGN (sessions, leases,
 # config). No step of this installer may write, rename, or delete under it.
 # guard_preserved aborts when a target path resolves under the store —
-# the realistic trigger is a mis-set PRIME_AGENT_RUST_PREFIX.
+# the realistic trigger is a mis-set ALLSPARK_RUST_PREFIX.
 # Resolved like PREFIX below: when $HOME is a symlink, a PREFIX spelled in the
 # physical form must still compare equal to the store, or the guard would
 # pass two different spellings of the same directory.
@@ -1245,9 +1245,9 @@ fi
 # which would make every later MSYS-form comparison miss; the sh-native
 # physical_path() keeps the guard's spellings consistent end to end.
 if [ "$WINDOWS" = "yes" ]; then
-  PRESERVED_STORE="$(physical_path "${HOME}/.prime/agent")"
+  PRESERVED_STORE="$(physical_path "${HOME}/.allspark")"
 else
-  PRESERVED_STORE="$("$UVPY" -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "${HOME}/.prime/agent")"
+  PRESERVED_STORE="$("$UVPY" -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "${HOME}/.allspark")"
 fi
 guard_preserved() {
   for guarded_path in "$@"; do
@@ -1282,13 +1282,13 @@ case "$PREFIX" in
     # C:\... in Git Bash): cygpath - the MSYS2/Cygwin core tool - rewrites
     # it to the POSIX form every later step compares in.
     if [ "$WINDOWS" = "yes" ] && command -v cygpath >/dev/null 2>&1; then
-      PREFIX="$(cygpath -u "$PREFIX" 2>/dev/null)"         || die "PRIME_AGENT_RUST_PREFIX must be an absolute path: ${PRIME_AGENT_RUST_PREFIX}"
+      PREFIX="$(cygpath -u "$PREFIX" 2>/dev/null)"         || die "ALLSPARK_RUST_PREFIX must be an absolute path: ${ALLSPARK_RUST_PREFIX}"
       case "$PREFIX" in
         /*) ;;
-        *) die "PRIME_AGENT_RUST_PREFIX must be an absolute path: ${PRIME_AGENT_RUST_PREFIX}" ;;
+        *) die "ALLSPARK_RUST_PREFIX must be an absolute path: ${ALLSPARK_RUST_PREFIX}" ;;
       esac
     else
-      die "PRIME_AGENT_RUST_PREFIX must be an absolute path: ${PREFIX}"
+      die "ALLSPARK_RUST_PREFIX must be an absolute path: ${PREFIX}"
     fi
     ;;
 esac
@@ -1319,7 +1319,7 @@ PREFIX="${PREFIX%X}"
 # it (the same boundary discipline as the absolute-path check).
 case "$PREFIX" in
   *'
-'*) die "PRIME_AGENT_RUST_PREFIX must not contain a newline: the rollback record is newline-delimited (resolved: ${PREFIX})" ;;
+'*) die "ALLSPARK_RUST_PREFIX must not contain a newline: the rollback record is newline-delimited (resolved: ${PREFIX})" ;;
 esac
 guard_preserved "$PREFIX" "${PREFIX}/share" "${PREFIX}/bin"
 mkdir -p "${PREFIX}/share" "${PREFIX}/bin"
@@ -1339,14 +1339,14 @@ for install_root in "${PREFIX}/share" "${PREFIX}/bin"; do
   fi
 done
 
-share_dir="${PREFIX}/share/prime-agent"
+share_dir="${PREFIX}/share/allspark"
 bin_dir="${PREFIX}/bin"
 launcher="${bin_dir}/prime-agent"
-old_layout_dir="${PREFIX}/share/prime-agent-rust"
-legacy_dir="${PREFIX}/share/prime-agent-legacy"
-lock_link="${PREFIX}/share/.prime-agent-install.lock"
-legacy_lock="${PREFIX}/share/.prime-agent-rust-install.lock"
-generations_record="${PREFIX}/share/.prime-agent-install-generations"
+old_layout_dir="${PREFIX}/share/allspark-rust"
+legacy_dir="${PREFIX}/share/allspark-legacy"
+lock_link="${PREFIX}/share/.allspark-install.lock"
+legacy_lock="${PREFIX}/share/.allspark-rust-install.lock"
+generations_record="${PREFIX}/share/.allspark-install-generations"
 guard_preserved "$share_dir" "$launcher" "$old_layout_dir" "$legacy_dir" "$lock_link"
 
 # --- --rollback: the newest kept generation ------------------------------------
@@ -1376,14 +1376,14 @@ if [ "$MODE" = rollback ]; then
   if [ -f "$generations_record" ]; then
     while IFS= read -r recorded; do
       case "$recorded" in
-        "${PREFIX}/share/prime-agent.old."*) ;;
+        "${PREFIX}/share/allspark.old."*) ;;
         *) continue ;;
       esac
       [ -d "$recorded" ] && [ -x "${recorded}/${BINARY_NAME}" ] || continue
       # The normalized marker read covers recorded entries too: a ps1-
       # marked live tree this script moved aside in a ROLLBACK becomes a
       # recorded generation, and its encoding rides with it.
-      case "$(marker_text "${recorded}/.prime-agent-install" \
+      case "$(marker_text "${recorded}/.allspark-install" \
                  | head -n 1)" in
         "install-rust.sh channel "*) ;;
         *) continue ;;
@@ -1392,7 +1392,7 @@ if [ "$MODE" = rollback ]; then
     done < "$generations_record"
   fi
   # The Windows-native installer's slot: install.ps1 keeps ITS replaced
-  # payload at the un-suffixed `prime-agent.old` and never writes the
+  # payload at the un-suffixed `allspark.old` and never writes the
   # generations record (its own one-generation bookkeeping; its recovery
   # is a printed manual Move-Item), so a ps1-updated machine has no
   # recorded entry — but the CLI still sees an installer-owned payload,
@@ -1409,10 +1409,10 @@ if [ "$MODE" = rollback ]; then
   # name — the record's entries are exactly the slots this script wrote
   # and swept, so it stays authoritative whenever it answers. The slot
   # serves the machines the record never covered.
-  ps1_slot="${PREFIX}/share/prime-agent.old"
+  ps1_slot="${PREFIX}/share/allspark.old"
   if [ -z "$rollback_from" ] \
      && [ -d "$ps1_slot" ] && [ -x "${ps1_slot}/${BINARY_NAME}" ] \
-     && case "$(marker_text "${ps1_slot}/.prime-agent-install" \
+     && case "$(marker_text "${ps1_slot}/.allspark-install" \
                  | head -n 1)" in
           "install-rust.sh channel "*) true ;;
           *) false ;;
@@ -1430,14 +1430,14 @@ if [ "$MODE" = rollback ]; then
   # run off (the Windows update command's handoff: this process must
   # exit for the publish to happen, so its exit code can only report the
   # pre-flight's answer honestly).
-  if [ "${PRIME_AGENT_ROLLBACK_CHECK:-}" = "1" ]; then
+  if [ "${ALLSPARK_ROLLBACK_CHECK:-}" = "1" ]; then
     printf '%s\n' "$rollback_from"
     exit 0
   fi
   # The channel/version lines come from the normalized marker: the slot's
   # marker can be a ps1-encoded write (see marker_text); a record entry's
   # marker is this script's own ASCII, so the normalization is a no-op.
-  marker="$(marker_text "${rollback_from}/.prime-agent-install")"
+  marker="$(marker_text "${rollback_from}/.allspark-install")"
   CHANNEL="$(printf '%s\n' "$marker" | sed -n '1s/^install-rust.sh channel //p')"
   VERSION="$(printf '%s\n' "$marker" | sed -n '2s/^version //p')"
   say "rolling back to prime-agent ${VERSION} (${rollback_from})"
@@ -1451,7 +1451,7 @@ if [ "$MODE" = channel ]; then
 # file must be the exact channel naming and its sha256 the 64-hex shape —
 # the same validation pa-core::update::release::latest_release applies, so
 # a lying manifest refuses here instead of staging a wrong tarball.
-# A PINNED version (PRIME_AGENT_VERSION) skips the channel manifest
+# A PINNED version (ALLSPARK_VERSION) skips the channel manifest
 # entirely — the channel manifest describes the channel's CURRENT
 # release, and a historical pin must install from its own versioned
 # prefix (the release's SHA256SUMS carries the row's digest; the
@@ -1583,7 +1583,7 @@ fi
 # will not greet, is NEVER silently skipped: the LOUD warning names it
 # and the manual stop command.
 # THE CANDIDATES (no silent skips): the TS daemon's default socket,
-# PRIME_AGENT_DAEMON_SOCKET when a profile exported it, and this
+# ALLSPARK_DAEMON_SOCKET when a profile exported it, and this
 # product's pinned rust socket. Every outcome is REPORTED (a say/note
 # line, plus a summary line for the stops) — a daemon that would not go
 # down is a LOUD warning, and the install ALWAYS verifies every stopped
@@ -1605,10 +1605,10 @@ ts_stop_refused=""
 ts_stop_rust_stopped=""
 windows_stop_summary=""
 ts_socket="${TMPDIR:-/tmp}/prime-agent-$(id -u)/daemon.sock"
-rust_socket="${TMPDIR:-/tmp}/prime-agent-rust-$(id -u)/daemon.sock"
-env_socket="${PRIME_AGENT_DAEMON_SOCKET:-}"
+rust_socket="${TMPDIR:-/tmp}/allspark-rust-$(id -u)/daemon.sock"
+env_socket="${ALLSPARK_DAEMON_SOCKET:-}"
 # THE TILDE EXPANSION (the CLI's own spelling: the products' clients
-# expand a leading ~/ in PRIME_AGENT_DAEMON_SOCKET before connecting, so
+# expand a leading ~/ in ALLSPARK_DAEMON_SOCKET before connecting, so
 # a profile exporting "~/..." names the real socket; a literal tilde path
 # would read as absent here and the daemon would be left running through
 # the update).
@@ -1617,19 +1617,19 @@ case "$env_socket" in
 esac
 # THE SELF-SOCKET REFUSAL (the fleet-kill class, twice in the field: an
 # installer run UNDER a daemon probed that daemon's own socket through
-# the inherited PRIME_AGENT_DAEMON_SOCKET and stopped it — the running
+# the inherited ALLSPARK_DAEMON_SOCKET and stopped it — the running
 # agent died with its supervisor): the daemon driving THIS process tree
 # is identified by the internal supervisor-socket variable it exports to
 # its workers (TS parity), with the worker-role marker + the public
 # socket as the belt. A stop candidate equal to it is NEVER probed at
-# all — not even the hello — unless PRIME_AGENT_STOP_LIVE_DAEMON=1
+# all — not even the hello — unless ALLSPARK_STOP_LIVE_DAEMON=1
 # explicitly overrides for a deliberate in-daemon update (never
 # --force). An operator shell never carries the internal variables (a
-# profile-exported PRIME_AGENT_DAEMON_SOCKET alone does not trigger the
+# profile-exported ALLSPARK_DAEMON_SOCKET alone does not trigger the
 # refusal), so the field contract is unchanged.
-live_daemon_socket="${PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET:-}"
-if [ -z "$live_daemon_socket" ] && [ "${PRIME_AGENT_INTERNAL_DAEMON_WORKER:-}" = "1" ]; then
-  live_daemon_socket="${PRIME_AGENT_DAEMON_SOCKET:-}"
+live_daemon_socket="${ALLSPARK_INTERNAL_DAEMON_SUPERVISOR_SOCKET:-}"
+if [ -z "$live_daemon_socket" ] && [ "${ALLSPARK_INTERNAL_DAEMON_WORKER:-}" = "1" ]; then
+  live_daemon_socket="${ALLSPARK_DAEMON_SOCKET:-}"
 fi
 case "$live_daemon_socket" in
   "~/"*) live_daemon_socket="${HOME}${live_daemon_socket#\~}" ;;
@@ -1679,10 +1679,10 @@ for flag in sys.argv[1:-1]:
         force = True
 
 # The visible progress: on a terminal the installer's renderer reads the
-# active step from PRIME_AGENT_INSTALL_UI_FILE (label, detail); otherwise
+# active step from ALLSPARK_INSTALL_UI_FILE (label, detail); otherwise
 # plain lines go to fd 4 (the installer points it at its stderr). stdout
 # stays the one-word verdict the shell parses.
-ui_file = os.environ.get("PRIME_AGENT_INSTALL_UI_FILE", "")
+ui_file = os.environ.get("ALLSPARK_INSTALL_UI_FILE", "")
 ui_label = ""
 try:
     progress_out = None if ui_file else os.fdopen(4, "w", buffering=1)
@@ -1885,7 +1885,7 @@ build_id = runtime.get("buildId") if isinstance(runtime, dict) else None
 if kind == "ts":
     # The TS candidates classify by IDENTITY first, then by schema: a
     # hello carrying this product's runtime build id is OUR daemon of any
-    # build (a user's PRIME_AGENT_DAEMON_SOCKET override pointing at a
+    # build (a user's ALLSPARK_DAEMON_SOCKET override pointing at a
     # running Rust daemon — the update flow stops it too, whatever its
     # schema hash; the field's stale rust daemon was twice mislabeled TS
     # by the hash-only guess); below that the family prefix is the
@@ -2087,7 +2087,7 @@ stop_daemon_candidate() {
   last_stop_was_rust="no"
   # THE SELF-SOCKET REFUSAL: the candidate that is the daemon DRIVING this
   # very install is never probed — not even the hello — unless
-  # PRIME_AGENT_STOP_LIVE_DAEMON=1 is set (a deliberate in-daemon update).
+  # ALLSPARK_STOP_LIVE_DAEMON=1 is set (a deliberate in-daemon update).
   # --force never lifts it: only processes inside a daemon session ever
   # reach this branch, so a --force hint would steer agents into stopping
   # their own daemon. The refusal is loud and lands in the summary: a
@@ -2100,11 +2100,11 @@ stop_daemon_candidate() {
   if [ -n "$live_daemon_socket" ] \
      && { [ "$socket_path" = "$live_daemon_socket" ] \
           || [ "$socket_path" -ef "$live_daemon_socket" ]; } \
-     && [ "${PRIME_AGENT_STOP_LIVE_DAEMON:-}" != "1" ]; then
+     && [ "${ALLSPARK_STOP_LIVE_DAEMON:-}" != "1" ]; then
     note "! Left the daemon this install runs under running (${socket_path}):"
     note "  stopping it would also end this install and every session it runs."
-    note "  Set PRIME_AGENT_STOP_LIVE_DAEMON=1 to stop it on purpose."
-    ts_stop_summary="${ts_stop_summary}daemon: skipped the live daemon socket ${socket_path} (this install runs under it; PRIME_AGENT_STOP_LIVE_DAEMON=1 stops it)
+    note "  Set ALLSPARK_STOP_LIVE_DAEMON=1 to stop it on purpose."
+    ts_stop_summary="${ts_stop_summary}daemon: skipped the live daemon socket ${socket_path} (this install runs under it; ALLSPARK_STOP_LIVE_DAEMON=1 stops it)
 "
     ts_stop_refused="yes"
     return 0
@@ -2117,7 +2117,7 @@ stop_daemon_candidate() {
     step_start "Checking for a running daemon"
     probe_ui_file=""
     if [ -n "$ui_pid" ]; then probe_ui_file="$ui_active"; fi
-    verdict="$(PRIME_AGENT_INSTALL_UI_FILE="$probe_ui_file" "$UVPY" "$probe_py" "--kind=${candidate_kind}" "--force=${FORCE}" "$socket_path" 4>&2 2>/dev/null)" || verdict="probe-error"
+    verdict="$(ALLSPARK_INSTALL_UI_FILE="$probe_ui_file" "$UVPY" "$probe_py" "--kind=${candidate_kind}" "--force=${FORCE}" "$socket_path" 4>&2 2>/dev/null)" || verdict="probe-error"
   else
     verdict="absent"
   fi
@@ -2240,16 +2240,16 @@ stop_daemon_candidate() {
 # ts_managed_root: the directory the TS installer owns (its .managed marker).
 ts_managed_root="${XDG_DATA_HOME:-${HOME}/.local/share}/prime-agent"
 ts_managed() {
-  [ -f "$1/.managed" ] && [ "$(cat "$1/.managed" 2>/dev/null)" = "prime-agent-native-v1" ]
+  [ -f "$1/.managed" ] && [ "$(cat "$1/.managed" 2>/dev/null)" = "allspark-native-v1" ]
 }
 
 # The pre-takeover layout's ownership shape: the old installer always
-# published the binary beside prime-agent-runtime/ (RELEASE_ASSETS) — the
+# published the binary beside allspark-runtime/ (RELEASE_ASSETS) — the
 # move AND the leftover sweep use the same rule, so a tree one path refuses
 # is never deleted by the other.
 ts_owned_old_layout() {
   [ -x "$1/prime-agent" ] \
-    && [ -d "$1/prime-agent-runtime" ] \
+    && [ -d "$1/allspark-runtime" ] \
     && ! ts_managed "$1"
 }
 
@@ -2273,7 +2273,7 @@ fi
 # instead. The old tree is renamed ASIDE first and removed only after the
 # new stage is in place, so the live tree is never rm'd while the launcher
 # still points into it. The renamed-aside tree is KEPT as a one-generation
-# rollback (prime-agent.old.<pid>); the next successful install sweeps it.
+# rollback (allspark.old.<pid>); the next successful install sweeps it.
 # A rollback publishes the kept generation itself as the stage: it already
 # carries its payload and its marker.
 if [ -n "$rollback_from" ]; then
@@ -2281,7 +2281,7 @@ if [ -n "$rollback_from" ]; then
   stage="$rollback_from"
 else
 step_start "Installing"
-stage="$(mktemp -d "${PREFIX}/share/prime-agent.stage.XXXXXX")"
+stage="$(mktemp -d "${PREFIX}/share/allspark.stage.XXXXXX")"
 guard_preserved "$stage"
 # A bad tarball (a malformed --archive is the realistic one) leaves no
 # stage behind: the cleanup trap is not armed yet.
@@ -2310,7 +2310,7 @@ fi
 # payload-writable stage: an extracted archive could forge a done marker
 # where the loop looks and hang past the bound (the trailing wait would
 # block on the hanging payload forever).
-if [ "$MODE" != "archive" ] && [ "${PRIME_AGENT_PRESERVE_NPM_BRIDGE:-0}" != 1 ]; then
+if [ "$MODE" != "archive" ] && [ "${ALLSPARK_PRESERVE_NPM_BRIDGE:-0}" != 1 ]; then
   # A non-bridge channel install continues to the marker write.
   :
 else
@@ -2428,20 +2428,20 @@ fi
 # off (the Windows update handoff: this process must exit for the publish
 # to happen, so its exit code can only report the pre-flight's answer
 # honestly).
-if [ "${PRIME_AGENT_ARCHIVE_CHECK:-}" = "1" ]; then
+if [ "${ALLSPARK_ARCHIVE_CHECK:-}" = "1" ]; then
   rm -rf "$stage"
   exit 0
 fi
 # The ownership marker: the share tree this script publishes carries it, so
 # later installs recognize the tree as theirs BY MARKER, not by shape — an
-# unrelated directory that happens to contain a `prime-agent` entry is never
+# unrelated directory that happens to contain a `allspark` entry is never
 # adopted, moved aside, or swept (the refusal below sends it back to the
 # user instead).
 printf 'install-rust.sh channel %s\nversion %s\n' "$CHANNEL" "$VERSION" \
-  > "${stage}/.prime-agent-install"
+  > "${stage}/.allspark-install"
 fi
 
-# A lock left by the pre-takeover installer (name .prime-agent-rust-install.lock):
+# A lock left by the pre-takeover installer (name .allspark-rust-install.lock):
 # a live holder still owns the publish, a dead one can never publish again —
 # remove it and take the new-name lock (this run is serialized against every
 # other new installer by the lock below).
@@ -2454,7 +2454,7 @@ if [ -e "$legacy_lock" ] || [ -L "$legacy_lock" ]; then
     # trap that would sweep it: a fresh install's stage is this run's own scratch,
     # so it never outlives the refused install — a rollback's stage is the kept
     # generation itself, never this run's trash to delete.
-    { [ -z "${rollback_from:-}" ] && rm -rf "$stage"; die "an older prime-agent-rust installer (pid ${held_by}) is publishing to ${PREFIX}; retry when it finishes"; }
+    { [ -z "${rollback_from:-}" ] && rm -rf "$stage"; die "an older allspark-rust installer (pid ${held_by}) is publishing to ${PREFIX}; retry when it finishes"; }
   fi
   rm -f "$legacy_lock"
 fi
@@ -2468,7 +2468,7 @@ fi
 # a lock is never auto-stolen, and when the holder does not show as live
 # the message stays conditional (the manual-recovery contract of the link).
 if [ "$WINDOWS" = "yes" ]; then
-  lock_dir="${PREFIX}/share/.prime-agent-install.lock.d"
+  lock_dir="${PREFIX}/share/.allspark-install.lock.d"
   pid_waits=0
   until mkdir "$lock_dir" 2>/dev/null; do
     # Digits only: install.ps1's Set-Content ends the pid line with CRLF.
@@ -2503,7 +2503,7 @@ fi
 # THE WINDOWS DAEMON STOP, after the lock, before the publish (a Windows
 # process holds its own binary open, so the old-tree rename-aside below
 # fails while a daemon runs). THE TRUSTED STOP: the previous payload's OWN
-# BINARY (the marked share tree's prime-agent.exe), never the launcher - an
+# BINARY (the marked share tree's allspark.exe), never the launcher - an
 # unowned regular file at ${launcher} is precisely the untrusted-execution
 # shape (the ownership check that later preserves it has not run yet), and
 # exec'ing it would hand a foreign command the installer's inherited
@@ -2511,7 +2511,7 @@ fi
 # with no marked payload yet (a fresh install) has no daemon the stop could
 # reach - that absence is the normal fresh-install path.
 if [ "$WINDOWS" = "yes" ] \
-   && [ -f "${share_dir}/.prime-agent-install" ] \
+   && [ -f "${share_dir}/.allspark-install" ] \
    && [ -f "${share_dir}/${BINARY_NAME}" ]; then
   say "stopping the running Rust daemon before the publish (a Windows"
   say "  process holds its binary open - the payload swap needs it down)"
@@ -2584,8 +2584,8 @@ on_exit() {
   # The Windows .cmd twin's own preserve slot rides the same restore
   # discipline (a failed install returns the user's unowned command).
   if [ -n "${preserved_cmd_file:-}" ]; then
-    if mv "$preserved_cmd_file" "${bin_dir}/prime-agent.cmd" 2>/dev/null; then
-      echo "note: the existing prime-agent.cmd was restored to ${bin_dir}/prime-agent.cmd — the install did not complete" >&2
+    if mv "$preserved_cmd_file" "${bin_dir}/allspark.cmd" 2>/dev/null; then
+      echo "note: the existing allspark.cmd was restored to ${bin_dir}/allspark.cmd — the install did not complete" >&2
     fi
     preserved_cmd_file=""
   fi
@@ -2600,12 +2600,12 @@ on_exit() {
     echo "  prime-agent invocation boots it from the restored payload" >&2
   fi
   # A migrated old-layout tree goes home the same way: the pre-takeover
-  # launcher (bin/prime-agent-rust) still points at the old name until this
+  # launcher (bin/allspark-rust) still points at the old name until this
   # install's launcher section retires it, so an interrupted migration must
   # put the tree back or that command breaks.
   if [ -n "$migrated_old_layout" ] && [ -d "$migrated_old_layout" ] && [ ! -d "$old_layout_dir" ]; then
     if mv "$migrated_old_layout" "$old_layout_dir" 2>/dev/null; then
-      echo "note: the prime-agent-rust tree was restored to ${old_layout_dir} — the install did not complete" >&2
+      echo "note: the allspark-rust tree was restored to ${old_layout_dir} — the install did not complete" >&2
     fi
     migrated_old_layout=""
   fi
@@ -2614,7 +2614,7 @@ on_exit() {
   # The Windows lock arm (the mkdir lock directory): the link removal is a
   # no-op there, the directory removal is the release.
   if [ "$WINDOWS" = "yes" ]; then
-    rm -rf "${PREFIX}/share/.prime-agent-install.lock.d"
+    rm -rf "${PREFIX}/share/.allspark-install.lock.d"
   fi
   rm -rf "$dl"
 }
@@ -2630,18 +2630,18 @@ fi
 # Sweep rollback generations from PREVIOUS installs (both name eras) before
 # this run creates its own — exactly one .old generation survives each install.
 # A generation is swept only when BOTH hold: it carries this installer's
-# .prime-agent-install marker AND its exact path is in the generations record
-# (${PREFIX}/share/.prime-agent-install-generations — written when the slot was
+# .allspark-install marker AND its exact path is in the generations record
+# (${PREFIX}/share/.allspark-install-generations — written when the slot was
 # created, OUTSIDE the payload tree). The marker alone proves the TREE is a
 # payload, not that the SLOT is a rollback generation: a user who COPIES the
 # payload into the namespace (marker and all) keeps their copy. Pre-takeover-era
-# crash leftovers (prime-agent-rust.old.*, never stamped) are left in place —
+# crash leftovers (allspark-rust.old.*, never stamped) are left in place —
 # harmless, and the user's to remove. A rollback's source generation is the
 # payload being published, never swept.
-for sweep_dir in "${PREFIX}"/share/prime-agent.old.* "${PREFIX}"/share/prime-agent-rust.old.*; do
+for sweep_dir in "${PREFIX}"/share/allspark.old.* "${PREFIX}"/share/allspark-rust.old.*; do
   [ -d "$sweep_dir" ] || continue
   [ "$sweep_dir" != "$rollback_from" ] || continue
-  [ -f "${sweep_dir}/.prime-agent-install" ] || continue
+  [ -f "${sweep_dir}/.allspark-install" ] || continue
   grep -qxF -- "$sweep_dir" "$generations_record" 2>/dev/null || continue
   # Best-effort: an un-sweepable generation (a mounted dir, a permission
   # wall) must not abort the install — the leftover is harmless.
@@ -2676,35 +2676,35 @@ if [ -d "$share_dir" ] && ts_managed "$share_dir"; then
   # copy-pasteable line.
   rust_aside="$(fresh_slot "${share_dir}.rust-rollback")"
   ts_takeover_from="$preserved_to"
-  ts_takeover_undo="mv '${share_dir}' '${rust_aside}' && mv '${preserved_to}' '${share_dir}' && ln -snf '${share_dir}/bin/prime-agent' '${launcher}'"
+  ts_takeover_undo="mv '${share_dir}' '${rust_aside}' && mv '${preserved_to}' '${share_dir}' && ln -snf '${share_dir}/bin/allspark' '${launcher}'"
   say "  rollback: ${ts_takeover_undo}"
 fi
 
 # Refuse to take ownership of a share dir that is neither this installer's
 # marked payload tree nor the TS managed root (the TS installer's own rule:
 # never adopt a nonempty directory you do not own). Only a tree carrying the
-# .prime-agent-install marker is claimed — an unowned tree is never moved
+# .allspark-install marker is claimed — an unowned tree is never moved
 # aside, where the next install's rollback sweep would delete it.
 if [ -d "$share_dir" ]; then
-  if [ -f "${share_dir}/.prime-agent-install" ]; then
+  if [ -f "${share_dir}/.allspark-install" ]; then
     :   # this installer's own previous tree: the normal update path below
   elif [ -z "$(ls -A "$share_dir" 2>/dev/null)" ]; then
     rmdir "$share_dir"
   else
     die "refusing to take ownership of ${share_dir}: it is neither this
-installer's marked payload tree (.prime-agent-install) nor the TypeScript
+installer's marked payload tree (.allspark-install) nor the TypeScript
 installer's managed root; move it aside and re-run"
   fi
 fi
 
-old="$(fresh_slot "${PREFIX}/share/prime-agent.old")"
+old="$(fresh_slot "${PREFIX}/share/allspark.old")"
 guard_preserved "$old"
 had_share_dir=0
-# Migration from the pre-takeover layout: an old share/prime-agent-rust tree
+# Migration from the pre-takeover layout: an old share/allspark-rust tree
 # becomes this run's rollback (the install migrates to the new name).
 if [ -d "$old_layout_dir" ] && [ ! -d "$share_dir" ]; then
   # The pre-takeover script stamped nothing, so ownership here is a SHAPE
-  # claim (its payload always shipped the binary beside prime-agent-runtime/),
+  # claim (its payload always shipped the binary beside allspark-runtime/),
   # never a marker: the slot is moved but deliberately NOT stamped — a
   # shape check is not proof of ownership, so nothing the sweep can
   # auto-delete ever rides on it. The migrated tree is PRESERVED in its
@@ -2719,8 +2719,8 @@ if [ -d "$old_layout_dir" ] && [ ! -d "$share_dir" ]; then
   else
     mv "$old_layout_dir" "$old"
     migrated_old_layout="$old"
-    migrated_note="moved the old prime-agent-rust install to $(tilde "$old") (kept for rollback; remove it by hand when done)"
-    say "the old prime-agent-rust install migrated to the rollback slot ${old}"
+    migrated_note="moved the old allspark-rust install to $(tilde "$old") (kept for rollback; remove it by hand when done)"
+    say "the old allspark-rust install migrated to the rollback slot ${old}"
     say "  (it is kept — the sweep only removes marker-stamped generations; remove"
     say "   the slot by hand once you no longer need the rollback)"
   fi
@@ -2739,7 +2739,7 @@ if [ -d "$share_dir" ]; then
   # The slot is a rollback generation this installer created: record its
   # exact path so the next install's sweep can tell it from a user-made
   # copy of the payload (the record rides OUTSIDE the tree).
-  printf '%s\n' "$old" >> "${PREFIX}/share/.prime-agent-install-generations"
+  printf '%s\n' "$old" >> "${PREFIX}/share/.allspark-install-generations"
 fi
 if ! mv "$stage" "$share_dir"; then
   if [ "$had_share_dir" = 1 ] && [ -d "$old" ]; then
@@ -2754,7 +2754,7 @@ windows_installed="yes"
 # A leftover old-layout tree when a new-layout tree also existed: it is
 # superseded by the fresh publish. The ownership rule is EXACTLY the
 # migration's (the pre-takeover payload always shipped the binary beside
-# prime-agent-runtime/) — a tree the migration would refuse is never
+# allspark-runtime/) — a tree the migration would refuse is never
 # deleted here either; it is left in place with a note instead. Best-effort:
 # the payload is already live, so an un-removable leftover warns, not dies.
 if [ -d "$old_layout_dir" ] && ts_owned_old_layout "$old_layout_dir"; then
@@ -2774,24 +2774,24 @@ fi
 # rides ../share/ from wherever the prefix placed the binary), the
 # per-user socket suffix runs at launch, and a prefix containing shell
 # syntax can never end up reparsed inside this generated script.
-# The launcher REPLACES whatever occupied ~/.local/bin/prime-agent — on a
+# The launcher REPLACES whatever occupied ~/.local/bin/allspark — on a
 # TS machine that path was the TS installer's public symlink; the keyword
 # is the Rust port's now (the TS tree itself was preserved above). An
 # UNOWNED regular file at the path is not silently destroyed: it is moved
 # aside first, so nothing this script did not write is ever lost.
-# Old npm TUIs may have captured `node <prefix>/bin/prime-agent` before
+# Old npm TUIs may have captured `node <prefix>/bin/allspark` before
 # updating. Keep that npm-owned JS symlink executable by Node when npm and
 # Rust share a prefix. The bridge delegates directly to the native payload.
 preserve_npm_launcher=no
-if [ "${PRIME_AGENT_PRESERVE_NPM_BRIDGE:-0}" = 1 ] \
-   && [ -n "${PRIME_AGENT_NPM_BRIDGE_ENTRYPOINT:-}" ] \
+if [ "${ALLSPARK_PRESERVE_NPM_BRIDGE:-0}" = 1 ] \
+   && [ -n "${ALLSPARK_NPM_BRIDGE_ENTRYPOINT:-}" ] \
    && [ -L "$launcher" ] \
-   && [ "$launcher" -ef "$PRIME_AGENT_NPM_BRIDGE_ENTRYPOINT" ]; then
+   && [ "$launcher" -ef "$ALLSPARK_NPM_BRIDGE_ENTRYPOINT" ]; then
   preserve_npm_launcher=yes
 fi
 if [ "$preserve_npm_launcher" != yes ] && { [ -e "$launcher" ] || [ -L "$launcher" ]; }; then
   if [ -L "$launcher" ]; then
-    say "replacing the prime-agent command symlink (was: $(readlink "$launcher" 2>/dev/null || true));"
+    say "replacing the allspark command symlink (was: $(readlink "$launcher" 2>/dev/null || true));"
     say "  the keyword is the Rust port's now"
   elif [ -f "$launcher" ] && grep -q 'launcher written by install-rust.sh' "$launcher" 2>/dev/null; then
     :   # this installer's own previous launcher (a REGULAR file — the
@@ -2807,7 +2807,7 @@ if [ "$preserve_npm_launcher" != yes ] && { [ -e "$launcher" ] || [ -L "$launche
 fi
 launcher_tmp="$(mktemp "${bin_dir}/.prime-agent.XXXXXX")"
 if [ "$WINDOWS" = "yes" ]; then
-  # The Git Bash launcher: execs the payload's prime-agent.exe. NO daemon
+  # The Git Bash launcher: execs the payload's allspark.exe. NO daemon
   # socket pin — this product's Windows daemon endpoint is the fixed named
   # pipe (pa-daemon platform/paths), which is rust-only by construction:
   # the TypeScript product never shipped a Windows build, so the unix
@@ -2816,18 +2816,18 @@ if [ "$WINDOWS" = "yes" ]; then
   cat > "$launcher_tmp" <<'EOF'
 #!/bin/sh
 # prime-agent — launcher written by install-rust.sh.
-export PRIME_AGENT_CODING_AGENT_DIR="${PRIME_AGENT_CODING_AGENT_DIR:-$HOME/.prime/agent}"
-exec "$(dirname "$0")/../share/prime-agent/prime-agent.exe" "$@"
+export ALLSPARK_CODING_AGENT_DIR="${ALLSPARK_CODING_AGENT_DIR:-$HOME/.allspark}"
+exec "$(dirname "$0")/../share/allspark/allspark.exe" "$@"
 EOF
 else
   cat > "$launcher_tmp" <<'EOF'
 #!/bin/sh
 # prime-agent — launcher written by install-rust.sh.
 # The session store is shared with the TypeScript product BY DESIGN: both
-# read and write the same $HOME/.prime/agent (sessions and their leases),
+# read and write the same $HOME/.allspark (sessions and their leases),
 # so the same sessions appear in both products. The env keeps the TS
 # product's default while allowing the usual overrides.
-export PRIME_AGENT_CODING_AGENT_DIR="${PRIME_AGENT_CODING_AGENT_DIR:-$HOME/.prime/agent}"
+export ALLSPARK_CODING_AGENT_DIR="${ALLSPARK_CODING_AGENT_DIR:-$HOME/.allspark}"
 # This daemon's OWN socket: the products share the store, NOT the daemon —
 # their daemon schema ids differ, so without this pin the Rust CLI would
 # treat the TypeScript daemon as stale and shut it down when idle. This
@@ -2837,12 +2837,12 @@ export PRIME_AGENT_CODING_AGENT_DIR="${PRIME_AGENT_CODING_AGENT_DIR:-$HOME/.prim
 # installer's clean TS-daemon stop the two daemons cannot fight again.
 # An npm migration restores the running TS daemon into its existing namespace.
 # The durable marker survives payload replacement and later curl updates.
-if [ -f "$(dirname "$0")/../share/.prime-agent-npm-bridge/legacy-daemon-socket" ]; then
-  export PRIME_AGENT_DAEMON_SOCKET="${PRIME_AGENT_DAEMON_SOCKET:-${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/prime-agent-$(id -u)/daemon.sock}"
+if [ -f "$(dirname "$0")/../share/.allspark-npm-bridge/legacy-daemon-socket" ]; then
+  export ALLSPARK_DAEMON_SOCKET="${ALLSPARK_DAEMON_SOCKET:-${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/prime-agent-$(id -u)/daemon.sock}"
 else
-  export PRIME_AGENT_DAEMON_SOCKET="${PRIME_AGENT_DAEMON_SOCKET:-${TMPDIR:-/tmp}/prime-agent-rust-$(id -u)/daemon.sock}"
+  export ALLSPARK_DAEMON_SOCKET="${ALLSPARK_DAEMON_SOCKET:-${TMPDIR:-/tmp}/allspark-rust-$(id -u)/daemon.sock}"
 fi
-exec "$(dirname "$0")/../share/prime-agent/prime-agent" "$@"
+exec "$(dirname "$0")/../share/allspark/prime-agent" "$@"
 EOF
 fi
 chmod 0755 "$launcher_tmp"
@@ -2856,20 +2856,20 @@ else
   launcher_tmp=""
   install_probe_launcher="$launcher"
 fi
-if [ "${PRIME_AGENT_USE_LEGACY_DAEMON_SOCKET:-0}" = 1 ]; then
-  mkdir -p "${PREFIX}/share/.prime-agent-npm-bridge"
-  printf 'legacy\n' > "${PREFIX}/share/.prime-agent-npm-bridge/legacy-daemon-socket"
+if [ "${ALLSPARK_USE_LEGACY_DAEMON_SOCKET:-0}" = 1 ]; then
+  mkdir -p "${PREFIX}/share/.allspark-npm-bridge"
+  printf 'legacy\n' > "${PREFIX}/share/.allspark-npm-bridge/legacy-daemon-socket"
 fi
 # The cmd/PowerShell launcher twin (Windows only): the same
-# ../share/prime-agent payload, resolved from the .cmd's own location, so
-# `prime-agent` answers from cmd.exe and PowerShell too (the sh launcher
+# ../share/allspark payload, resolved from the .cmd's own location, so
+# `allspark` answers from cmd.exe and PowerShell too (the sh launcher
 # above serves Git Bash). The same unowned-file discipline as the sh
 # launcher: a foreign .cmd is preserved aside, never destroyed.
 if [ "$WINDOWS" = "yes" ]; then
-  cmd_launcher="${bin_dir}/prime-agent.cmd"
+  cmd_launcher="${bin_dir}/allspark.cmd"
   if [ -f "$cmd_launcher" ] \
      && ! grep -q 'launcher written by install-rust.sh' "$cmd_launcher" 2>/dev/null; then
-    preserved_cmd_path="$(fresh_slot "${bin_dir}/prime-agent.cmd.pre-takeover")"
+    preserved_cmd_path="$(fresh_slot "${bin_dir}/allspark.cmd.pre-takeover")"
     mv "$cmd_launcher" "$preserved_cmd_path" \
       || die "could not preserve the existing file at ${cmd_launcher}; resolve it and re-run"
     preserved_cmd_file="$preserved_cmd_path"
@@ -2879,8 +2879,8 @@ if [ "$WINDOWS" = "yes" ]; then
   cat > "$cmd_tmp" <<'EOF'
 @echo off
 rem prime-agent - launcher written by install-rust.sh.
-if not defined PRIME_AGENT_CODING_AGENT_DIR set "PRIME_AGENT_CODING_AGENT_DIR=%USERPROFILE%\.prime\agent"
-"%~dp0..\share\prime-agent\prime-agent.exe" %*
+if not defined ALLSPARK_CODING_AGENT_DIR set "ALLSPARK_CODING_AGENT_DIR=%USERPROFILE%\.prime\agent"
+"%~dp0..\share\prime-agent\allspark.exe" %*
 EOF
   mv -f "$cmd_tmp" "$cmd_launcher"
   # The takeover stands for the .cmd twin too: the preserved aside slot is
@@ -2898,7 +2898,7 @@ migrated_old_layout=""
 
 # Retire the launcher's own pre-takeover name (marker-checked: only ever
 # remove the shim this script wrote, never a user's file).
-old_launcher="${bin_dir}/prime-agent-rust"
+old_launcher="${bin_dir}/allspark-rust"
 if [ -f "$old_launcher" ] && grep -q 'launcher written by install-rust.sh' "$old_launcher" 2>/dev/null; then
   rm -f "$old_launcher"
   say "removed the old ${old_launcher} launcher (the keyword is prime-agent now)"
@@ -2918,7 +2918,7 @@ fi
 # occupies this installer's publish path); it runs inside the lock with its
 # own restore-on-failure and printed rollback instead.
 # Every candidate is probed by its named variable (the default TS
-# socket, the profile-exported PRIME_AGENT_DAEMON_SOCKET, this product's
+# socket, the profile-exported ALLSPARK_DAEMON_SOCKET, this product's
 # pinned rust socket) — no silent skips, except the one the self-socket
 # refusal protects, and no word-split iteration: each named path is
 # passed QUOTED, exactly once, so a socket path containing whitespace
@@ -2936,7 +2936,7 @@ last_stop_was_rust=""
 # The historical npm updater launches its restart coordinator through the
 # migration bridge. That coordinator must capture the TS restart manifest
 # before stopping the old daemon; the bridge explicitly transfers that duty.
-if [ "$WINDOWS" != "yes" ] && [ "${PRIME_AGENT_DEFER_DAEMON_STOP:-0}" != 1 ]; then
+if [ "$WINDOWS" != "yes" ] && [ "${ALLSPARK_DEFER_DAEMON_STOP:-0}" != 1 ]; then
   stop_daemon_candidate "$ts_socket" ts
   ts_stop_stopped_ts="$last_stop_recorded"
   ts_stop_was_rust_ts="$last_stop_was_rust"
@@ -2986,13 +2986,13 @@ if [ "$WINDOWS" != "yes" ]; then
 fi
 
 # The TS npm package: uninstalled (operator directive — the Rust port owns the
-# keyword), with the restore command printed. Exact package `prime-agent`
+# keyword), with the restore command printed. Exact package `allspark`
 # only; best-effort — an npm failure warns and moves on. Windows never had
 # a TS npm install (the TS product shipped darwin/linux only), so the whole
 # step is darwin/linux. The npm migration bridge remains the package manager's
 # command entry point: removing it during its child installer would delete the
 # running launcher's files and break later package-manager updates.
-if [ "$WINDOWS" != "yes" ] && [ "${PRIME_AGENT_PRESERVE_NPM_BRIDGE:-0}" != 1 ] && command -v npm >/dev/null 2>&1; then
+if [ "$WINDOWS" != "yes" ] && [ "${ALLSPARK_PRESERVE_NPM_BRIDGE:-0}" != 1 ] && command -v npm >/dev/null 2>&1; then
   npm_root="$(npm root -g 2>/dev/null || true)"
   if [ -n "$npm_root" ] && [ -f "${npm_root}/prime-agent/package.json" ]; then
     ts_version="$("$UVPY" -c 'import json, sys
@@ -3016,11 +3016,11 @@ except Exception:
 fi
 
 # --- the kernel pre-warm: uv + the Python kernel venv ------------------------
-# The payload ships the prime-agent-runtime/ sidecar but NOT uv and not the
+# The payload ships the allspark-runtime/ sidecar but NOT uv and not the
 # venv: without this step the FIRST session fails with "uv is required to
 # set up the Python kernel" — and the Python kernel is the product's only
 # tool, so a fresh install would be dead in the water. The binary's own
-# install-time entry (`--prime-agent-bootstrap`, the TS cli-main.ts
+# install-time entry (`--allspark-bootstrap`, the TS cli-main.ts
 # precedent) creates the venv now; both steps are best-effort — an offline
 # machine still gets a successful install, and the first session retries
 # the bootstrap online per the product's own guidance.
@@ -3096,7 +3096,7 @@ if uv_on_path \
    || { [ -n "$uv_bin_dir" ] && [ -x "${uv_bin_dir}/${uv_name}" ]; } \
    || { [ "$uv_under_store" = "no" ] && [ -x "${HOME}/.local/bin/${uv_name}" ]; }; then
   step_start "Preparing the Python kernel"
-  if bootstrap_out="$("$install_probe_launcher" --prime-agent-bootstrap 2>&1)"; then
+  if bootstrap_out="$("$install_probe_launcher" --allspark-bootstrap 2>&1)"; then
     step_ok "Kernel ready"
     say "kernel pre-warmed: the first session's Python kernel is ready"
     say "$bootstrap_out"
@@ -3132,7 +3132,7 @@ say "launcher:  ${launcher}"
 say "payload:   ${share_dir}"
 if [ -d "$old" ] && grep -qxF -- "$old" "$generations_record" 2>/dev/null; then
   say "rollback:  ${old} (the previous payload, one generation; swept on the next install)"
-  say "           restore it with: prime-agent update --rollback (the live"
+  say "           restore it with: allspark update --rollback (the live"
   say "            build must carry the update rollback; an older payload may not)"
 elif [ -d "$old" ]; then
   say "rollback:  ${old} (the migrated pre-takeover tree; kept — remove it by hand"
@@ -3173,7 +3173,7 @@ printf '\n' >&2
 if [ "$version_ok" = yes ]; then
   printf ' %sDone.%s Run %sprime-agent%s to start.\n' "$C_BOLD" "$C_RESET" "$C_BOLD" "$C_RESET" >&2
 else
-  note "! Installed, but the first prime-agent --version run failed (it sets up"
+  note "! Installed, but the first allspark --version run failed (it sets up"
   note "  the kernel on first launch). Its output:"
   printf '%s\n' "$version_out" >&2
   note "  Run it again:"
@@ -3243,7 +3243,7 @@ path_check_note() {
   fi
 }
 path_check_note "${bin_dir}"
-if [ -n "${PRIME_AGENT_UV_BIN_DIR:-}" ] \
+if [ -n "${ALLSPARK_UV_BIN_DIR:-}" ] \
    && [ -n "$uv_bin_dir" ] \
    && [ "$uv_bin_dir" != "${bin_dir}" ] \
    && [ "$uv_bin_dir" != "${HOME}/.local/bin" ]; then

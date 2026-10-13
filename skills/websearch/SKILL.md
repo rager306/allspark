@@ -18,8 +18,8 @@ don't ask them to set environment variables.
 
 Optional overrides (environment variables):
 
-- `PRIME_AGENT_WEBSEARCH_TIMEOUT` - HTTP timeout in seconds (default 45).
-- `PRIME_AGENT_WEBSEARCH_NUM_RESULTS` - number of organic results to return (default 5).
+- `ALLSPARK_WEBSEARCH_TIMEOUT` - HTTP timeout in seconds (default 45).
+- `ALLSPARK_WEBSEARCH_NUM_RESULTS` - number of organic results to return (default 5).
 
 ## Usage
 

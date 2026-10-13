@@ -33,11 +33,11 @@
 # binary open; the payload swap needs the daemon down first).
 #
 # Configuration (environment, install-rust.sh's own knobs):
-#   PRIME_AGENT_DOWNLOAD_BASE_URL  the R2-backed download base
-#   PRIME_AGENT_RELEASE_CHANNEL    stable | beta
-#   PRIME_AGENT_VERSION            pin an exact version
-#   PRIME_AGENT_RUST_PREFIX        install prefix (default: $HOME\.local)
-#   PRIME_AGENT_UV_BIN_DIR         uv install dir (default: $HOME\.local\bin)
+#   ALLSPARK_DOWNLOAD_BASE_URL  the R2-backed download base
+#   ALLSPARK_RELEASE_CHANNEL    stable | beta
+#   ALLSPARK_VERSION            pin an exact version
+#   ALLSPARK_RUST_PREFIX        install prefix (default: $HOME\.local)
+#   ALLSPARK_UV_BIN_DIR         uv install dir (default: $HOME\.local\bin)
 #
 # Prerequisites: Windows 10+ (tar.exe and Get-FileHash ship with the OS;
 # the kernel's Python runtime bootstraps through uv on first session — the
@@ -183,21 +183,21 @@ function Save-Release {
 }
 
 # --- the knobs ----------------------------------------------------------------
-$baseUrl = if ($env:PRIME_AGENT_DOWNLOAD_BASE_URL) { $env:PRIME_AGENT_DOWNLOAD_BASE_URL } else { $DownloadBaseUrlDefault }
-$channelRequested = $env:PRIME_AGENT_RELEASE_CHANNEL
+$baseUrl = if ($env:ALLSPARK_DOWNLOAD_BASE_URL) { $env:ALLSPARK_DOWNLOAD_BASE_URL } else { $DownloadBaseUrlDefault }
+$channelRequested = $env:ALLSPARK_RELEASE_CHANNEL
 $channel = if ($channelRequested) { $channelRequested } else { $ReleaseChannelDefault }
-$versionPin = $env:PRIME_AGENT_VERSION
-$prefix = if ($env:PRIME_AGENT_RUST_PREFIX) { $env:PRIME_AGENT_RUST_PREFIX } else { Join-Path $HOME '.local' }
+$versionPin = $env:ALLSPARK_VERSION
+$prefix = if ($env:ALLSPARK_RUST_PREFIX) { $env:ALLSPARK_RUST_PREFIX } else { Join-Path $HOME '.local' }
 
 # THE HTTPS RULE: the channel is served over the R2-backed domain, and a
 # plaintext download base would let a network attacker swap the payload
 # the checksum then "verifies" into place. The one escape hatch is the
 # explicitly-named knob for local-channel/e2e use (install-rust.sh carries
 # the same rule + knob); it prints a loud warning when it is active.
-$allowHttp = $env:PRIME_AGENT_ALLOW_HTTP -eq '1'
+$allowHttp = $env:ALLSPARK_ALLOW_HTTP -eq '1'
 if ($baseUrl -notmatch '^https://') {
     if ($allowHttp) {
-        Write-Warning "PRIME_AGENT_ALLOW_HTTP=1: the download base $baseUrl is NOT https - the download is plaintext; use this only for a local channel you control"
+        Write-Warning "ALLSPARK_ALLOW_HTTP=1: the download base $baseUrl is NOT https - the download is plaintext; use this only for a local channel you control"
     } else {
         Fail "the download base URL must be an https URL: $baseUrl"
     }
@@ -218,11 +218,11 @@ if (Test-Path $prefix -PathType Leaf) { Fail "the install prefix names an existi
 # spellings like C:uv-bin or \uv-bin, which resolve against the CURRENT
 # directory in later shells - the exact break this check exists to
 # prevent.
-if ($env:PRIME_AGENT_UV_BIN_DIR -and (($env:PRIME_AGENT_UV_BIN_DIR -notmatch '^[a-zA-Z]:[\\/]') -and ($env:PRIME_AGENT_UV_BIN_DIR -notmatch '^\\\\[^\\\\]+\\[^\\\\]+'))) {
-    Fail "PRIME_AGENT_UV_BIN_DIR must be a fully qualified absolute path (a drive-based or UNC path): $($env:PRIME_AGENT_UV_BIN_DIR)"
+if ($env:ALLSPARK_UV_BIN_DIR -and (($env:ALLSPARK_UV_BIN_DIR -notmatch '^[a-zA-Z]:[\\/]') -and ($env:ALLSPARK_UV_BIN_DIR -notmatch '^\\\\[^\\\\]+\\[^\\\\]+'))) {
+    Fail "ALLSPARK_UV_BIN_DIR must be a fully qualified absolute path (a drive-based or UNC path): $($env:ALLSPARK_UV_BIN_DIR)"
 }
-if ($env:PRIME_AGENT_UV_BIN_DIR -and $env:PRIME_AGENT_UV_BIN_DIR.Contains(';')) {
-    Fail "PRIME_AGENT_UV_BIN_DIR must not contain a semicolon (the Windows PATH separator): $($env:PRIME_AGENT_UV_BIN_DIR)"
+if ($env:ALLSPARK_UV_BIN_DIR -and $env:ALLSPARK_UV_BIN_DIR.Contains(';')) {
+    Fail "ALLSPARK_UV_BIN_DIR must not contain a semicolon (the Windows PATH separator): $($env:ALLSPARK_UV_BIN_DIR)"
 }
 
 # The channel files: the pointer (<base>/stable or <base>/beta) names the
@@ -394,7 +394,7 @@ $share = Join-Path $prefix 'share\prime-agent'
 $bin = Join-Path $prefix 'bin'
 New-Item -ItemType Directory -Path (Join-Path $prefix 'share') -Force | Out-Null
 New-Item -ItemType Directory -Path $bin -Force | Out-Null
-$stage = Join-Path (Join-Path $prefix 'share') ("prime-agent.stage-{0}" -f [Guid]::NewGuid().ToString('N'))
+$stage = Join-Path (Join-Path $prefix 'share') ("allspark.stage-{0}" -f [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $stage | Out-Null
 # The stage rides every exit path once created (the failure sweep at the bottom:
 # a failed extraction/validation must not leave the extracted payload
@@ -402,8 +402,8 @@ New-Item -ItemType Directory -Path $stage | Out-Null
 $script:primeAgentInstallStage = $stage
 & tar -xzf $tarball -C $stage
 if ($LASTEXITCODE -ne 0) { Fail "could not extract $expectedFile (tar exited $LASTEXITCODE)" }
-$payloadExe = Join-Path $stage 'prime-agent.exe'
-if (-not (Test-Path $payloadExe -PathType Leaf)) { Fail "the tarball did not contain a prime-agent.exe payload" }
+$payloadExe = Join-Path $stage 'allspark.exe'
+if (-not (Test-Path $payloadExe -PathType Leaf)) { Fail "the tarball did not contain a allspark.exe payload" }
 Step-Ok 'extracted' $expectedFile
 
 # The ownership marker (install-rust.sh's exact write shape — the update
@@ -453,7 +453,7 @@ $script:daemonStopped = $false
 # THE PREFLIGHT: every ownership refusal that can happen runs BEFORE the
 # daemon stop (a refused install must never have stopped a daemon - the
 # bots' finding: the stop-then-refuse order was the avoidable downtime).
-$rollback = Join-Path (Join-Path $prefix 'share') 'prime-agent.old'
+$rollback = Join-Path (Join-Path $prefix 'share') 'allspark.old'
 if (Test-Path $share -PathType Container) {
     $markerPath = Join-Path $share '.prime-agent-install'
     if (-not (Test-Path $markerPath -PathType Leaf)) {
@@ -471,13 +471,13 @@ try {
     # THE DAEMON STOP, inside the lock's try (a terminating error in the
     # stop must still release the lock - the bots' finding: the stale lock
     # otherwise left behind). THE TRUSTED STOP: the previous payload's own
-    # binary (the marked share tree's prime-agent.exe), never the launcher -
+    # binary (the marked share tree's allspark.exe), never the launcher -
     # a launcher this installer has not verified is the unowned-execution
     # shape (an attacker-placed bin\prime-agent.cmd would otherwise run
     # with the installer's inherited environment); the share's ownership
     # marker gates the stop, and a fresh install (no marked payload yet)
     # has no daemon the stop could reach.
-    $payloadStopExe = Join-Path $share 'prime-agent.exe'
+    $payloadStopExe = Join-Path $share 'allspark.exe'
     $shareMarker = Join-Path $share '.prime-agent-install'
     if ((Test-Path $shareMarker -PathType Leaf) -and (Test-Path $payloadStopExe -PathType Leaf)) {
         Write-Host 'stopping the running Rust daemon before the publish (a Windows process holds its binary open)'
@@ -509,8 +509,8 @@ try {
     [IO.Directory]::Move($stage, $share)
     $script:primeAgentInstallStage = $null
     # The payload is live: no later launcher failure rolls it back (the new
-    # tree is valid; the restored launchers point at ../share/prime-agent/
-    # prime-agent.exe - the new payload - and keep working).
+    # tree is valid; the restored launchers point at ../share/allspark/
+    # allspark.exe - the new payload - and keep working).
     $published = $true
     Step-Ok 'published' "prime-agent $version to $prefix"
 
@@ -559,16 +559,16 @@ try {
         $cmdShim = @'
 @echo off
 rem prime-agent - launcher written by install-rust.sh.
-if not defined PRIME_AGENT_CODING_AGENT_DIR set "PRIME_AGENT_CODING_AGENT_DIR=%USERPROFILE%\.prime\agent"
-"%~dp0..\share\prime-agent\prime-agent.exe" %*
+if not defined ALLSPARK_CODING_AGENT_DIR set "ALLSPARK_CODING_AGENT_DIR=%USERPROFILE%\.prime\agent"
+"%~dp0..\share\prime-agent\allspark.exe" %*
 '@
         Set-Content -LiteralPath $launcher -Value $cmdShim
 
         $shBody = @'
 #!/bin/sh
 # prime-agent — launcher written by install-rust.sh.
-export PRIME_AGENT_CODING_AGENT_DIR="${PRIME_AGENT_CODING_AGENT_DIR:-$HOME/.prime/agent}"
-exec "$(dirname "$0")/../share/prime-agent/prime-agent.exe" "$@"
+export ALLSPARK_CODING_AGENT_DIR="${ALLSPARK_CODING_AGENT_DIR:-$HOME/.allspark}"
+exec "$(dirname "$0")/../share/allspark/allspark.exe" "$@"
 '@
         # LF endings + no BOM: the sh launcher must stay a POSIX file.
         [IO.File]::WriteAllText($shLauncher, $shBody.Replace("`r`n", "`n"))
@@ -616,7 +616,7 @@ exec "$(dirname "$0")/../share/prime-agent/prime-agent.exe" "$@"
             }
         }
         # A failed install sweeps its stage tree (the bots' finding: the
-        # accumulated prime-agent.stage-* directories).
+        # accumulated allspark.stage-* directories).
         if ($stage -and (Test-Path $stage -PathType Container)) {
             Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
         }
@@ -644,7 +644,7 @@ exec "$(dirname "$0")/../share/prime-agent/prime-agent.exe" "$@"
 # --- and the caller's values come back. Offline the step degrades to the
 # --- honest note plus the exact manual command (install-rust.sh's
 # --- note/todo shape); the install itself still succeeds.
-# THE UV TARGET KNOB (install-rust.sh's own PRIME_AGENT_UV_BIN_DIR): an
+# THE UV TARGET KNOB (install-rust.sh's own ALLSPARK_UV_BIN_DIR): an
 # operator-set dir wins (a packaged install keeps uv inside its own tree,
 # the e2e harnesses point it at their scratch dir so a run never touches
 # the shared ~/.local/bin); without the knob the canonical ~/.local/bin is
@@ -652,7 +652,7 @@ exec "$(dirname "$0")/../share/prime-agent/prime-agent.exe" "$@"
 $uvInstallDir = Join-Path $HOME '.local\bin'
 # The knob's fully-qualified validation ran early with the other knobs
 # (before any side effect - see the validation block in the knobs section).
-if ($env:PRIME_AGENT_UV_BIN_DIR) { $uvInstallDir = $env:PRIME_AGENT_UV_BIN_DIR }
+if ($env:ALLSPARK_UV_BIN_DIR) { $uvInstallDir = $env:ALLSPARK_UV_BIN_DIR }
 $uvExe = Join-Path $uvInstallDir 'uv.exe'
 $uvDefaultExe = Join-Path (Join-Path $HOME '.local\bin') 'uv.exe'
 # THE THREE-WAY LOOKUP (the reviewer's finding): a usable uv is one on
@@ -680,7 +680,7 @@ if (-not $uvKnown) {
         if ((Test-Path $uvInstallerPath -PathType Leaf) -and ((Get-Item -LiteralPath $uvInstallerPath).Length -gt 0)) {
             $callerUvInstallDir = $env:UV_INSTALL_DIR
             $callerUvUnmanaged = $env:UV_UNMANAGED_INSTALL
-            $callerUvInstaller = $env:PRIME_AGENT_UV_INSTALLER
+            $callerUvInstaller = $env:ALLSPARK_UV_INSTALLER
             try {
                 $env:UV_INSTALL_DIR = $uvInstallDir
                 $env:UV_UNMANAGED_INSTALL = $null
@@ -714,11 +714,11 @@ if (-not $uvKnown) {
                 # already runs UV_INSTALL_DIR through), and the child reads
                 # the variable - environment inheritance is OS semantics,
                 # no PowerShell parsing of the path happens at any version.
-                $env:PRIME_AGENT_UV_INSTALLER = $uvInstallerPath
+                $env:ALLSPARK_UV_INSTALLER = $uvInstallerPath
                 $childScript = @"
 `$ProgressPreference = 'SilentlyContinue'
 `$VerbosePreference = 'SilentlyContinue'
-& `$env:PRIME_AGENT_UV_INSTALLER
+& `$env:ALLSPARK_UV_INSTALLER
 "@
                 $childEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childScript))
                 & $childShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $childEncoded *> $null
@@ -726,7 +726,7 @@ if (-not $uvKnown) {
             } finally {
                 $env:UV_INSTALL_DIR = $callerUvInstallDir
                 $env:UV_UNMANAGED_INSTALL = $callerUvUnmanaged
-                $env:PRIME_AGENT_UV_INSTALLER = $callerUvInstaller
+                $env:ALLSPARK_UV_INSTALLER = $callerUvInstaller
             }
             if (-not (Test-Path $uvExe -PathType Leaf)) {
                 Step-Fail 'installing uv' "the uv installer exited $uvRunExit; uv.exe is missing"
@@ -752,7 +752,7 @@ if (-not $uvKnown) {
 }
 # THE PRE-WARM'S PATH FIX (install-rust.sh's own): the product's ensure_uv
 # searches PATH and ~/.local/bin/uv(.exe) - it does NOT know the
-# PRIME_AGENT_UV_BIN_DIR target - so the prepend serves the uv THIS RUN
+# ALLSPARK_UV_BIN_DIR target - so the prepend serves the uv THIS RUN
 # installed or found at the target when nothing usable answers on PATH
 # (the reviewer's finding: a pre-warm whose uv is known but unfindable
 # fails). THE GUARD (the macroscope finding): a working PATH uv is never
@@ -767,7 +767,7 @@ if (-not $uvOnPath -and $uvAtTarget -and -not (Test-PathEntry $env:PATH $uvInsta
 }
 if ($uvKnown) {
     Write-Host 'kernel pre-warm: provisioning the Python kernel runtime'
-    & $launcher --prime-agent-bootstrap
+    & $launcher --allspark-bootstrap
     if ($LASTEXITCODE -ne 0) {
         Step-Fail 'preparing the Python kernel' 'the first session retries it online'
     } else {

@@ -28,8 +28,8 @@ def _env_int(name: str, default: int) -> int:
 def _agent_dir() -> Path:
     """Resolve the Prime Agent config dir the same way the runtime does."""
     raw = (
-        os.environ.get("PRIME_AGENT_CODING_AGENT_DIR")
-        or os.environ.get("PI_CODING_AGENT_DIR")
+        os.environ.get("ALLSPARK_CODING_AGENT_DIR")
+        or os.environ.get("ALLSPARK_CODING_AGENT_DIR")
         or str(Path.home() / ".prime" / "agent")
     )
     return Path(raw).expanduser()
@@ -166,9 +166,9 @@ async def run(
         )
 
     if timeout is None:
-        timeout = _env_int("PRIME_AGENT_WEBSEARCH_TIMEOUT", 45)
+        timeout = _env_int("ALLSPARK_WEBSEARCH_TIMEOUT", 45)
     if num_results is None:
-        num_results = _env_int("PRIME_AGENT_WEBSEARCH_NUM_RESULTS", 5)
+        num_results = _env_int("ALLSPARK_WEBSEARCH_NUM_RESULTS", 5)
 
     try:
         result = await _fetch_serper(query, api_key, timeout=timeout, num_results=num_results)
