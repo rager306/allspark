@@ -50,7 +50,7 @@ impl RpcChild {
             std::fs::create_dir_all(&agent_dir).unwrap();
             std::fs::write(agent_dir.join("models.json"), models.to_string()).unwrap();
         }
-        let bin = env!("CARGO_BIN_EXE_prime-agent");
+        let bin = env!("CARGO_BIN_EXE_allspark");
         let mut child = Command::new(bin)
             .args(args)
             .env("HOME", home.path())
@@ -1096,7 +1096,7 @@ impl TimedRpcChild {
     /// Spawn with the reader deferred (stdout held unread until `begin_reading`).
     fn spawn_stalled(fixture: &std::path::Path, script: &Value) -> TimedRpcChild {
         let home = tempfile::TempDir::new().unwrap();
-        let bin = env!("CARGO_BIN_EXE_prime-agent");
+        let bin = env!("CARGO_BIN_EXE_allspark");
         let mut child = Command::new(bin)
             .args(["--mode", "rpc", "--resume", fixture.to_str().unwrap()])
             .env("HOME", home.path())

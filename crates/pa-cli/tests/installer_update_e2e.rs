@@ -143,7 +143,7 @@ fn run_prime_agent(args: &[&str], sandbox: &Sandbox, url: &str) -> std::process:
 }
 
 fn prime_agent(args: &[&str], sandbox: &Sandbox) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_allspark"));
     command
         .args(args)
         .env("HOME", sandbox.root.join("home"))
@@ -364,7 +364,7 @@ fn update_archive_and_rollback_swap_installer_payloads() {
     let live = sandbox.prefix.join("share/prime-agent");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
-    std::fs::copy(env!("CARGO_BIN_EXE_prime-agent"), &binary).expect("copy this build");
+    std::fs::copy(env!("CARGO_BIN_EXE_allspark"), &binary).expect("copy this build");
     std::fs::write(
         live.join(".prime-agent-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",
@@ -423,7 +423,7 @@ fn rollback_check_answers_synchronously_without_touching_the_payload() {
     let live = sandbox.prefix.join("share/prime-agent");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
-    std::fs::copy(env!("CARGO_BIN_EXE_prime-agent"), &binary).expect("copy this build");
+    std::fs::copy(env!("CARGO_BIN_EXE_allspark"), &binary).expect("copy this build");
     std::fs::write(
         live.join(".prime-agent-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",
@@ -492,7 +492,7 @@ fn update_archive_refuses_a_misnamed_payload_version() {
     let live = sandbox.prefix.join("share/prime-agent");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
-    std::fs::copy(env!("CARGO_BIN_EXE_prime-agent"), &binary).expect("copy this build");
+    std::fs::copy(env!("CARGO_BIN_EXE_allspark"), &binary).expect("copy this build");
     std::fs::write(
         live.join(".prime-agent-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",
@@ -544,7 +544,7 @@ fn update_rollback_reads_the_unsuffixed_installer_slot() {
     let live = sandbox.prefix.join("share/prime-agent");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
-    std::fs::copy(env!("CARGO_BIN_EXE_prime-agent"), &binary).expect("copy this build");
+    std::fs::copy(env!("CARGO_BIN_EXE_allspark"), &binary).expect("copy this build");
     std::fs::write(
         live.join(".prime-agent-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",
@@ -594,7 +594,7 @@ fn update_rollback_without_a_kept_version_changes_nothing() {
     let live = sandbox.prefix.join("share/prime-agent");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
-    std::fs::copy(env!("CARGO_BIN_EXE_prime-agent"), &binary).expect("copy this build");
+    std::fs::copy(env!("CARGO_BIN_EXE_allspark"), &binary).expect("copy this build");
     std::fs::write(
         live.join(".prime-agent-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",
@@ -645,7 +645,7 @@ fn archive_check_answers_synchronously_without_publishing() {
     let live = sandbox.prefix.join("share/prime-agent");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
-    std::fs::copy(env!("CARGO_BIN_EXE_prime-agent"), &binary).expect("copy this build");
+    std::fs::copy(env!("CARGO_BIN_EXE_allspark"), &binary).expect("copy this build");
     std::fs::write(
         live.join(".prime-agent-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",

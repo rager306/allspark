@@ -1008,10 +1008,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().join("cwd");
         let agent_dir = dir.path().join("agent");
-        std::fs::create_dir_all(cwd.join(".prime/agent")).unwrap();
+        std::fs::create_dir_all(cwd.join(crate::settings::CONFIG_DIR_NAME)).unwrap();
         std::fs::create_dir_all(&agent_dir).unwrap();
         std::fs::write(
-            cwd.join(".prime/agent/settings.json"),
+            cwd.join(crate::settings::CONFIG_DIR_NAME)
+                .join("settings.json"),
             r#"{ "factory": { "enabled": true } }"#,
         )
         .unwrap();

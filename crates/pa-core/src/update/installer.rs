@@ -33,14 +33,11 @@ pub const ENV_RELEASE_CHANNEL: &str = "PRIME_AGENT_RELEASE_CHANNEL";
 pub const ENV_DOWNLOAD_BASE_URL: &str = "PRIME_AGENT_DOWNLOAD_BASE_URL";
 /// `install-rust.sh`'s `DOWNLOAD_BASE_URL_DEFAULT`: where the channel
 /// manifests (`latest.json`, `beta.json`) are published.
-pub const DEFAULT_DOWNLOAD_BASE_URL: &str = "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev";
+pub const DEFAULT_DOWNLOAD_BASE_URL: &str = "https://github.com/rager306/allspark/releases";
 
-/// The official domain's install endpoint — the stable channel's installer
-/// source; never a GitHub raw or workflow URL (the override env var stays
-/// for tests and pinned installs).
-pub const OFFICIAL_INSTALLER_URL: &str = "https://app.primeintellect.ai/prime-agent/install.sh";
 /// The nightly installer's file under the download base (the domain only
 /// forwards `install.sh`, so nightly updates fetch it from the base).
+pub const INSTALLER_FILE: &str = "install.sh";
 pub const BETA_INSTALLER_FILE: &str = "install-beta.sh";
 
 /// `install-rust.sh` as this build shipped it. The local operations
@@ -80,7 +77,10 @@ pub fn installer_script_url(channel: Option<&str>) -> String {
             "{}/{BETA_INSTALLER_FILE}",
             download_base_url().trim_end_matches('/')
         ),
-        _ => OFFICIAL_INSTALLER_URL.to_string(),
+        _ => format!(
+            "{}/{INSTALLER_FILE}",
+            download_base_url().trim_end_matches('/')
+        ),
     }
 }
 
@@ -1035,7 +1035,9 @@ mod tests {
         fn new(root: &Path) -> Self {
             let session_file = root
                 .join("home")
-                .join(".prime/agent/sessions/session.jsonl");
+                .join(pa_types::identity::CONFIG_DIR_NAME)
+                .join("sessions")
+                .join("session.jsonl");
             std::fs::create_dir_all(session_file.parent().expect("session dir"))
                 .expect("session dir");
             let bytes =
@@ -1108,19 +1110,25 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
         std::env::remove_var(ENV_DOWNLOAD_BASE_URL);
         assert_eq!(
             installer_script_url(Some("stable")),
-            "https://app.primeintellect.ai/prime-agent/install.sh"
+            format!("{DEFAULT_DOWNLOAD_BASE_URL}/install.sh")
         );
-        assert_eq!(installer_script_url(None), OFFICIAL_INSTALLER_URL);
+        assert_eq!(
+            installer_script_url(None),
+            format!("{DEFAULT_DOWNLOAD_BASE_URL}/install.sh")
+        );
         assert_eq!(
             installer_script_url(Some("beta")),
-            "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/install-beta.sh"
+            format!("{DEFAULT_DOWNLOAD_BASE_URL}/install-beta.sh")
         );
         std::env::set_var(ENV_DOWNLOAD_BASE_URL, "https://mirror.example/");
         assert_eq!(
             installer_script_url(Some("beta")),
             "https://mirror.example/install-beta.sh"
         );
-        assert_eq!(installer_script_url(Some("stable")), OFFICIAL_INSTALLER_URL);
+        assert_eq!(
+            installer_script_url(Some("stable")),
+            "https://mirror.example/install.sh"
+        );
         std::env::set_var(ENV_INSTALLER_URL, "http://127.0.0.1:9/pinned.sh");
         assert_eq!(
             installer_script_url(Some("beta")),

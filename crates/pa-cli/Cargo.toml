@@ -20,7 +20,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [[bin]]
-name = "prime-agent"
+name = "allspark"
 path = "src/main.rs"
 
 [dev-dependencies]

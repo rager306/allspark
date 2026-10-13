@@ -9,7 +9,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use anyhow::{anyhow, Result};
 
-pub const CONFIG_DIR_NAME: &str = ".prime/agent";
+pub const CONFIG_DIR_NAME: &str = pa_types::identity::CONFIG_DIR_NAME;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsScope {

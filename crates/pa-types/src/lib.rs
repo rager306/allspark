@@ -9,6 +9,7 @@
 pub mod ai;
 pub mod daemon;
 pub mod goal;
+pub mod identity;
 pub mod incident;
 pub mod memory_release;
 pub mod platform;

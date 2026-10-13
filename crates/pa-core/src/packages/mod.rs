@@ -46,7 +46,9 @@ pub(crate) fn is_offline_mode_enabled() -> bool {
 /// packaged bun-binary layout), through [`exe_dir_of`] so a launcher
 /// symlink resolves.
 pub(crate) fn package_dir() -> PathBuf {
-    if let Ok(env_dir) = std::env::var("PI_PACKAGE_DIR") {
+    if let Ok(env_dir) = std::env::var(pa_types::identity::PACKAGE_DIR_ENV)
+        .or_else(|_| std::env::var(pa_types::identity::LEGACY_PACKAGE_DIR_ENV))
+    {
         if !env_dir.is_empty() {
             return expand_tilde(&env_dir);
         }

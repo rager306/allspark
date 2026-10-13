@@ -249,7 +249,7 @@ fn ts_binary_sees_a_rust_held_lock_as_contention() {
 
 #[test]
 fn rust_binary_reclaims_stale_lock_directory_artifact() {
-    let rust = PathBuf::from(env!("CARGO_BIN_EXE_prime-agent"));
+    let rust = PathBuf::from(env!("CARGO_BIN_EXE_allspark"));
     let sandbox = sandbox("rs-stale-dir");
     seed_stale_lock_dir(&sandbox);
     let (exit, stdout, stderr) = run(
@@ -276,7 +276,7 @@ fn rust_binary_reclaims_stale_lock_directory_artifact() {
 fn rust_binary_heals_stale_lock_file_artifact() {
     // Pre-compat Rust builds left flock FILEs at the lock path. The Rust
     // binary removes the foreign artifact and proceeds; the TS binary cannot.
-    let rust = PathBuf::from(env!("CARGO_BIN_EXE_prime-agent"));
+    let rust = PathBuf::from(env!("CARGO_BIN_EXE_allspark"));
     let sandbox = sandbox("rs-stale-file");
     seed_stale_lock_file(&sandbox);
     let (exit, stdout, stderr) = run(

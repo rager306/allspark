@@ -469,7 +469,10 @@ mod tests {
                 true,
             ),
             resource(
-                "/work/.prime/agent/skills/project-skill/SKILL.md",
+                &format!(
+                    "/work/{}/skills/project-skill/SKILL.md",
+                    crate::settings::CONFIG_DIR_NAME
+                ),
                 metadata(
                     MetadataSource::Local,
                     SourceScope::Project,
@@ -498,7 +501,7 @@ mod tests {
             labels,
             vec![
                 "npm:foo/bar (user)",
-                "User (~/.prime/agent/)",
+                &format!("User (~/{}/)", crate::settings::CONFIG_DIR_NAME),
                 "Built-in",
                 "Project settings"
             ]
@@ -525,7 +528,7 @@ mod tests {
     #[test]
     fn prompt_display_names_show_the_file_name() {
         let item = resource(
-            "/work/.prime/agent/prompts/fix.md",
+            &format!("/work/{}/prompts/fix.md", crate::settings::CONFIG_DIR_NAME),
             metadata(
                 MetadataSource::Local,
                 SourceScope::Project,

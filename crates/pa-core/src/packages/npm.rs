@@ -102,7 +102,7 @@ pub fn installed_npm_version(installed_path: &Path) -> Option<String> {
 pub const NETWORK_TIMEOUT_MS: u64 = 10_000;
 
 pub fn project_npm_root(cwd: &Path) -> PathBuf {
-    cwd.join(super::CONFIG_DIR_NAME).join("npm")
+    cwd.join(crate::settings::CONFIG_DIR_NAME).join("npm")
 }
 
 /// Install root for npm packages in a scope (`temporary` uses the hash-stable
@@ -199,7 +199,10 @@ mod tests {
         );
         assert_eq!(
             npm_install_path(&source, SourceScope::Project, cwd, global_root),
-            PathBuf::from("/work/.prime/agent/npm/node_modules/pkg")
+            PathBuf::from(format!(
+                "/work/{}/npm/node_modules/pkg",
+                crate::settings::CONFIG_DIR_NAME
+            ))
         );
         assert_eq!(
             npm_install_root(SourceScope::User, cwd, global_root),

@@ -78,7 +78,7 @@ fn live_captured_sessions_roundtrip_losslessly() {
         .or_else(|| {
             std::env::var_os("HOME").map(|h| {
                 PathBuf::from(h)
-                    .join(".prime")
+                    .join(pa_types::identity::CONFIG_DIR_NAME)
                     .join("agent")
                     .join("sessions")
             })

@@ -73,7 +73,43 @@ pub use interactive_mode::{
 
 /// Entry point shared by the binary and the integration tests. Returns the
 /// process exit code.
+
+/// One-time import of the core settings from a legacy upstream install:
+/// when the fork's config dir does not exist yet and the legacy
+/// `~/.prime/agent` does, copy the small user-owned files (settings, auth,
+/// models overlay) so the first `allspark` start keeps the user's logins.
+/// Sessions are deliberately NOT copied; a `.migrated-from-prime` marker
+/// records that the check ran.
+fn migrate_from_legacy_once() {
+    use pa_types::platform::home_dir;
+    let Some(home) = home_dir() else { return };
+    let new_dir = home.join(pa_types::identity::CONFIG_DIR_NAME);
+    if new_dir.exists() {
+        return;
+    }
+    let legacy = home.join(".prime/agent");
+    if !legacy.is_dir() {
+        return;
+    }
+    for name in ["settings.json", "auth.json", "models.json"] {
+        let from = legacy.join(name);
+        if from.is_file() {
+            let _ = std::fs::create_dir_all(&new_dir);
+            let _ = std::fs::copy(&from, new_dir.join(name));
+        }
+    }
+    let _ = std::fs::write(
+        new_dir.join(".migrated-from-prime"),
+        "copied settings/auth/models from ~/.prime/agent\n",
+    );
+    eprintln!(
+        "note: imported settings/auth/models from ~/.prime/agent into {} (sessions were left in place)",
+        new_dir.display()
+    );
+}
+
 pub fn main_with_runtime(args: &[String], runtime: &dyn mode::Runtime) -> i32 {
+    migrate_from_legacy_once();
     match main_impl(args, runtime) {
         Ok(code) => code,
         Err(error) => {

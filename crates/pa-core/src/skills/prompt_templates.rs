@@ -396,7 +396,12 @@ mod tests {
         let agent_dir = tmp.path().join("agent");
         let project = tmp.path().join("project");
         std::fs::create_dir_all(agent_dir.join("prompts")).unwrap();
-        std::fs::create_dir_all(project.join(".prime").join("agent").join("prompts")).unwrap();
+        std::fs::create_dir_all(
+            project
+                .join(crate::settings::CONFIG_DIR_NAME)
+                .join("prompts"),
+        )
+        .unwrap();
         std::fs::write(
             agent_dir.join("prompts").join("global.md"),
             "Global prompt body",
@@ -404,8 +409,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             project
-                .join(".prime")
-                .join("agent")
+                .join(crate::settings::CONFIG_DIR_NAME)
                 .join("prompts")
                 .join("local.md"),
             "---\ndescription: A local one\n---\nBody here",

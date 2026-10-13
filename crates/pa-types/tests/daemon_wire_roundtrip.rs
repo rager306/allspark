@@ -55,7 +55,7 @@ fn live_worker_descriptors_roundtrip_losslessly() {
         .or_else(|| {
             std::env::var_os("HOME").map(|h| {
                 PathBuf::from(h)
-                    .join(".prime")
+                    .join(pa_types::identity::CONFIG_DIR_NAME)
                     .join("agent")
                     .join("daemon-workers")
             })

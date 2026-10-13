@@ -13,7 +13,7 @@ pub fn get_agent_dir() -> String {
         }
         return dir;
     }
-    format!("{}/.prime/agent", home_dir())
+    format!("{}/{}", home_dir(), pa_types::identity::CONFIG_DIR_NAME)
 }
 
 fn home_dir() -> String {

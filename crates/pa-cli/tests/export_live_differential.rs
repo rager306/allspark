@@ -389,7 +389,7 @@ fn differential_live_export_matches_ts_binary() {
         eprintln!("SKIPPED: TS prime-agent binary not found (set PA_TS_BINARY)");
         return;
     };
-    let rust = PathBuf::from(env!("CARGO_BIN_EXE_prime-agent"));
+    let rust = PathBuf::from(env!("CARGO_BIN_EXE_allspark"));
     let ts_base = tempfile::TempDir::new().expect("temp dir");
     let rs_base = tempfile::TempDir::new().expect("temp dir");
     let ts_data = live_export(&ts, ts_base.path(), true);

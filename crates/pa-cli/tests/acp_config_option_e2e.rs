@@ -203,7 +203,7 @@ fn acp_daemon_attached_config_option_pickers() {
         .to_string(),
     )
     .unwrap();
-    let bin = env!("CARGO_BIN_EXE_prime-agent");
+    let bin = env!("CARGO_BIN_EXE_allspark");
     let mut child = Command::new(bin)
         .args([
             "--mode",

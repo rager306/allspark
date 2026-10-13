@@ -2,9 +2,9 @@
 
 use std::path::PathBuf;
 
-pub const APP_NAME: &str = "prime-agent";
+pub const APP_NAME: &str = pa_types::identity::APP_NAME;
 
-pub const CONFIG_DIR_NAME: &str = ".prime/agent";
+pub const CONFIG_DIR_NAME: &str = pa_types::identity::CONFIG_DIR_NAME;
 
 pub const ENV_AGENT_DIR: &str = "PRIME_AGENT_CODING_AGENT_DIR";
 
@@ -60,7 +60,9 @@ pub fn version() -> &'static str {
 /// the executable, launcher symlinks resolved through pa-core's
 /// `exe_dir_of`).
 fn package_dir() -> PathBuf {
-    if let Ok(env_dir) = std::env::var("PI_PACKAGE_DIR") {
+    if let Ok(env_dir) = std::env::var(pa_types::identity::PACKAGE_DIR_ENV)
+        .or_else(|_| std::env::var(pa_types::identity::LEGACY_PACKAGE_DIR_ENV))
+    {
         if !env_dir.is_empty() {
             return expand_tilde_path(&env_dir);
         }

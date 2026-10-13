@@ -257,7 +257,8 @@ mod tests {
         let dir = match std::env::var_os("PA_ROSTER_BENCH_DIR") {
             Some(dir) => PathBuf::from(dir),
             None => Path::new(&std::env::var_os("HOME").unwrap_or_default())
-                .join(".prime/agent/sessions"),
+                .join(pa_types::identity::CONFIG_DIR_NAME)
+                .join("sessions"),
         };
         let warm = list_sessions(&dir);
         eprintln!("roster_scan_wall_clock: {} rows (warm pass)", warm.len());

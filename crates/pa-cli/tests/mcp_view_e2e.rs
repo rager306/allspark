@@ -181,7 +181,7 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
         .to_string(),
     )
     .expect("write settings");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_allspark"));
     command
         .args(["--mode", "daemon", "--daemon-socket"])
         .arg(&socket)

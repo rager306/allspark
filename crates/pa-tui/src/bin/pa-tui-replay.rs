@@ -54,7 +54,8 @@ struct Args {
 fn newest_session() -> Result<std::path::PathBuf> {
     let dir = pa_types::platform::home_dir()
         .context("home directory not found (HOME, or USERPROFILE on Windows)")?
-        .join(".prime/agent/sessions");
+        .join(pa_types::identity::CONFIG_DIR_NAME)
+        .join("sessions");
     let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
     for entry in std::fs::read_dir(&dir)? {
         let entry = entry?;

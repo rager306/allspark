@@ -346,10 +346,10 @@ fn home_agents_skills_stays_user_scoped_when_cwd_is_under_home() {
     );
     let mut manager = PackageManager::new(
         fixture.temp_dir.join("scratch").join("nested"),
-        fixture.temp_dir.join(".prime").join("agent"),
+        fixture.temp_dir.join(crate::settings::CONFIG_DIR_NAME),
         SettingsManager::create(
             fixture.temp_dir.join("scratch").join("nested"),
-            fixture.temp_dir.join(".prime").join("agent"),
+            fixture.temp_dir.join(crate::settings::CONFIG_DIR_NAME),
         ),
     );
     let result = manager.resolve().unwrap();

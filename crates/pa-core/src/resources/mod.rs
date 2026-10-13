@@ -331,15 +331,19 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let agent_dir = tmp.path().join("agent");
         let project = tmp.path().join("proj");
-        fs::create_dir_all(agent_dir.join(".prime").join("agent")).unwrap();
-        fs::create_dir_all(project.join(".prime").join("agent")).unwrap();
+        fs::create_dir_all(agent_dir.join(crate::settings::CONFIG_DIR_NAME)).unwrap();
+        fs::create_dir_all(project.join(crate::settings::CONFIG_DIR_NAME)).unwrap();
         fs::write(
-            agent_dir.join(".prime").join("agent").join("SYSTEM.md"),
+            agent_dir
+                .join(crate::settings::CONFIG_DIR_NAME)
+                .join("SYSTEM.md"),
             "global system",
         )
         .unwrap();
         fs::write(
-            project.join(".prime").join("agent").join("SYSTEM.md"),
+            project
+                .join(crate::settings::CONFIG_DIR_NAME)
+                .join("SYSTEM.md"),
             "project system",
         )
         .unwrap();
@@ -357,7 +361,7 @@ mod tests {
         let agent_dir = tmp.path().join("agent");
         let cwd = tmp.path().join("proj");
         fs::create_dir_all(agent_dir.join("skills").join("alpha")).unwrap();
-        fs::create_dir_all(cwd.join(".prime").join("agent").join("prompts")).unwrap();
+        fs::create_dir_all(cwd.join(crate::settings::CONFIG_DIR_NAME).join("prompts")).unwrap();
         fs::create_dir_all(&cwd).unwrap();
         fs::write(
             agent_dir.join("skills").join("alpha").join("SKILL.md"),
@@ -365,8 +369,7 @@ mod tests {
         )
         .unwrap();
         fs::write(
-            cwd.join(".prime")
-                .join("agent")
+            cwd.join(crate::settings::CONFIG_DIR_NAME)
                 .join("prompts")
                 .join("fix.md"),
             "Fix $1",
@@ -374,7 +377,7 @@ mod tests {
         .unwrap();
         fs::write(cwd.join("AGENTS.md"), "Project rules").unwrap();
         fs::write(
-            cwd.join(".prime").join("agent").join("SYSTEM.md"),
+            cwd.join(crate::settings::CONFIG_DIR_NAME).join("SYSTEM.md"),
             "custom system",
         )
         .unwrap();
@@ -445,8 +448,7 @@ mod tests {
         let cwd = tmp.path().join("proj");
         fs::create_dir_all(agent_dir.join("skills").join("alpha")).unwrap();
         fs::create_dir_all(
-            cwd.join(".prime")
-                .join("agent")
+            cwd.join(crate::settings::CONFIG_DIR_NAME)
                 .join("skills")
                 .join("alpha"),
         )
@@ -458,8 +460,7 @@ mod tests {
         )
         .unwrap();
         fs::write(
-            cwd.join(".prime")
-                .join("agent")
+            cwd.join(crate::settings::CONFIG_DIR_NAME)
                 .join("skills")
                 .join("alpha")
                 .join("SKILL.md"),

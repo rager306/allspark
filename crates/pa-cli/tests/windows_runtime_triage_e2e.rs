@@ -49,7 +49,7 @@ use pa_tui::interactive::{
 use serde_json::{json, Map, Value};
 
 /// The daemon supervisor spawned as the freshly-built binary
-/// (`CARGO_BIN_EXE_prime-agent --mode daemon`).
+/// (`CARGO_BIN_EXE_allspark --mode daemon`).
 struct Supervisor {
     child: Child,
     socket: PathBuf,
@@ -127,7 +127,7 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
     let socket = daemon_endpoint(dir);
     let agent_dir = dir.join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_allspark"));
     command
         .args(["--mode", "daemon", "--daemon-socket"])
         .arg(&socket)

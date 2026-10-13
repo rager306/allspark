@@ -176,7 +176,7 @@ mod tests {
         // A project scope cannot weaken the global pin: the project dir is
         // the temp dir itself.
         write_settings(
-            &dir.path().join(".prime").join("agent"),
+            &dir.path().join(pa_types::identity::CONFIG_DIR_NAME),
             r#"{"allowedModels": []}"#,
         );
         assert_eq!(

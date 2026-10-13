@@ -453,7 +453,7 @@ fn differential_corpus_matches_ts_binary() {
         eprintln!("SKIPPED: TS prime-agent binary not found (set PA_TS_BINARY)");
         return;
     };
-    let rust = PathBuf::from(env!("CARGO_BIN_EXE_prime-agent"));
+    let rust = PathBuf::from(env!("CARGO_BIN_EXE_allspark"));
     let ts_sandbox = sandbox("ts");
     let rs_sandbox = sandbox("rs");
     let sandbox_roots: Vec<&Path> = vec![&ts_sandbox, &rs_sandbox];
@@ -520,7 +520,7 @@ fn differential_env_flag_cases_match_ts_binary() {
         eprintln!("SKIPPED: TS prime-agent binary not found (set PA_TS_BINARY)");
         return;
     };
-    let rust = PathBuf::from(env!("CARGO_BIN_EXE_prime-agent"));
+    let rust = PathBuf::from(env!("CARGO_BIN_EXE_allspark"));
     let ts_sandbox = sandbox("ts-env");
     let rs_sandbox = sandbox("rs-env");
     let sandbox_roots: Vec<&Path> = vec![&ts_sandbox, &rs_sandbox];
@@ -590,7 +590,7 @@ fn differential_session_export_matches_ts_binary() {
         eprintln!("SKIPPED: TS prime-agent binary not found (set PA_TS_BINARY)");
         return;
     };
-    let rust = PathBuf::from(env!("CARGO_BIN_EXE_prime-agent"));
+    let rust = PathBuf::from(env!("CARGO_BIN_EXE_allspark"));
     let ts_sandbox = sandbox("ts-export");
     let rs_sandbox = sandbox("rs-export");
     let sandbox_roots: Vec<&Path> = vec![&ts_sandbox, &rs_sandbox];

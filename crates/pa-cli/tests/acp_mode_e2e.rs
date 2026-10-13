@@ -218,7 +218,7 @@ fn daemon_attached_command(
     socket: &std::path::Path,
     args: &[&str],
 ) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_allspark"));
     command
         .args(args)
         .arg("--daemon-socket")
@@ -1938,7 +1938,8 @@ fn spawn_with_compaction_settings(
     keep_recent_tokens: u64,
 ) -> AcpChild {
     let home = tempfile::TempDir::new().unwrap();
-    std::fs::create_dir_all(home.path().join(".prime/agent")).expect("agent dir");
+    std::fs::create_dir_all(home.path().join(pa_types::identity::CONFIG_DIR_NAME))
+        .expect("agent dir");
     std::fs::write(
         home.path().join(".prime/agent/settings.json"),
         json!({

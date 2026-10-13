@@ -494,7 +494,7 @@ fn package_manager_corpus_matches_ts_binary() {
         eprintln!("SKIPPED: TS prime-agent binary not installed");
         return;
     };
-    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_prime-agent"));
+    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_allspark"));
     let fixtures = make_fixtures();
 
     let base = std::env::temp_dir().join(format!("pa-package-e2e-{}", std::process::id()));
@@ -516,8 +516,7 @@ fn package_manager_corpus_matches_ts_binary() {
         &std::fs::read_to_string(
             rust_sandbox
                 .cwd
-                .join(".prime")
-                .join("agent")
+                .join(pa_types::identity::CONFIG_DIR_NAME)
                 .join("settings.json"),
         )
         .unwrap(),
@@ -543,7 +542,10 @@ fn package_manager_corpus_matches_ts_binary() {
     );
 
     // Project npm prefix survives the earlier npm --local round trip.
-    let npm_root = rust_sandbox.cwd.join(".prime").join("agent").join("npm");
+    let npm_root = rust_sandbox
+        .cwd
+        .join(pa_types::identity::CONFIG_DIR_NAME)
+        .join("npm");
     assert!(npm_root.join("package.json").exists());
     assert!(npm_root.join(".gitignore").exists());
     // Git installs are fully pruned, leaving only the gitignore guard file.

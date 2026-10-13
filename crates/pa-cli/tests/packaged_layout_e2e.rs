@@ -69,12 +69,12 @@ fn packaged_binary_name() -> &'static str {
 fn stage_packaged_layout(dir: &Path, with_runtime: bool) {
     std::fs::create_dir_all(dir).expect("stage dir");
     let binary = dir.join(packaged_binary_name());
-    std::fs::copy(env!("CARGO_BIN_EXE_prime-agent"), &binary).expect("copy binary");
+    std::fs::copy(env!("CARGO_BIN_EXE_allspark"), &binary).expect("copy binary");
     set_executable(&binary);
     std::fs::write(
         dir.join("package.json"),
         format!(
-            r#"{{"name":"prime-agent","version":"{}","piConfig":{{"name":"prime-agent","configDir":".prime/agent"}}}}"#,
+            r#"{{"name":"allspark","version":"{}","piConfig":{{"name":"allspark","configDir":".allspark"}}}}"#,
             env!("CARGO_PKG_VERSION")
         ),
     )
@@ -665,7 +665,7 @@ fn packaging_dry_run_produces_artifact() {
             Some(fixture.dir),
         )
     } else {
-        (env!("CARGO_BIN_EXE_prime-agent").into(), None, None)
+        (env!("CARGO_BIN_EXE_allspark").into(), None, None)
     };
     // The platform tag the packer derives on this host: linux-x64 on the
     // linux CI host, win32-x64 on the windows-latest battery (the channel

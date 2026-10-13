@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 
 pub const AGENT_DIR_ENV: &str = "PRIME_AGENT_CODING_AGENT_DIR";
 pub const SESSION_DIR_ENV: &str = "PRIME_AGENT_SESSION_DIR";
-pub const CONFIG_DIR_NAME: &str = ".prime/agent";
+pub const CONFIG_DIR_NAME: &str = pa_types::identity::CONFIG_DIR_NAME;
 
 /// The home directory for state layout. Unresolvable home is an explicit
 /// error, not a degraded `/tmp` default: the daemon must refuse to start

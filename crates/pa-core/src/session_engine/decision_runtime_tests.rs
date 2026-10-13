@@ -88,7 +88,9 @@ async fn decision_api_preimports_the_skill_only_while_the_setting_is_set() {
         .map(std::path::PathBuf::from)
         .or_else(|| {
             std::env::var_os("HOME").map(|home| {
-                std::path::PathBuf::from(home).join(".prime/agent/kernel-venv/bin/python")
+                std::path::PathBuf::from(home)
+                    .join(pa_types::identity::CONFIG_DIR_NAME)
+                    .join("kernel-venv/bin/python")
             })
         });
     if !installed.is_some_and(|path| path.exists()) {
@@ -163,7 +165,9 @@ async fn decision_api_real_runtime_loop_routes_decisions_and_child_delivery_then
         .map(std::path::PathBuf::from)
         .or_else(|| {
             std::env::var_os("HOME").map(|home| {
-                std::path::PathBuf::from(home).join(".prime/agent/kernel-venv/bin/python")
+                std::path::PathBuf::from(home)
+                    .join(pa_types::identity::CONFIG_DIR_NAME)
+                    .join("kernel-venv/bin/python")
             })
         });
     let Some(python) = python.filter(|path| path.exists()) else {
