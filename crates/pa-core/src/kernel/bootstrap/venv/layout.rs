@@ -17,10 +17,10 @@ pub(super) fn home_dir() -> PathBuf {
     pa_types::platform::home_dir().unwrap_or_else(|| PathBuf::from("/"))
 }
 
-/// Directory of the kernel venv, honoring `PRIME_AGENT_KERNEL_VENV`.
+/// Directory of the kernel venv, honoring `ALLSPARK_KERNEL_VENV`.
 #[must_use]
 pub fn kernel_venv_dir() -> PathBuf {
-    if let Ok(override_dir) = std::env::var("PRIME_AGENT_KERNEL_VENV") {
+    if let Ok(override_dir) = std::env::var("ALLSPARK_KERNEL_VENV") {
         if !override_dir.is_empty() {
             return expand_home(&override_dir);
         }
@@ -43,7 +43,7 @@ pub(crate) fn resolve_writable_kernel_venv_dir() -> anyhow::Result<PathBuf> {
     if std::fs::create_dir_all(primary.parent().unwrap_or(Path::new("/"))).is_ok() {
         return Ok(primary);
     }
-    if std::env::var("PRIME_AGENT_KERNEL_VENV").is_ok_and(|v| !v.is_empty()) {
+    if std::env::var("ALLSPARK_KERNEL_VENV").is_ok_and(|v| !v.is_empty()) {
         return Err(anyhow!(
             "couldn't create kernel venv parent directories for {}",
             primary.display()
@@ -52,7 +52,7 @@ pub(crate) fn resolve_writable_kernel_venv_dir() -> anyhow::Result<PathBuf> {
     let fallback = xdg_kernel_venv_dir();
     if std::fs::create_dir_all(fallback.parent().unwrap_or(Path::new("/"))).is_err() {
         return Err(anyhow!(
-            "couldn't create kernel venv directory at {} or {}; set PRIME_AGENT_KERNEL_PYTHON to a python with a current prime-agent-runtime installed",
+            "couldn't create kernel venv directory at {} or {}; set ALLSPARK_KERNEL_PYTHON to a python with a current prime-agent-runtime installed",
             primary.display(),
             fallback.display()
         ));

@@ -254,7 +254,7 @@ fn pipe_name(path: &Path) -> Result<String> {
         .with_context(|| format!("pipe name is not UTF-8: {}", absolute.display()))?
         .to_ascii_lowercase();
     Ok(format!(
-        r"\\.\pipe\prime-agent-explicit-{:016x}",
+        r"\\.\pipe\allspark-explicit-{:016x}",
         fnv1a64(&normalized)
     ))
 }
@@ -465,12 +465,12 @@ mod pipe_name_tests {
 
     #[test]
     fn pipe_namespace_names_pass_through_unchanged() {
-        let fixed = Path::new(r"\\.\pipe\prime-agent-daemon");
-        assert_eq!(pipe_name(fixed).unwrap(), r"\\.\pipe\prime-agent-daemon");
-        let worker = Path::new(r"\\.\pipe\prime-agent-worker-abc123-0123456789ab");
+        let fixed = Path::new(r"\\.\pipe\allspark-daemon");
+        assert_eq!(pipe_name(fixed).unwrap(), r"\\.\pipe\allspark-daemon");
+        let worker = Path::new(r"\\.\pipe\allspark-worker-abc123-0123456789ab");
         assert_eq!(
             pipe_name(worker).unwrap(),
-            r"\\.\pipe\prime-agent-worker-abc123-0123456789ab"
+            r"\\.\pipe\allspark-worker-abc123-0123456789ab"
         );
     }
 
@@ -480,7 +480,7 @@ mod pipe_name_tests {
         let a = pipe_name(socket).expect("derives");
         let b = pipe_name(socket).expect("derives again");
         assert_eq!(a, b, "the derivation is deterministic");
-        assert!(a.starts_with(r"\\.\pipe\prime-agent-explicit-"), "{a}");
+        assert!(a.starts_with(r"\\.\pipe\allspark-explicit-"), "{a}");
     }
 
     #[test]
@@ -498,8 +498,8 @@ mod pipe_name_tests {
 
     #[test]
     fn pipe_paths_match_case_insensitively_and_remote_forms_pass_through() {
-        let upper = Path::new(r"\\.\PIPE\prime-agent-daemon");
-        assert_eq!(pipe_name(upper).unwrap(), r"\\.\PIPE\prime-agent-daemon");
+        let upper = Path::new(r"\\.\PIPE\allspark-daemon");
+        assert_eq!(pipe_name(upper).unwrap(), r"\\.\PIPE\allspark-daemon");
         let remote = Path::new(r"\\fileserver\pipe\prime-agent");
         assert_eq!(pipe_name(remote).unwrap(), r"\\fileserver\pipe\prime-agent");
     }
@@ -531,10 +531,7 @@ mod pipe_name_tests {
             here, elsewhere,
             "the same relative name derives per working directory"
         );
-        assert!(
-            here.starts_with(r"\\.\pipe\prime-agent-explicit-"),
-            "{here}"
-        );
+        assert!(here.starts_with(r"\\.\pipe\allspark-explicit-"), "{here}");
     }
 
     /// Restores the process working directory on scope exit (including panics).

@@ -11,7 +11,7 @@ Port of the TS catalog client (branch `feat/catalog-client`:
 
 - Fetch layer: unauthenticated GET on the two catalog URLs; 5 s timeout,
   8 MiB cap (content-length AND streaming), redirects refused, ETag
-  `If-None-Match` with 304 snapshot reuse; `PI_OFFLINE` disables the network.
+  `If-None-Match` with 304 snapshot reuse; `ALLSPARK_OFFLINE` disables the network.
 - No-cold-start chain: validated last-good disk cache -> build-time bundled
   snapshot -> compiled fallback (42 transport tuples + 110 offline Prime
   Inference entries).

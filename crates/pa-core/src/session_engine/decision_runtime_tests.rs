@@ -84,7 +84,7 @@ async fn decision_api_preimports_the_skill_only_while_the_setting_is_set() {
     }
     // This verifier needs an installed runtime; hermetic hosts can run the
     // metadata regressions without downloading a Python environment.
-    let installed = std::env::var_os("PRIME_AGENT_KERNEL_PYTHON")
+    let installed = std::env::var_os("ALLSPARK_KERNEL_PYTHON")
         .map(std::path::PathBuf::from)
         .or_else(|| {
             std::env::var_os("HOME").map(|home| {
@@ -161,7 +161,7 @@ async fn decision_api_real_runtime_loop_routes_decisions_and_child_delivery_then
     }
     // This is a real REPL/skill bridge with synthetic child and reply
     // handlers. It never invokes a paid provider or starts a daemon child.
-    let python = std::env::var_os("PRIME_AGENT_KERNEL_PYTHON")
+    let python = std::env::var_os("ALLSPARK_KERNEL_PYTHON")
         .map(std::path::PathBuf::from)
         .or_else(|| {
             std::env::var_os("HOME").map(|home| {

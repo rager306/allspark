@@ -144,7 +144,7 @@ fn graceful_shutdown(socket: &Path) {
     let command = json!({
         "type": "command",
         "id": "test-shutdown",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
+        "protocol": { "name": "allspark.daemon", "version": 7 },
         "command": { "type": "shutdown" },
     });
     let mut line = serde_json::to_string(&command).expect("serialize");
@@ -185,9 +185,9 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
     command
         .args(["--mode", "daemon", "--daemon-socket"])
         .arg(&socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
-        .env("PRIME_AGENT_KERNEL_VENV", dir.join("kernel-venv"))
-        .env("PI_OFFLINE", "1")
+        .env("ALLSPARK_CODING_AGENT_DIR", &agent_dir)
+        .env("ALLSPARK_KERNEL_VENV", dir.join("kernel-venv"))
+        .env("ALLSPARK_OFFLINE", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

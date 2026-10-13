@@ -11,16 +11,16 @@ const os = require("node:os");
 const path = require("node:path");
 const packageRoot = path.resolve(__dirname, "../..");
 const metadata = require(path.join(packageRoot, "package.json"));
-const prefix = path.resolve(process.env.PRIME_AGENT_RUST_PREFIX || path.join(os.homedir(), ".local"));
+const prefix = path.resolve(process.env.ALLSPARK_RUST_PREFIX || path.join(os.homedir(), ".local"));
 // npm may recreate prefix/bin/prime-agent as this package's symlink on every
 // reinstall. Invoke the payload directly, never that mutually managed path.
 const executable = path.join(prefix, "share", "prime-agent", "prime-agent");
 const args = process.argv.slice(2);
 const coordinator = args.includes("--internal-update-restart-coordinator");
-const delegatedUpdate = process.env.PRIME_AGENT_INTERNAL_TS_UPDATE === "1";
+const delegatedUpdate = process.env.ALLSPARK_INTERNAL_TS_UPDATE === "1";
 // A delegated TS updater may spawn the new bridge's restart coordinator. That
 // coordinator must perform migration, never delegate back into the TS updater.
-delete process.env.PRIME_AGENT_INTERNAL_TS_UPDATE;
+delete process.env.ALLSPARK_INTERNAL_TS_UPDATE;
 let updateRequested = coordinator;
 // Recognize updates after leading global options without interpreting prompt
 // text such as `--print update` as an update retry. The value options mirror
@@ -48,10 +48,10 @@ const failedReceipt = `${receipt}.failed`;
 const legacySocketMarker = path.join(receiptDir, "legacy-daemon-socket");
 const legacySocket = path.join(os.tmpdir(), `prime-agent-${process.getuid()}`, "daemon.sock");
 const nativeEnvironment = { ...process.env,
-  PRIME_AGENT_CODING_AGENT_DIR: process.env.PRIME_AGENT_CODING_AGENT_DIR || path.join(os.homedir(), ".prime/agent"),
-  PRIME_AGENT_DAEMON_SOCKET: process.env.PRIME_AGENT_DAEMON_SOCKET ||
+  ALLSPARK_CODING_AGENT_DIR: process.env.ALLSPARK_CODING_AGENT_DIR || path.join(os.homedir(), ".prime/agent"),
+  ALLSPARK_DAEMON_SOCKET: process.env.ALLSPARK_DAEMON_SOCKET ||
     (coordinator || fs.existsSync(legacySocketMarker) ? legacySocket :
-      path.join(process.env.TMPDIR || "/tmp", `prime-agent-rust-${process.getuid()}`, "daemon.sock")),
+      path.join(process.env.TMPDIR || "/tmp", `allspark-rust-${process.getuid()}`, "daemon.sock")),
 };
 delete nativeEnvironment.PI_PACKAGE_DIR;
 const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
@@ -157,7 +157,7 @@ async function launchFallback(reason) {
     console.error(`prime-agent: Rust ${metadata.version} migration failed: ${reason}`);
     console.error(`prime-agent: Continuing with TypeScript ${fallback.version}. Run prime-agent update to retry the Rust upgrade.`);
   }
-  const environment = { ...process.env, PI_PACKAGE_DIR: fallbackRoot, PRIME_AGENT_INSTALL_METHOD: "node" };
+  const environment = { ...process.env, PI_PACKAGE_DIR: fallbackRoot, ALLSPARK_INSTALL_METHOD: "node" };
   const modules = path.dirname(packageRoot);
   if (path.basename(modules) === "node_modules" && path.basename(path.dirname(modules)) === "lib") {
     // The immutable fallback is nested below the real global package. Restore
@@ -199,7 +199,7 @@ async function main() {
     // genuine updater fetch the current bridge package (and its installer),
     // then verify native activation instead of trusting TS's warning-only exit.
     const result = await run(process.execPath, [path.join(packageRoot, "dist/bundle/cli.js"), ...args], {
-      env: { ...process.env, PRIME_AGENT_INTERNAL_TS_UPDATE: "1" },
+      env: { ...process.env, ALLSPARK_INTERNAL_TS_UPDATE: "1" },
       detached: true, timeoutMs: 600000,
     });
     if (result.timedOut) throw new Error("The TypeScript release updater timed out before Rust activation");
@@ -227,7 +227,7 @@ async function main() {
   const socketIndex = args.indexOf("--daemon-socket");
   const now = new Date().toISOString();
   const status = { version: 1, requestId: randomUUID(),
-    socketPath: socketIndex >= 0 ? args[socketIndex + 1] : nativeEnvironment.PRIME_AGENT_DAEMON_SOCKET,
+    socketPath: socketIndex >= 0 ? args[socketIndex + 1] : nativeEnvironment.ALLSPARK_DAEMON_SOCKET,
     phase: "starting", coordinator: { pid: process.pid },
     counts: { total: 0, restored: 0, resumed: 0, failed: 0 },
     startedAt: now, updatedAt: now, heartbeatAt: now };
@@ -286,15 +286,15 @@ async function main() {
     if (!installed) {
       // The TS restart coordinator restores sessions in the TS namespace.
       // Persist that choice in the native installer so both entrypoints agree.
-      if (!process.env.PRIME_AGENT_DAEMON_SOCKET) nativeEnvironment.PRIME_AGENT_DAEMON_SOCKET = legacySocket;
+      if (!process.env.ALLSPARK_DAEMON_SOCKET) nativeEnvironment.ALLSPARK_DAEMON_SOCKET = legacySocket;
       const result = await run("sh", [path.join(packageRoot, "install-rust.sh")], {
         // Never remove the npm package while its updater/restart coordinator is running.
-        env: { ...nativeEnvironment, PRIME_AGENT_VERSION: metadata.version,
-          PRIME_AGENT_RELEASE_CHANNEL: metadata.primeAgentReleaseChannel,
-          PRIME_AGENT_RUST_PREFIX: prefix, PRIME_AGENT_PRESERVE_NPM_BRIDGE: "1",
-          PRIME_AGENT_NPM_BRIDGE_ENTRYPOINT: path.join(packageRoot, "dist", "bundle", "cli.js"),
-          PRIME_AGENT_USE_LEGACY_DAEMON_SOCKET: "1",
-          PRIME_AGENT_DEFER_DAEMON_STOP: coordinator ? "1" : "0" },
+        env: { ...nativeEnvironment, ALLSPARK_VERSION: metadata.version,
+          ALLSPARK_RELEASE_CHANNEL: metadata.primeAgentReleaseChannel,
+          ALLSPARK_RUST_PREFIX: prefix, ALLSPARK_PRESERVE_NPM_BRIDGE: "1",
+          ALLSPARK_NPM_BRIDGE_ENTRYPOINT: path.join(packageRoot, "dist", "bundle", "cli.js"),
+          ALLSPARK_USE_LEGACY_DAEMON_SOCKET: "1",
+          ALLSPARK_DEFER_DAEMON_STOP: coordinator ? "1" : "0" },
         stdio: ["ignore", process.stderr, process.stderr],
         detached: true,
       });
@@ -321,8 +321,8 @@ async function main() {
     clearInterval(heartbeat);
     if (ownsLock && fs.readFileSync(lockPath, "utf8") === lockOwner) fs.unlinkSync(lockPath);
   }
-  if (!process.env.PRIME_AGENT_DAEMON_SOCKET && fs.existsSync(legacySocketMarker)) {
-    nativeEnvironment.PRIME_AGENT_DAEMON_SOCKET = legacySocket;
+  if (!process.env.ALLSPARK_DAEMON_SOCKET && fs.existsSync(legacySocketMarker)) {
+    nativeEnvironment.ALLSPARK_DAEMON_SOCKET = legacySocket;
   }
   finish(await run(executable, args, { env: nativeEnvironment }));
 }

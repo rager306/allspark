@@ -223,7 +223,7 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, trace_path: &Path) -> Super
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .env_remove("PRIME_API_KEY")
-        .env_remove("PRIME_AGENT_CODING_AGENT_DIR")
+        .env_remove("ALLSPARK_CODING_AGENT_DIR")
         .env("PA_COMPACTION_TRACE", trace_path)
         .env(
             pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
@@ -268,7 +268,7 @@ impl TimedClient {
         let envelope = json!({
             "type": "command",
             "id": id,
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
+            "protocol": { "name": "allspark.daemon", "version": 7 },
             "command": command,
         });
         let mut line = serde_json::to_string(&envelope).expect("serialize");

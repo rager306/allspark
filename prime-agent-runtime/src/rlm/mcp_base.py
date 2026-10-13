@@ -56,8 +56,8 @@ class McpToolError(RuntimeError):
 def _agent_dir() -> Path:
     """Resolve the Prime Agent config dir the same way the rest of the runtime does."""
     raw = (
-        os.environ.get("PRIME_AGENT_CODING_AGENT_DIR")
-        or os.environ.get("PI_CODING_AGENT_DIR")
+        os.environ.get("ALLSPARK_CODING_AGENT_DIR")
+        or os.environ.get("ALLSPARK_CODING_AGENT_DIR")
         or str(Path.home() / ".prime" / "agent")
     )
     # resolve() so a relative env override reads auth.json from the right place,

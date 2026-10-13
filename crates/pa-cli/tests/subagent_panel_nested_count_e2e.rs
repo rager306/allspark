@@ -51,7 +51,7 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
     command
         .args(["--mode", "daemon", "--daemon-socket"])
         .arg(&socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
+        .env("ALLSPARK_CODING_AGENT_DIR", &agent_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -114,7 +114,7 @@ impl Client {
         let envelope = json!({
             "type": "command",
             "id": id,
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
+            "protocol": { "name": "allspark.daemon", "version": 7 },
             "command": command,
         });
         let mut line = serde_json::to_string(&envelope).expect("serialize command");

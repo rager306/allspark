@@ -1,5 +1,5 @@
 {
-  "_source": "Live TS daemon (prime-agent 0.9.5, protocol 7, schema 28) at /tmp/prime-agent-1000/daemon.sock. Read-only capture: attach + detach with a chunked_snapshot client, 2026-09-16. Recorded by hand from the captured records; message contents redacted.",
+  "_source": "Live TS daemon (prime-agent 0.9.5, protocol 7, schema 28) at /tmp/allspark-1000/daemon.sock. Read-only capture: attach + detach with a chunked_snapshot client, 2026-09-16. Recorded by hand from the captured records; message contents redacted.",
   "attachCommand": {
     "type": "attach",
     "capabilities": [

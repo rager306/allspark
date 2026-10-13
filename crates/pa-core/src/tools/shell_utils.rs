@@ -3,9 +3,9 @@
 
 pub use crate::platform::shell::get_shell_config;
 
-/// The agent config directory (`~/.prime/agent` unless overridden).
+/// The agent config directory (`~/.allspark` unless overridden).
 pub fn get_agent_dir() -> String {
-    if let Ok(dir) = std::env::var("PI_CODING_AGENT_DIR") {
+    if let Ok(dir) = std::env::var("ALLSPARK_CODING_AGENT_DIR") {
         if dir.starts_with('~') {
             if let Some(rest) = dir.strip_prefix("~/") {
                 return format!("{}/{}", home_dir(), rest);

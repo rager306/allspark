@@ -152,7 +152,7 @@ pub(super) fn runtime_probe_key(
 /// The runtime-ready check, memoized on success across two layers: the process-global map first,
 /// then the on-disk cross-process memo. `version_raw` is the raw `.bootstrap-version` text the
 /// caller already read. The key is recomputed fresh on every call so a hit skips only the two
-/// interpreter probes. A caller-owned `PRIME_AGENT_KERNEL_PYTHON` override never reaches this.
+/// interpreter probes. A caller-owned `ALLSPARK_KERNEL_PYTHON` override never reaches this.
 pub(super) fn has_prime_agent_runtime_memoized(
     python: &str,
     runtime_identity: &str,

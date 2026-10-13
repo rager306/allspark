@@ -135,7 +135,7 @@ pub fn get_harness_state_path(harness_state_dir: &Path) -> PathBuf {
 
 /// The settings file the factory opt-in gate reads: the agent dir's
 /// settings.json, the same document the kernel-side gate resolves through
-/// `PRIME_AGENT_CODING_AGENT_DIR` (the host exports the session's agent
+/// `ALLSPARK_CODING_AGENT_DIR` (the host exports the session's agent
 /// dir to the kernel, so both sides read one setting).
 pub const FACTORY_SETTINGS_FILE_NAME: &str = "settings.json";
 

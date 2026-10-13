@@ -42,15 +42,15 @@ pub(crate) struct DaemonStateRoot {
 /// (operator-mandated containment guard; see the module docs). These hold
 /// this box's live mission infrastructure; an ambient `HOME`/`TMPDIR`
 /// leaking into a test process makes `current_state_root()` resolve onto
-/// them, so root matching alone cannot be trusted. `/tmp/prime-agent-1000`
+/// them, so root matching alone cannot be trusted. `/tmp/allspark-1000`
 /// is also the product-default socket dir for uid 1000 (deliberate,
 /// mission-local); the `-0` entries are the uid-0 twins — without them the
 /// protection silently disappears at uid 0.
 pub(crate) const NEVER_TOUCH_SOCKET_DIRS: &[&str] = &[
-    "/tmp/prime-agent-1000",
+    "/tmp/allspark-1000",
     "/tmp/mission-tmp/prime-agent-1000",
     "/tmp/mission-daemon",
-    "/tmp/prime-agent-0",
+    "/tmp/allspark-0",
     "/tmp/mission-tmp/prime-agent-0",
 ];
 
@@ -580,7 +580,7 @@ mod tests {
         }
         assert!(is_never_touch(Path::new("/tmp/mission-daemon")));
         assert!(is_never_touch(Path::new("/tmp/mission-daemon/daemon.sock")));
-        assert!(is_never_touch(Path::new("/tmp/prime-agent-1000")));
+        assert!(is_never_touch(Path::new("/tmp/allspark-1000")));
         assert!(!is_never_touch(Path::new("/tmp")));
         assert!(!is_never_touch(Path::new("/tmp/other/daemon.sock")));
     }

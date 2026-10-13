@@ -1,5 +1,5 @@
 //! Scripted faux provider registration from a JSON script (the verification
-//! seam shared by pa-cli's `PRIME_AGENT_FAUX_SCRIPT` harness and the daemon
+//! seam shared by pa-cli's `ALLSPARK_FAUX_SCRIPT` harness and the daemon
 //! worker). Entries carry plain text or content-block arrays (thinking, text,
 //! tool calls) so visual and behavioral harnesses can script full turns.
 

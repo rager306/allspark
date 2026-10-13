@@ -152,7 +152,7 @@ fn graceful_shutdown(socket: &Path) -> Option<u32> {
     let shutdown = json!({
         "type": "command",
         "id": "fork-e2e-shutdown",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
+        "protocol": { "name": "allspark.daemon", "version": 7 },
         "command": { "type": "shutdown" },
     });
     let mut line = serde_json::to_string(&shutdown).expect("serialize shutdown");
@@ -177,9 +177,9 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, session_dir: &Path) -> Supe
     command
         .args(["--mode", "daemon", "--daemon-socket"])
         .arg(socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
-        .env("PRIME_AGENT_SESSION_DIR", session_dir)
-        .env("PI_OFFLINE", "1")
+        .env("ALLSPARK_CODING_AGENT_DIR", agent_dir)
+        .env("ALLSPARK_SESSION_DIR", session_dir)
+        .env("ALLSPARK_OFFLINE", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -383,11 +383,11 @@ async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
     let seeded = Command::new(env!("CARGO_BIN_EXE_allspark"))
         .args(["-p", "seedphrase4fork tell me"])
         .current_dir(&cwd)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
-        .env("PRIME_AGENT_SESSION_DIR", &session_dir)
-        .env("PI_OFFLINE", "1")
+        .env("ALLSPARK_CODING_AGENT_DIR", &agent_dir)
+        .env("ALLSPARK_SESSION_DIR", &session_dir)
+        .env("ALLSPARK_OFFLINE", "1")
         .env(
-            "PRIME_AGENT_FAUX_SCRIPT",
+            "ALLSPARK_FAUX_SCRIPT",
             json!({ "responses": ["seedonlyanswer"] }).to_string(),
         )
         .env_remove("RLM_DEPTH")
@@ -413,7 +413,7 @@ async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
     let source_before = std::fs::read(&source).expect("read source");
 
     // The interactive launch child on a pty, forking the hosted source by
-    // its id; the seam reads PRIME_AGENT_FAUX_SCRIPT as a script FILE path.
+    // its id; the seam reads ALLSPARK_FAUX_SCRIPT as a script FILE path.
     // The scripted engine indexes responses by the prompt ordinal
     // (message_count / 2): the copied exchange occupies index 0, so the
     // first LIVE turn runs at index 1.
@@ -448,10 +448,10 @@ async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
             })
             .to_string(),
         )
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
-        .env("PRIME_AGENT_SESSION_DIR", &session_dir)
-        .env("PI_OFFLINE", "1")
-        .env("PRIME_AGENT_FAUX_SCRIPT", fork_script.display().to_string())
+        .env("ALLSPARK_CODING_AGENT_DIR", &agent_dir)
+        .env("ALLSPARK_SESSION_DIR", &session_dir)
+        .env("ALLSPARK_OFFLINE", "1")
+        .env("ALLSPARK_FAUX_SCRIPT", fork_script.display().to_string())
         .env_remove("TMUX")
         .env_remove("RLM_DEPTH")
         .stdin(slave.try_clone().expect("clone pty slave"))

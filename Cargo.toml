@@ -139,3 +139,14 @@ used_underscore_binding = "warn"
 lto = "thin"
 codegen-units = 4
 debug = "line-tables-only"
+
+# Fork-local compact profile: same codegen posture as release, plus
+# symbol stripping and no debug info. Build with:
+#   cargo build --profile dist -p pa-cli
+[profile.dist]
+inherits = "release"
+debug = false
+strip = "symbols"
+panic = "abort"
+lto = "fat"
+codegen-units = 1

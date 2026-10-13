@@ -29,7 +29,7 @@ impl SessionUi {
     /// The shipped CHANGELOG.md path: the package directory (`PI_PACKAGE_DIR`
     /// wins, else the running executable's directory) plus `CHANGELOG.md`.
     pub(super) fn changelog_path() -> std::path::PathBuf {
-        let package_dir = match std::env::var("PI_PACKAGE_DIR") {
+        let package_dir = match std::env::var(pa_types::identity::PACKAGE_DIR_ENV) {
             Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
             _ => std::env::current_exe()
                 .ok()

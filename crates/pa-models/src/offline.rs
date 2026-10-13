@@ -1,4 +1,4 @@
-//! Offline mode (`PI_OFFLINE`): no network at all, serve cache/bundled/compiled.
+//! Offline mode (`ALLSPARK_OFFLINE`): no network at all, serve cache/bundled/compiled.
 
 /// Whether the catalog subsystem must avoid every network request.
 #[must_use]
@@ -7,7 +7,7 @@ pub fn is_catalog_offline() -> bool {
 }
 
 fn offline_flag() -> Option<String> {
-    std::env::var("PI_OFFLINE")
+    std::env::var("ALLSPARK_OFFLINE")
         .ok()
         .map(|value| value.trim().to_ascii_lowercase())
 }
@@ -22,9 +22,9 @@ mod tests {
     #[test]
     fn parses_offline_values() {
         let yes = |raw: &str| {
-            std::env::remove_var("PI_OFFLINE");
+            std::env::remove_var("ALLSPARK_OFFLINE");
             // SAFETY: single-threaded test runtime before tokio starts.
-            std::env::set_var("PI_OFFLINE", raw);
+            std::env::set_var("ALLSPARK_OFFLINE", raw);
             is_catalog_offline()
         };
         assert!(yes("1"));
@@ -34,7 +34,7 @@ mod tests {
         assert!(!yes("0"));
         assert!(!yes("no"));
         assert!(!yes("maybe"));
-        std::env::remove_var("PI_OFFLINE");
+        std::env::remove_var("ALLSPARK_OFFLINE");
         assert!(!is_catalog_offline());
     }
 }

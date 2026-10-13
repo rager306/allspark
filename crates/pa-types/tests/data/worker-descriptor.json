@@ -17,7 +17,7 @@
   "lifecycle": "ready",
   "createCommand": {
     "type": "create",
-    "sessionPath": "/home/ubuntu/.prime/agent/sessions/01a0a7fa-6fda-75dc-8c7b-e3e00614a6f6.jsonl"
+    "sessionPath": "/home/ubuntu/.allspark/sessions/01a0a7fa-6fda-75dc-8c7b-e3e00614a6f6.jsonl"
   },
   "consecutiveFailures": 0
 }

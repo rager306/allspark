@@ -52,7 +52,7 @@ fn graceful_shutdown(socket: &Path) {
     let command = serde_json::json!({
         "type": "command",
         "id": "test-shutdown",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
+        "protocol": { "name": "allspark.daemon", "version": 7 },
         "command": { "type": "shutdown" },
     });
     let Ok(mut line) = serde_json::to_string(&command) else {
@@ -77,7 +77,7 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
     command
         .args(["--mode", "daemon", "--daemon-socket"])
         .arg(&socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
+        .env("ALLSPARK_CODING_AGENT_DIR", &agent_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -140,7 +140,7 @@ fn ask(socket: &Path, command: &serde_json::Value) -> Option<serde_json::Value> 
     let mut line = serde_json::to_string(&serde_json::json!({
         "type": "command",
         "id": "reply-e2e-ask",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
+        "protocol": { "name": "allspark.daemon", "version": 7 },
         "command": command,
     }))
     .ok()?;

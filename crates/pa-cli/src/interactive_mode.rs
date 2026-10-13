@@ -388,7 +388,7 @@ async fn run_agents_view_flow(
     }
 }
 
-/// `--daemon-socket` value, the `PRIME_AGENT_DAEMON_SOCKET` environment,
+/// `--daemon-socket` value, the `ALLSPARK_DAEMON_SOCKET` environment,
 /// or the per-user default socket path (precedence in that order).
 #[must_use]
 pub fn resolve_socket_path(daemon_socket: Option<&str>) -> PathBuf {
@@ -413,7 +413,7 @@ fn build_tui_options(
     }
     let keybindings = pa_tui::keybindings::KeybindingsManager::create(&config.agent_dir);
     // Test seam: a scripted faux daemon session; never set by the product.
-    let script_path = std::env::var_os("PRIME_AGENT_FAUX_SCRIPT").map(PathBuf::from);
+    let script_path = std::env::var_os("ALLSPARK_FAUX_SCRIPT").map(PathBuf::from);
     // Flag order (fork -> resume -> create): the daemon opens the fork —
     // never the source — through the create `sessionPath`.
     let session = match &options.session.fork {

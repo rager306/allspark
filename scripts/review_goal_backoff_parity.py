@@ -139,20 +139,20 @@ def run_case(binary, label, scenario, base_dir):
     # An explicit environment prevents inherited tokens, proxies, or a user's
     # package/session paths from reaching either binary or a spawned kernel.
     env = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL", "TZ", "PYTHONPATH",
-                                             "PRIME_AGENT_KERNEL_PYTHON", "PA_E2E_KERNEL_PYTHON")
+                                             "ALLSPARK_KERNEL_PYTHON", "PA_E2E_KERNEL_PYTHON")
            if key in os.environ}
     env.update({"HOME": str(home), "XDG_CONFIG_HOME": str(home / "config"),
                 "XDG_CACHE_HOME": str(home / "cache"), "XDG_DATA_HOME": str(home / "data"),
-                "TMPDIR": str(home / "tmp"), "DO_NOT_TRACK": "1", "PI_OFFLINE": "1",
-                "PI_CODING_AGENT_DIR": str(agent), "PI_SESSION_DIR": str(sessions),
-                "PRIME_AGENT_CODING_AGENT_DIR": str(agent),
-                "PRIME_AGENT_SESSION_DIR": str(sessions)})
+                "TMPDIR": str(home / "tmp"), "DO_NOT_TRACK": "1", "ALLSPARK_OFFLINE": "1",
+                "ALLSPARK_CODING_AGENT_DIR": str(agent), "PI_SESSION_DIR": str(sessions),
+                "ALLSPARK_CODING_AGENT_DIR": str(agent),
+                "ALLSPARK_SESSION_DIR": str(sessions)})
     (home / "tmp").mkdir()
     goal_module = next((pathlib.Path(part) / "goal" / "__init__.py"
                         for part in env.get("PYTHONPATH", "").split(os.pathsep)
                         if part and (pathlib.Path(part) / "goal" / "__init__.py").is_file()), None)
     kernel_provenance = {
-        "kernel_python": env.get("PRIME_AGENT_KERNEL_PYTHON"),
+        "kernel_python": env.get("ALLSPARK_KERNEL_PYTHON"),
         "e2e_kernel_python": env.get("PA_E2E_KERNEL_PYTHON"),
         "pythonpath": env.get("PYTHONPATH"),
         "goal_module_path": str(goal_module) if goal_module else None,

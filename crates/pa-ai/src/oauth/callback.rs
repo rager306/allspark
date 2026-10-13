@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-pub(crate) const CALLBACK_HOST_ENV: &str = "PI_OAUTH_CALLBACK_HOST";
+pub(crate) const CALLBACK_HOST_ENV: &str = "ALLSPARK_OAUTH_CALLBACK_HOST";
 
 /// The registered redirect port (the registration's, not a scan
 /// range).

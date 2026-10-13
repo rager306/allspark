@@ -10,7 +10,7 @@ use proptest::test_runner::RngSeed;
 /// so these tests serialize through the crate-wide
 /// `test_support::TELEMETRY_ENV_MUTEX` (shared with `agent_engine`'s
 /// `telemetry_opt_in`) while they hold it.
-const TELEMETRY_ENV_VARS: [&str; 3] = ["DO_NOT_TRACK", "PI_OFFLINE", "PRIME_AGENT_TELEMETRY"];
+const TELEMETRY_ENV_VARS: [&str; 3] = ["DO_NOT_TRACK", "ALLSPARK_OFFLINE", "ALLSPARK_TELEMETRY"];
 
 struct CleanTelemetryEnv {
     saved: Vec<(&'static str, Option<String>)>,

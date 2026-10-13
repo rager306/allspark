@@ -15,15 +15,15 @@ use super::prime_inference::{
     DEFAULT_REQUEST_TIMEOUT_MS,
 };
 
-pub const PRIME_AGENT_TRACES_PROVIDER_ID: &str = "prime-agent-traces";
-pub const PRIME_AGENT_TRACES_PROVIDER_NAME: &str = "Prime Agent Traces";
+pub const ALLSPARK_TRACES_PROVIDER_ID: &str = "allspark-traces";
+pub const ALLSPARK_TRACES_PROVIDER_NAME: &str = "Allspark Traces";
 pub const DEFAULT_POLL_INTERVAL_MS: u64 = 5_000;
 
 /// The override (or the env key) normalized, else the platform default.
 pub fn resolve_prime_agent_traces_base_url(base_url: Option<&str>) -> String {
     let override_url = base_url
         .map(str::to_string)
-        .or_else(|| std::env::var("PRIME_AGENT_TRACES_BASE_URL").ok());
+        .or_else(|| std::env::var("ALLSPARK_TRACES_BASE_URL").ok());
     normalize_base_url(override_url.as_deref())
 }
 
@@ -547,7 +547,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn the_login_reuses_an_eligible_prime_cli_key() {
         let _env = env_lock();
-        std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");
+        std::env::remove_var("ALLSPARK_TRACES_BASE_URL");
         let dir = tempfile::tempdir().expect("temp dir");
         let config_path = dir.path().join("config.json");
         std::fs::write(
@@ -580,7 +580,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn the_browser_login_completes_the_challenge_round_trip() {
         let _env = env_lock();
-        std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");
+        std::env::remove_var("ALLSPARK_TRACES_BASE_URL");
         let http = ScriptedHttp::new(vec![whoami_ok(true)]);
         let auth = Mutex::new(Vec::<String>::new());
         let logged = Mutex::new(Vec::<String>::new());
@@ -633,7 +633,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn the_browser_key_without_traces_access_reports_the_ts_error() {
         let _env = env_lock();
-        std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");
+        std::env::remove_var("ALLSPARK_TRACES_BASE_URL");
         let http = ScriptedHttp::new(vec![whoami_ok(false)]);
         let logged = Mutex::new(Vec::<String>::new());
         let callbacks = PrimeAgentTracesCallbacks {
@@ -657,7 +657,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn an_ineligible_cli_key_falls_through_to_the_browser() {
         let _env = env_lock();
-        std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");
+        std::env::remove_var("ALLSPARK_TRACES_BASE_URL");
         let dir = tempfile::tempdir().expect("temp dir");
         let config_path = dir.path().join("config.json");
         std::fs::write(
@@ -693,7 +693,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn an_expired_challenge_reports_the_ts_error() {
         let _env = env_lock();
-        std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");
+        std::env::remove_var("ALLSPARK_TRACES_BASE_URL");
         // The dynamic generate stays off so the queue owns every answer.
         let http = ScriptedHttp::without_dynamic(vec![
             (

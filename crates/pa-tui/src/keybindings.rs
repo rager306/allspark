@@ -1,7 +1,7 @@
 //! Global keybinding registry with TS DEFAULT_* defaults, port of
 //! `packages/tui/src/keybindings.ts` +
 //! `coding-agent/src/core/keybindings.ts`. Every binding is configurable via
-//! `~/.prime/agent/keybindings.json`; user bindings load with the TS parse semantics: legacy names
+//! `~/.allspark/keybindings.json`; user bindings load with the TS parse semantics: legacy names
 //! migrate, malformed values drop, an empty array disables a binding.
 
 use anyhow::Result;

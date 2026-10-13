@@ -27,6 +27,20 @@ import re
 import sys
 
 VOLATILE_STRING = "<volatile>"
+# The ACP `_meta` key: the upstream TS capture uses the prime-agent namespace,
+# the fork capture uses allspark. Normalize both so the differential compares
+# frame shapes, not the product name.
+_META_KEY = "ai.allspark.agent"
+_META_KEYS = ("ai.allspark.agent", "ai.primeintellect.prime-agent")
+
+
+def _meta_of(node):
+    """The ACP meta block under either product namespace (fork or upstream)."""
+    meta = node.get("_meta", {})
+    for key in _META_KEYS:
+        if key in meta:
+            return meta[key]
+    return {}
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
@@ -48,7 +62,7 @@ def normalize_frame(direction, frame, sequence_index):
         shape = {"dir": direction, "method": frame["method"]}
         if frame["method"] == "session/update":
             update = frame.get("params", {}).get("update", {})
-            meta = update.get("_meta", {}).get("ai.primeintellect.prime-agent", {})
+            meta = _meta_of(update)
             shape["sessionUpdate"] = update.get("sessionUpdate")
             kind = update.get("sessionUpdate")
             if kind in ("agent_message_chunk", "agent_thought_chunk"):

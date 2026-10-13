@@ -488,7 +488,7 @@ fn windows_build_job_contract() {
             .iter()
             .any(|step| step.run.as_deref().is_some_and(|run| {
                 run.contains("cargo build --release --locked --target")
-                    && !run.contains("dist/prime-agent")
+                    && !run.contains("dist/allspark")
             })),
         "the Windows build compiles the MSVC target (the split-debug step is linux-only)"
     );
@@ -747,7 +747,7 @@ fn single_artifact_release_finds_the_downloaded_manifest() {
     );
     assert!(cwd
         .path()
-        .join("release-unpacked/x86_64-unknown-linux-gnu/prime-agent")
+        .join("release-unpacked/x86_64-unknown-linux-gnu/allspark")
         .is_file());
 }
 

@@ -1,8 +1,8 @@
 //! The update flow's timeout budget (spec §9): the watchdog table, its defaults, and the
-//! `PRIME_AGENT_UPDATE_<NAME>_MS` overrides that let CI run the whole FSM in seconds.
+//! `ALLSPARK_UPDATE_<NAME>_MS` overrides that let CI run the whole FSM in seconds.
 
 /// Prefix of every update-flow timeout override variable.
-pub const UPDATE_ENV_PREFIX: &str = "PRIME_AGENT_UPDATE_";
+pub const UPDATE_ENV_PREFIX: &str = "ALLSPARK_UPDATE_";
 
 /// Every watchdog budget of the update flow (spec §9). Each field names the state it guards; on
 /// expiry the coordinator/supervisor takes the transition listed there (`Aborted`, `Rollback`, or
@@ -56,7 +56,7 @@ impl Default for UpdateTimeoutBudget {
 }
 
 impl UpdateTimeoutBudget {
-    /// The budget with `PRIME_AGENT_UPDATE_<NAME>_MS` overrides (`_ATTEMPTS` for the download retry
+    /// The budget with `ALLSPARK_UPDATE_<NAME>_MS` overrides (`_ATTEMPTS` for the download retry
     /// count) applied. An unparsable override falls back to the default: an override is test
     /// plumbing, and a typo must never wedge the FSM behind a huge budget.
     #[must_use]
@@ -135,11 +135,11 @@ mod tests {
     #[test]
     fn env_overrides_apply_and_unrelated_vars_are_ignored() {
         let mut vars: HashMap<String, String> = HashMap::new();
-        vars.insert("PRIME_AGENT_UPDATE_DOWNLOAD_MS".into(), "2000".into());
-        vars.insert("PRIME_AGENT_UPDATE_PREPARE_MS".into(), "150".into());
-        vars.insert("PRIME_AGENT_UPDATE_BOOT_MS".into(), "25".into());
-        vars.insert("PRIME_AGENT_UPDATE_DOWNLOAD_ATTEMPTS".into(), "1".into());
-        vars.insert("PRIME_AGENT_UNRELATED_MS".into(), "99999".into());
+        vars.insert("ALLSPARK_UPDATE_DOWNLOAD_MS".into(), "2000".into());
+        vars.insert("ALLSPARK_UPDATE_PREPARE_MS".into(), "150".into());
+        vars.insert("ALLSPARK_UPDATE_BOOT_MS".into(), "25".into());
+        vars.insert("ALLSPARK_UPDATE_DOWNLOAD_ATTEMPTS".into(), "1".into());
+        vars.insert("ALLSPARK_UNRELATED_MS".into(), "99999".into());
         let lookup = |key: &str| vars.get(key).cloned();
         let b = UpdateTimeoutBudget::from_overrides(lookup);
         assert_eq!(b.download_ms, 2000);
@@ -154,10 +154,10 @@ mod tests {
     #[test]
     fn garbage_overrides_fall_back_to_defaults() {
         let vars: HashMap<String, String> = [
-            ("PRIME_AGENT_UPDATE_PREPARE_MS", "soon"),
-            ("PRIME_AGENT_UPDATE_DOWNLOAD_ATTEMPTS", "many"),
-            ("PRIME_AGENT_UPDATE_PREPARED_EXPIRY_MS", "-5"),
-            ("PRIME_AGENT_UPDATE_ACTIVATE_MS", ""),
+            ("ALLSPARK_UPDATE_PREPARE_MS", "soon"),
+            ("ALLSPARK_UPDATE_DOWNLOAD_ATTEMPTS", "many"),
+            ("ALLSPARK_UPDATE_PREPARED_EXPIRY_MS", "-5"),
+            ("ALLSPARK_UPDATE_ACTIVATE_MS", ""),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))

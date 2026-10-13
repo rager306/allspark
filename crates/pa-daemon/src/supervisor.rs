@@ -195,7 +195,7 @@ pub struct Supervisor {
     update_prepare: PrepareCoordinator,
     /// In-flight mutating-command counter feeding the prepare transaction's `Draining` wait.
     mutation_drain: MutationDrainLatch,
-    /// Timeout budget of the update flow (`PRIME_AGENT_UPDATE_*_MS`
+    /// Timeout budget of the update flow (`ALLSPARK_UPDATE_*_MS`
     /// overridable for CI).
     update_budget: UpdateTimeoutBudget,
     /// The boot-time restore pass (spec §6): sweep + roster restore + scheduled-work

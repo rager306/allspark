@@ -21,11 +21,11 @@ fn normalize_base_url(value: &str) -> String {
     stripped
 }
 
-/// The `PRIME_AGENT_TRACES_BASE_URL` override normalized, else the
+/// The `ALLSPARK_TRACES_BASE_URL` override normalized, else the
 /// platform default.
 #[must_use]
 pub fn traces_base_url() -> String {
-    match std::env::var("PRIME_AGENT_TRACES_BASE_URL") {
+    match std::env::var("ALLSPARK_TRACES_BASE_URL") {
         Ok(value) => normalize_base_url(&value),
         Err(_) => "https://api.primeintellect.ai".to_string(),
     }
@@ -290,7 +290,7 @@ pub fn format_upload_outcome(outcome: &TraceUploadOutcome, log_path: &str) -> St
             message,
         } => {
             if *status_code == Some(404) {
-                return "Trace upload endpoint was not found. The platform API may not be deployed yet, or PRIME_AGENT_TRACES_BASE_URL points at the wrong API.".to_string();
+                return "Trace upload endpoint was not found. The platform API may not be deployed yet, or ALLSPARK_TRACES_BASE_URL points at the wrong API.".to_string();
             }
             let status = status_code
                 .map(|status| format!("HTTP {status}: "))
@@ -471,14 +471,14 @@ mod tests {
 
     #[test]
     fn the_base_url_normalizes_like_ts() {
-        std::env::set_var("PRIME_AGENT_TRACES_BASE_URL", "https://api.example.com///");
+        std::env::set_var("ALLSPARK_TRACES_BASE_URL", "https://api.example.com///");
         assert_eq!(traces_base_url(), "https://api.example.com");
         std::env::set_var(
-            "PRIME_AGENT_TRACES_BASE_URL",
+            "ALLSPARK_TRACES_BASE_URL",
             "https://api.example.com/api/v1/",
         );
         assert_eq!(traces_base_url(), "https://api.example.com");
-        std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");
+        std::env::remove_var("ALLSPARK_TRACES_BASE_URL");
         assert_eq!(traces_base_url(), "https://api.primeintellect.ai");
     }
 
@@ -564,7 +564,7 @@ mod tests {
                 },
                 log
             ),
-            "Trace upload endpoint was not found. The platform API may not be deployed yet, or PRIME_AGENT_TRACES_BASE_URL points at the wrong API."
+            "Trace upload endpoint was not found. The platform API may not be deployed yet, or ALLSPARK_TRACES_BASE_URL points at the wrong API."
         );
         let report = TraceUploadReport::new(&TraceUploadOutcome::NoSessionFile, log);
         assert_eq!(

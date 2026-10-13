@@ -153,8 +153,8 @@ fn kernel_python() -> Option<PathBuf> {
         "kernel-venv/bin/python"
     };
     let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| format!("/home/ubuntu/.prime/agent/{venv_python}"),
-        |home| format!("{home}/.prime/agent/{venv_python}"),
+        |_| format!("/home/ubuntu/.allspark/{venv_python}"),
+        |home| format!("{home}/.allspark/{venv_python}"),
     ));
     if candidate.exists() {
         return Some(candidate);
@@ -193,12 +193,12 @@ impl Sandbox {
         let mut command = Command::new(staged.join(packaged_binary_name()));
         command
             .env("HOME", self.home.path())
-            .env("PRIME_AGENT_CODING_AGENT_DIR", &self.agent_dir)
-            .env_remove("PI_PACKAGE_DIR")
-            .env_remove("PRIME_AGENT_KERNEL_PYTHON")
-            .env_remove("PRIME_AGENT_KERNEL_VENV")
-            .env_remove("PRIME_AGENT_SESSION_DIR")
-            .env_remove("PRIME_AGENT_CODING_AGENT_SESSION_DIR")
+            .env("ALLSPARK_CODING_AGENT_DIR", &self.agent_dir)
+            .env_remove(pa_types::identity::PACKAGE_DIR_ENV)
+            .env_remove("ALLSPARK_KERNEL_PYTHON")
+            .env_remove("ALLSPARK_KERNEL_VENV")
+            .env_remove("ALLSPARK_SESSION_DIR")
+            .env_remove("ALLSPARK_CODING_AGENT_SESSION_DIR")
             .env_remove("PRIME_API_KEY")
             .current_dir(&self.cwd);
         command
@@ -233,7 +233,7 @@ fn run_json_turn(
         .arg("json")
         .arg("-p")
         .arg("use the kernel")
-        .env("PRIME_AGENT_FAUX_SCRIPT", script.to_string())
+        .env("ALLSPARK_FAUX_SCRIPT", script.to_string())
         .output()
         .expect("run packaged binary");
     (
@@ -269,7 +269,7 @@ fn packaged_session_boots_kernel_without_pi_package_dir() {
     let script = kernel_boot_script(&receipt);
 
     let mut command = box_.command(staged);
-    command.env("PRIME_AGENT_KERNEL_PYTHON", &kernel_python);
+    command.env("ALLSPARK_KERNEL_PYTHON", &kernel_python);
     let (stdout, stderr, code) = run_json_turn(&mut command, &script);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     assert!(
@@ -359,7 +359,7 @@ fn missing_sidecar_reports_actionable_bootstrap_error() {
     );
 }
 
-/// A `PRIME_AGENT_KERNEL_PYTHON` that lacks the runtime reports the TS override error.
+/// A `ALLSPARK_KERNEL_PYTHON` that lacks the runtime reports the TS override error.
 #[test]
 fn invalid_kernel_python_override_reports_ts_error() {
     let _guard = serial_lock();
@@ -371,13 +371,13 @@ fn invalid_kernel_python_override_reports_ts_error() {
     let output = box_
         .command(staged)
         .arg("--prime-agent-bootstrap")
-        .env("PRIME_AGENT_KERNEL_PYTHON", &bogus)
+        .env("ALLSPARK_KERNEL_PYTHON", &bogus)
         .output()
         .expect("run packaged binary");
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("PRIME_AGENT_KERNEL_PYTHON points to a Python missing"),
+        stderr.contains("ALLSPARK_KERNEL_PYTHON points to a Python missing"),
         "TS override error missing: {stderr}"
     );
 }
@@ -428,10 +428,10 @@ fn hostile_child_assertions(staged: &Path) {
         "the hint must name the staged dir: {stderr}"
     );
     assert!(
-        !stderr.contains("PRIME_AGENT_KERNEL_PYTHON points to"),
+        !stderr.contains("ALLSPARK_KERNEL_PYTHON points to"),
         "the hostile kernel-python override leaked into the packaged layout: {stderr}"
     );
-    if let Some(package_decoy) = std::env::var_os("PI_PACKAGE_DIR") {
+    if let Some(package_decoy) = std::env::var_os(pa_types::identity::PACKAGE_DIR_ENV) {
         assert!(
             !stderr.contains(Path::new(&package_decoy).to_string_lossy().as_ref()),
             "the hostile PI_PACKAGE_DIR leaked into the packaged layout: {stderr}"
@@ -473,7 +473,7 @@ fn packaged_layout_stays_hermetic_under_hostile_host_env() {
     std::fs::write(venv_decoy.join("bin").join("python"), "#!/bin/sh\nexit 0\n")
         .expect("decoy python");
 
-    // The most hostile PRIME_AGENT_KERNEL_PYTHON would satisfy the
+    // The most hostile ALLSPARK_KERNEL_PYTHON would satisfy the
     // bootstrap if it leaked: the live venv when present, else a bogus path.
     let hostile_python =
         kernel_python().unwrap_or_else(|| decoys.path().join("hostile-kernel-python"));
@@ -482,9 +482,9 @@ fn packaged_layout_stays_hermetic_under_hostile_host_env() {
         .arg("--exact")
         .arg("packaged_layout_stays_hermetic_under_hostile_host_env")
         .env(HOSTILE_CHILD_STAGE, staged)
-        .env("PRIME_AGENT_KERNEL_PYTHON", &hostile_python)
-        .env("PI_PACKAGE_DIR", &package_decoy)
-        .env("PRIME_AGENT_KERNEL_VENV", &venv_decoy)
+        .env("ALLSPARK_KERNEL_PYTHON", &hostile_python)
+        .env(pa_types::identity::PACKAGE_DIR_ENV, &package_decoy)
+        .env("ALLSPARK_KERNEL_VENV", &venv_decoy)
         .output()
         .expect("re-exec the test binary with the hostile host env");
     assert!(
@@ -964,7 +964,7 @@ fn bootstrap_kernel_venv_from_packaged_sidecar() {
     let output = box_
         .command(staged)
         .arg("--prime-agent-bootstrap")
-        .env("PRIME_AGENT_KERNEL_VENV", &venv)
+        .env("ALLSPARK_KERNEL_VENV", &venv)
         .output()
         .expect("run packaged binary");
     assert_eq!(
@@ -991,7 +991,7 @@ fn bootstrap_kernel_venv_from_packaged_sidecar() {
     let receipt = box_.home.path().join("kernel-receipt.json");
     let script = kernel_boot_script(&receipt);
     let mut command = box_.command(staged);
-    command.env("PRIME_AGENT_KERNEL_VENV", &venv);
+    command.env("ALLSPARK_KERNEL_VENV", &venv);
     let (stdout, stderr, code) = run_json_turn(&mut command, &script);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     assert!(

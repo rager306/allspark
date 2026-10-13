@@ -36,15 +36,15 @@ def main() -> int:
             with release_server(feed) as base:
                 env = isolated_environment(root / "user", base)
                 prefix = root / "user" / "prefix with spaces"
-                env.update(PRIME_AGENT_RUST_PREFIX=str(prefix), PRIME_AGENT_ALLOW_HTTP="1")
-                state = Path(env["PRIME_AGENT_CODING_AGENT_DIR"])
+                env.update(ALLSPARK_RUST_PREFIX=str(prefix), ALLSPARK_ALLOW_HTTP="1")
+                state = Path(env["ALLSPARK_CODING_AGENT_DIR"])
                 witnesses = {"settings.json": '{}\n', "auth.json": '{}\n',
                              "sessions/preserved.jsonl": '{"migrationWitness":"saved session"}\n'}
                 for name, content in witnesses.items():
                     path = state / name
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text(content)
-                command = ["bash", "-o", "pipefail", "-c", 'curl -fsSL "$PRIME_AGENT_DOWNLOAD_BASE_URL/install.sh" | sh']
+                command = ["bash", "-o", "pipefail", "-c", 'curl -fsSL "$ALLSPARK_DOWNLOAD_BASE_URL/install.sh" | sh']
                 for _ in range(2):
                     report["steps"].append(execute(command, env))
                     probe = execute([str(prefix / "bin/prime-agent"), "--version"], env)

@@ -38,8 +38,8 @@ fn kernel_python() -> Option<PathBuf> {
         return Some(explicit);
     }
     let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
+        |_| "/home/ubuntu/.allspark/kernel-venv/bin/python".to_string(),
+        |home| format!("{home}/.allspark/kernel-venv/bin/python"),
     ));
     if candidate.exists() {
         return Some(candidate);
@@ -59,7 +59,7 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
         .arg(socket)
         .arg("--agent-dir")
         .arg(agent_dir)
-        .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
+        .env("ALLSPARK_KERNEL_PYTHON", kernel_python)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         // A supervisor killed at teardown must not leak its session workers: the worker's
@@ -116,7 +116,7 @@ impl Client {
         self.send(&json!({
             "type": "command",
             "id": id,
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
+            "protocol": { "name": "allspark.daemon", "version": 7 },
             "command": command,
         }));
     }

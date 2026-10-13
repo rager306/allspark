@@ -267,7 +267,7 @@ mod tests {
     fn residual_sweep_never_touches_a_never_touch_dir() {
         // The ambient mission daemon's workers listen under these dirs; a
         // sweep rooted on them must see no listeners and harm nothing.
-        for dir in ["/tmp/mission-tmp/prime-agent-1000", "/tmp/prime-agent-1000"] {
+        for dir in ["/tmp/mission-tmp/prime-agent-1000", "/tmp/allspark-1000"] {
             let root = DaemonStateRoot {
                 agent_dir: PathBuf::from(dir),
                 socket_dir: PathBuf::from(dir),

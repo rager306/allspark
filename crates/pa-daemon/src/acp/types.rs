@@ -425,7 +425,7 @@ mod tests {
                     "sessionCapabilities": { "close": {} },
                 },
                 "agentInfo": { "name": "prime-agent", "title": "Prime Agent", "version": "9.9.9" },
-                "_meta": { "ai.primeintellect.prime-agent": {} },
+                "_meta": { "ai.allspark.agent": {} },
             })
         );
     }

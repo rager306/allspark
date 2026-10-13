@@ -998,7 +998,7 @@ mod tests {
     /// `factory.enabled` reads the GLOBAL scope only (the agent-dir
     /// document the kernel's factory gate and `set_factory_enabled` use):
     /// a project-scope override can never flip the gate out from under the
-    /// kernel — a project `.prime/agent/settings.json` with `enabled: true`
+    /// kernel — a project `.allspark/settings.json` with `enabled: true`
     /// leaves the factory disabled while the global setting says nothing
     /// (Macroscope review finding: the merged read could diverge the
     /// daemon's lane advertisement and the client's `/factory status`

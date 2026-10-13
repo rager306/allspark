@@ -376,7 +376,7 @@ pub(crate) fn boot_sweep(agent_dir: &Path, socket_path: &Path) {
 
 // Spec §6 step 2: consume the roster from the spawn env
 
-/// Read `PRIME_AGENT_UPDATE_ROSTER`: a coordinator-passed path, never
+/// Read `ALLSPARK_UPDATE_ROSTER`: a coordinator-passed path, never
 /// discovered. `None` on a normal boot; a malformed roster never fails the boot (spec §9).
 pub(crate) fn consume_roster_env() -> Option<UpdateRoster> {
     let path = std::env::var(UPDATE_ROSTER_ENV).ok()?;

@@ -23,7 +23,7 @@ fn supervisor_line(ts: &str, msg: &str, extra: &serde_json::Value) -> String {
         "component": "coding-agent.daemon-supervisor",
         "msg": msg,
         "pid": 15026,
-        "socketPath": "/tmp/prime-agent-501/daemon.sock",
+        "socketPath": "/tmp/allspark-501/daemon.sock",
     });
     if let (Some(fields), Some(record)) = (extra.as_object(), record.as_object_mut()) {
         for (key, value) in fields {
@@ -82,13 +82,13 @@ fn incident_fixture_lines() -> Vec<String> {
         json!({
             "ts": ts,
             "component": "coding-agent.daemon-supervisor",
-            "socketPath": "/tmp/prime-agent-501/daemon.sock",
+            "socketPath": "/tmp/allspark-501/daemon.sock",
             "pid": 15026,
             "msg": msg,
         })
         .to_string()
     };
-    let crashed_worker = "/tmp/prime-agent-501/worker-98ed5cb228d2-5b1d3aeb91ee.sock";
+    let crashed_worker = "/tmp/allspark-501/worker-98ed5cb228d2-5b1d3aeb91ee.sock";
     let mut lines = Vec::new();
     // Worker starts before the window; its provider failures attribute
     // by pid.
@@ -196,12 +196,12 @@ fn a_clean_run_shows_no_anomalies() {
     let text = report_for(&[
         supervisor_line(
             "2026-09-10T20:00:05.000Z",
-            "Prime Agent daemon supervisor e14de15c listening on /tmp/prime-agent-501/daemon.sock",
+            "Prime Agent daemon supervisor e14de15c listening on /tmp/allspark-501/daemon.sock",
             &json!({}),
         ),
         supervisor_line(
             "2026-09-10T20:01:00.000Z",
-            "Session worker 477fef4e85a8 stderr: Prime Agent daemon listening on /tmp/prime-agent-501/worker-a-477fef4e85a8.sock",
+            "Session worker 477fef4e85a8 stderr: Prime Agent daemon listening on /tmp/allspark-501/worker-a-477fef4e85a8.sock",
             &json!({}),
         ),
         supervisor_line("2026-09-10T20:02:00.000Z", "Migrated 2 scheduled jobs into session artifacts", &json!({})),
@@ -264,7 +264,7 @@ fn reconstructs_the_incident_narrative_in_one_report() {
     assert!(text.contains(
         "could not adopt worker 5b1d3aeb91ee: Session worker process is no longer running"
     ));
-    assert!(text.contains("/tmp/prime-agent-501/daemon.sock: 5 command timeouts over 19m18s"));
+    assert!(text.contains("/tmp/allspark-501/daemon.sock: 5 command timeouts over 19m18s"));
     assert!(text.contains("session 2339fb7da605: 3 command timeouts over 10m7s"));
     assert!(text.contains("provider stream failure (rate_limit 429) for worker 5b1d3aeb91ee (x24"));
     assert!(text.contains("provider stream failure (server_error 504) for worker 5b1d3aeb91ee (x6"));
@@ -333,7 +333,7 @@ fn a_passivation_event_with_an_empty_name_matches_no_filter() {
     let text = report_for_with(
         &[daemon_line(
             "2026-09-10T20:05:00.000Z",
-            "/tmp/prime-agent-501/worker-98ed5cb228d2-5b1d3aeb91ee.sock",
+            "/tmp/allspark-501/worker-98ed5cb228d2-5b1d3aeb91ee.sock",
             r#"Passivated idle child sessionId=feedface1234 name="" idleMinutes=5"#,
         )],
         &options,
@@ -350,7 +350,7 @@ fn keeps_session_tokens_from_worker_command_failures() {
     let text = report_for_with(
         &[daemon_line(
             "2026-09-10T20:05:00.000Z",
-            "/tmp/prime-agent-501/worker-98ed5cb228d2-5b1d3aeb91ee.sock",
+            "/tmp/allspark-501/worker-98ed5cb228d2-5b1d3aeb91ee.sock",
             r#"daemon command "set_session_name" failed: Error: Agent name "Faerie" is unavailable"#,
         )],
         &options,
@@ -370,7 +370,7 @@ fn says_clearly_when_nothing_in_the_window_references_the_session() {
 
 #[test]
 fn keeps_anomalies_and_aggregation_per_daemon_socket() {
-    let daemon_a = "/tmp/prime-agent-501/daemon.sock";
+    let daemon_a = "/tmp/allspark-501/daemon.sock";
     let daemon_b = "/tmp/other/daemon.sock";
     let mut lines = Vec::new();
     for (socket_path, times) in [
@@ -401,7 +401,7 @@ fn keeps_anomalies_and_aggregation_per_daemon_socket() {
 
 #[test]
 fn keeps_a_same_component_worker_restart_within_two_seconds() {
-    let socket_path = "/tmp/prime-agent-501/worker-98ed5cb228d2-5b1d3aeb91ee.sock";
+    let socket_path = "/tmp/allspark-501/worker-98ed5cb228d2-5b1d3aeb91ee.sock";
     let text = report_for(&[
         worker_start_line("2026-09-10T20:00:00.000Z", socket_path, 100),
         worker_start_line("2026-09-10T20:00:01.000Z", socket_path, 200),
@@ -415,7 +415,7 @@ fn the_report_layout_matches_the_ts_shape() {
     let options = default_options();
     let lines = vec![supervisor_line(
         "2026-09-10T20:00:05.000Z",
-        "Prime Agent daemon supervisor e14de15c listening on /tmp/prime-agent-501/daemon.sock",
+        "Prime Agent daemon supervisor e14de15c listening on /tmp/allspark-501/daemon.sock",
         &json!({}),
     )];
     let text = build_incident_report(&entries(&lines), &options).text;

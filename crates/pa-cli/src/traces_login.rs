@@ -11,8 +11,8 @@ use pa_core::agent_traces::resolve_traces_base_url;
 use pa_core::auth::{
     check_prime_agent_traces_access, login_prime_agent_traces, AuthCredential, AuthStorage,
     PrimeAccessError, PrimeAgentTracesCallbacks, PrimeAgentTracesLoginOptions, PrimeAuthInfo,
-    ReqwestPrimeHttp, DEFAULT_REQUEST_TIMEOUT_MS, PRIME_AGENT_TRACES_PROVIDER_ID,
-    PRIME_AGENT_TRACES_PROVIDER_NAME,
+    ReqwestPrimeHttp, ALLSPARK_TRACES_PROVIDER_ID, ALLSPARK_TRACES_PROVIDER_NAME,
+    DEFAULT_REQUEST_TIMEOUT_MS,
 };
 
 use pa_tui::auth_panel::{PastePromptTone, PasteStyle};
@@ -187,11 +187,11 @@ async fn manual_login(
         Ok(()) => complete_login(inputs, api_key),
         Err(PrimeAccessError::Denied(failure)) => TraceLoginOutcome::Error(format!(
             "Failed to login to {}: Prime API key does not have Prime Agent trace access ({})",
-            PRIME_AGENT_TRACES_PROVIDER_NAME,
+            ALLSPARK_TRACES_PROVIDER_NAME,
             failure.format()
         )),
         Err(PrimeAccessError::Failed(message)) => TraceLoginOutcome::Error(format!(
-            "Failed to login to {PRIME_AGENT_TRACES_PROVIDER_NAME}: {message}"
+            "Failed to login to {ALLSPARK_TRACES_PROVIDER_NAME}: {message}"
         )),
     }
 }
@@ -200,7 +200,7 @@ async fn manual_login(
 fn complete_login(inputs: &TracesLoginInputs<'_>, api_key: &str) -> TraceLoginOutcome {
     let mut auth = AuthStorage::create(inputs.agent_dir);
     auth.set(
-        PRIME_AGENT_TRACES_PROVIDER_ID,
+        ALLSPARK_TRACES_PROVIDER_ID,
         AuthCredential::ApiKey {
             key: api_key.to_string(),
             prime_team: None,
@@ -208,12 +208,12 @@ fn complete_login(inputs: &TracesLoginInputs<'_>, api_key: &str) -> TraceLoginOu
     );
     if let Some(error) = auth.drain_errors().pop() {
         return TraceLoginOutcome::Error(format!(
-            "Failed to login to {PRIME_AGENT_TRACES_PROVIDER_NAME}: {error}"
+            "Failed to login to {ALLSPARK_TRACES_PROVIDER_NAME}: {error}"
         ));
     }
     TraceLoginOutcome::Status(format!(
         "Saved API key for {}. Credentials saved to {}",
-        PRIME_AGENT_TRACES_PROVIDER_NAME,
+        ALLSPARK_TRACES_PROVIDER_NAME,
         inputs.agent_dir.join("auth.json").display()
     ))
 }
@@ -486,7 +486,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn the_cli_candidate_logs_in_without_a_prompt() {
         let _env = env_lock();
-        std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");
+        std::env::remove_var("ALLSPARK_TRACES_BASE_URL");
         let (dir, agent) = temp_agent();
         let config = dir.path().join("prime-config.json");
         std::fs::write(
@@ -506,7 +506,7 @@ mod tests {
         assert_eq!(
             outcome,
             TraceLoginOutcome::Status(format!(
-                "Saved API key for Prime Agent Traces. Credentials saved to {}",
+                "Saved API key for Allspark Traces. Credentials saved to {}",
                 agent.join("auth.json").display()
             ))
         );
@@ -520,7 +520,7 @@ mod tests {
         let mut storage = AuthStorage::create(&agent);
         assert_eq!(
             storage
-                .get_api_key_with_source_token("prime-agent-traces", false)
+                .get_api_key_with_source_token("allspark-traces", false)
                 .api_key,
             Some("cli-key".to_string())
         );
@@ -531,7 +531,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn the_manual_key_wins_the_race_and_checks_access() {
         let _env = env_lock();
-        std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");
+        std::env::remove_var("ALLSPARK_TRACES_BASE_URL");
         let (_dir, agent) = temp_agent();
         // The browser flow starts (the generate answer arms the prompt), the pending status poll
         // yields, and the pasted key wins.
@@ -548,7 +548,7 @@ mod tests {
         assert_eq!(
             outcome,
             TraceLoginOutcome::Status(format!(
-                "Saved API key for Prime Agent Traces. Credentials saved to {}",
+                "Saved API key for Allspark Traces. Credentials saved to {}",
                 agent.join("auth.json").display()
             ))
         );
@@ -565,7 +565,7 @@ mod tests {
         let mut storage = AuthStorage::create(&agent);
         assert_eq!(
             storage
-                .get_api_key_with_source_token("prime-agent-traces", false)
+                .get_api_key_with_source_token("allspark-traces", false)
                 .api_key,
             Some("manual-key".to_string())
         );
@@ -576,7 +576,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn the_browser_login_completes_when_the_prompt_never_answers() {
         let _env = env_lock();
-        std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");
+        std::env::remove_var("ALLSPARK_TRACES_BASE_URL");
         let (_dir, agent) = temp_agent();
         let http = ScriptedHttp::new(vec![whoami_ok()]);
         let ui = ScriptedUi::new(vec![Some("never".to_string())]);
@@ -603,7 +603,7 @@ mod tests {
         let mut storage = AuthStorage::create(&agent);
         assert_eq!(
             storage
-                .get_api_key_with_source_token("prime-agent-traces", false)
+                .get_api_key_with_source_token("allspark-traces", false)
                 .api_key,
             Some("fixture-browser-key".to_string())
         );
@@ -614,7 +614,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn a_denied_manual_key_reports_the_ts_error() {
         let _env = env_lock();
-        std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");
+        std::env::remove_var("ALLSPARK_TRACES_BASE_URL");
         let (_dir, agent) = temp_agent();
         // The browser cannot start (the generate answer is down), the fallback prompt arms, and the
         // pasted key is denied.
@@ -641,7 +641,7 @@ mod tests {
         assert_eq!(
             outcome,
             TraceLoginOutcome::Error(
-                "Failed to login to Prime Agent Traces: Prime API key does not have Prime Agent trace access (HTTP 403: forbidden)"
+                "Failed to login to Allspark Traces: Prime API key does not have Prime Agent trace access (HTTP 403: forbidden)"
                     .to_string()
             )
         );
@@ -652,7 +652,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn a_cancelled_prompt_stays_silent() {
         let _env = env_lock();
-        std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");
+        std::env::remove_var("ALLSPARK_TRACES_BASE_URL");
         let (_dir, agent) = temp_agent();
         // The browser flow arms the prompt; the closed input cancels the login (the pending status
         // poll yields first).
@@ -667,7 +667,7 @@ mod tests {
         let outcome = run_traces_login_inner(&inputs, ui.as_ref()).await;
         assert_eq!(outcome, TraceLoginOutcome::Cancelled);
         let storage = AuthStorage::create(&agent);
-        assert!(storage.get_all().get("prime-agent-traces").is_none());
+        assert!(storage.get_all().get("allspark-traces").is_none());
     }
 
     #[tokio::test]
@@ -675,7 +675,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn a_failed_browser_falls_back_to_the_paste_prompt() {
         let _env = env_lock();
-        std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");
+        std::env::remove_var("ALLSPARK_TRACES_BASE_URL");
         let (_dir, agent) = temp_agent();
         // The challenge generate endpoint is down (the browser flow fails before any URL shows).
         let http = ScriptedHttp::without_dynamic(vec![
@@ -702,7 +702,7 @@ mod tests {
         let mut storage = AuthStorage::create(&agent);
         assert_eq!(
             storage
-                .get_api_key_with_source_token("prime-agent-traces", false)
+                .get_api_key_with_source_token("allspark-traces", false)
                 .api_key,
             Some("fallback-key".to_string())
         );

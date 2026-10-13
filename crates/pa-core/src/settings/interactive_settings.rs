@@ -311,7 +311,7 @@ impl SettingsManager {
     /// `/factory on`. The read is GLOBAL SCOPE ONLY, exactly the agent-dir
     /// document `set_factory_enabled` writes and the kernel's factory gate
     /// reads, so no project-scope override can flip the gate out from
-    /// under the kernel (a project `.prime/agent/settings.json` with
+    /// under the kernel (a project `.allspark/settings.json` with
     /// `factory.enabled` never diverges the daemon's lane advertisement
     /// or the client's `/factory status` from what the kernel will do).
     #[must_use]

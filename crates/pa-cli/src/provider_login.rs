@@ -53,7 +53,7 @@ const BUILT_IN_PROVIDER_DISPLAY_NAMES: &[(&str, &str)] = &[
     ("opencode-go", "OpenCode Go"),
     ("openai", "OpenAI"),
     ("openrouter", "OpenRouter"),
-    ("prime-agent-traces", "Prime Agent Traces"),
+    ("allspark-traces", "Allspark Traces"),
     ("prime-inference", "Prime Inference"),
     ("vercel-ai-gateway", "Vercel AI Gateway"),
     ("xai", "xAI (Grok)"),

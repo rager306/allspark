@@ -53,7 +53,7 @@ const TRACE_UPLOAD_ALL_MIN_REQUEST_INTERVAL_MS: u64 = TRACE_UPLOAD_RATE_LIMIT_WI
     + TRACE_UPLOAD_RATE_LIMIT_SAFETY_MS;
 const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 
-pub const PRIME_AGENT_TRACES_PROVIDER_ID: &str = "prime-agent-traces";
+pub const ALLSPARK_TRACES_PROVIDER_ID: &str = "allspark-traces";
 pub const PRIME_INFERENCE_PROVIDER_ID: &str = "prime-inference";
 
 // Credential
@@ -75,17 +75,17 @@ pub struct TraceCredential {
 
 #[must_use]
 pub fn trace_credential(agent_dir: &Path) -> Option<TraceCredential> {
-    if let Ok(value) = std::env::var("PRIME_AGENT_TRACES_API_KEY") {
+    if let Ok(value) = std::env::var("ALLSPARK_TRACES_API_KEY") {
         if !value.trim().is_empty() {
             return Some(TraceCredential {
                 api_key: value,
                 source: TraceCredentialSource::Environment,
-                label: "PRIME_AGENT_TRACES_API_KEY".to_string(),
+                label: "ALLSPARK_TRACES_API_KEY".to_string(),
             });
         }
     }
     let mut auth = crate::auth::AuthStorage::create(agent_dir);
-    if let Some(key) = stored_key(&mut auth, PRIME_AGENT_TRACES_PROVIDER_ID) {
+    if let Some(key) = stored_key(&mut auth, ALLSPARK_TRACES_PROVIDER_ID) {
         return Some(TraceCredential {
             api_key: key,
             source: TraceCredentialSource::Stored,

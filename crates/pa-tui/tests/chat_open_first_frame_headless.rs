@@ -55,7 +55,7 @@ impl MockSupervisor {
 
         let hello = json!({
             "type": "daemon_hello",
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
+            "protocol": { "name": "allspark.daemon", "version": 7 },
             "serverCapabilities": ["kernel_bash_activity"],
             "clientId": "mock",
         });
@@ -187,7 +187,7 @@ fn attach_data(id: &str, with_content: bool) -> Value {
         "command": "attach",
         "success": true,
         "data": {
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
+            "protocol": { "name": "allspark.daemon", "version": 7 },
             "activeSessionId": "s1",
             "snapshot": {
                 "activeSessionId": "s1",

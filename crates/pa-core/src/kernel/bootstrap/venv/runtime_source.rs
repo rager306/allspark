@@ -7,9 +7,7 @@ use super::{expand_home, Digest, Path, PathBuf, RUNTIME_REQUIREMENT};
 /// Directory of the installed `prime-agent-runtime` sources. The Rust binary ships the same sidecar
 /// layout the compiled TS executable uses.
 pub(in crate::kernel::bootstrap) fn package_dir() -> PathBuf {
-    if let Ok(env_dir) = std::env::var(pa_types::identity::PACKAGE_DIR_ENV)
-        .or_else(|_| std::env::var(pa_types::identity::LEGACY_PACKAGE_DIR_ENV))
-    {
+    if let Ok(env_dir) = std::env::var(pa_types::identity::PACKAGE_DIR_ENV) {
         if !env_dir.is_empty() {
             return expand_home(&env_dir);
         }

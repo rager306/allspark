@@ -42,7 +42,7 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
     command
         .args(["--mode", "daemon", "--daemon-socket"])
         .arg(socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
+        .env("ALLSPARK_CODING_AGENT_DIR", agent_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -94,7 +94,7 @@ fn make_session_active(socket: &Path, session_path: &Path, cwd: &Path) -> String
     let command = json!({
         "type": "command",
         "id": "guard-create",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
+        "protocol": { "name": "allspark.daemon", "version": 7 },
         "command": {
             "type": "create",
             "sessionPath": session_path.to_string_lossy(),
@@ -161,11 +161,11 @@ fn print_continue_refuses_an_active_daemon_session() {
     let env = vec![
         ("HOME".to_string(), dir.path().to_string_lossy().to_string()),
         (
-            "PRIME_AGENT_CODING_AGENT_DIR".to_string(),
+            "ALLSPARK_CODING_AGENT_DIR".to_string(),
             agent_dir.to_string_lossy().to_string(),
         ),
         (
-            "PRIME_AGENT_FAUX_SCRIPT".to_string(),
+            "ALLSPARK_FAUX_SCRIPT".to_string(),
             json!({"responses": [{"text": "first turn"}]}).to_string(),
         ),
     ];
@@ -280,11 +280,11 @@ fn print_resume_refuses_a_foreign_lease_holder() {
     let env = vec![
         ("HOME".to_string(), dir.path().to_string_lossy().to_string()),
         (
-            "PRIME_AGENT_CODING_AGENT_DIR".to_string(),
+            "ALLSPARK_CODING_AGENT_DIR".to_string(),
             agent_dir.to_string_lossy().to_string(),
         ),
         (
-            "PRIME_AGENT_FAUX_SCRIPT".to_string(),
+            "ALLSPARK_FAUX_SCRIPT".to_string(),
             json!({"responses": [{"text": "first turn"}]}).to_string(),
         ),
     ];

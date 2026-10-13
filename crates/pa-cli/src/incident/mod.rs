@@ -1,7 +1,7 @@
 //! `prime-agent incident`: reconstructs what the daemon did during a time
 //! window from its diagnostic logs (the shared classifier lives in
 //! `pa_types::incident`). The primary source is the shared structured log
-//! (`~/.prime/agent/logs/agent.jsonl` plus its `.old` rotation); when it is
+//! (`~/.allspark/logs/agent.jsonl` plus its `.old` rotation); when it is
 //! missing, empty, or unreadable, the newest per-daemon log is the fallback.
 
 pub(crate) mod report;

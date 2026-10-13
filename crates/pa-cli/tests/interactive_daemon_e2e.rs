@@ -171,7 +171,7 @@ fn assert_daemon_stops_clean(socket: &Path) {
     let command = serde_json::json!({
         "type": "command",
         "id": "stop-assert",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
+        "protocol": { "name": "allspark.daemon", "version": 7 },
         "command": { "type": "shutdown" },
     });
     let mut line = serde_json::to_string(&command).expect("serialize");
@@ -227,7 +227,7 @@ fn graceful_shutdown(socket: &Path) -> Option<u32> {
     let command = serde_json::json!({
         "type": "command",
         "id": "test-shutdown",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
+        "protocol": { "name": "allspark.daemon", "version": 7 },
         "command": { "type": "shutdown" },
     });
     let Ok(mut line) = serde_json::to_string(&command) else {
@@ -351,10 +351,10 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
     command
         .args(["--mode", "daemon", "--daemon-socket"])
         .arg(&socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
+        .env("ALLSPARK_CODING_AGENT_DIR", &agent_dir)
         // The daemon's startup catalog refresh must never reach the network
-        // from a test: PI_OFFLINE keeps it on the bundled/models.json snapshot.
-        .env("PI_OFFLINE", "1")
+        // from a test: ALLSPARK_OFFLINE keeps it on the bundled/models.json snapshot.
+        .env("ALLSPARK_OFFLINE", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -1264,7 +1264,7 @@ async fn ensure_daemon_running_spawns_supervisor_and_tui_attaches() {
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
     let socket = dir.path().join("spawned.sock");
-    std::env::set_var("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir);
+    std::env::set_var("ALLSPARK_CODING_AGENT_DIR", &agent_dir);
     // The internally-spawned supervisor inherits this process's env: the short
     // supervisor-lost window keeps a killed supervisor from leaking workers.
     std::env::set_var(
@@ -2388,7 +2388,7 @@ async fn tui_renders_and_fires_user_keybindings_from_settings() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    // One binding overridden exactly like a user's `~/.prime/agent/keybindings.json` would.
+    // One binding overridden exactly like a user's `~/.allspark/keybindings.json` would.
     std::fs::write(
         agent_dir.join("keybindings.json"),
         r#"{ "app.tools.expand": "ctrl+alt+x" }"#,
@@ -3498,7 +3498,7 @@ async fn tui_prompt_stash_survives_the_agents_view_handoff() {
     // bytes (the reopened chat's paste registry is empty — the stash hydrates it).
     let png_path = dir.path().join("fixture.png");
     std::fs::write(&png_path, MINIMAL_PNG).expect("write fixture image");
-    std::env::set_var("PRIME_AGENT_TEST_CLIPBOARD_IMAGE", &png_path);
+    std::env::set_var("ALLSPARK_TEST_CLIPBOARD_IMAGE", &png_path);
     let prompt_stash: std::sync::Arc<std::sync::Mutex<pa_tui::prompt_stash::PromptStashStore>> =
         std::sync::Arc::default();
     let make_options = || pa_tui::interactive::InteractiveOptions {
@@ -3638,7 +3638,7 @@ async fn tui_prompt_stash_restores_a_pasted_image_with_the_draft() {
     std::fs::write(&png_path, MINIMAL_PNG).expect("write fixture image");
     // The seam only applies to the paste path (ctrl+v). The var stays set for
     // the whole process: a cross-test remove would race the parallel stash tests.
-    std::env::set_var("PRIME_AGENT_TEST_CLIPBOARD_IMAGE", &png_path);
+    std::env::set_var("ALLSPARK_TEST_CLIPBOARD_IMAGE", &png_path);
     let supervisor = spawn_supervisor(dir.path());
     let script = serde_json::json!({
         "engine": "faux",
@@ -3771,7 +3771,7 @@ async fn tui_ctrl_s_stashes_and_restores_the_prompt_draft() {
     // The draft carries a pasted image, so the manual stash must round-trip the bytes too.
     let png_path = dir.path().join("fixture.png");
     std::fs::write(&png_path, MINIMAL_PNG).expect("write fixture image");
-    std::env::set_var("PRIME_AGENT_TEST_CLIPBOARD_IMAGE", &png_path);
+    std::env::set_var("ALLSPARK_TEST_CLIPBOARD_IMAGE", &png_path);
     let supervisor = spawn_supervisor(dir.path());
     let script = serde_json::json!({
         "engine": "faux",

@@ -33,7 +33,7 @@ pub fn default_daemon_socket_path() -> PathBuf {
 #[cfg(not(unix))]
 #[must_use]
 pub fn default_daemon_socket_path() -> PathBuf {
-    PathBuf::from(r"\\.\pipe\prime-agent-daemon")
+    PathBuf::from(r"\\.\pipe\allspark-daemon")
 }
 
 /// Worker endpoint next to the supervisor's: hashed supervisor key plus the
@@ -53,7 +53,7 @@ pub fn worker_socket_path(supervisor_socket_path: &Path, worker_id: &str) -> Pat
 pub fn worker_socket_path(supervisor_socket_path: &Path, worker_id: &str) -> PathBuf {
     let key = hash_key(&supervisor_socket_path.to_string_lossy(), 12);
     PathBuf::from(format!(
-        r"\\.\pipe\prime-agent-worker-{key}-{}",
+        r"\\.\pipe\allspark-worker-{key}-{}",
         &worker_id[..12.min(worker_id.len())]
     ))
 }
@@ -86,7 +86,7 @@ mod tests {
 
     #[test]
     fn worker_socket_names_are_deterministic() {
-        let supervisor = Path::new("/tmp/prime-agent-1/daemon.sock");
+        let supervisor = Path::new("/tmp/allspark-1/daemon.sock");
         let a = worker_socket_path(supervisor, "0123456789abcdef");
         let b = worker_socket_path(supervisor, "fedcba9876543210");
         assert_ne!(a, b);
@@ -103,13 +103,13 @@ mod tests {
     fn windows_endpoints_are_the_ts_pipe_names() {
         assert_eq!(
             default_daemon_socket_path(),
-            PathBuf::from(r"\\.\pipe\prime-agent-daemon")
+            PathBuf::from(r"\\.\pipe\allspark-daemon")
         );
-        let supervisor = Path::new(r"\\.\pipe\prime-agent-daemon");
+        let supervisor = Path::new(r"\\.\pipe\allspark-daemon");
         let a = worker_socket_path(supervisor, "0123456789abcdef");
         let rendered = a.to_string_lossy();
         assert!(
-            rendered.starts_with(r"\\.\pipe\prime-agent-worker-"),
+            rendered.starts_with(r"\\.\pipe\allspark-worker-"),
             "the worker pipe namespace: {rendered}"
         );
         assert!(

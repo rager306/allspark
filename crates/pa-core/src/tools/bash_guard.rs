@@ -3,7 +3,7 @@
 //! chains, `git -C`, inline env assignments), and formats the dirty-tree refusal.
 
 /// Bypass env var for the destructive-git dirty-tree guard.
-pub(crate) const BASH_DESTRUCTIVE_GIT_BYPASS_ENV: &str = "PI_BASH_ALLOW_DESTRUCTIVE_GIT";
+pub(crate) const BASH_DESTRUCTIVE_GIT_BYPASS_ENV: &str = "ALLSPARK_BASH_ALLOW_DESTRUCTIVE_GIT";
 
 /// How many dirty paths the refusal lists before eliding the rest.
 pub(crate) const MAX_DIRTY_PATHS_LISTED: usize = 10;

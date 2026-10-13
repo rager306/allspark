@@ -42,7 +42,7 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
     command
         .args(["--mode", "daemon", "--daemon-socket"])
         .arg(socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
+        .env("ALLSPARK_CODING_AGENT_DIR", agent_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

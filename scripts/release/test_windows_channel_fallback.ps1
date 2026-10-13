@@ -44,11 +44,11 @@ Set-Content -LiteralPath (Join-Path $channel 'beta.json') -Value ('{"version": "
 # from the server itself.
 function Invoke-Installer {
     param([string]$ChannelKnob, [string]$Prefix)
-    Remove-Item -Path 'Env:PRIME_AGENT_DOWNLOAD_BASE_URL', 'Env:PRIME_AGENT_RELEASE_CHANNEL', 'Env:PRIME_AGENT_RUST_PREFIX', 'Env:PRIME_AGENT_ALLOW_HTTP', 'Env:PRIME_AGENT_VERSION' -ErrorAction SilentlyContinue
-    $env:PRIME_AGENT_DOWNLOAD_BASE_URL = $baseUrl
-    $env:PRIME_AGENT_ALLOW_HTTP = '1'
-    $env:PRIME_AGENT_RUST_PREFIX = $Prefix
-    if ($ChannelKnob) { $env:PRIME_AGENT_RELEASE_CHANNEL = $ChannelKnob }
+    Remove-Item -Path 'Env:ALLSPARK_DOWNLOAD_BASE_URL', 'Env:ALLSPARK_RELEASE_CHANNEL', 'Env:ALLSPARK_RUST_PREFIX', 'Env:ALLSPARK_ALLOW_HTTP', 'Env:ALLSPARK_VERSION' -ErrorAction SilentlyContinue
+    $env:ALLSPARK_DOWNLOAD_BASE_URL = $baseUrl
+    $env:ALLSPARK_ALLOW_HTTP = '1'
+    $env:ALLSPARK_RUST_PREFIX = $Prefix
+    if ($ChannelKnob) { $env:ALLSPARK_RELEASE_CHANNEL = $ChannelKnob }
     $lines = @(& pwsh -NoProfile -File (Join-Path $repo 'install.ps1') 2>&1 | ForEach-Object { "$_" })
     return [pscustomobject]@{ Lines = $lines; Exit = $LASTEXITCODE }
 }
@@ -65,21 +65,21 @@ $server = Start-Process -FilePath $py -ArgumentList '-u','-m','http.server','0',
 # THE UV INSTALL IS ISOLATED (the reviewers' finding): ownership of a file
 # in the shared ~/.local/bin is unprovable, so the harness never lets the
 # installer touch the shared dir - install.ps1 honors
-# PRIME_AGENT_UV_BIN_DIR and the harness points it at its scratch.
+# ALLSPARK_UV_BIN_DIR and the harness points it at its scratch.
 # The kernel pre-warm's writes (the venv, uv's cache, uv's pythons) would
 # land in the real user profile too; the harness steers all of them into
 # its own scratch dir through the product's override knobs and restores
 # the caller's values in the cleanup (the discipline install.ps1 itself
 # runs).
-$callerKernelVenv = $env:PRIME_AGENT_KERNEL_VENV
+$callerKernelVenv = $env:ALLSPARK_KERNEL_VENV
 $callerUvCacheDir = $env:UV_CACHE_DIR
 $callerUvPythonDir = $env:UV_PYTHON_INSTALL_DIR
-$callerUvBinDir = $env:PRIME_AGENT_UV_BIN_DIR
+$callerUvBinDir = $env:ALLSPARK_UV_BIN_DIR
 try {
-    $env:PRIME_AGENT_KERNEL_VENV = Join-Path $scratch 'kernel-venv'
+    $env:ALLSPARK_KERNEL_VENV = Join-Path $scratch 'kernel-venv'
     $env:UV_CACHE_DIR = Join-Path $scratch 'uv-cache'
     $env:UV_PYTHON_INSTALL_DIR = Join-Path $scratch 'uv-python'
-    $env:PRIME_AGENT_UV_BIN_DIR = Join-Path $scratch 'uv-bin'
+    $env:ALLSPARK_UV_BIN_DIR = Join-Path $scratch 'uv-bin'
     # The port the server itself announced, then readiness is it answering
     # a request for this test's own channel (beta.json): bounded deadlines,
     # and a dead child fails fast instead of hanging the installer.
@@ -126,7 +126,7 @@ try {
         $runBeta.Lines | Write-Host
         throw 'the explicit beta install failed'
     }
-    $marker = Get-Content -LiteralPath (Join-Path $prefixBeta 'share\prime-agent\.prime-agent-install') -Raw
+    $marker = Get-Content -LiteralPath (Join-Path $prefixBeta 'share\prime-agent\.allspark-install') -Raw
     if ($marker -ne "install-rust.sh channel beta`nversion $betaVersion") { throw "unexpected beta marker: $marker" }
 
     # Publish stable and verify the production default selects its artifact.
@@ -143,7 +143,7 @@ try {
         $runStable.Lines | Write-Host
         throw 'the default stable install failed'
     }
-    $marker = Get-Content -LiteralPath (Join-Path $prefixStable 'share\prime-agent\.prime-agent-install') -Raw
+    $marker = Get-Content -LiteralPath (Join-Path $prefixStable 'share\prime-agent\.allspark-install') -Raw
     if ($marker -ne "install-rust.sh channel stable`nversion $stableVersion") { throw "unexpected stable marker: $marker" }
     foreach ($prefix in @($prefixBeta, $prefixStable)) {
         if (-not (Test-Path (Join-Path $prefix 'share\prime-agent\prime-agent.exe') -PathType Leaf)) { throw "missing payload in $prefix" }
@@ -186,12 +186,12 @@ try {
         if ($envKey) { $envKey.Close() }
     }
     # The uv install needs no cleanup: it never left the scratch dir (the
-    # PRIME_AGENT_UV_BIN_DIR knob above steered the installer), and the
+    # ALLSPARK_UV_BIN_DIR knob above steered the installer), and the
     # user's ~/.local/bin was never touched at all.
-    $env:PRIME_AGENT_KERNEL_VENV = $callerKernelVenv
+    $env:ALLSPARK_KERNEL_VENV = $callerKernelVenv
     $env:UV_CACHE_DIR = $callerUvCacheDir
     $env:UV_PYTHON_INSTALL_DIR = $callerUvPythonDir
-    $env:PRIME_AGENT_UV_BIN_DIR = $callerUvBinDir
+    $env:ALLSPARK_UV_BIN_DIR = $callerUvBinDir
     Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue
     if ($pathCleanFailed) {
         throw 'could not clean the user PATH entries this test added'

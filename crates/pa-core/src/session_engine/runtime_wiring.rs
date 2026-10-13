@@ -202,7 +202,7 @@ pub fn kernel_python_skills(skills: &[Skill]) -> Vec<KernelPythonSkill> {
 
 /// Build the kernel provisioner for a session: host handlers for the goal/heartbeat bridge
 /// plus the pre-imported skills. The session's agent dir is propagated into the kernel env
-/// (`PRIME_AGENT_CODING_AGENT_DIR`): an embedding host whose ambient env differs must not
+/// (`ALLSPARK_CODING_AGENT_DIR`): an embedding host whose ambient env differs must not
 /// leak its own paths into the kernel (#109). `cwd` is the SESSION's working directory.
 #[allow(clippy::too_many_arguments)] // one wiring funnel, same style as AgentSession::from_session_arc
 #[must_use]
@@ -221,7 +221,7 @@ pub fn kernel_provisioner(
 ) -> Arc<KernelProvisioner> {
     let mut env = HashMap::with_capacity(1);
     env.insert(
-        "PRIME_AGENT_CODING_AGENT_DIR".to_string(),
+        "ALLSPARK_CODING_AGENT_DIR".to_string(),
         agent_dir.to_string_lossy().to_string(),
     );
     Arc::new(KernelProvisioner::new(

@@ -9,11 +9,11 @@ fn run(sandbox: &Path, args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, Str
     let mut command = Command::new(env!("CARGO_BIN_EXE_allspark"));
     command
         .args(args)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", sandbox.join("agent"))
+        .env("ALLSPARK_CODING_AGENT_DIR", sandbox.join("agent"))
         .env("HOME", sandbox)
-        .env_remove("PI_OFFLINE")
+        .env_remove("ALLSPARK_OFFLINE")
         .env_remove("DO_NOT_TRACK")
-        .env_remove("PRIME_AGENT_TELEMETRY")
+        .env_remove("ALLSPARK_TELEMETRY")
         .current_dir(sandbox);
     for (key, value) in env {
         command.env(key, value);

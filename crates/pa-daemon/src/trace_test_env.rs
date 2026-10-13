@@ -1,5 +1,5 @@
 //! Test-only: the trace uploader resolves credentials from process env
-//! (`PRIME_AGENT_TRACES_API_KEY`, then `PRIME_API_KEY`), so daemon tests
+//! (`ALLSPARK_TRACES_API_KEY`, then `PRIME_API_KEY`), so daemon tests
 //! that install consent-enabled controllers must clear both and serialize
 //! with each other while the values stay stable.
 
@@ -16,12 +16,12 @@ pub(crate) fn lock_env() -> TraceEnv {
     let lock = env_lock();
     let saved = [
         (
-            "PRIME_AGENT_TRACES_API_KEY",
-            std::env::var_os("PRIME_AGENT_TRACES_API_KEY"),
+            "ALLSPARK_TRACES_API_KEY",
+            std::env::var_os("ALLSPARK_TRACES_API_KEY"),
         ),
         ("PRIME_API_KEY", std::env::var_os("PRIME_API_KEY")),
     ];
-    std::env::remove_var("PRIME_AGENT_TRACES_API_KEY");
+    std::env::remove_var("ALLSPARK_TRACES_API_KEY");
     std::env::remove_var("PRIME_API_KEY");
     TraceEnv { lock, saved }
 }

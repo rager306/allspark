@@ -20,7 +20,7 @@
 #!/usr/bin/env bash
 # tmux verifier for the pa-tui lane.
 #
-# Renders a captured real agent session (~/.prime/agent/sessions) in the
+# Renders a captured real agent session (~/.allspark/sessions) in the
 # pa-tui agent view inside an 80x24 tmux session, captures the pane, and
 # asserts the structural contract of the TS product's interactive view:
 #   - transcript content present (assistant markdown text, tool headers)
@@ -48,7 +48,7 @@ if [ ! -x "$BIN" ]; then
 fi
 
 if [ -z "$SESSION" ]; then
-    SESSION=$(ls -t "$HOME"/.prime/agent/sessions/*.jsonl 2>/dev/null | head -1)
+    SESSION=$(ls -t "$HOME"/.allspark/sessions/*.jsonl 2>/dev/null | head -1)
 fi
 if [ -z "${SESSION:-}" ] || [ ! -f "$SESSION" ]; then
     echo "FAIL: no session file to replay" >&2

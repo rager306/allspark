@@ -208,16 +208,17 @@ mod tests {
     fn table_matches_the_ts_layout() {
         let table = format_daemon_list_table(&[
             daemon(
-                "/tmp/prime-agent-1000/daemon.sock",
+                "/tmp/allspark-1000/daemon.sock",
                 DaemonStatus::Current,
                 true,
             ),
             daemon("/tmp/other.sock", DaemonStatus::Stale, false),
         ]);
-        // Column widths: socket 35 (the starred default path), pid 3,
-        // version 7, status 7, sessions 8, uptime 6; two-space gutters.
+        // Column widths follow the widest cell (the starred default socket
+        // path is the longest one here); two-space gutters.
+        let starred = "/tmp/allspark-1000/daemon.sock *".len();
         let expected_header = [
-            ("socket", 35),
+            ("socket", starred),
             ("pid", 3),
             ("version", 7),
             ("status", 7),
@@ -233,7 +234,7 @@ mod tests {
         assert!(lines
             .next()
             .unwrap()
-            .starts_with("/tmp/prime-agent-1000/daemon.sock *  42   0.1.0"));
+            .starts_with("/tmp/allspark-1000/daemon.sock *  42   0.1.0"));
         assert!(table.ends_with("* default background service"));
     }
 

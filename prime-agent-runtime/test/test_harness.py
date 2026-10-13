@@ -30,16 +30,16 @@ def setUpModule() -> None:
     _factory_gate_dir = tempfile.TemporaryDirectory(prefix="harness_test_agent_dir_")
     settings = Path(_factory_gate_dir.name) / "settings.json"
     settings.write_text('{"factory": {"enabled": true}}', encoding="utf-8")
-    _previous_agent_dir = os.environ.get("PRIME_AGENT_CODING_AGENT_DIR")
-    os.environ["PRIME_AGENT_CODING_AGENT_DIR"] = _factory_gate_dir.name
+    _previous_agent_dir = os.environ.get("ALLSPARK_CODING_AGENT_DIR")
+    os.environ["ALLSPARK_CODING_AGENT_DIR"] = _factory_gate_dir.name
 
 
 def tearDownModule() -> None:
     global _factory_gate_dir
     if _previous_agent_dir is None:
-        os.environ.pop("PRIME_AGENT_CODING_AGENT_DIR", None)
+        os.environ.pop("ALLSPARK_CODING_AGENT_DIR", None)
     else:
-        os.environ["PRIME_AGENT_CODING_AGENT_DIR"] = _previous_agent_dir
+        os.environ["ALLSPARK_CODING_AGENT_DIR"] = _previous_agent_dir
     if _factory_gate_dir is not None:
         _factory_gate_dir.cleanup()
         _factory_gate_dir = None
@@ -952,20 +952,20 @@ class HarnessStateTest(unittest.TestCase):
             )
 
     def test_in_memory_state_global_flag_uses_default_global_store(self) -> None:
-        previous_agent_dir = os.environ.get("PRIME_AGENT_CODING_AGENT_DIR")
+        previous_agent_dir = os.environ.get("ALLSPARK_CODING_AGENT_DIR")
         previous_global = os.environ.get("RLM_GLOBAL_HARNESS_STATE_DIR")
         with tempfile.TemporaryDirectory() as temp_dir:
             agent_dir = Path(temp_dir) / "agent"
-            os.environ["PRIME_AGENT_CODING_AGENT_DIR"] = str(agent_dir)
+            os.environ["ALLSPARK_CODING_AGENT_DIR"] = str(agent_dir)
             os.environ.pop("RLM_GLOBAL_HARNESS_STATE_DIR", None)
             try:
                 state = HarnessState(in_memory=True)
                 global_entry = state.create_memory("Default global", "persisted", id="default_global", global_=True)
             finally:
                 if previous_agent_dir is None:
-                    os.environ.pop("PRIME_AGENT_CODING_AGENT_DIR", None)
+                    os.environ.pop("ALLSPARK_CODING_AGENT_DIR", None)
                 else:
-                    os.environ["PRIME_AGENT_CODING_AGENT_DIR"] = previous_agent_dir
+                    os.environ["ALLSPARK_CODING_AGENT_DIR"] = previous_agent_dir
                 if previous_global is None:
                     os.environ.pop("RLM_GLOBAL_HARNESS_STATE_DIR", None)
                 else:

@@ -25,20 +25,20 @@ use serde_json::Value;
 /// Environment keys this box's own prime-agent worker sets; they must not
 /// leak into spawned supervisors.
 const SCRUB_ENV: [&str; 9] = [
-    "PRIME_AGENT_INTERNAL_DAEMON_WORKER",
-    "PRIME_AGENT_INTERNAL_DAEMON_WORKER_TOKEN",
-    "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID",
-    "PRIME_AGENT_INTERNAL_DAEMON_WORKER_INSTANCE_ID",
-    "PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL",
-    "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET",
-    "PRIME_AGENT_INTERNAL_ORPHAN_PROCESS_JOURNAL",
-    "PRIME_AGENT_INTERNAL_SESSION_LEASES",
-    "PRIME_AGENT_INTERNAL_SESSION_LEASE_OWNER_ID",
+    "ALLSPARK_INTERNAL_DAEMON_WORKER",
+    "ALLSPARK_INTERNAL_DAEMON_WORKER_TOKEN",
+    "ALLSPARK_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID",
+    "ALLSPARK_INTERNAL_DAEMON_WORKER_INSTANCE_ID",
+    "ALLSPARK_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL",
+    "ALLSPARK_INTERNAL_DAEMON_SUPERVISOR_SOCKET",
+    "ALLSPARK_INTERNAL_ORPHAN_PROCESS_JOURNAL",
+    "ALLSPARK_INTERNAL_SESSION_LEASES",
+    "ALLSPARK_INTERNAL_SESSION_LEASE_OWNER_ID",
 ];
 
 /// Child-mode env var for the launcher test's re-exec'd client (below):
 /// the socket the client must launch a supervisor on.
-const LAUNCHER_CLIENT_SOCKET_ENV: &str = "PRIME_AGENT_TEST_LAUNCHER_CLIENT_SOCKET";
+const LAUNCHER_CLIENT_SOCKET_ENV: &str = "ALLSPARK_TEST_LAUNCHER_CLIENT_SOCKET";
 
 fn cli_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_allspark"))
@@ -68,7 +68,7 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path, tmp_dir: &Path) -> Daemon {
     command
         .args(["--mode", "daemon", "--daemon-socket"])
         .arg(socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
+        .env("ALLSPARK_CODING_AGENT_DIR", agent_dir)
         .env("TMPDIR", tmp_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -103,7 +103,7 @@ fn run_cli(root: &Path, args: &[&str]) -> Output {
     let mut command = Command::new(cli_binary());
     command
         .args(args)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
+        .env("ALLSPARK_CODING_AGENT_DIR", &agent_dir)
         .env("TMPDIR", root)
         .stdin(Stdio::null());
     for key in SCRUB_ENV {
@@ -143,7 +143,7 @@ fn interactive_launcher_detaches_supervisor_from_client_session() {
         .arg("launcher_client_child_mode")
         .current_dir(fixture.path())
         .env(LAUNCHER_CLIENT_SOCKET_ENV, &socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
+        .env("ALLSPARK_CODING_AGENT_DIR", &agent_dir)
         .env("TMPDIR", &tmp_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -263,7 +263,7 @@ fn run_shutdown_on_socket(socket: &Path) -> Option<i32> {
         .as_i64()? as i32;
     let command = serde_json::json!({
         "type": "command", "id": "test-cleanup",
-        "protocol": { "name": "prime-agent.daemon", "version": pa_types::daemon::DAEMON_PROTOCOL_VERSION },
+        "protocol": { "name": "allspark.daemon", "version": pa_types::daemon::DAEMON_PROTOCOL_VERSION },
         "command": { "type": "shutdown", "force": true }
     });
     // The write is best-effort: a failed write leaves the kill path above

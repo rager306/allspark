@@ -216,7 +216,7 @@ fn enable_synthetic_fixture(fixture: &Fixture) {
     settings.set_agent_traces_enabled(true).unwrap();
     std::fs::write(
         fixture.agent_dir.join("auth.json"),
-        r#"{"prime-agent-traces":{"type":"api_key","key":"synthetic-only"}}"#,
+        r#"{"allspark-traces":{"type":"api_key","key":"synthetic-only"}}"#,
     )
     .unwrap();
 }
@@ -1043,7 +1043,7 @@ async fn a_credentialless_controller_retries_after_credentials_arrive() {
     tokio::time::sleep(MIN_INTERVAL + DEBOUNCE * 2).await;
     std::fs::write(
         fixture.agent_dir.join("auth.json"),
-        r#"{"prime-agent-traces":{"type":"api_key","key":"synthetic-only"}}"#,
+        r#"{"allspark-traces":{"type":"api_key","key":"synthetic-only"}}"#,
     )
     .unwrap();
     let (_body, reply) = tokio::time::timeout(MIN_INTERVAL * 2, observed.recv())
@@ -1119,7 +1119,7 @@ async fn missing_credentials_leave_the_sweep_incomplete_until_provided() {
     );
     std::fs::write(
         fixture.agent_dir.join("auth.json"),
-        r#"{"prime-agent-traces":{"type":"api_key","key":"synthetic-only"}}"#,
+        r#"{"allspark-traces":{"type":"api_key","key":"synthetic-only"}}"#,
     )
     .unwrap();
     assert!(

@@ -16,7 +16,7 @@ use super::*;
 /// cleared (the Cargo test config sets `DO_NOT_TRACK`); restore after.
 /// The env is process-wide, so these tests (and the packages env tests)
 /// serialize through the shared env lock while they hold it.
-const TELEMETRY_ENV_VARS: [&str; 3] = ["DO_NOT_TRACK", "PI_OFFLINE", "PRIME_AGENT_TELEMETRY"];
+const TELEMETRY_ENV_VARS: [&str; 3] = ["DO_NOT_TRACK", "ALLSPARK_OFFLINE", "ALLSPARK_TELEMETRY"];
 
 struct CleanTelemetryEnv {
     saved: Vec<(&'static str, Option<String>)>,

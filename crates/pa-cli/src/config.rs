@@ -6,15 +6,15 @@ pub const APP_NAME: &str = pa_types::identity::APP_NAME;
 
 pub const CONFIG_DIR_NAME: &str = pa_types::identity::CONFIG_DIR_NAME;
 
-pub const ENV_AGENT_DIR: &str = "PRIME_AGENT_CODING_AGENT_DIR";
+pub const ENV_AGENT_DIR: &str = "ALLSPARK_CODING_AGENT_DIR";
 
-pub const ENV_SESSION_DIR: &str = "PRIME_AGENT_SESSION_DIR";
+pub const ENV_SESSION_DIR: &str = "ALLSPARK_SESSION_DIR";
 
-/// `PRIME_AGENT_DAEMON_SOCKET`: overrides the daemon socket path when no explicit
+/// `ALLSPARK_DAEMON_SOCKET`: overrides the daemon socket path when no explicit
 /// `--daemon-socket` flag is given. The launcher pins it so the Rust daemon runs
 /// beside — never replacing — the TS daemon (a Rust CLI that found the TS daemon
 /// on the default socket would treat the schema-id mismatch as staleness).
-pub const ENV_DAEMON_SOCKET: &str = "PRIME_AGENT_DAEMON_SOCKET";
+pub const ENV_DAEMON_SOCKET: &str = "ALLSPARK_DAEMON_SOCKET";
 
 /// The daemon socket path: an explicit `--daemon-socket` flag wins, then
 /// [`ENV_DAEMON_SOCKET`], then the per-user default.
@@ -40,7 +40,7 @@ pub fn expand_tilde_path_os(value: &std::ffi::OsStr) -> PathBuf {
     PathBuf::from(value)
 }
 
-pub const ENV_LEGACY_SESSION_DIR: &str = "PRIME_AGENT_CODING_AGENT_SESSION_DIR";
+pub const ENV_LEGACY_SESSION_DIR: &str = "ALLSPARK_CODING_AGENT_SESSION_DIR";
 
 /// The version compiled into this build, used when no packaged manifest
 /// overrides it.
@@ -60,9 +60,7 @@ pub fn version() -> &'static str {
 /// the executable, launcher symlinks resolved through pa-core's
 /// `exe_dir_of`).
 fn package_dir() -> PathBuf {
-    if let Ok(env_dir) = std::env::var(pa_types::identity::PACKAGE_DIR_ENV)
-        .or_else(|_| std::env::var(pa_types::identity::LEGACY_PACKAGE_DIR_ENV))
-    {
+    if let Ok(env_dir) = std::env::var(pa_types::identity::PACKAGE_DIR_ENV) {
         if !env_dir.is_empty() {
             return expand_tilde_path(&env_dir);
         }
@@ -80,9 +78,9 @@ fn packaged_manifest_version() -> Option<String> {
     (!version.is_empty()).then(|| version.to_string())
 }
 
-pub const ENV_OFFLINE: &str = "PI_OFFLINE";
+pub const ENV_OFFLINE: &str = "ALLSPARK_OFFLINE";
 
-pub const ENV_STARTUP_BENCHMARK: &str = "PI_STARTUP_BENCHMARK";
+pub const ENV_STARTUP_BENCHMARK: &str = "ALLSPARK_STARTUP_BENCHMARK";
 
 /// Expand a leading `~`, `~/`, or (Windows) `~\` segment against the
 /// home directory.

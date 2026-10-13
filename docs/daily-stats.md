@@ -29,7 +29,7 @@ The query excludes PostHog test accounts and version `0.0.0-benchmark`.
 3. Merge the workflow to `main`. Run it manually with **publish unchecked** to
    validate access without sending a message. Logs show validation status only.
 4. After reviewing a local report, set repository variable
-   `PRIME_AGENT_STATS_ENABLED=true` to enable daily delivery. Keep this variable
+   `ALLSPARK_STATS_ENABLED=true` to enable daily delivery. Keep this variable
    unset or `false` to stop delivery. Manual sends also require this variable,
    **publish checked**, and the `main` branch.
 

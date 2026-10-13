@@ -233,7 +233,7 @@ supervisor resumes `Serving`, refused sessions untouched, stopped workers
 relaunched — never a kill), or the update exit when all workers stopped
 (descriptors survive for the new supervisor's create-or-adopt restore).
 The new supervisor's boot owns the update's restore side
-(`update_restore.rs`, spec §6): it consumes `PRIME_AGENT_UPDATE_ROSTER`
+(`update_restore.rs`, spec §6): it consumes `ALLSPARK_UPDATE_ROSTER`
 from its spawn env before the unconditional scratch-dir sweep (this
 socket's `update-restarts/` subtree plus the TS-era legacy names — no
 liveness checks, no exceptions), then restores the roster rows bottom-up

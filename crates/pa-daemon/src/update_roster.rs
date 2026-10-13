@@ -594,13 +594,13 @@ mod tests {
         assert_eq!(
             roster.workers[0]
                 .launch_env
-                .get("PRIME_AGENT_INTERNAL_DAEMON_WORKER"),
+                .get("ALLSPARK_INTERNAL_DAEMON_WORKER"),
             Some(&"1".to_string())
         );
         assert_eq!(
             roster.workers[0]
                 .launch_env
-                .get("PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID"),
+                .get("ALLSPARK_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID"),
             Some(&"active-p1".to_string())
         );
 

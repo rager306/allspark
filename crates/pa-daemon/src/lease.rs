@@ -10,8 +10,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-pub const SESSION_LEASES_ENABLED_ENV: &str = "PRIME_AGENT_INTERNAL_SESSION_LEASES";
-pub const SESSION_LEASE_OWNER_ID_ENV: &str = "PRIME_AGENT_INTERNAL_SESSION_LEASE_OWNER_ID";
+pub const SESSION_LEASES_ENABLED_ENV: &str = "ALLSPARK_INTERNAL_SESSION_LEASES";
+pub const SESSION_LEASE_OWNER_ID_ENV: &str = "ALLSPARK_INTERNAL_SESSION_LEASE_OWNER_ID";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

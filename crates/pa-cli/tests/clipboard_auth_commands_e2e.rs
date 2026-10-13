@@ -103,7 +103,7 @@ fn graceful_shutdown(socket: &Path) {
     let command = serde_json::json!({
         "type": "command",
         "id": "test-shutdown",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
+        "protocol": { "name": "allspark.daemon", "version": 7 },
         "command": { "type": "shutdown" },
     });
     let mut line = serde_json::to_string(&command).expect("serialize");
@@ -128,7 +128,7 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
     command
         .args(["--mode", "daemon", "--daemon-socket"])
         .arg(&socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
+        .env("ALLSPARK_CODING_AGENT_DIR", &agent_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -308,7 +308,7 @@ impl TracesCommands for ScriptedTraces {
         let outcome = self.logins.lock().unwrap().pop_front().unwrap_or_else(|| {
             if self.credential.lock().unwrap().is_some() {
                 TraceLoginOutcome::Status(
-                    "Saved API key for Prime Agent Traces. Credentials saved to /agent/auth.json."
+                    "Saved API key for Allspark Traces. Credentials saved to /agent/auth.json."
                         .to_string(),
                 )
             } else {
@@ -1380,7 +1380,7 @@ async fn tui_traces_without_a_credential_runs_the_login_flow() {
         .lock()
         .unwrap()
         .push_back(TraceLoginOutcome::Error(
-            "Failed to login to Prime Agent Traces: no browser and no pasted key.".to_string(),
+            "Failed to login to Allspark Traces: no browser and no pasted key.".to_string(),
         ));
     let options = command_options(
         &supervisor.socket,
@@ -1408,7 +1408,7 @@ async fn tui_traces_without_a_credential_runs_the_login_flow() {
             .expect("interactive run");
     let rendered = rendered_frames(&outcome);
     assert!(
-        rendered.contains("Failed to login to Prime Agent Traces: no browser and no pasted key."),
+        rendered.contains("Failed to login to Allspark Traces: no browser and no pasted key."),
         "the login flow's error row renders:\n{rendered}"
     );
     assert!(
@@ -1485,8 +1485,7 @@ async fn tui_traces_login_enables_and_uploads() {
         .lock()
         .unwrap()
         .push_back(TraceLoginOutcome::Status(
-            "Saved API key for Prime Agent Traces. Credentials saved to /agent/auth.json."
-                .to_string(),
+            "Saved API key for Allspark Traces. Credentials saved to /agent/auth.json.".to_string(),
         ));
     traces
         .credential
@@ -1721,7 +1720,7 @@ async fn tui_update_runs_out_of_band_during_a_turn() {
         "the out-of-band update has no busy guard:\n{rendered}"
     );
     assert!(
-        rendered.contains("your sessions and configuration (~/.prime/agent) are never touched"),
+        rendered.contains("your sessions and configuration (~/.allspark) are never touched"),
         "the confirm carries the preserve invariant:\n{rendered}"
     );
     assert!(

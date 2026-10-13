@@ -131,10 +131,10 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
     command
         .args(["--mode", "daemon", "--daemon-socket"])
         .arg(&socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
+        .env("ALLSPARK_CODING_AGENT_DIR", &agent_dir)
         // The daemon's startup catalog refresh must never reach the network
-        // from a test: PI_OFFLINE keeps it on the bundled snapshot.
-        .env("PI_OFFLINE", "1")
+        // from a test: ALLSPARK_OFFLINE keeps it on the bundled snapshot.
+        .env("ALLSPARK_OFFLINE", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

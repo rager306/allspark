@@ -461,7 +461,7 @@ mod tests {
     #[test]
     fn hello_and_snapshot_roundtrip() {
         rt::<DaemonOutbound>(
-            r#"{"type":"daemon_hello","socketPath":"/sock","protocol":{"name":"prime-agent.daemon","version":7},"schemaId":"protocol-7-schema-28-92bc5368a082","schemaRevision":28,"appVersion":"1.0","supervisorGeneration":"g","supervisorPid":42,"clientId":"c","serverCapabilities":["attach_snapshot","event_sequence"]}"#,
+            r#"{"type":"daemon_hello","socketPath":"/sock","protocol":{"name":"allspark.daemon","version":7},"schemaId":"protocol-7-schema-28-92bc5368a082","schemaRevision":28,"appVersion":"1.0","supervisorGeneration":"g","supervisorPid":42,"clientId":"c","serverCapabilities":["attach_snapshot","event_sequence"]}"#,
         );
         let msg = r#"{"role":"user","content":"hi","timestamp":1}"#;
         rt::<DaemonOutbound>(&format!(

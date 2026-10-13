@@ -52,8 +52,8 @@ def exercise(args, root: Path) -> dict:
         env.update({'npm_config_prefix': str(prefix), 'npm_config_cache': str(root / 'npm cache'),
                     'npm_config_ignore_scripts': 'true', 'npm_config_audit': 'false', 'npm_config_fund': 'false',
                     'npm_config_update_notifier': 'false',
-                    'PRIME_AGENT_RUST_PREFIX': str(root / 'rust prefix'), 'PRIME_AGENT_ALLOW_HTTP': '1',
-                    'PRIME_AGENT_DAEMON_SOCKET': str(root / 'daemon.sock')})
+                    'ALLSPARK_RUST_PREFIX': str(root / 'rust prefix'), 'ALLSPARK_ALLOW_HTTP': '1',
+                    'ALLSPARK_DAEMON_SOCKET': str(root / 'daemon.sock')})
         env['PATH'] = str(prefix / 'bin') + os.pathsep + env['PATH']
         if not args.previous_prefix:
             steps.append(execute(['npm', 'install', '-g', str(archive)], env))
@@ -64,7 +64,7 @@ def exercise(args, root: Path) -> dict:
         old = execute(['node', str(cli), '--version'], env)
         assert (old['stdout'] + old['stderr']).strip() == source['version'], old
         steps.append(old)
-        state = Path(env['PRIME_AGENT_CODING_AGENT_DIR'])
+        state = Path(env['ALLSPARK_CODING_AGENT_DIR'])
         witness = state / 'skills/upgrade-witness/SKILL.md'
         witness.parent.mkdir(parents=True)
         witness.write_text('# Preserve this skill\n')
@@ -74,7 +74,7 @@ def exercise(args, root: Path) -> dict:
         # curl/reinstall/bridge invocation is permitted before this assertion.
         # Some earliest clients never relaunch; their explicit opt-in case
         # verifies activation through the next ordinary version command.
-        native = Path(env['PRIME_AGENT_RUST_PREFIX']) / 'bin/prime-agent'
+        native = Path(env['ALLSPARK_RUST_PREFIX']) / 'bin/prime-agent'
         activated_during_update = native.is_file()
         if not activated_during_update and not args.allow_deferred_activation:
             diagnostic = subprocess.run(['node', str(cli), '--version'], env=env, cwd=env['HOME'], capture_output=True, text=True, timeout=180)

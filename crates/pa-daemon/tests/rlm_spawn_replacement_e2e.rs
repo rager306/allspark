@@ -121,7 +121,7 @@ impl Client {
         let envelope = json!({
             "type": "command",
             "id": id,
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
+            "protocol": { "name": "allspark.daemon", "version": 7 },
             "command": command,
         });
         let mut line = serde_json::to_string(&envelope).expect("serialize command");

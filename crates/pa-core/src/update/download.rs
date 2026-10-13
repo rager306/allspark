@@ -321,7 +321,7 @@ async fn stage_payload_version(payload: &Path, staging: &Path) -> Result<String>
     } else {
         unpack_archive_into(payload, staging)?;
     }
-    let binary = staging.join("prime-agent");
+    let binary = staging.join("allspark");
     if !binary.is_file() {
         anyhow::bail!("the release payload is missing prime-agent");
     }
@@ -418,7 +418,7 @@ fn finish_staging(
             anyhow::bail!("the staged release is missing {asset}");
         }
     }
-    let binary = staging.join("prime-agent");
+    let binary = staging.join("allspark");
     make_executable(&binary)?;
     std::fs::write(staging.join(".archive-sha256"), archive_sha256)?;
     std::fs::write(staging.join(".install-source"), install_source)?;
@@ -561,20 +561,20 @@ mod tests {
     /// A fixture archive with the exact release payload, deterministically packed.
     fn fixture_archive(dir: &Path, name: &str) -> (PathBuf, String) {
         let staging = dir.join("staging");
-        std::fs::create_dir_all(staging.join("prime-agent-runtime")).unwrap();
+        std::fs::create_dir_all(staging.join("allspark-runtime")).unwrap();
         std::fs::create_dir_all(staging.join("skills")).unwrap();
-        for file in ["prime-agent", "LICENSE", "README.md"] {
+        for file in ["allspark", "LICENSE", "README.md"] {
             std::fs::write(staging.join(file), "payload").unwrap();
         }
         let archive = dir.join(name);
         let file = std::fs::File::create(&archive).unwrap();
         let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
         let mut tar = tar::Builder::new(encoder);
-        for entry in ["prime-agent", "LICENSE", "README.md"] {
+        for entry in ["allspark", "LICENSE", "README.md"] {
             tar.append_path_with_name(staging.join(entry), entry)
                 .unwrap();
         }
-        for dir_entry in ["prime-agent-runtime", "skills"] {
+        for dir_entry in ["allspark-runtime", "skills"] {
             tar.append_dir_all(dir_entry, staging.join(dir_entry))
                 .unwrap();
         }
@@ -638,16 +638,16 @@ mod tests {
         assert!(stage_archive(&archive, &sha, &root, "0.2.0", "https://example.com").is_err());
     }
 
-    /// A payload directory whose `prime-agent` is a script binary reporting
+    /// A payload directory whose `allspark` is a script binary reporting
     /// a fixed version — the probe path is the same as a real binary's.
     fn fixture_payload(dir: &Path, name: &str, version: &str) -> PathBuf {
         let payload = dir.join(name);
-        std::fs::create_dir_all(payload.join("prime-agent-runtime")).unwrap();
+        std::fs::create_dir_all(payload.join("allspark-runtime")).unwrap();
         std::fs::create_dir_all(payload.join("skills")).unwrap();
         for file in ["LICENSE", "README.md"] {
             std::fs::write(payload.join(file), "payload").unwrap();
         }
-        let binary = payload.join("prime-agent");
+        let binary = payload.join("allspark");
         std::fs::write(
             &binary,
             format!("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo {version}; fi\nexit 0\n"),
@@ -735,11 +735,11 @@ mod tests {
         let file = std::fs::File::create(&archive).unwrap();
         let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
         let mut tar = tar::Builder::new(encoder);
-        for entry in ["prime-agent", "LICENSE", "README.md"] {
+        for entry in ["allspark", "LICENSE", "README.md"] {
             tar.append_path_with_name(payload.join(entry), entry)
                 .unwrap();
         }
-        for dir_entry in ["prime-agent-runtime", "skills"] {
+        for dir_entry in ["allspark-runtime", "skills"] {
             tar.append_dir_all(dir_entry, payload.join(dir_entry))
                 .unwrap();
         }

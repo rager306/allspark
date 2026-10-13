@@ -213,8 +213,8 @@ fn acp_daemon_attached_config_option_pickers() {
             socket.to_str().unwrap(),
         ])
         .env("HOME", home.path())
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
-        .env("PRIME_AGENT_FAUX_SCRIPT", &script_path)
+        .env("ALLSPARK_CODING_AGENT_DIR", &agent_dir)
+        .env("ALLSPARK_FAUX_SCRIPT", &script_path)
         .env(
             pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
             "15000",

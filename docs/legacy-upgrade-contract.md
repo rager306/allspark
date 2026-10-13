@@ -75,7 +75,7 @@ assets remain the authoritative end-to-end test inputs.
   Their `cli/native-update.ts` files are also byte-identical: SHA-256
   `707cdc796f035f01c08647c026a1f1a5aaeafbb3b4158a22e741b367a8d10f03`.
 
-All stable clients read `latest.json` under `PRIME_AGENT_DOWNLOAD_BASE_URL`, or
+All stable clients read `latest.json` under `ALLSPARK_DOWNLOAD_BASE_URL`, or
 the default release bucket. Beta clients read `beta.json`. The parser accepts
 `version`, `package` (or `packageName`), and `tarball`; relative tarball URLs
 resolve against the release bucket. Keep the npm tarball in the manifest even
@@ -181,7 +181,7 @@ and maintain TS-compatible status and use the TS daemon's
 otherwise reports a restart warning even if installation succeeded.
 
 For `/update`, the old TUI runs the update subprocess with
-`PRIME_AGENT_INTERACTIVE_SELF_UPDATE=1`, disposes its old connection, launches
+`ALLSPARK_INTERACTIVE_SELF_UPDATE=1`, disposes its old connection, launches
 the coordinator itself, and relaunches with its saved session file. Do not
 restart the daemon prematurely from the installer or an executable probe.
 

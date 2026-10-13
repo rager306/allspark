@@ -15,7 +15,7 @@ use crate::mcp_command::run_mcp_management_command;
 use crate::package_command::handle_package_command;
 
 /// Environment flag marking an interactive self-update child process.
-pub const SELF_UPDATE_INTERACTIVE_CHILD_ENV: &str = "PRIME_AGENT_INTERACTIVE_SELF_UPDATE";
+pub const SELF_UPDATE_INTERACTIVE_CHILD_ENV: &str = "ALLSPARK_INTERACTIVE_SELF_UPDATE";
 
 /// Internal update-restart coordinator flags.
 pub const DAEMON_UPDATE_RESTART_COORDINATOR_FLAG: &str = "--internal-update-restart-coordinator";

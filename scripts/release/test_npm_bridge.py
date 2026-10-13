@@ -42,7 +42,7 @@ else if (process.argv[2] === "prefix") console.log(process.env.npm_config_prefix
 else if (process.argv[2] === "descriptor") console.log(require("node:fs").readFileSync(Number(process.env.TEST_DESCRIPTOR), "utf8"));
 else if (process.argv[2] === "ipc") { process.send({fallback:true}); process.disconnect(); }
 else if (process.argv.includes("update") && !process.argv.includes("--print")) {
-  if (process.env.PRIME_AGENT_INTERNAL_TS_UPDATE) throw new Error("delegation flag leaked into the TS updater");
+  if (process.env.ALLSPARK_INTERNAL_TS_UPDATE) throw new Error("delegation flag leaked into the TS updater");
   const {spawnSync}=require("node:child_process");
   let installed={status:0};
   if (process.env.FUTURE_BRIDGE_TARBALL) {
@@ -81,31 +81,31 @@ else console.log(JSON.stringify({fallback:true,args:process.argv.slice(2)}));
         self.fixture.write_text('''#!/usr/bin/env node
 if (process.argv[2] === "wait") { console.log("ready"); setInterval(() => {}, 1000); }
 else if (process.argv[2] === "--version") console.log(require("node:fs").readFileSync(require("node:path").join(__dirname,"version"),"utf8").trim());
-else if (process.argv[2] === "socket") console.log(process.env.PRIME_AGENT_DAEMON_SOCKET);
+else if (process.argv[2] === "socket") console.log(process.env.ALLSPARK_DAEMON_SOCKET);
 else if (process.argv[2] === "signal") process.kill(process.pid, "SIGTERM");
 else { console.log(JSON.stringify(process.argv.slice(2))); process.exitCode = Number(process.env.NATIVE_EXIT || 0); }
 ''')
         self.fixture.chmod(0o755)
         (self.repo / "install-rust.sh").write_text('''#!/bin/sh
 set -eu
-test "$PRIME_AGENT_VERSION" = "${EXPECT_VERSION:-1.0.0}"
-test "$PRIME_AGENT_RELEASE_CHANNEL" = "stable"
-test "$PRIME_AGENT_PRESERVE_NPM_BRIDGE" = "1"
-test -f "$PRIME_AGENT_NPM_BRIDGE_ENTRYPOINT"
+test "$ALLSPARK_VERSION" = "${EXPECT_VERSION:-1.0.0}"
+test "$ALLSPARK_RELEASE_CHANNEL" = "stable"
+test "$ALLSPARK_PRESERVE_NPM_BRIDGE" = "1"
+test -f "$ALLSPARK_NPM_BRIDGE_ENTRYPOINT"
 echo install >> "$INSTALL_LOG"
 echo "installer output stays on stderr"
 if [ "${FAIL_INSTALL:-0}" = 1 ]; then exit 23; fi
-test "$PRIME_AGENT_DEFER_DAEMON_STOP" = "${EXPECT_DEFER:-0}"
-test "$PRIME_AGENT_USE_LEGACY_DAEMON_SOCKET" = 1
-mkdir -p "$PRIME_AGENT_RUST_PREFIX/share/prime-agent"
-cp "$FIXTURE_NATIVE" "$PRIME_AGENT_RUST_PREFIX/share/prime-agent/prime-agent"
-printf '%s\\n' "$PRIME_AGENT_VERSION" > "$PRIME_AGENT_RUST_PREFIX/share/prime-agent/version"
-mkdir -p "$PRIME_AGENT_RUST_PREFIX/share/.prime-agent-npm-bridge"
-touch "$PRIME_AGENT_RUST_PREFIX/share/.prime-agent-npm-bridge/legacy-daemon-socket"
+test "$ALLSPARK_DEFER_DAEMON_STOP" = "${EXPECT_DEFER:-0}"
+test "$ALLSPARK_USE_LEGACY_DAEMON_SOCKET" = 1
+mkdir -p "$ALLSPARK_RUST_PREFIX/share/prime-agent"
+cp "$FIXTURE_NATIVE" "$ALLSPARK_RUST_PREFIX/share/allspark/prime-agent"
+printf '%s\\n' "$ALLSPARK_VERSION" > "$ALLSPARK_RUST_PREFIX/share/allspark/version"
+mkdir -p "$ALLSPARK_RUST_PREFIX/share/.prime-agent-npm-bridge"
+touch "$ALLSPARK_RUST_PREFIX/share/.prime-agent-npm-bridge/legacy-daemon-socket"
 ''')
         self.out = self.root / "out"
         self.metadata = assemble(self.repo, self.out, "1.0.0", "stable", self.fallback_tarball)
-        self.env = {**os.environ, "PRIME_AGENT_RUST_PREFIX": str(self.prefix),
+        self.env = {**os.environ, "ALLSPARK_RUST_PREFIX": str(self.prefix),
                     "INSTALL_LOG": str(self.installs), "FIXTURE_NATIVE": str(self.fixture),
                     "npm_config_cache": str(self.root / "npm-cache")}
         self.env.pop("NODE_OPTIONS", None)
@@ -291,13 +291,13 @@ child.on("exit",code=>{process.exitCode=code;});
 
     def test_missing_native_install_is_repaired(self):
         self.assertEqual(self.launch().returncode, 0)
-        (self.prefix / "share/prime-agent/prime-agent").unlink()
+        (self.prefix / "share/allspark/prime-agent").unlink()
         self.assertEqual(self.launch().returncode, 0)
         self.assertEqual(self.installs.read_text(), "install\ninstall\n")
 
     def test_npm_and_native_prefix_overlap_does_not_recurse(self):
         self.prefix = self.npm_prefix
-        self.env["PRIME_AGENT_RUST_PREFIX"] = str(self.prefix)
+        self.env["ALLSPARK_RUST_PREFIX"] = str(self.prefix)
         self.assertEqual(self.launch("first").returncode, 0)
         # npm owns this link and may replace it during npm install at any time.
         command = self.prefix / "bin/prime-agent"
@@ -309,14 +309,14 @@ child.on("exit",code=>{process.exitCode=code;});
         self.assertEqual(self.installs.read_text(), "install\n")
 
     def test_later_launch_keeps_migrated_daemon_socket_namespace(self):
-        self.env.pop("PRIME_AGENT_DAEMON_SOCKET", None)
+        self.env.pop("ALLSPARK_DAEMON_SOCKET", None)
         self.env["TMPDIR"] = str(self.root / "sockets")
         self.assertEqual(self.launch("--internal-update-restart-coordinator", EXPECT_DEFER="1").returncode, 0)
         expected = str(self.root / "sockets" / f"prime-agent-{os.getuid()}" / "daemon.sock")
         result = self.launch("socket")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), expected)
-        custom = self.launch("socket", PRIME_AGENT_DAEMON_SOCKET=str(self.root / "custom.sock"))
+        custom = self.launch("socket", ALLSPARK_DAEMON_SOCKET=str(self.root / "custom.sock"))
         self.assertEqual(custom.stdout.strip(), str(self.root / "custom.sock"))
 
     def test_real_installer_preserves_node_relaunch_only_for_its_npm_bridge(self):
@@ -327,7 +327,7 @@ child.on("exit",code=>{process.exitCode=code;});
         # an old TUI captures the public symlink path in Node's argv before npm
         # replaces the package. That path must still contain JavaScript later.
         section = "# --- the launcher (the takeover lives here)" + section
-        self.env["PRIME_AGENT_RUST_PREFIX"] = str(self.npm_prefix)
+        self.env["ALLSPARK_RUST_PREFIX"] = str(self.npm_prefix)
         payload = self.npm_prefix / "share/prime-agent"
         payload.mkdir(parents=True)
         shutil.copyfile(self.fixture, payload / "prime-agent")
@@ -346,7 +346,7 @@ child.on("exit",code=>{process.exitCode=code;});
                 command.unlink(missing_ok=True)
                 command.symlink_to(target)
                 result = subprocess.run(["sh", "-eu"], input='''
-PREFIX="$PRIME_AGENT_RUST_PREFIX"
+PREFIX="$ALLSPARK_RUST_PREFIX"
 bin_dir="$PREFIX/bin"
 launcher="$bin_dir/prime-agent"
 WINDOWS=no
@@ -354,9 +354,9 @@ say() { :; }; note() { :; }; die() { echo "$*" >&2; exit 1; }
 trap '[ -z "${launcher_tmp:-}" ] || rm -f "$launcher_tmp"' EXIT
 ''' + section + '\n"$install_probe_launcher" --version\n',
                     text=True, capture_output=True, timeout=10, env={**self.env,
-                        "PRIME_AGENT_PRESERVE_NPM_BRIDGE": flag,
-                        "PRIME_AGENT_NPM_BRIDGE_ENTRYPOINT": str(self.entrypoint),
-                        "PRIME_AGENT_USE_LEGACY_DAEMON_SOCKET": "1"})
+                        "ALLSPARK_PRESERVE_NPM_BRIDGE": flag,
+                        "ALLSPARK_NPM_BRIDGE_ENTRYPOINT": str(self.entrypoint),
+                        "ALLSPARK_USE_LEGACY_DAEMON_SOCKET": "1"})
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.strip(), "1.0.0")
                 self.assertEqual(command.is_symlink(), preserved)
@@ -373,7 +373,7 @@ trap '[ -z "${launcher_tmp:-}" ] || rm -f "$launcher_tmp"' EXIT
         executable = payload / "prime-agent"
         executable.write_text('''#!/usr/bin/env node
 if (process.argv[2] === "--version") console.log("prime-agent 1.2.0");
-else if (process.argv[2] === "socket") console.log(process.env.PRIME_AGENT_DAEMON_SOCKET);
+else if (process.argv[2] === "socket") console.log(process.env.ALLSPARK_DAEMON_SOCKET);
 else console.log(JSON.stringify(process.argv.slice(2)));
 ''')
         executable.chmod(0o755)
@@ -381,9 +381,9 @@ else console.log(JSON.stringify(process.argv.slice(2)));
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.installs.exists())
         self.assertEqual(json.loads(result.stdout), ["keep-newer"])
-        self.env.pop("PRIME_AGENT_DAEMON_SOCKET", None)
+        self.env.pop("ALLSPARK_DAEMON_SOCKET", None)
         self.env["TMPDIR"] = str(self.root / "sockets")
-        expected = str(self.root / "sockets" / f"prime-agent-rust-{os.getuid()}" / "daemon.sock")
+        expected = str(self.root / "sockets" / f"allspark-rust-{os.getuid()}" / "daemon.sock")
         self.assertEqual(self.launch("socket").stdout.strip(), expected)
 
     def test_concurrent_first_launches_install_once(self):
@@ -454,7 +454,7 @@ step_start() { :; }; step_ok() { :; }; step_fail() { :; }; note() { :; }; todo()
 ''' + retirement, text=True, capture_output=True, env={**self.env,
                     "PATH": str(fake_bin) + os.pathsep + self.env["PATH"],
                     "UVPY": sys.executable, "TEST_NPM_ROOT": str(npm_root),
-                    "TEST_UNINSTALL_LOG": str(uninstalls), "PRIME_AGENT_PRESERVE_NPM_BRIDGE": flag})
+                    "TEST_UNINSTALL_LOG": str(uninstalls), "ALLSPARK_PRESERVE_NPM_BRIDGE": flag})
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(uninstalls.exists(), expected)
 

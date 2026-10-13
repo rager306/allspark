@@ -4,7 +4,7 @@
 This is an opt-in integration gate, not a mocked-binary unit test. Example:
   python3 scripts/release/test_legacy_upgrade.py \
     --archive /tmp/prime-agent-1.0.0-darwin-arm64.tar.gz \
-    --installer-ref v0.9.8 --previous-archive /tmp/prime-agent-0.9.8-darwin-arm64.tar.gz
+    --installer-ref v0.9.8 --previous-archive /tmp/allspark-0.9.8-darwin-arm64.tar.gz
 
 Supply one --installer-ref per verified Prime release, or --installer-file to
 use exact bytes extracted from a published artifact. Do not assume every old
@@ -88,14 +88,14 @@ def isolated_environment(root: Path, base_url: str, layout: str = "custom") -> d
     for name, relative in {
         "HOME": "home", "TMPDIR": "tmp", "XDG_DATA_HOME": "data",
         "XDG_CONFIG_HOME": "config", "XDG_CACHE_HOME": "cache",
-        "XDG_RUNTIME_DIR": "run", "PRIME_AGENT_CODING_AGENT_DIR": "home/.prime/agent",
-        "PRIME_AGENT_INSTALL_DIR": "install root", "PRIME_AGENT_BIN_DIR": "public bin",
+        "XDG_RUNTIME_DIR": "run", "ALLSPARK_CODING_AGENT_DIR": "home/.prime/agent",
+        "ALLSPARK_INSTALL_DIR": "install root", "ALLSPARK_BIN_DIR": "public bin",
     }.items():
         path = root / relative
         path.mkdir(parents=True, exist_ok=True)
         env[name] = str(path)
     if layout == "standard":
-        for name, relative in {"XDG_DATA_HOME": "home/.local/share", "PRIME_AGENT_INSTALL_DIR": "home/.local/share/prime-agent", "PRIME_AGENT_BIN_DIR": "home/.local/bin"}.items():
+        for name, relative in {"XDG_DATA_HOME": "home/.local/share", "ALLSPARK_INSTALL_DIR": "home/.local/share/prime-agent", "ALLSPARK_BIN_DIR": "home/.local/bin"}.items():
             path = root / relative
             path.mkdir(parents=True, exist_ok=True)
             env[name] = str(path)
@@ -103,13 +103,13 @@ def isolated_environment(root: Path, base_url: str, layout: str = "custom") -> d
     env["npm_config_userconfig"] = str(root / "npmrc")
     env.update({
         "SHELL": "/bin/sh", "DO_NOT_TRACK": "1", "TERM": "dumb",
-        "PRIME_AGENT_DOWNLOAD_BASE_URL": base_url,
-        "PRIME_AGENT_ALLOW_INSECURE_HTTP_FOR_TESTS": "1",
-        "PRIME_AGENT_INSTALL_METHOD": "binary", "PRIME_AGENT_INSTALLER_NONINTERACTIVE": "1",
-        "PRIME_AGENT_INSTALLER_PLAIN": "1", "PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL": "0",
-        "PRIME_AGENT_INSTALL_LINK": "1", "PRIME_AGENT_PROBE_TIMEOUT_SECONDS": "30",
+        "ALLSPARK_DOWNLOAD_BASE_URL": base_url,
+        "ALLSPARK_ALLOW_INSECURE_HTTP_FOR_TESTS": "1",
+        "ALLSPARK_INSTALL_METHOD": "binary", "ALLSPARK_INSTALLER_NONINTERACTIVE": "1",
+        "ALLSPARK_INSTALLER_PLAIN": "1", "ALLSPARK_BOOTSTRAP_KERNEL_ON_INSTALL": "0",
+        "ALLSPARK_INSTALL_LINK": "1", "ALLSPARK_PROBE_TIMEOUT_SECONDS": "30",
     })
-    env["PATH"] = env["PRIME_AGENT_BIN_DIR"] + os.pathsep + env.get("PATH", "/usr/bin:/bin")
+    env["PATH"] = env["ALLSPARK_BIN_DIR"] + os.pathsep + env.get("PATH", "/usr/bin:/bin")
     return env
 
 
@@ -151,7 +151,7 @@ def exercise(installer: Path, archive: Path, previous: Path | None, root: Path, 
     steps = []
     with release_server(feed) as base_url:
         env = isolated_environment(root / "user", base_url, layout)
-        state = Path(env["PRIME_AGENT_CODING_AGENT_DIR"])
+        state = Path(env["ALLSPARK_CODING_AGENT_DIR"])
         # Opaque content witnesses that installation never edits existing state.
         witnesses = {
             "settings.json": '{"migrationWitness":"settings"}\n',
@@ -163,8 +163,8 @@ def exercise(installer: Path, archive: Path, previous: Path | None, root: Path, 
             path = state / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(contents)
-        public = Path(env["PRIME_AGENT_BIN_DIR"]) / "prime-agent"
-        active = Path(env["PRIME_AGENT_INSTALL_DIR"]) / "bin/prime-agent"
+        public = Path(env["ALLSPARK_BIN_DIR"]) / "prime-agent"
+        active = Path(env["ALLSPARK_INSTALL_DIR"]) / "bin/prime-agent"
         if previous:
             steps.append(execute(["sh", str(installer), previous_version], env))
             probe = execute([str(public), "--version"], env)
@@ -179,8 +179,8 @@ def exercise(installer: Path, archive: Path, previous: Path | None, root: Path, 
             assert os.readlink(active) == old_target, "Failed upgrade changed active target"
             assert digest(active.resolve()) == old_binary_hash, "Failed upgrade changed active executable"
             checksums.write_text(good_checksums)
-            env["PRIME_AGENT_EXPECTED_CURRENT"] = old_target
-            env["PRIME_AGENT_EXPECTED_SHA256"] = digest(archive)
+            env["ALLSPARK_EXPECTED_CURRENT"] = old_target
+            env["ALLSPARK_EXPECTED_SHA256"] = digest(archive)
         update_command = [str(public), "update"] if entrypoint == "cli" else ["sh", str(installer), version]
         steps.append(execute(update_command, env))
         probe = execute([str(public), "--version"], env)
@@ -198,10 +198,10 @@ def exercise(installer: Path, archive: Path, previous: Path | None, root: Path, 
             assert next_platform == platform, "Second Rust archive uses another platform"
             (feed / "latest.json").write_text(json.dumps({"version": next_version, "binaries": [{"platform": platform, "file": next_archive.name, "sha256": digest(next_archive)}]}))
             (feed / "stable").write_text(next_version + "\n")
-            env.pop("PRIME_AGENT_EXPECTED_CURRENT", None)
-            env.pop("PRIME_AGENT_EXPECTED_SHA256", None)
-            env["PRIME_AGENT_RUST_INSTALLER_URL"] = base_url + "/install.sh"
-            env["PRIME_AGENT_ALLOW_HTTP"] = "1"
+            env.pop("ALLSPARK_EXPECTED_CURRENT", None)
+            env.pop("ALLSPARK_EXPECTED_SHA256", None)
+            env["ALLSPARK_RUST_INSTALLER_URL"] = base_url + "/install.sh"
+            env["ALLSPARK_ALLOW_HTTP"] = "1"
             steps.append(execute([str(public), "update"], env))
             probe = execute([str(public), "--version"], env)
             steps.append(probe)

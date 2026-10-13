@@ -6,8 +6,8 @@ use std::time::{Duration, SystemTime};
 use anyhow::{anyhow, Result};
 use sha2::{Digest, Sha256};
 
-pub const AGENT_DIR_ENV: &str = "PRIME_AGENT_CODING_AGENT_DIR";
-pub const SESSION_DIR_ENV: &str = "PRIME_AGENT_SESSION_DIR";
+pub const AGENT_DIR_ENV: &str = "ALLSPARK_CODING_AGENT_DIR";
+pub const SESSION_DIR_ENV: &str = "ALLSPARK_SESSION_DIR";
 pub const CONFIG_DIR_NAME: &str = pa_types::identity::CONFIG_DIR_NAME;
 
 /// The home directory for state layout. Unresolvable home is an explicit
@@ -38,8 +38,8 @@ pub fn expand_tilde(path: &str) -> Result<PathBuf> {
     }
 }
 
-/// The agent state root: the `PRIME_AGENT_CODING_AGENT_DIR` override when
-/// set (tilde expanded), else `.prime/agent` under the home directory.
+/// The agent state root: the `ALLSPARK_CODING_AGENT_DIR` override when
+/// set (tilde expanded), else `.allspark` under the home directory.
 ///
 /// # Errors
 ///
@@ -52,7 +52,7 @@ pub fn agent_dir() -> Result<PathBuf> {
     }
 }
 
-/// The sessions root: the `PRIME_AGENT_SESSION_DIR` override when set
+/// The sessions root: the `ALLSPARK_SESSION_DIR` override when set
 /// (tilde expanded), else `<agent-dir>/sessions`.
 ///
 /// # Errors
@@ -171,20 +171,14 @@ mod tests {
 
     #[test]
     fn log_path_hashes_socket() {
-        let path = daemon_log_path(
-            Path::new("/tmp/prime-agent-1/daemon.sock"),
-            Path::new("/ad"),
-        );
+        let path = daemon_log_path(Path::new("/tmp/allspark-1/daemon.sock"), Path::new("/ad"));
         assert!(path.starts_with("/ad/logs"));
         assert!(path
             .file_name()
             .unwrap()
             .to_string_lossy()
             .contains("daemon.sock."));
-        let other = daemon_log_path(
-            Path::new("/tmp/prime-agent-2/daemon.sock"),
-            Path::new("/ad"),
-        );
+        let other = daemon_log_path(Path::new("/tmp/allspark-2/daemon.sock"), Path::new("/ad"));
         assert_ne!(path, other);
     }
 }

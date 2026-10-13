@@ -499,8 +499,8 @@ impl Drop for KernelEnvOverride {
 #[cfg(test)]
 fn live_kernel_python() -> Option<std::path::PathBuf> {
     let candidate = std::path::PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
+        |_| "/home/ubuntu/.allspark/kernel-venv/bin/python".to_string(),
+        |home| format!("{home}/.allspark/kernel-venv/bin/python"),
     ));
     if candidate.exists() {
         return Some(candidate);
@@ -521,10 +521,10 @@ fn abort_in_flight_turn_cancels_a_running_kernel_cell() {
     };
     let _env = KernelEnvOverride::apply(&[
         (
-            "PRIME_AGENT_KERNEL_PYTHON",
+            "ALLSPARK_KERNEL_PYTHON",
             Some(kernel_python.display().to_string()),
         ),
-        ("PRIME_AGENT_CODING_AGENT_DIR", None),
+        ("ALLSPARK_CODING_AGENT_DIR", None),
         ("PRIME_API_KEY", None),
     ]);
     let _faux = FAUX_TEST_LOCK

@@ -64,9 +64,9 @@ pub struct UpdateIntent {
     pub rest: JsonMap,
 }
 
-/// `PRIME_AGENT_UPDATE_ROSTER`: the roster snapshot path the coordinator passes to the successor
+/// `ALLSPARK_UPDATE_ROSTER`: the roster snapshot path the coordinator passes to the successor
 /// supervisor's spawn environment (spec §6: the one update-related input any boot reads).
-pub const UPDATE_ROSTER_ENV: &str = "PRIME_AGENT_UPDATE_ROSTER";
+pub const UPDATE_ROSTER_ENV: &str = "ALLSPARK_UPDATE_ROSTER";
 
 pub const UPDATE_STATUS_FORMAT_VERSION: u64 = 1;
 
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn status_roundtrip_ts_schema_with_spec_additions() {
         rt::<UpdateStatus>(
-            r#"{"version":1,"updateId":"018f1234-abcd-7abc-8def-0123456789ab","socketPath":"/tmp/prime-agent-1000/daemon.sock","state":"preparing","epoch":3,"coordinator":{"pid":99,"processStartId":"1/2"},"counts":{"total":2,"restored":0,"resumed":0,"failed":0},"startedAt":"2026-10-01T12:00:00Z","updatedAt":"2026-10-01T12:00:05Z","heartbeatAt":"2026-10-01T12:00:05Z"}"#,
+            r#"{"version":1,"updateId":"018f1234-abcd-7abc-8def-0123456789ab","socketPath":"/tmp/allspark-1000/daemon.sock","state":"preparing","epoch":3,"coordinator":{"pid":99,"processStartId":"1/2"},"counts":{"total":2,"restored":0,"resumed":0,"failed":0},"startedAt":"2026-10-01T12:00:00Z","updatedAt":"2026-10-01T12:00:05Z","heartbeatAt":"2026-10-01T12:00:05Z"}"#,
         );
         rt::<UpdateStatus>(
             r#"{"version":1,"updateId":"u2","socketPath":"/s","state":"complete","epoch":7,"predecessor":{"pid":1},"successor":{"pid":2,"supervisorGeneration":"g"},"counts":{"total":3,"restored":2,"resumed":1,"failed":1},"failures":[{"sessionFile":"/sessions/a.jsonl","message":"worker refused"}],"message":"updated","startedAt":"a","updatedAt":"b","unknownField":true}"#,

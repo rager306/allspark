@@ -116,8 +116,8 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
         .arg(socket)
         .arg("--agent-dir")
         .arg(agent_dir)
-        .env("PRIME_AGENT_MODEL_PROVIDER", "prime-inference")
-        .env("PRIME_AGENT_MODEL", "mock-1")
+        .env("ALLSPARK_MODEL_PROVIDER", "prime-inference")
+        .env("ALLSPARK_MODEL", "mock-1")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         // A supervisor killed at teardown must not leak its session workers
@@ -165,7 +165,7 @@ impl Client {
         let envelope = json!({
             "type": "command",
             "id": id,
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
+            "protocol": { "name": "allspark.daemon", "version": 7 },
             "command": command,
         });
         let mut line = serde_json::to_string(&envelope).expect("serialize command");

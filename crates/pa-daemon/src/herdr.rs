@@ -25,8 +25,8 @@
 //! response byte, an error, or 500 ms):
 //!
 //! ```json
-//! {"id":"herdr:pi:<ms>:<rand>","method":"pane.report_agent","params":{"pane_id":"<HERDR_PANE_ID>","source":"herdr:pi","agent":"prime-agent","state":"working","seq":1780000000000000,"agent_session_path":"/home/me/.prime/agent/sessions/<id>.jsonl"}}
-//! {"id":"herdr:pi:release:<ms>:<rand>","method":"pane.release_agent","params":{"pane_id":"…","source":"herdr:pi","agent":"prime-agent","seq":1780000000000001}}
+//! {"id":"herdr:pi:<ms>:<rand>","method":"pane.report_agent","params":{"pane_id":"<HERDR_PANE_ID>","source":"herdr:pi","agent":"allspark","state":"working","seq":1780000000000000,"agent_session_path":"/home/me/.allspark/sessions/<id>.jsonl"}}
+//! {"id":"herdr:pi:release:<ms>:<rand>","method":"pane.release_agent","params":{"pane_id":"…","source":"herdr:pi","agent":"allspark","seq":1780000000000001}}
 //! ```
 //!
 //! `message` rides only blocked reports. `seq` is per-process monotonic
@@ -1208,7 +1208,7 @@ mod tests {
         let (requests, server) = fake_herdr(&socket_path);
         let config = HerdrConfig::from_env(&pane_env(&socket_path, "w1:p1")).unwrap();
         let session_ref = HerdrSessionRef::new(
-            Some("/home/me/.prime/agent/sessions/s1.jsonl".to_string()),
+            Some("/home/me/.allspark/sessions/s1.jsonl".to_string()),
             Some("s1".to_string()),
         );
         let (reporter, _generation) = start_reporter(config, session_ref.clone());
@@ -1226,14 +1226,14 @@ mod tests {
         assert_eq!(params["state"], "idle");
         assert_eq!(
             params["agent_session_path"],
-            "/home/me/.prime/agent/sessions/s1.jsonl"
+            "/home/me/.allspark/sessions/s1.jsonl"
         );
         assert_eq!(
             params["resume_argv"],
             json!([
                 "prime-agent",
                 "--resume",
-                "/home/me/.prime/agent/sessions/s1.jsonl"
+                "/home/me/.allspark/sessions/s1.jsonl"
             ])
         );
         // The id carries the source prefix; the seq is a number.

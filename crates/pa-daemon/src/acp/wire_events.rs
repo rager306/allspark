@@ -564,7 +564,7 @@ mod tests {
         let value = serde_json::to_value(&updates[0]).unwrap();
         assert_eq!(value["sessionUpdate"], "session_info_update");
         assert_eq!(
-            value["_meta"]["ai.primeintellect.prime-agent"]["goal"],
+            value["_meta"]["ai.allspark.agent"]["goal"],
             json!({
                 "status": "active",
                 "objective": "Name a river",
@@ -637,7 +637,7 @@ mod tests {
         let value = serde_json::to_value(&updates[0]).unwrap();
         assert_eq!(value["sessionUpdate"], "session_info_update");
         assert_eq!(
-            value["_meta"]["ai.primeintellect.prime-agent"]["compaction"],
+            value["_meta"]["ai.allspark.agent"]["compaction"],
             json!({ "tokensBefore": 4200, "summary": "a summary" })
         );
     }
@@ -695,7 +695,7 @@ mod tests {
     }
 
     fn namespaced(update: &AcpSessionUpdate) -> Value {
-        update.to_bare_value()["_meta"]["ai.primeintellect.prime-agent"].clone()
+        update.to_bare_value()["_meta"]["ai.allspark.agent"].clone()
     }
 
     #[test]

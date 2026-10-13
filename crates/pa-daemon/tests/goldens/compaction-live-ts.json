@@ -1,5 +1,5 @@
 {
- "_comment": "Compaction goldens captured read-only from the live TS daemon (prime-agent 0.9.5, protocol 7, schema 28) at /tmp/prime-agent-1000/daemon.sock on 2026-09-16. Scratch sessions used, killed after capture.",
+ "_comment": "Compaction goldens captured read-only from the live TS daemon (prime-agent 0.9.5, protocol 7, schema 28) at /tmp/allspark-1000/daemon.sock on 2026-09-16. Scratch sessions used, killed after capture.",
  "compact": {
   "successResponse": {
    "command": "compact",

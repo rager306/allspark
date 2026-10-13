@@ -291,7 +291,7 @@ fn run(binary: &Path, args: &[&str], sandbox: &Sandbox) -> Output {
         .arg(binary)
         .args(args)
         .env("HOME", &sandbox.home)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &sandbox.agent_dir)
+        .env("ALLSPARK_CODING_AGENT_DIR", &sandbox.agent_dir)
         .env("GIT_SSH_COMMAND", &sandbox.ssh_shim)
         .current_dir(&sandbox.cwd)
         .output()

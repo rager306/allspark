@@ -56,10 +56,10 @@ fn run(binary: &Path, args: &[&str], sandbox: &Path) -> (Option<i32>, String, St
         .arg(binary)
         .args(args)
         // Fixture agent dir only: never the ambient installation.
-        .env("PRIME_AGENT_CODING_AGENT_DIR", sandbox.join("agent"))
+        .env("ALLSPARK_CODING_AGENT_DIR", sandbox.join("agent"))
         .env("HOME", sandbox.join("home"))
         .env("TMPDIR", sandbox.join("tmp"))
-        .env("PI_OFFLINE", "1")
+        .env("ALLSPARK_OFFLINE", "1")
         .current_dir(sandbox.join("cwd"))
         .output()
         .expect("failed to spawn binary under test");

@@ -190,7 +190,7 @@ impl Runtime for UnavailableRuntime {
     }
 }
 
-/// Env overrides first (`PI_OFFLINE` / `DO_NOT_TRACK` / `PRIME_AGENT_TELEMETRY`),
+/// Env overrides first (`ALLSPARK_OFFLINE` / `DO_NOT_TRACK` / `ALLSPARK_TELEMETRY`),
 /// then the settings AND; `true` when disabled for this invocation.
 pub fn telemetry_disabled(settings: &pa_core::settings::SettingsManager) -> bool {
     !pa_core::session_engine::telemetry::telemetry_switch(settings).enabled()
@@ -292,7 +292,7 @@ pub(crate) mod tests {
         let _guard = LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let vars = ["PRIME_AGENT_TELEMETRY", "DO_NOT_TRACK", "PI_OFFLINE"];
+        let vars = ["ALLSPARK_TELEMETRY", "DO_NOT_TRACK", "ALLSPARK_OFFLINE"];
         let saved: Vec<(String, Option<String>)> = vars
             .iter()
             .map(|key| ((*key).to_string(), std::env::var(key).ok()))
@@ -314,8 +314,8 @@ pub(crate) mod tests {
         }
     }
 
-    /// The opt-out chain (the operator's explicit ask): `DO_NOT_TRACK`/`PI_OFFLINE` disable
-    /// even against `PRIME_AGENT_TELEMETRY=1`.
+    /// The opt-out chain (the operator's explicit ask): `DO_NOT_TRACK`/`ALLSPARK_OFFLINE` disable
+    /// even against `ALLSPARK_TELEMETRY=1`.
     #[test]
     fn telemetry_opt_out_resolves_disabled() {
         with_clean_telemetry_env(|| {
@@ -336,14 +336,14 @@ pub(crate) mod tests {
             let dir = tempfile::tempdir().unwrap();
             let agent_dir = dir.path().join("agent");
             let settings = pa_core::settings::SettingsManager::create(dir.path(), agent_dir);
-            // `PRIME_AGENT_TELEMETRY=1` re-enables over the settings default.
-            std::env::set_var("PRIME_AGENT_TELEMETRY", "1");
+            // `ALLSPARK_TELEMETRY=1` re-enables over the settings default.
+            std::env::set_var("ALLSPARK_TELEMETRY", "1");
             assert!(!telemetry_disabled(&settings));
             // But DO_NOT_TRACK outranks it: still disabled.
             std::env::set_var("DO_NOT_TRACK", "1");
             assert!(telemetry_disabled(&settings));
-            // And PI_OFFLINE outranks the re-enable too.
-            std::env::set_var("PI_OFFLINE", "1");
+            // And ALLSPARK_OFFLINE outranks the re-enable too.
+            std::env::set_var("ALLSPARK_OFFLINE", "1");
             assert!(telemetry_disabled(&settings));
         });
     }

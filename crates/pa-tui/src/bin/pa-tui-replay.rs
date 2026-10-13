@@ -69,7 +69,7 @@ fn newest_session() -> Result<std::path::PathBuf> {
         }
     }
     best.map(|(_, p)| p)
-        .context("no session files found in ~/.prime/agent/sessions")
+        .context("no session files found in ~/.allspark/sessions")
 }
 
 fn main() -> Result<()> {

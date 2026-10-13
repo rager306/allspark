@@ -187,7 +187,7 @@ impl SessionUi {
         view.push_entry(ChatEntry::Status {
             // The same disclosure text the print-mode notice carries
             // (pa-cli `telemetry_notice`), plus the interactive switch.
-            text: "Prime Agent sends pseudonymous usage and performance metrics without prompts, responses, tool content, file paths, or repository data. Disable this with /telemetry off, telemetry.enabled=false, PRIME_AGENT_TELEMETRY=0, DO_NOT_TRACK=1, or offline mode."
+            text: "Prime Agent sends pseudonymous usage and performance metrics without prompts, responses, tool content, file paths, or repository data. Disable this with /telemetry off, telemetry.enabled=false, ALLSPARK_TELEMETRY=0, DO_NOT_TRACK=1, or offline mode."
                 .to_string(),
             kind: StatusKind::Info,
         });

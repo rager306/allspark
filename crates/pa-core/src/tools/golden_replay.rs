@@ -222,7 +222,7 @@ async fn golden_bash_group_matches_ts() {
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
         {
-            std::env::set_var("PI_BASH_ALLOW_DESTRUCTIVE_GIT", "1");
+            std::env::set_var("ALLSPARK_BASH_ALLOW_DESTRUCTIVE_GIT", "1");
         }
         let result = bash::execute_bash(
             &dir_path,
@@ -236,7 +236,7 @@ async fn golden_bash_group_matches_ts() {
         )
         .await;
         if case.get("envBypass").is_some() {
-            std::env::remove_var("PI_BASH_ALLOW_DESTRUCTIVE_GIT");
+            std::env::remove_var("ALLSPARK_BASH_ALLOW_DESTRUCTIVE_GIT");
         }
         let recorded = &case["result"];
         match result {

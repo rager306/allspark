@@ -56,8 +56,8 @@ fn kernel_python() -> Option<PathBuf> {
         return Some(explicit);
     }
     let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
+        |_| "/home/ubuntu/.allspark/kernel-venv/bin/python".to_string(),
+        |home| format!("{home}/.allspark/kernel-venv/bin/python"),
     ));
     if candidate.exists() {
         return Some(candidate);
@@ -155,10 +155,10 @@ async fn a_kernel_needing_op_mid_boot_joins_the_in_flight_build_and_succeeds() {
     // ambient agent state leaks in.
     let _env = EnvOverride::apply(&[
         (
-            "PRIME_AGENT_KERNEL_PYTHON",
+            "ALLSPARK_KERNEL_PYTHON",
             Some(kernel_python.display().to_string()),
         ),
-        ("PRIME_AGENT_CODING_AGENT_DIR", None),
+        ("ALLSPARK_CODING_AGENT_DIR", None),
         ("PRIME_API_KEY", None),
     ]);
 
@@ -320,10 +320,10 @@ async fn generic_mcp_servers_settle_in_the_background_and_first_use_joins_the_op
 
     let _env = EnvOverride::apply(&[
         (
-            "PRIME_AGENT_KERNEL_PYTHON",
+            "ALLSPARK_KERNEL_PYTHON",
             Some(kernel_python.display().to_string()),
         ),
-        ("PRIME_AGENT_CODING_AGENT_DIR", None),
+        ("ALLSPARK_CODING_AGENT_DIR", None),
         ("PRIME_API_KEY", None),
     ]);
 
@@ -441,10 +441,10 @@ async fn the_first_python_cell_never_waits_behind_the_eager_mcp_status() {
 
     let _env = EnvOverride::apply(&[
         (
-            "PRIME_AGENT_KERNEL_PYTHON",
+            "ALLSPARK_KERNEL_PYTHON",
             Some(kernel_python.display().to_string()),
         ),
-        ("PRIME_AGENT_CODING_AGENT_DIR", None),
+        ("ALLSPARK_CODING_AGENT_DIR", None),
         ("PRIME_API_KEY", None),
     ]);
 

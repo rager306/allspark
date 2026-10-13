@@ -545,14 +545,14 @@ fn disk_memo_late_write_after_invalidate_is_benign() {
 /// Env-mutating tests serialize on this lock: the process env is global.
 /// Unix only: its takers are the unix env-override tests.
 #[cfg(unix)]
-static PRIME_AGENT_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static ALLSPARK_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// A caller-owned `PRIME_AGENT_KERNEL_PYTHON` override resolves through
+/// A caller-owned `ALLSPARK_KERNEL_PYTHON` override resolves through
 /// the DIRECT probe and never reads or writes any memo file.
 #[cfg(unix)]
 #[tokio::test]
 async fn custom_override_never_touches_the_disk_memo() {
-    let _guard = PRIME_AGENT_ENV_LOCK.lock().await;
+    let _guard = ALLSPARK_ENV_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
@@ -563,21 +563,21 @@ async fn custom_override_never_touches_the_disk_memo() {
         std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     let previous_home = std::env::var("HOME").ok();
-    let previous_override = std::env::var("PRIME_AGENT_KERNEL_PYTHON").ok();
-    let previous_venv = std::env::var("PRIME_AGENT_KERNEL_VENV").ok();
+    let previous_override = std::env::var("ALLSPARK_KERNEL_PYTHON").ok();
+    let previous_venv = std::env::var("ALLSPARK_KERNEL_VENV").ok();
     std::env::set_var("HOME", &home);
-    std::env::set_var("PRIME_AGENT_KERNEL_PYTHON", &python);
-    std::env::remove_var("PRIME_AGENT_KERNEL_VENV");
+    std::env::set_var("ALLSPARK_KERNEL_PYTHON", &python);
+    std::env::remove_var("ALLSPARK_KERNEL_VENV");
     let resolved =
         super::super::ensure_kernel_python(super::super::EnsureKernelPythonOptions::default())
             .await;
     match previous_venv {
-        Some(value) => std::env::set_var("PRIME_AGENT_KERNEL_VENV", value),
-        None => std::env::remove_var("PRIME_AGENT_KERNEL_VENV"),
+        Some(value) => std::env::set_var("ALLSPARK_KERNEL_VENV", value),
+        None => std::env::remove_var("ALLSPARK_KERNEL_VENV"),
     }
     match previous_override {
-        Some(value) => std::env::set_var("PRIME_AGENT_KERNEL_PYTHON", value),
-        None => std::env::remove_var("PRIME_AGENT_KERNEL_PYTHON"),
+        Some(value) => std::env::set_var("ALLSPARK_KERNEL_PYTHON", value),
+        None => std::env::remove_var("ALLSPARK_KERNEL_PYTHON"),
     }
     match previous_home {
         Some(value) => std::env::set_var("HOME", value),

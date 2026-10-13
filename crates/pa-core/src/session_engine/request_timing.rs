@@ -27,7 +27,7 @@ use clock::{Outcome, RequestTiming};
 pub(crate) use payload::RequestPayloadCapture;
 
 /// The env override (inherited by daemon workers).
-const REQUEST_TIMING_ENV: &str = "PI_REQUEST_TIMING";
+const REQUEST_TIMING_ENV: &str = "ALLSPARK_REQUEST_TIMING";
 
 const LOG_COMPONENT: &str = "coding-agent.request-timing";
 
@@ -39,7 +39,7 @@ const AGENT_LOG_MAX_BYTES: u64 = 20 * 1024 * 1024;
 /// env half stays live.
 pub type RequestTimingEnabled = Arc<dyn Fn() -> bool + Send + Sync>;
 
-/// 1/true/yes, case-insensitive (the `PI_OFFLINE`/`PI_TIMING` convention).
+/// 1/true/yes, case-insensitive (the `ALLSPARK_OFFLINE`/`PI_TIMING` convention).
 fn truthy_env_flag(value: Option<&str>) -> bool {
     let Some(value) = value else {
         return false;

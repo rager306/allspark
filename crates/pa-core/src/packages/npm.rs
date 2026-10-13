@@ -2,7 +2,7 @@
 //! configured npm command (`settings.npmCommand`, default `npm`), install
 //! root/path layout per scope, and the project-root bootstrap files:
 //! user-scope installs go through `npm install -g` and `npm root -g`,
-//! project-scope into `<cwd>/.prime/agent/npm/node_modules` via `--prefix`.
+//! project-scope into `<cwd>/.allspark/npm/node_modules` via `--prefix`.
 
 use std::path::{Path, PathBuf};
 

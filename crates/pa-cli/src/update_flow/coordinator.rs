@@ -20,7 +20,7 @@ use super::successor::{identity_from_hello, spawn_supervisor, wait_for_exit, wai
 use super::swap;
 
 /// The staged release directory, passed by the invoking CLI through the coordinator's environment.
-pub const UPDATE_CANDIDATE_DIR_ENV: &str = "PRIME_AGENT_UPDATE_CANDIDATE_DIR";
+pub const UPDATE_CANDIDATE_DIR_ENV: &str = "ALLSPARK_UPDATE_CANDIDATE_DIR";
 
 /// One coordinator run's fixed inputs.
 pub struct CoordinatorOptions {
@@ -183,7 +183,7 @@ async fn drive(
         .set_state(UpdateState::Stopped)
         .map_err(PhaseFailure::after_stop)?;
     // `Activating`: validate the staged candidate BEFORE the swap, then record
-    // `.activation-state` and repoint `bin/prime-agent` (spec §7).
+    // `.activation-state` and repoint `bin/allspark` (spec §7).
     writer
         .lock()
         .await
@@ -396,7 +396,7 @@ fn activation_plan() -> Result<ActivationPlan> {
         .context("the staged release directory name does not carry a version")?;
     Ok(ActivationPlan {
         current_target: swap::launcher_target(&root, pa_core::update::install::CURRENT_LAUNCHER)?,
-        candidate_target: format!("../releases/{directory_name}/prime-agent"),
+        candidate_target: format!("../releases/{directory_name}/allspark"),
         executable,
         version,
         root,

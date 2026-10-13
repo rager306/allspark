@@ -32,7 +32,7 @@ impl HomebrewKind {
 pub fn managed_kind(executable: &Path) -> Option<HomebrewKind> {
     let resolved = executable.canonicalize().ok()?;
     for ancestor in resolved.ancestors() {
-        if ancestor.file_name() != Some(OsStr::new("prime-agent")) {
+        if ancestor.file_name() != Some(OsStr::new("allspark")) {
             continue;
         }
         let owner = ancestor.parent().and_then(Path::file_name);
@@ -62,10 +62,8 @@ mod tests {
     #[test]
     fn detects_formula_and_cask_layouts() {
         let root = tempfile::tempdir().unwrap();
-        let formula = root
-            .path()
-            .join("Cellar/prime-agent/1.0.0/libexec/prime-agent");
-        let cask = root.path().join("Caskroom/prime-agent/1.0.0/prime-agent");
+        let formula = root.path().join("Cellar/allspark/1.0.0/libexec/allspark");
+        let cask = root.path().join("Caskroom/allspark/1.0.0/allspark");
         std::fs::create_dir_all(formula.parent().unwrap()).unwrap();
         std::fs::create_dir_all(cask.parent().unwrap()).unwrap();
         std::fs::write(&formula, b"binary").unwrap();
@@ -78,10 +76,8 @@ mod tests {
     #[test]
     fn resolves_brew_bin_symlinks_into_the_formula_keg() {
         let root = tempfile::tempdir().unwrap();
-        let formula = root
-            .path()
-            .join("Cellar/prime-agent/1.0.0/libexec/prime-agent");
-        let launcher = root.path().join("bin/prime-agent");
+        let formula = root.path().join("Cellar/allspark/1.0.0/libexec/allspark");
+        let launcher = root.path().join("bin/allspark");
         std::fs::create_dir_all(formula.parent().unwrap()).unwrap();
         std::fs::create_dir_all(launcher.parent().unwrap()).unwrap();
         std::fs::write(&formula, b"binary").unwrap();
@@ -93,9 +89,9 @@ mod tests {
     fn ignores_other_kegs_and_non_homebrew_installs() {
         let root = tempfile::tempdir().unwrap();
         for path in [
-            "Cellar/other-tool/1.0.0/libexec/prime-agent",
-            "releases/1.0.0-darwin-arm64-abc123/prime-agent",
-            "plain/prime-agent",
+            "Cellar/other-tool/1.0.0/libexec/allspark",
+            "releases/1.0.0-darwin-arm64-abc123/allspark",
+            "plain/allspark",
         ] {
             let executable = root.path().join(path);
             std::fs::create_dir_all(executable.parent().unwrap()).unwrap();

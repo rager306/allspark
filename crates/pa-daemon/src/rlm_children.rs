@@ -922,7 +922,7 @@ impl SupervisorChildSessionsInner {
                 .join(session_id)
                 .join(child_id),
             // No persistent parent artifacts dir: an ephemeral temp dir.
-            None => std::env::temp_dir().join(format!("prime-agent-rlm-{child_id}")),
+            None => std::env::temp_dir().join(format!("allspark-rlm-{child_id}")),
         };
         std::fs::create_dir_all(&base)
             .with_context(|| format!("create RLM child session dir {}", base.display()))?;

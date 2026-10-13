@@ -194,7 +194,7 @@ mod tests {
     const ROSTER_JSON: &str = r#"{
         "format_version": 1,
         "update_id": "018f1234-abcd-7abc-8def-0123456789ab",
-        "socket_path": "/tmp/prime-agent-1000/daemon.sock",
+        "socket_path": "/tmp/allspark-1000/daemon.sock",
         "created_at": "2026-10-01T12:00:00Z",
         "supervisor": {"pid": 4242, "process_start_id": "4242/170000", "generation": "gen-7"},
         "binary": {"from_version": "0.9.5", "to_version": "0.9.6"},
@@ -202,7 +202,7 @@ mod tests {
             {
                 "session_id": "01a0b4f6-0000-7000-8000-000000000001",
                 "active_session_id": "a-1",
-                "session_file": "~/.prime/agent/sessions/01a0b4f6-0000-7000-8000-000000000001.jsonl",
+                "session_file": "~/.allspark/sessions/01a0b4f6-0000-7000-8000-000000000001.jsonl",
                 "name": "worker-1",
                 "kind": "top-level",
                 "rlm_depth": 0,
@@ -218,7 +218,7 @@ mod tests {
             {
                 "session_id": "01a0b4f6-0000-7000-8000-000000000002",
                 "active_session_id": "a-2",
-                "session_file": "~/.prime/agent/sessions/01a0b4f6-0000-7000-8000-000000000002.jsonl",
+                "session_file": "~/.allspark/sessions/01a0b4f6-0000-7000-8000-000000000002.jsonl",
                 "kind": "subagent",
                 "parent_session_id": "01a0b4f6-0000-7000-8000-000000000001",
                 "rlm_depth": 1,
@@ -237,7 +237,7 @@ mod tests {
                 "worker_id": "w-1",
                 "worker_instance_id": "w-1-abc",
                 "sessions": ["01a0b4f6-0000-7000-8000-000000000001"],
-                "launch_env": {"PRIME_AGENT_SESSION_DIR": "/tmp/sess"}
+                "launch_env": {"ALLSPARK_SESSION_DIR": "/tmp/sess"}
             }
         ],
         "subagents": [
@@ -248,8 +248,8 @@ mod tests {
                 "name": "api-reviewer",
                 "status": "completed",
                 "depth": 2,
-                "session_file": "~/.prime/agent/sessions/01a0b4f6-0000-7000-8000-000000000002.jsonl",
-                "display_file": "~/.prime/agent/session-artifacts/01a0b4f6-0000-7000-8000-000000000002/rlm-subagent.json"
+                "session_file": "~/.allspark/sessions/01a0b4f6-0000-7000-8000-000000000002.jsonl",
+                "display_file": "~/.allspark/session-artifacts/01a0b4f6-0000-7000-8000-000000000002/rlm-subagent.json"
             }
         ],
         "heartbeats": [

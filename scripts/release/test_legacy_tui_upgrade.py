@@ -112,7 +112,7 @@ def exercise(root: Path, previous: Path, installer: Path | None, candidate: Path
     with release_server(feed) as base:
         env = isolated_environment(root / "user", base, "standard")
         env.update(TERM="xterm-256color", ANTHROPIC_API_KEY="fixture-not-a-real-key")
-        state = Path(env["PRIME_AGENT_CODING_AGENT_DIR"])
+        state = Path(env["ALLSPARK_CODING_AGENT_DIR"])
         (state / "settings.json").write_text(json.dumps({"onboardingShown": True}))
         if npm_prefix:
             isolated_prefix = root / "npm prefix"
@@ -121,13 +121,13 @@ def exercise(root: Path, previous: Path, installer: Path | None, candidate: Path
             assert entrypoint.read_bytes() == old_entrypoint, "Npm fixture entrypoint differs from published bytes"
             env.update(npm_config_prefix=str(isolated_prefix), npm_config_cache=str(root / "npm-cache"),
                        npm_config_ignore_scripts="true", npm_config_audit="false", npm_config_fund="false",
-                       npm_config_update_notifier="false", PRIME_AGENT_ALLOW_HTTP="1",
-                       PRIME_AGENT_RUST_PREFIX=str(root / "rust prefix"),
-                       PRIME_AGENT_DAEMON_SOCKET=str(daemon_socket))
+                       npm_config_update_notifier="false", ALLSPARK_ALLOW_HTTP="1",
+                       ALLSPARK_RUST_PREFIX=str(root / "rust prefix"),
+                       ALLSPARK_DAEMON_SOCKET=str(daemon_socket))
             env["PATH"] = str(isolated_prefix / "bin") + os.pathsep + env["PATH"]
             public = isolated_prefix / "bin/prime-agent"
         else:
-            public = Path(env["PRIME_AGENT_BIN_DIR"]) / "prime-agent"
+            public = Path(env["ALLSPARK_BIN_DIR"]) / "prime-agent"
             evidence["steps"].append(execute(["sh", str(installer), previous_version], env))
         # TS buffers unsaved drafts until an assistant message exists. Start
         # from a valid saved transcript so the migration exercises restoration.

@@ -257,7 +257,7 @@ pub async fn read_clipboard_image() -> Option<ClipboardImage> {
     // Verification seam (never set by the product): a harness without a display server
     // cannot drive the real clipboard readers, so a fixture file stands in for the
     // clipboard and travels the exact paste path from there.
-    if let Some(path) = std::env::var_os("PRIME_AGENT_TEST_CLIPBOARD_IMAGE") {
+    if let Some(path) = std::env::var_os("ALLSPARK_TEST_CLIPBOARD_IMAGE") {
         return std::fs::read(path)
             .ok()
             .and_then(clipboard_image_from_bytes);

@@ -30,14 +30,14 @@ fn run(home: &Path, args: &[&str], script: &Value) -> (String, String, i32) {
     let output = Command::new(bin)
         .args(args)
         .env("HOME", home)
-        .env("PRIME_AGENT_FAUX_SCRIPT", script.to_string())
+        .env("ALLSPARK_FAUX_SCRIPT", script.to_string())
         // Keep the isolated HOME authoritative: ambient agent/session dir
         // overrides and daemon sockets from the test environment must not
         // leak in (fresh sessions never probe the daemon; keep it that way).
-        .env_remove("PRIME_AGENT_CODING_AGENT_DIR")
-        .env_remove("PRIME_AGENT_SESSION_DIR")
-        .env_remove("PRIME_AGENT_CODING_AGENT_SESSION_DIR")
-        .env_remove("PRIME_AGENT_DAEMON_SOCKET")
+        .env_remove("ALLSPARK_CODING_AGENT_DIR")
+        .env_remove("ALLSPARK_SESSION_DIR")
+        .env_remove("ALLSPARK_CODING_AGENT_SESSION_DIR")
+        .env_remove("ALLSPARK_DAEMON_SOCKET")
         .env_remove("PRIME_API_KEY")
         .current_dir(home)
         .output()
@@ -100,7 +100,7 @@ fn always_failing_verifier(home: &Path) -> PathBuf {
 }
 
 fn session_files(home: &Path) -> Vec<PathBuf> {
-    let dir = home.join(".prime/agent/sessions");
+    let dir = home.join(".allspark/sessions");
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
         .map(|entries| {
             entries

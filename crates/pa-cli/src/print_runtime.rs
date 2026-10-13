@@ -94,7 +94,7 @@ async fn acp_mode_main(options: &RunOptions) -> Result<i32, String> {
     // transport starts (TS pushes the daemon-created session's diagnostics
     // to the client; the Rust stderr surface prints it here).
     crate::telemetry_notice::print_if_due(&options.config);
-    // Flag > env > default: the same `PRIME_AGENT_DAEMON_SOCKET` contract
+    // Flag > env > default: the same `ALLSPARK_DAEMON_SOCKET` contract
     // as every other mode (the `prime-agent` launcher written by
     // install-rust.sh pins that env, so the ACP path must honor it or it
     // would target the TypeScript default socket and treat the schema
@@ -191,13 +191,13 @@ fn daemon_acp_create(
     }
     // Verification seam (the interactive mode's contract): a scripted daemon
     // session from a script FILE path. The product never sets it.
-    if let Some(script) = std::env::var_os("PRIME_AGENT_FAUX_SCRIPT") {
+    if let Some(script) = std::env::var_os("ALLSPARK_FAUX_SCRIPT") {
         create_config["script"] = serde_json::Value::String(script.to_string_lossy().to_string());
     }
     // Verification seam (the TS child runtime inherits the parent's
     // `sessionConfig`): a scripted parent session's children run this script
     // FILE. The product never sets it.
-    if let Some(child_script) = std::env::var_os("PRIME_AGENT_FAUX_CHILD_SCRIPT") {
+    if let Some(child_script) = std::env::var_os("ALLSPARK_FAUX_CHILD_SCRIPT") {
         create_config["childScript"] =
             serde_json::Value::String(child_script.to_string_lossy().to_string());
     }
@@ -325,7 +325,7 @@ fn rpc_engine_factory(options: &RunOptions) -> pa_daemon::rpc::session::RpcEngin
                     (manager, lease)
                 }
             };
-            let engine = if let Ok(script) = std::env::var("PRIME_AGENT_FAUX_SCRIPT") {
+            let engine = if let Ok(script) = std::env::var("ALLSPARK_FAUX_SCRIPT") {
                 build_faux_engine_with(&options, &script, Some(manager), "rpc").await?
             } else {
                 build_headless_engine_with(&options, Some(manager), "rpc").await?
@@ -408,7 +408,7 @@ async fn print_mode_main(
 
 /// Assemble the in-process session engine for a headless run: model
 /// resolution, session persistence, and the engine facade. The faux-script
-/// seam (`PRIME_AGENT_FAUX_SCRIPT`) drives the same assembly without the
+/// seam (`ALLSPARK_FAUX_SCRIPT`) drives the same assembly without the
 /// network; verification harness only, never set by the product.
 ///
 /// The switchable provider target the session's stream reads per call
@@ -441,7 +441,7 @@ async fn build_headless_engine_parts(
     crate::telemetry_notice::print_if_due(&options.config);
     let (session_manager, opened_lease) = select_session_manager_with_lease(options)?;
     *lease = opened_lease;
-    if let Ok(script) = std::env::var("PRIME_AGENT_FAUX_SCRIPT") {
+    if let Ok(script) = std::env::var("ALLSPARK_FAUX_SCRIPT") {
         return build_faux_engine_with(options, &script, session_manager, execution_mode).await;
     }
     build_headless_engine_with(options, session_manager, execution_mode).await
@@ -1405,7 +1405,7 @@ async fn build_faux_engine_with(
 ) -> Result<HeadlessEngine, String> {
     let config = &options.config;
     let script: serde_json::Value = serde_json::from_str(script)
-        .map_err(|error| format!("invalid PRIME_AGENT_FAUX_SCRIPT: {error}"))?;
+        .map_err(|error| format!("invalid ALLSPARK_FAUX_SCRIPT: {error}"))?;
     // Response entries: a plain string answers with fixed text; `{"systemPrompt":
     // true}` answers with the request's system prompt; other objects go through the
     // shared faux-script parser.
@@ -1457,7 +1457,7 @@ async fn build_faux_engine_with(
                 })
                 .collect::<Result<Vec<_>, String>>()
         })
-        .ok_or_else(|| "PRIME_AGENT_FAUX_SCRIPT requires a responses array".to_string())??;
+        .ok_or_else(|| "ALLSPARK_FAUX_SCRIPT requires a responses array".to_string())??;
     // A `reasoning` model makes the harness script thinking-capable turns so
     // thinking-level resolution can be verified without the network.
     let reasoning = script

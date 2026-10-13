@@ -21,16 +21,16 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const ENV_INSTALLER_URL: &str = "PRIME_AGENT_RUST_INSTALLER_URL";
-const ENV_PREFIX: &str = "PRIME_AGENT_RUST_PREFIX";
+const ENV_INSTALLER_URL: &str = "ALLSPARK_RUST_INSTALLER_URL";
+const ENV_PREFIX: &str = "ALLSPARK_RUST_PREFIX";
 
 /// The mock installer the command downloads: it installs a launcher that
 /// answers a stamped `--version` (the takeover's contract).
 const MOCK_INSTALLER: &str = r#"#!/bin/sh
 set -eu
-mkdir -p "${PRIME_AGENT_RUST_PREFIX}/bin"
-printf '#!/bin/sh\necho "9.9.9-continuous.0123456789abcdef"\n' > "${PRIME_AGENT_RUST_PREFIX}/bin/prime-agent"
-chmod 0755 "${PRIME_AGENT_RUST_PREFIX}/bin/prime-agent"
+mkdir -p "${ALLSPARK_RUST_PREFIX}/bin"
+printf '#!/bin/sh\necho "9.9.9-continuous.0123456789abcdef"\n' > "${ALLSPARK_RUST_PREFIX}/bin/allspark"
+chmod 0755 "${ALLSPARK_RUST_PREFIX}/bin/allspark"
 echo "installed: 9.9.9-continuous.0123456789abcdef"
 "#;
 
@@ -102,7 +102,7 @@ impl Sandbox {
         ));
         std::fs::create_dir_all(&root).expect("sandbox root");
         let home = root.join("home");
-        let session_file = home.join(".prime/agent/sessions/session.jsonl");
+        let session_file = home.join(".allspark/sessions/session.jsonl");
         std::fs::create_dir_all(session_file.parent().expect("session dir")).expect("session dir");
         let session_bytes =
             b"{\"type\":\"user_message\",\"content\":\"the session the update must preserve\"}\n"
@@ -123,7 +123,7 @@ impl Sandbox {
         let observed = std::fs::read(&self.session_file).expect("session file survives");
         assert_eq!(
             observed, self.session_bytes,
-            "the sandbox ~/.prime/agent session file is byte-identical"
+            "the sandbox ~/.allspark session file is byte-identical"
         );
     }
 }
@@ -150,8 +150,8 @@ fn prime_agent(args: &[&str], sandbox: &Sandbox) -> Command {
         .env_remove(ENV_INSTALLER_URL)
         .env(ENV_PREFIX, &sandbox.prefix)
         .env(
-            "PRIME_AGENT_CODING_AGENT_DIR",
-            sandbox.root.join("home/.prime/agent"),
+            "ALLSPARK_CODING_AGENT_DIR",
+            sandbox.root.join("home/.allspark"),
         );
     command
 }
@@ -176,7 +176,7 @@ fn update_runs_the_downloaded_installer_and_preserves_the_session_store() {
         stdout.contains("restart prime-agent to run the new build"),
         "the success line carries the restart hint:\n{stdout}"
     );
-    let launcher = sandbox.prefix.join("bin/prime-agent");
+    let launcher = sandbox.prefix.join("bin/allspark");
     assert!(launcher.is_file(), "the launcher landed");
     let version = Command::new(&launcher)
         .arg("--version")
@@ -195,16 +195,16 @@ fn update_runs_the_downloaded_installer_and_preserves_the_session_store() {
 #[test]
 fn a_nightly_update_fetches_install_beta_from_the_download_base() {
     let sandbox = Sandbox::new();
-    let share = sandbox.prefix.join("share/prime-agent");
+    let share = sandbox.prefix.join("share/allspark");
     std::fs::create_dir_all(&share).expect("share dir");
     std::fs::write(
-        share.join(".prime-agent-install"),
+        share.join(".allspark-install"),
         "install-rust.sh channel beta\nversion 0.9.9-beta.11\n",
     )
     .expect("install marker");
     let base = serve_at("/install-beta.sh", MOCK_INSTALLER);
     let output = prime_agent(&["update"], &sandbox)
-        .env("PRIME_AGENT_DOWNLOAD_BASE_URL", &base)
+        .env("ALLSPARK_DOWNLOAD_BASE_URL", &base)
         .output()
         .expect("run the prime-agent binary");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -232,7 +232,7 @@ fn a_failing_installer_keeps_the_previous_install() {
     let sandbox = Sandbox::new();
     // A previous install exists; the funnel must leave it in place.
     std::fs::create_dir_all(sandbox.prefix.join("bin")).expect("bin dir");
-    let previous = sandbox.prefix.join("bin/prime-agent");
+    let previous = sandbox.prefix.join("bin/allspark");
     std::fs::write(&previous, "#!/bin/sh\necho 9.9.7-continuous.0000001\n").expect("launcher");
     make_executable(&previous);
     let url = serve(FAILING_INSTALLER);
@@ -307,7 +307,7 @@ fn installer_env(command: &mut Command, sandbox: &Sandbox) {
 fn fake_release(sandbox: &Sandbox, version: &str) -> PathBuf {
     let payload = sandbox.root.join(format!("payload-{version}"));
     std::fs::create_dir_all(&payload).expect("payload dir");
-    let binary = payload.join("prime-agent");
+    let binary = payload.join("allspark");
     std::fs::write(&binary, format!("#!/bin/sh\necho {version}\n")).expect("payload binary");
     make_executable(&binary);
     let platform = pa_core::update::install::current_platform_alias();
@@ -338,12 +338,8 @@ fn assert_ran(output: &std::process::Output, what: &str) -> String {
 
 /// The version the live payload's install marker records.
 fn live_version(sandbox: &Sandbox) -> String {
-    let marker = std::fs::read_to_string(
-        sandbox
-            .prefix
-            .join("share/prime-agent/.prime-agent-install"),
-    )
-    .expect("the live payload's marker");
+    let marker = std::fs::read_to_string(sandbox.prefix.join("share/allspark/.allspark-install"))
+        .expect("the live payload's marker");
     marker
         .lines()
         .nth(1)
@@ -361,12 +357,12 @@ fn live_version(sandbox: &Sandbox) -> String {
 fn update_archive_and_rollback_swap_installer_payloads() {
     let sandbox = Sandbox::new();
     // This build, published as an installer payload.
-    let live = sandbox.prefix.join("share/prime-agent");
+    let live = sandbox.prefix.join("share/allspark");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
     std::fs::copy(env!("CARGO_BIN_EXE_allspark"), &binary).expect("copy this build");
     std::fs::write(
-        live.join(".prime-agent-install"),
+        live.join(".allspark-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",
     )
     .expect("install marker");
@@ -420,12 +416,12 @@ fn update_archive_and_rollback_swap_installer_payloads() {
 #[test]
 fn rollback_check_answers_synchronously_without_touching_the_payload() {
     let sandbox = Sandbox::new();
-    let live = sandbox.prefix.join("share/prime-agent");
+    let live = sandbox.prefix.join("share/allspark");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
     std::fs::copy(env!("CARGO_BIN_EXE_allspark"), &binary).expect("copy this build");
     std::fs::write(
-        live.join(".prime-agent-install"),
+        live.join(".allspark-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",
     )
     .expect("install marker");
@@ -435,7 +431,7 @@ fn rollback_check_answers_synchronously_without_touching_the_payload() {
         command.arg(&script).arg("--rollback");
         installer_env(&mut command, &sandbox);
         command
-            .env("PRIME_AGENT_ROLLBACK_CHECK", "1")
+            .env("ALLSPARK_ROLLBACK_CHECK", "1")
             .output()
             .expect("run the installer's check mode")
     };
@@ -465,7 +461,7 @@ fn rollback_check_answers_synchronously_without_touching_the_payload() {
     let source = stdout.lines().last().unwrap_or_default().to_string();
     let kept = source.strip_prefix(sandbox.prefix.display().to_string().as_str());
     assert!(
-        kept.is_some_and(|rest| rest.starts_with("/share/prime-agent.old.")),
+        kept.is_some_and(|rest| rest.starts_with("/share/allspark.old.")),
         "the source names the kept generation: {source}"
     );
     assert_eq!(live_version(&sandbox), "1.0.0", "the check touched nothing");
@@ -489,12 +485,12 @@ fn rollback_check_answers_synchronously_without_touching_the_payload() {
 #[test]
 fn update_archive_refuses_a_misnamed_payload_version() {
     let sandbox = Sandbox::new();
-    let live = sandbox.prefix.join("share/prime-agent");
+    let live = sandbox.prefix.join("share/allspark");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
     std::fs::copy(env!("CARGO_BIN_EXE_allspark"), &binary).expect("copy this build");
     std::fs::write(
-        live.join(".prime-agent-install"),
+        live.join(".allspark-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",
     )
     .expect("install marker");
@@ -541,21 +537,21 @@ fn update_archive_refuses_a_misnamed_payload_version() {
 #[test]
 fn update_rollback_reads_the_unsuffixed_installer_slot() {
     let sandbox = Sandbox::new();
-    let live = sandbox.prefix.join("share/prime-agent");
+    let live = sandbox.prefix.join("share/allspark");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
     std::fs::copy(env!("CARGO_BIN_EXE_allspark"), &binary).expect("copy this build");
     std::fs::write(
-        live.join(".prime-agent-install"),
+        live.join(".allspark-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",
     )
     .expect("install marker");
     // The install.ps1 era: the replaced payload sits at the un-suffixed
     // name, and no generations record exists.
-    let slot = sandbox.prefix.join("share/prime-agent.old");
+    let slot = sandbox.prefix.join("share/allspark.old");
     std::fs::create_dir_all(&slot).expect("slot dir");
     std::fs::write(
-        slot.join(".prime-agent-install"),
+        slot.join(".allspark-install"),
         "install-rust.sh channel beta\nversion 1.0.0\n",
     )
     .expect("slot marker");
@@ -576,9 +572,7 @@ fn update_rollback_reads_the_unsuffixed_installer_slot() {
     );
     // The displaced live tree becomes a recorded generation: the machine
     // converts to the sh bookkeeping, so the toggle keeps working.
-    let record = sandbox
-        .prefix
-        .join("share/.prime-agent-install-generations");
+    let record = sandbox.prefix.join("share/.allspark-install-generations");
     assert!(
         record.exists(),
         "the publish recorded the displaced payload"
@@ -591,12 +585,12 @@ fn update_rollback_reads_the_unsuffixed_installer_slot() {
 #[test]
 fn update_rollback_without_a_kept_version_changes_nothing() {
     let sandbox = Sandbox::new();
-    let live = sandbox.prefix.join("share/prime-agent");
+    let live = sandbox.prefix.join("share/allspark");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
     std::fs::copy(env!("CARGO_BIN_EXE_allspark"), &binary).expect("copy this build");
     std::fs::write(
-        live.join(".prime-agent-install"),
+        live.join(".allspark-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",
     )
     .expect("install marker");
@@ -642,12 +636,12 @@ fn update_rollback_without_a_kept_version_changes_nothing() {
 #[test]
 fn archive_check_answers_synchronously_without_publishing() {
     let sandbox = Sandbox::new();
-    let live = sandbox.prefix.join("share/prime-agent");
+    let live = sandbox.prefix.join("share/allspark");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
     std::fs::copy(env!("CARGO_BIN_EXE_allspark"), &binary).expect("copy this build");
     std::fs::write(
-        live.join(".prime-agent-install"),
+        live.join(".allspark-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",
     )
     .expect("install marker");
@@ -657,7 +651,7 @@ fn archive_check_answers_synchronously_without_publishing() {
         command.arg(&script).arg("--archive").arg(archive);
         installer_env(&mut command, &sandbox);
         command
-            .env("PRIME_AGENT_ARCHIVE_CHECK", "1")
+            .env("ALLSPARK_ARCHIVE_CHECK", "1")
             .output()
             .expect("run the installer's check mode")
     };
@@ -700,7 +694,7 @@ fn archive_check_answers_synchronously_without_publishing() {
 fn fake_release_payload(sandbox: &Sandbox, named: &str, reported: &str) -> PathBuf {
     let payload = sandbox.root.join(format!("payload-mismatch-{named}"));
     std::fs::create_dir_all(&payload).expect("payload dir");
-    let binary = payload.join("prime-agent");
+    let binary = payload.join("allspark");
     std::fs::write(&binary, format!("#!/bin/sh\necho {reported}\n")).expect("payload binary");
     make_executable(&binary);
     let platform = pa_core::update::install::current_platform_alias();

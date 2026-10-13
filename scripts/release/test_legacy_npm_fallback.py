@@ -76,10 +76,10 @@ def exercise(args, root: Path) -> dict:
         env.update(PATH=str(wrappers) + os.pathsep + str(prefix / "bin") + os.pathsep + env["PATH"],
                    npm_config_prefix=str(prefix), npm_config_cache=str(root / "npm-cache"),
                    npm_config_ignore_scripts="true", npm_config_audit="false", npm_config_fund="false",
-                   npm_config_update_notifier="false", PRIME_AGENT_RUST_PREFIX=str(native_prefix),
-                   PRIME_AGENT_ALLOW_HTTP="1", PRIME_AGENT_DAEMON_SOCKET=str(socket),
+                   npm_config_update_notifier="false", ALLSPARK_RUST_PREFIX=str(native_prefix),
+                   ALLSPARK_ALLOW_HTTP="1", ALLSPARK_DAEMON_SOCKET=str(socket),
                    TERM="xterm-256color", ANTHROPIC_API_KEY="fixture-not-a-real-key")
-        state = Path(env["PRIME_AGENT_CODING_AGENT_DIR"])
+        state = Path(env["ALLSPARK_CODING_AGENT_DIR"])
         (state / "settings.json").write_text(json.dumps({"onboardingShown": True}))
         stamp = "2026-10-09T00:00:00.000Z"
         transcript = state / "sessions/recovery.jsonl"
@@ -102,7 +102,7 @@ def exercise(args, root: Path) -> dict:
         evidence["steps"].append(probe)
         assert npm_bridge.FALLBACK_VERSION in (probe["stdout"] + probe["stderr"]).splitlines(), probe
         assert "TypeScript" in probe["stderr"], probe
-        assert not (native_prefix / "share/prime-agent/prime-agent").exists(), "Unusable native payload was published"
+        assert not (native_prefix / "share/allspark/prime-agent").exists(), "Unusable native payload was published"
         assert public.is_symlink() and public.resolve() == cli.resolve(), "Installer overwrote the public npm recovery launcher"
         receipts = native_prefix / "share/.prime-agent-npm-bridge"
         assert not (receipts / version).exists(), "Failed migration recorded success"
@@ -130,7 +130,7 @@ def exercise(args, root: Path) -> dict:
         if args.recovery_archive:
             assert retry.returncode == 0, evidence["explicit_retry"]
             assert (receipts / expected_runtime).is_file(), "Newer release did not record successful migration"
-            assert (native_prefix / "share/prime-agent/prime-agent").is_file()
+            assert (native_prefix / "share/allspark/prime-agent").is_file()
             recovered = execute([str(public), "--version"], env)
             evidence["steps"].append(recovered)
             assert recovered["stdout"].strip() == expected_runtime, recovered
@@ -168,7 +168,7 @@ def exercise(args, root: Path) -> dict:
             # Track the fixture's daemon, worker, and inherited bootstrap children
             # before shutdown; they must stop writing before deleting their home.
             owned = set()
-            namespace = f"PRIME_AGENT_CODING_AGENT_DIR={state}".encode()
+            namespace = f"ALLSPARK_CODING_AGENT_DIR={state}".encode()
             for process in Path("/proc").iterdir():
                 if process.name.isdigit():
                     try:

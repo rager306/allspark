@@ -492,7 +492,7 @@ mod tests {
         }]});
         let hello = json!({"type":"daemon_hello", "supervisorPid":std::process::id(),
             "supervisorProcessStartId":"fixed-start", "supervisorGeneration":"generation",
-            "appVersion":"0.6.0", "protocol":{"name":"prime-agent.daemon","version":7}});
+            "appVersion":"0.6.0", "protocol":{"name":"allspark.daemon","version":7}});
         let owner = hello.clone();
         let server = tokio::spawn(async move {
             let mut prepare_key = None;
@@ -665,7 +665,7 @@ mod tests {
             let (read, mut write) = stream.into_split();
             let hello = json!({"type":"daemon_hello","supervisorPid":std::process::id(),
                 "supervisorProcessStartId":"start", "supervisorGeneration":"generation",
-                "protocol":{"name":"prime-agent.daemon","version":7}});
+                "protocol":{"name":"allspark.daemon","version":7}});
             write
                 .write_all(format!("{hello}\n").as_bytes())
                 .await

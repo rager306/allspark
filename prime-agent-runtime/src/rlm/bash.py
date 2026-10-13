@@ -998,27 +998,27 @@ def bash(command: str) -> BashHandle:
 
 def _shell() -> str:
     # Read per call so env changes made in the REPL apply to later commands.
-    override = os.environ.get("PRIME_AGENT_BASH_SHELL")
+    override = os.environ.get("ALLSPARK_BASH_SHELL")
     if override:
         if not os.path.isabs(override):
-            raise ValueError("PRIME_AGENT_BASH_SHELL must be an absolute path")
+            raise ValueError("ALLSPARK_BASH_SHELL must be an absolute path")
         return override
     if not _IS_POSIX:
         # Never consult PATH on Windows: a repo-controlled PATH could supply
-        # the shell. The host injects PRIME_AGENT_BASH_SHELL when one exists.
+        # the shell. The host injects ALLSPARK_BASH_SHELL when one exists.
         raise RuntimeError(
-            "bash() needs PRIME_AGENT_BASH_SHELL set to the absolute path of a "
+            "bash() needs ALLSPARK_BASH_SHELL set to the absolute path of a "
             "POSIX shell on Windows (e.g. install Git Bash in its default "
             "location so the host injects it)"
         )
     # PATH fallback only serves bare/standalone POSIX runtime use: the host
-    # always injects PRIME_AGENT_BASH_SHELL (an absolute path) when a shell exists.
+    # always injects ALLSPARK_BASH_SHELL (an absolute path) when a shell exists.
     shell = shutil.which("bash")
     return shell or "/bin/sh"
 
 
 def _with_prefix(command: str) -> str:
-    prefix = os.environ.get("PRIME_AGENT_BASH_COMMAND_PREFIX")
+    prefix = os.environ.get("ALLSPARK_BASH_COMMAND_PREFIX")
     return f"{prefix}\n{command}" if prefix else command
 
 
@@ -1177,8 +1177,8 @@ def _record_journal(pid: int, active: bool) -> bool:
     # failures never fail the spawn - a misconfigured owner pid is the only
     # hard False. Identity-free records (no processStartId) are valid and
     # still safely reaped on POSIX (the group-scoped kill).
-    path = os.environ.get("PRIME_AGENT_INTERNAL_ORPHAN_PROCESS_JOURNAL")
-    owner = os.environ.get("PRIME_AGENT_KERNEL_OWNER_PID")
+    path = os.environ.get("ALLSPARK_INTERNAL_ORPHAN_PROCESS_JOURNAL")
+    owner = os.environ.get("ALLSPARK_KERNEL_OWNER_PID")
     if not path or not owner:
         return True
     try:

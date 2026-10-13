@@ -274,7 +274,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn the_credential_labels_follow_the_ts_precedence() {
         let _env = env_lock();
-        std::env::remove_var("PRIME_AGENT_TRACES_API_KEY");
+        std::env::remove_var("ALLSPARK_TRACES_API_KEY");
         std::env::remove_var("PRIME_API_KEY");
         let (_dir, agent) = temp_agent_dir();
         let traces = ClientTraces::new("/tmp", agent.clone());
@@ -292,7 +292,7 @@ mod tests {
             Some("Prime Inference credential")
         );
         auth.set(
-            "prime-agent-traces",
+            "allspark-traces",
             pa_core::auth::AuthCredential::ApiKey {
                 key: "t".to_string(),
                 prime_team: None,
@@ -302,12 +302,12 @@ mod tests {
             traces.credential().await.as_deref(),
             Some("Prime Agent Traces credential")
         );
-        std::env::set_var("PRIME_AGENT_TRACES_API_KEY", "env-key");
+        std::env::set_var("ALLSPARK_TRACES_API_KEY", "env-key");
         assert_eq!(
             traces.credential().await.as_deref(),
-            Some("PRIME_AGENT_TRACES_API_KEY")
+            Some("ALLSPARK_TRACES_API_KEY")
         );
-        std::env::remove_var("PRIME_AGENT_TRACES_API_KEY");
+        std::env::remove_var("ALLSPARK_TRACES_API_KEY");
     }
 
     #[tokio::test]
@@ -345,7 +345,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn the_report_formats_the_engine_rows() {
         let _env = env_lock();
-        std::env::remove_var("PRIME_AGENT_TRACES_API_KEY");
+        std::env::remove_var("ALLSPARK_TRACES_API_KEY");
         std::env::remove_var("PRIME_API_KEY");
         let (_dir, agent) = temp_agent_dir();
         let traces = ClientTraces::new("/tmp", agent.clone());

@@ -104,7 +104,7 @@ fn graceful_shutdown(socket: &Path) {
     let command = serde_json::json!({
         "type": "command",
         "id": "test-shutdown",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
+        "protocol": { "name": "allspark.daemon", "version": 7 },
         "command": { "type": "shutdown" },
     });
     let mut line = serde_json::to_string(&command).expect("serialize");
@@ -129,7 +129,7 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
     command
         .args(["--mode", "daemon", "--daemon-socket"])
         .arg(&socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
+        .env("ALLSPARK_CODING_AGENT_DIR", &agent_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -210,7 +210,7 @@ async fn tui_export_and_share_surface() {
     std::fs::create_dir_all(&stub_dir).expect("bin dir");
     write_stub_gh(&stub_dir);
     let previous_path = std::env::var("PATH").unwrap_or_default();
-    let previous_viewer_url = std::env::var("PI_SHARE_VIEWER_URL").ok();
+    let previous_viewer_url = std::env::var("ALLSPARK_SHARE_VIEWER_URL").ok();
     std::env::set_var("PATH", format!("{}:{}", stub_dir.display(), previous_path));
 
     // The faux engine (`engine: "faux"`) drives the real agent engine, so
@@ -309,8 +309,8 @@ async fn tui_export_and_share_surface() {
 
     std::env::set_var("PATH", previous_path);
     match previous_viewer_url {
-        Some(value) => std::env::set_var("PI_SHARE_VIEWER_URL", value),
-        None => std::env::remove_var("PI_SHARE_VIEWER_URL"),
+        Some(value) => std::env::set_var("ALLSPARK_SHARE_VIEWER_URL", value),
+        None => std::env::remove_var("ALLSPARK_SHARE_VIEWER_URL"),
     }
 
     let rendered = outcome.frames.join("\n");

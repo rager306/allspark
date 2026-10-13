@@ -40,8 +40,8 @@ fn kernel_python() -> Option<PathBuf> {
         return Some(explicit);
     }
     let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
+        |_| "/home/ubuntu/.allspark/kernel-venv/bin/python".to_string(),
+        |home| format!("{home}/.allspark/kernel-venv/bin/python"),
     ));
     if candidate.exists() {
         return Some(candidate);
@@ -154,10 +154,10 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
         .arg(socket)
         .arg("--agent-dir")
         .arg(agent_dir)
-        .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
+        .env("ALLSPARK_KERNEL_PYTHON", kernel_python)
         // Hermetic agent dir: the ambient environment may export a real
         // agent dir; point every fallback at the test sandbox instead.
-        .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
+        .env("ALLSPARK_CODING_AGENT_DIR", agent_dir)
         .env_remove("PRIME_API_KEY")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -203,7 +203,7 @@ impl Client {
         self.write_line(&json!({
             "type": "command",
             "id": id,
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
+            "protocol": { "name": "allspark.daemon", "version": 7 },
             "command": command,
         }));
     }

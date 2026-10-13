@@ -14,15 +14,15 @@ try:
     bash = _prime_agent_rlm_module.bash
     import rlm.mcp as mcp
 except Exception as _prime_agent_rlm_error:
-    _PRIME_AGENT_RLM_IMPORT_ERROR = str(_prime_agent_rlm_error)
+    _ALLSPARK_RLM_IMPORT_ERROR = str(_prime_agent_rlm_error)
 
     class _PrimeAgentMissingRlm:
         def _raise_missing(self):
             raise RuntimeError(
-                "prime-agent-runtime is not installed in this kernel. "
+                "allspark-runtime is not installed in this kernel. "
                 "Remove the kernel venv (~/.allspark/kernel-venv) so allspark can rebuild it, or set "
-                "PRIME_AGENT_KERNEL_PYTHON to a kernel environment with prime-agent-runtime installed. "
-                f"Import error: {_PRIME_AGENT_RLM_IMPORT_ERROR}"
+                "ALLSPARK_KERNEL_PYTHON to a kernel environment with prime-agent-runtime installed. "
+                f"Import error: {_ALLSPARK_RLM_IMPORT_ERROR}"
             )
 
         async def spawn(self, prompt, **kwargs):
@@ -133,7 +133,7 @@ def _prime_agent_wrap_skill_module(module):
     _prime_agent_sys.modules[module.__name__] = wrapped
     return wrapped
 
-_PRIME_AGENT_SKILL_IMPORT_ERRORS = {{}}
+_ALLSPARK_SKILL_IMPORT_ERRORS = {{}}
 
 for _prime_agent_skill_name in {import_names_json}:
     try:
@@ -141,7 +141,7 @@ for _prime_agent_skill_name in {import_names_json}:
             _prime_agent_importlib.import_module(_prime_agent_skill_name)
         )
     except Exception as _prime_agent_skill_error:
-        _PRIME_AGENT_SKILL_IMPORT_ERRORS[_prime_agent_skill_name] = str(_prime_agent_skill_error)
+        _ALLSPARK_SKILL_IMPORT_ERRORS[_prime_agent_skill_name] = str(_prime_agent_skill_error)
         globals()[_prime_agent_skill_name] = _PrimeAgentUnavailableSkill(
             _prime_agent_skill_name,
             str(_prime_agent_skill_error),

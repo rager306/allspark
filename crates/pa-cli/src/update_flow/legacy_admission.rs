@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-const REGISTRY_OVERRIDE: &str = "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR";
+const REGISTRY_OVERRIDE: &str = "ALLSPARK_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR";
 const LEASE_MS: u64 = 5_000;
 
 pub(super) struct Admission {
@@ -24,7 +24,7 @@ impl Admission {
             let home =
                 pa_types::platform::home_dir().context("resolve supervisor registry home")?;
             vec![
-                home.join(".prime/supervisor-owners"),
+                home.join(".allspark/supervisor-owners"),
                 pa_daemon::socket::default_daemon_socket_path()
                     .parent()
                     .context("resolve legacy supervisor registry")?

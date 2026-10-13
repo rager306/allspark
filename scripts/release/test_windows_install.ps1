@@ -131,7 +131,7 @@ $server = Start-Process -FilePath $py -ArgumentList '-m','http.server','8123','-
 # ~/.local/bin is unprovable (a transcript line proves an attempt, not a
 # landing; a concurrent external install races the attribution) - so the
 # harness never lets the installers touch the shared dir: both routes
-# honor PRIME_AGENT_UV_BIN_DIR and the harness points it at its scratch.
+# honor ALLSPARK_UV_BIN_DIR and the harness points it at its scratch.
 # The uv PRE-STATE still guards the parity gate below - install.ps1 skips
 # its uv branch when the machine already answers uv, so the gate runs
 # only against the fresh-runner contract.
@@ -141,15 +141,15 @@ $uvWasOnPath = [bool](Get-Command uv -CommandType Application -ErrorAction Silen
 # steers all of them into its own scratch dir through the product's
 # override knobs and restores the caller's values in the cleanup (the
 # discipline install.ps1 itself runs).
-$callerKernelVenv = $env:PRIME_AGENT_KERNEL_VENV
+$callerKernelVenv = $env:ALLSPARK_KERNEL_VENV
 $callerUvCacheDir = $env:UV_CACHE_DIR
 $callerUvPythonDir = $env:UV_PYTHON_INSTALL_DIR
-$callerUvBinDir = $env:PRIME_AGENT_UV_BIN_DIR
+$callerUvBinDir = $env:ALLSPARK_UV_BIN_DIR
 try {
-    $env:PRIME_AGENT_KERNEL_VENV = Join-Path $scratch 'kernel-venv'
+    $env:ALLSPARK_KERNEL_VENV = Join-Path $scratch 'kernel-venv'
     $env:UV_CACHE_DIR = Join-Path $scratch 'uv-cache'
     $env:UV_PYTHON_INSTALL_DIR = Join-Path $scratch 'uv-python'
-    $env:PRIME_AGENT_UV_BIN_DIR = Join-Path $scratch 'uv-bin'
+    $env:ALLSPARK_UV_BIN_DIR = Join-Path $scratch 'uv-bin'
     Start-Sleep -Seconds 2
     $base = 'http://localhost:8123'
 
@@ -159,10 +159,10 @@ try {
     #    https).
     $prefixA = Join-Path $scratch 'prefix-a'
     New-Item -ItemType Directory -Path $prefixA | Out-Null
-    $env:PRIME_AGENT_DOWNLOAD_BASE_URL = $base
-    $env:PRIME_AGENT_RELEASE_CHANNEL = 'stable'
-    $env:PRIME_AGENT_RUST_PREFIX = $prefixA
-    $env:PRIME_AGENT_ALLOW_HTTP = '1'
+    $env:ALLSPARK_DOWNLOAD_BASE_URL = $base
+    $env:ALLSPARK_RELEASE_CHANNEL = 'stable'
+    $env:ALLSPARK_RUST_PREFIX = $prefixA
+    $env:ALLSPARK_ALLOW_HTTP = '1'
     # The transcript is captured (the fallback harness's pattern): it is the
     # uv gate's evidence below - the branch's own verdict, not the network's.
     $ps1Lines = @(& pwsh -File (Join-Path $repo 'install.ps1') 2>&1 | ForEach-Object { "$_" })
@@ -193,10 +193,10 @@ try {
     New-Item -ItemType Directory -Path $prefixB | Out-Null
     $bash = 'C:\Program Files\Git\bin\bash.exe'
     if (-not (Test-Path $bash)) { throw "Git Bash is required for the sh route: $bash" }
-    $env:PRIME_AGENT_DOWNLOAD_BASE_URL = $base
-    $env:PRIME_AGENT_RELEASE_CHANNEL = 'stable'
-    $env:PRIME_AGENT_RUST_PREFIX = $prefixB
-    $env:PRIME_AGENT_ALLOW_HTTP = '1'
+    $env:ALLSPARK_DOWNLOAD_BASE_URL = $base
+    $env:ALLSPARK_RELEASE_CHANNEL = 'stable'
+    $env:ALLSPARK_RUST_PREFIX = $prefixB
+    $env:ALLSPARK_ALLOW_HTTP = '1'
     & $bash (Join-Path $repo 'install-rust.sh')
     if ($LASTEXITCODE -ne 0) { throw 'install-rust.sh failed under Git Bash' }
     $shLauncher = Join-Path $prefixB 'bin\prime-agent'
@@ -249,12 +249,12 @@ try {
         if ($envKey) { $envKey.Close() }
     }
     # The uv install needs no cleanup: it never left the scratch dir (the
-    # PRIME_AGENT_UV_BIN_DIR knob above steered both installers), and the
+    # ALLSPARK_UV_BIN_DIR knob above steered both installers), and the
     # user's ~/.local/bin was never touched at all.
-    $env:PRIME_AGENT_KERNEL_VENV = $callerKernelVenv
+    $env:ALLSPARK_KERNEL_VENV = $callerKernelVenv
     $env:UV_CACHE_DIR = $callerUvCacheDir
     $env:UV_PYTHON_INSTALL_DIR = $callerUvPythonDir
-    $env:PRIME_AGENT_UV_BIN_DIR = $callerUvBinDir
+    $env:ALLSPARK_UV_BIN_DIR = $callerUvBinDir
     Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue
     if ($pathCleanFailed) {
         throw 'could not clean the user PATH entries this test added'

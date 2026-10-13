@@ -52,16 +52,16 @@ use serde_json::{json, Value};
 /// Env keys this box's own worker sets; they must not leak into spawned
 /// daemons. `PI_PACKAGE_DIR` too: a Rust-checkout value kills the TS CLI.
 const SCRUB_ENV: [&str; 10] = [
-    "PRIME_AGENT_INTERNAL_DAEMON_WORKER",
-    "PRIME_AGENT_INTERNAL_DAEMON_WORKER_TOKEN",
-    "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID",
-    "PRIME_AGENT_INTERNAL_DAEMON_WORKER_INSTANCE_ID",
-    "PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL",
-    "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET",
-    "PRIME_AGENT_INTERNAL_ORPHAN_PROCESS_JOURNAL",
-    "PRIME_AGENT_INTERNAL_SESSION_LEASES",
-    "PRIME_AGENT_INTERNAL_SESSION_LEASE_OWNER_ID",
-    "PI_PACKAGE_DIR",
+    "ALLSPARK_INTERNAL_DAEMON_WORKER",
+    "ALLSPARK_INTERNAL_DAEMON_WORKER_TOKEN",
+    "ALLSPARK_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID",
+    "ALLSPARK_INTERNAL_DAEMON_WORKER_INSTANCE_ID",
+    "ALLSPARK_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL",
+    "ALLSPARK_INTERNAL_DAEMON_SUPERVISOR_SOCKET",
+    "ALLSPARK_INTERNAL_ORPHAN_PROCESS_JOURNAL",
+    "ALLSPARK_INTERNAL_SESSION_LEASES",
+    "ALLSPARK_INTERNAL_SESSION_LEASE_OWNER_ID",
+    pa_types::identity::PACKAGE_DIR_ENV,
 ];
 
 /// Locate the built `pa-daemon` binary next to this crate's `prime-agent`
@@ -118,7 +118,7 @@ fn spawn_daemon(binary: &Path, socket: &Path, agent_dir: &Path) -> Daemon {
         .arg(socket)
         .arg("--agent-dir")
         .arg(agent_dir)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
+        .env("ALLSPARK_CODING_AGENT_DIR", agent_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     for key in SCRUB_ENV {
@@ -175,7 +175,7 @@ impl Wire {
         let envelope = json!({
             "type": "command",
             "id": id,
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
+            "protocol": { "name": "allspark.daemon", "version": 7 },
             "command": command,
         });
         let mut line = serde_json::to_string(&envelope).expect("serialize command");
@@ -247,7 +247,7 @@ fn run_cli(binary: &Path, dir: &Path, agent_dir: &Path, args: &[&str]) -> Output
     command
         .args(args)
         .current_dir(dir)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
+        .env("ALLSPARK_CODING_AGENT_DIR", agent_dir)
         .env("TMPDIR", dir);
     for key in SCRUB_ENV {
         command.env_remove(key);
@@ -785,7 +785,7 @@ fn ts_daemon_differential_cli_output() {
         // The TS CLI resolves its manifest by walking up from the cwd; a Rust
         // checkout has no package.json, so run from the scratch work dir.
         .current_dir(&work)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
+        .env("ALLSPARK_CODING_AGENT_DIR", &agent_dir)
         .env("TMPDIR", dir.path())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

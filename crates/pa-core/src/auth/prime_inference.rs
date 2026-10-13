@@ -40,12 +40,12 @@ impl PrimeInferenceAuthConfig {
 pub fn resolve_prime_inference_auth_config() -> PrimeInferenceAuthConfig {
     PrimeInferenceAuthConfig {
         base_url: normalize_base_url(
-            std::env::var("PRIME_AGENT_INFERENCE_API_BASE_URL")
+            std::env::var("ALLSPARK_INFERENCE_API_BASE_URL")
                 .ok()
                 .as_deref(),
         ),
         frontend_url: normalize_url(
-            std::env::var("PRIME_AGENT_INFERENCE_FRONTEND_URL")
+            std::env::var("ALLSPARK_INFERENCE_FRONTEND_URL")
                 .ok()
                 .as_deref(),
             DEFAULT_PRIME_FRONTEND_URL,

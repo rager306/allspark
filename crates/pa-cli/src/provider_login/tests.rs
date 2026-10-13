@@ -127,7 +127,7 @@ async fn login_options_list_providers_only() {
     let dir = tempfile::tempdir().expect("temp dir");
     let agent = dir.path().join("agent");
     std::fs::create_dir_all(&agent).expect("agent dir");
-    std::env::remove_var("PRIME_AGENT_TRACES_API_KEY");
+    std::env::remove_var("ALLSPARK_TRACES_API_KEY");
     std::env::remove_var("PRIME_API_KEY");
     let auth = ProviderAuth::new(dir.path(), agent.clone());
     let rows = auth.login_options().await;

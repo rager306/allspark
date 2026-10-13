@@ -486,7 +486,7 @@ impl SessionUi {
             // down; there is no busy guard to keep). The confirm carries
             // the preserve invariant: the update uninstalls the
             // TypeScript version and installs the latest Rust build;
-            // sessions and configuration (~/.prime/agent) are never
+            // sessions and configuration (~/.allspark) are never
             // touched.
             "update" => {
                 if !resolved.args.trim().is_empty() {
@@ -507,7 +507,7 @@ impl SessionUi {
                 // confirm renders each line truncated, never wrapped).
                 view.confirm = Some(crate::confirm::ConfirmPanel::yes_no(
                     "Update Prime Agent",
-                    "Update uninstalls the TypeScript version and installs the latest Rust build;\nyour sessions and configuration (~/.prime/agent) are never touched.\n\nThe update runs in the background — restart prime-agent after it\nfinishes to run the new build.",
+                    "Update uninstalls the TypeScript version and installs the latest Rust build;\nyour sessions and configuration (~/.allspark) are never touched.\n\nThe update runs in the background — restart allspark after it\nfinishes to run the new build.",
                 ));
                 self.pending_confirm = Some(PendingConfirm::Update);
                 self.dirty = true;

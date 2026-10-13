@@ -58,7 +58,7 @@ pub fn update_user_agent(version: &str) -> String {
 }
 
 /// Fetch and validate the channel's latest release.
-/// `PI_SKIP_VERSION_CHECK`/`PI_OFFLINE` short-circuit to `None`; a missing or
+/// `PI_SKIP_VERSION_CHECK`/`ALLSPARK_OFFLINE` short-circuit to `None`; a missing or
 /// malformed manifest is `None`, never an error - `Planning` decides skip.
 ///
 /// # Errors
@@ -70,7 +70,9 @@ pub async fn latest_release(
     base_url: &str,
     timeout: Duration,
 ) -> Result<Option<LatestRelease>> {
-    if std::env::var("PI_SKIP_VERSION_CHECK").is_ok() || std::env::var("PI_OFFLINE").is_ok() {
+    if std::env::var("ALLSPARK_SKIP_VERSION_CHECK").is_ok()
+        || std::env::var("ALLSPARK_OFFLINE").is_ok()
+    {
         return Ok(None);
     }
     let manifest_path =

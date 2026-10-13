@@ -47,7 +47,7 @@ Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui
   `status.json` — TS status-file shape, `prepared/<id>/{roster,marker}.json`),
   the roster-snapshot projection (sessions/workers/subagents/heartbeats,
   durable session ids, heartbeat re-arm fields only), the timeout-budget
-  table with `PRIME_AGENT_UPDATE_*_MS` overrides, and the artifact path
+  table with `ALLSPARK_UPDATE_*_MS` overrides, and the artifact path
   layout under `<agent-dir>/update-restarts/`. Pure serde + pure data
   helpers; the FSM drivers and watchdogs are owned by pa-daemon/pa-cli. The
   prepare/commit wire commands (`prepare_update_restart`/`

@@ -27,7 +27,7 @@ use std::time::Duration;
 use pa_tui::agents_view::{AgentsHeadlessPlan, AgentsStep, AgentsViewOptions, AgentsViewUiMode};
 use serde_json::{json, Value};
 
-/// Environment mutations are process-global: the `PRIME_AGENT_CODING_AGENT_DIR` redirect serializes
+/// Environment mutations are process-global: the `ALLSPARK_CODING_AGENT_DIR` redirect serializes
 /// on one lock and restores on exit. A tokio mutex (a std guard across an await is a clippy error).
 static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -66,7 +66,7 @@ impl MockSupervisor {
                 &mut writer,
                 &json!({
                     "type": "daemon_hello",
-                    "protocol": { "name": "prime-agent.daemon", "version": 7 },
+                    "protocol": { "name": "allspark.daemon", "version": 7 },
                     "serverCapabilities": [],
                 }),
             );
@@ -206,8 +206,8 @@ fn supervisor_start_line() -> String {
         "ts": iso_ago(600_000),
         "level": "warn",
         "component": "coding-agent.daemon-supervisor",
-        "msg": "Prime Agent daemon supervisor e14de15c listening on /tmp/prime-agent-501/daemon.sock",
-        "socketPath": "/tmp/prime-agent-501/daemon.sock",
+        "msg": "Prime Agent daemon supervisor e14de15c listening on /tmp/allspark-501/daemon.sock",
+        "socketPath": "/tmp/allspark-501/daemon.sock",
         "pid": 15026,
     })
     .to_string()
@@ -263,8 +263,8 @@ async fn renders_the_collapsed_worker_crash_notice_line() {
         format!("{}\n{}\n", supervisor_start_line(), worker_crash_line()),
     )
     .expect("write fixture log");
-    let previous = std::env::var_os("PRIME_AGENT_CODING_AGENT_DIR");
-    std::env::set_var("PRIME_AGENT_CODING_AGENT_DIR", agent_dir.path());
+    let previous = std::env::var_os("ALLSPARK_CODING_AGENT_DIR");
+    std::env::set_var("ALLSPARK_CODING_AGENT_DIR", agent_dir.path());
 
     let plan = AgentsHeadlessPlan {
         steps: vec![AgentsStep::WaitSettle { timeout_ms: 2_500 }],
@@ -281,8 +281,8 @@ async fn renders_the_collapsed_worker_crash_notice_line() {
     .outcome;
 
     match previous {
-        Some(previous) => std::env::set_var("PRIME_AGENT_CODING_AGENT_DIR", previous),
-        None => std::env::remove_var("PRIME_AGENT_CODING_AGENT_DIR"),
+        Some(previous) => std::env::set_var("ALLSPARK_CODING_AGENT_DIR", previous),
+        None => std::env::remove_var("ALLSPARK_CODING_AGENT_DIR"),
     }
 
     let frames_text = outcome.frames.join("\n");
@@ -325,8 +325,8 @@ async fn dismisses_with_esc_and_the_dismissal_survives_reentry() {
         format!("{}\n{}\n", supervisor_start_line(), worker_crash_line()),
     )
     .expect("write fixture log");
-    let previous = std::env::var_os("PRIME_AGENT_CODING_AGENT_DIR");
-    std::env::set_var("PRIME_AGENT_CODING_AGENT_DIR", agent_dir.path());
+    let previous = std::env::var_os("ALLSPARK_CODING_AGENT_DIR");
+    std::env::set_var("ALLSPARK_CODING_AGENT_DIR", agent_dir.path());
 
     let plan = AgentsHeadlessPlan {
         steps: vec![
@@ -375,8 +375,8 @@ async fn dismisses_with_esc_and_the_dismissal_survives_reentry() {
             .outcome;
 
     match previous {
-        Some(previous) => std::env::set_var("PRIME_AGENT_CODING_AGENT_DIR", previous),
-        None => std::env::remove_var("PRIME_AGENT_CODING_AGENT_DIR"),
+        Some(previous) => std::env::set_var("ALLSPARK_CODING_AGENT_DIR", previous),
+        None => std::env::remove_var("ALLSPARK_CODING_AGENT_DIR"),
     }
 
     let frames_text = second.frames.join("\n");
@@ -409,8 +409,8 @@ async fn esc_cancels_an_armed_delete_confirmation_and_keeps_the_notice() {
         format!("{}\n{}\n", supervisor_start_line(), worker_crash_line()),
     )
     .expect("write fixture log");
-    let previous = std::env::var_os("PRIME_AGENT_CODING_AGENT_DIR");
-    std::env::set_var("PRIME_AGENT_CODING_AGENT_DIR", agent_dir.path());
+    let previous = std::env::var_os("ALLSPARK_CODING_AGENT_DIR");
+    std::env::set_var("ALLSPARK_CODING_AGENT_DIR", agent_dir.path());
 
     // ctrl+x arms the stop-or-delete confirm over the selected row; Esc must cancel it and keep the
     // notice, or the next ctrl+x would fire without a fresh confirmation.
@@ -433,8 +433,8 @@ async fn esc_cancels_an_armed_delete_confirmation_and_keeps_the_notice() {
     .outcome;
 
     match previous {
-        Some(previous) => std::env::set_var("PRIME_AGENT_CODING_AGENT_DIR", previous),
-        None => std::env::remove_var("PRIME_AGENT_CODING_AGENT_DIR"),
+        Some(previous) => std::env::set_var("ALLSPARK_CODING_AGENT_DIR", previous),
+        None => std::env::remove_var("ALLSPARK_CODING_AGENT_DIR"),
     }
 
     // The run exited through the empty-editor Esc (the delete confirm consumed the dismissal), and

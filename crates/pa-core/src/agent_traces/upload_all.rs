@@ -125,7 +125,7 @@ pub async fn upload_all_traces(options: &TraceUploadAllOptions<'_>) -> TraceUplo
         || {
             // The env override expanded, else the agent dir's sessions
             // directory.
-            match std::env::var_os("PRIME_AGENT_SESSION_DIR") {
+            match std::env::var_os("ALLSPARK_SESSION_DIR") {
                 Some(dir) if !dir.is_empty() => resolve_path(Path::new(&dir)),
                 _ => options.agent_dir.join("sessions"),
             }

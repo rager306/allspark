@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn durations_in_anomalies_report_the_cluster_span() {
-        let daemon_a = "/tmp/prime-agent-501/daemon.sock";
+        let daemon_a = "/tmp/allspark-501/daemon.sock";
         let daemon_b = "/tmp/other/daemon.sock";
         let minute = 60_000;
         let base = 1_789_070_400_000; // 2026-09-10T20:00:00Z
@@ -260,9 +260,7 @@ mod tests {
         ];
         let anomalies = compute_incident_anomalies(&events);
         let summaries: Vec<&str> = anomalies.iter().map(|a| a.summary.as_str()).collect();
-        assert!(
-            summaries.contains(&"/tmp/prime-agent-501/daemon.sock: 4 command timeouts over 19m")
-        );
+        assert!(summaries.contains(&"/tmp/allspark-501/daemon.sock: 4 command timeouts over 19m"));
         assert!(summaries.contains(&"/tmp/other/daemon.sock: 3 command timeouts over 27m"));
         // The stall anchors at the cluster's first timeout.
         let daemon_a_stall = anomalies
@@ -276,7 +274,7 @@ mod tests {
     fn isolated_failures_days_apart_never_merge() {
         let base = 1_789_070_400_000; // 2026-09-10T20:00:00Z
         let day = 86_400_000;
-        let subject = "/tmp/prime-agent-501/daemon.sock";
+        let subject = "/tmp/allspark-501/daemon.sock";
         let events = vec![
             burst_event(subject, base),
             burst_event(subject, base + 2 * day),
@@ -297,7 +295,7 @@ mod tests {
     fn bursts_of_command_failures_surface_as_warnings() {
         let base = 1_789_070_400_000; // 2026-09-10T20:00:00Z
         let events: Vec<IncidentEvent> = (1..=3)
-            .map(|index| burst_event("/tmp/prime-agent-501/daemon.sock", base + index * 60_000))
+            .map(|index| burst_event("/tmp/allspark-501/daemon.sock", base + index * 60_000))
             .collect();
         let anomalies = compute_incident_anomalies(&events);
         assert!(anomalies

@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use super::jsonrpc;
 use super::meta::{
     prime_agent_meta, PrimeAgentEventPhase, PrimeAgentOutcome, PrimeAgentSessionMeta,
-    PRIME_AGENT_META_NAMESPACE,
+    ALLSPARK_META_NAMESPACE,
 };
 use super::types::AcpSessionUpdate;
 use serde_json::{json, Value};
@@ -162,7 +162,7 @@ impl UpdateProducer {
         let namespace = meta
             .as_object_mut()
             .expect("_meta is a namespaced object")
-            .entry(PRIME_AGENT_META_NAMESPACE.to_string())
+            .entry(ALLSPARK_META_NAMESPACE.to_string())
             .or_insert_with(|| json!({}));
         let mut payload =
             serde_json::from_value::<PrimeAgentSessionMeta>(namespace.clone()).unwrap_or_default();

@@ -1,6 +1,6 @@
 //! Orphan-process journal: the runtime journals every `bash()` process group
 //! under the kernel pid into the file named by
-//! `PRIME_AGENT_INTERNAL_ORPHAN_PROCESS_JOURNAL`; the host reaps those
+//! `ALLSPARK_INTERNAL_ORPHAN_PROCESS_JOURNAL`; the host reaps those
 //! groups when a killed/crashed kernel cannot run its own shutdown hook.
 
 use std::collections::HashMap;
@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 
 /// Environment variable naming the journal file.
-pub const ORPHAN_PROCESS_JOURNAL_ENV: &str = "PRIME_AGENT_INTERNAL_ORPHAN_PROCESS_JOURNAL";
+pub const ORPHAN_PROCESS_JOURNAL_ENV: &str = "ALLSPARK_INTERNAL_ORPHAN_PROCESS_JOURNAL";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveOrphanProcess {

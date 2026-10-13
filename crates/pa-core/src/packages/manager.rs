@@ -1,6 +1,6 @@
 //! `PackageManager`: install/remove/list/update of package sources against
 //! the settings store. `user` installs into the agent directory and global
-//! npm root; `project` into `.prime/agent` and the project npm prefix;
+//! npm root; `project` into `.allspark` and the project npm prefix;
 //! local sources bind by path, persisted relative to their settings base.
 
 use std::path::{Path, PathBuf};

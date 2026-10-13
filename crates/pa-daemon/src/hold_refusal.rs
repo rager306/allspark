@@ -102,28 +102,28 @@ fn classify_from(exe: Option<&Path>, own_exe: Option<&Path>) -> HolderFlavor {
     }
     if components
         .iter()
-        .any(|component| component == "prime-agent-rust")
+        .any(|component| matches!(component.as_str(), "allspark-rust" | "prime-agent-rust"))
     {
         return HolderFlavor::ThisBuild;
     }
     // The keyword-takeover install layout: the payload sits DIRECTLY
-    // inside the share dir (`.../share/prime-agent/prime-agent`), while a
+    // inside the share dir (`.../share/allspark/allspark`), while a
     // TS release binary sits one level deeper
-    // (`.../releases/<name>/prime-agent`), so the parent component claims
+    // (`.../releases/<name>/allspark`), so the parent component claims
     // this product.
-    if components.len() >= 2 && components.last().map(String::as_str) == Some("prime-agent") {
+    if components.len() >= 2 && components.last().map(String::as_str) == Some("allspark") {
         let parent = components[components.len() - 2].as_str();
         // The parent alone is the layout signal (a TS release binary's
-        // parent is the release name, never `prime-agent`).
+        // parent is the release name, never `allspark`).
         let is_publish_byproduct =
-            parent.starts_with("prime-agent.old.") || parent.starts_with("prime-agent.stage.");
-        if parent == "prime-agent" || is_publish_byproduct {
+            parent.starts_with("allspark.old.") || parent.starts_with("allspark.stage.");
+        if parent == "allspark" || is_publish_byproduct {
             return HolderFlavor::ThisBuild;
         }
     }
     // The exe filename gate keeps a node/bun/deno runtime that merely runs
-    // FROM a `prime-agent`-named directory from claiming this build: only
-    // the payload binary named `prime-agent` is claimed.
+    // FROM an `allspark`-named directory from claiming this build: only
+    // the payload binary named `allspark` is claimed.
     if let Some(index) = components
         .iter()
         .position(|component| component == "target")
@@ -292,8 +292,8 @@ the same daemon, so this build cannot open the file while that process holds it.
             ));
             lines.push(String::new());
             lines.push("• Continue where you left off:".to_string());
-            // The Rust port owns the `prime-agent` keyword, so naming
-            // `prime-agent --resume` here would launch THIS build. The
+            // The Rust port owns the `allspark` keyword, so naming
+            // `allspark --resume` here would launch THIS build. The
             // continue path names the TypeScript binary that holds the
             // lease, derived from the holder's live process image.
             match (holder_exe, id) {
@@ -317,13 +317,13 @@ the same daemon, so this build cannot open the file while that process holds it.
                 }
                 _ => {
                     lines.push(
-                        "  (continue in the TypeScript product — its daemon owns this session; the prime-agent keyword launches this Rust build, so use the TypeScript binary from its preserved install)"
+                        "  (continue in the TypeScript product — its daemon owns this session; the allspark keyword launches this Rust build, so use the TypeScript binary from its preserved install)"
                             .to_string(),
                     );
                 }
             }
             lines.push(String::new());
-            lines.extend(take_over_lines(hold, "prime-agent", holder_exe));
+            lines.extend(take_over_lines(hold, "allspark", holder_exe));
         }
         HolderFlavor::ThisBuild => {
             lines.push(format!(
@@ -335,7 +335,7 @@ runtime lease."
             lines.push("• Continue where you left off:".to_string());
             if let Some(id) = id {
                 lines.push(format!(
-                    "  prime-agent --daemon-socket <socket> --resume {}",
+                    "  allspark --daemon-socket <socket> --resume {}",
                     shell_quote(&single_line(id))
                 ));
                 lines.push(
@@ -344,7 +344,7 @@ you started it — that daemon owns this session)"
                         .to_string(),
                 );
             } else {
-                lines.push("  prime-agent --resume".to_string());
+                lines.push("  allspark --resume".to_string());
                 lines.push(
                     "  (switch to the window or shell where that instance is running — its \
 daemon owns this session)"
@@ -352,7 +352,7 @@ daemon owns this session)"
                 );
             }
             lines.push(String::new());
-            lines.extend(take_over_lines(hold, "prime-agent", holder_exe));
+            lines.extend(take_over_lines(hold, "allspark", holder_exe));
         }
         HolderFlavor::AnotherProcess => {
             lines.push(format!(
@@ -361,7 +361,7 @@ daemon owns this session)"
 runtime lease."
             ));
             lines.push(String::new());
-            lines.extend(take_over_lines(hold, "prime-agent", holder_exe));
+            lines.extend(take_over_lines(hold, "allspark", holder_exe));
         }
     }
     lines.push(String::new());
@@ -424,7 +424,7 @@ Session: ts01ab";
 
         let message = refusal_for_flavor(HolderFlavor::TypeScriptProduct, &hold, None, None);
         assert!(
-            message.contains("the prime-agent keyword launches this Rust build"),
+            message.contains("the allspark keyword launches this Rust build"),
             "the unresolvable-exe continue path states the takeover: {message}"
         );
         assert!(
@@ -480,7 +480,7 @@ Session: ts01ab";
             "a runtime image never becomes the resume command: {message}"
         );
         assert!(
-            message.contains("the prime-agent keyword launches this Rust build"),
+            message.contains("the allspark keyword launches this Rust build"),
             "the runtime holder gets the takeover wording: {message}"
         );
 
@@ -508,7 +508,7 @@ Session: ts01ab";
         };
         let message = refusal_for_flavor(HolderFlavor::ThisBuild, &hold, None, None);
         assert!(
-            message.contains("prime-agent --daemon-socket <socket> --resume 'rs01cd'"),
+            message.contains("allspark --daemon-socket <socket> --resume 'rs01cd'"),
             "the attach command names the flag and the session: {message}"
         );
         assert!(
@@ -530,7 +530,7 @@ Session: ts01ab";
             "the anonymous holder id renders: {message}"
         );
         assert!(
-            message.contains("prime-agent shutdown --force"),
+            message.contains("allspark shutdown --force"),
             "without a pid the sweep command is the take-over path: {message}"
         );
     }
@@ -592,37 +592,35 @@ Session: ts01ab";
     /// `prime-agent` substring family, so their checks must win first.
     #[test]
     fn the_holder_classification_matrix() {
-        let own = Path::new("/Users/k/.local/share/prime-agent/prime-agent");
+        let own = Path::new("/Users/k/.local/share/allspark/allspark");
         assert_eq!(classify_from(Some(own), Some(own)), HolderFlavor::ThisBuild);
         assert_eq!(
             classify_from(
-                Some(Path::new("/Users/k/.local/share/prime-agent/prime-agent")),
-                Some(Path::new("/opt/pa/prime-agent"))
+                Some(Path::new("/Users/k/.local/share/allspark/allspark")),
+                Some(Path::new("/opt/pa/allspark"))
             ),
             HolderFlavor::ThisBuild
         );
         // A daemon still running from the renamed rollback tree.
         assert_eq!(
             classify_from(
-                Some(Path::new(
-                    "/Users/k/.local/share/prime-agent.old.123/prime-agent"
-                )),
-                Some(Path::new("/opt/pa/prime-agent"))
+                Some(Path::new("/Users/k/.local/share/allspark.old.123/allspark")),
+                Some(Path::new("/opt/pa/allspark"))
             ),
             HolderFlavor::ThisBuild
         );
         // The pre-takeover install dir: still this product.
         assert_eq!(
             classify_from(
-                Some(Path::new("/opt/pa/prime-agent-rust")),
-                Some(Path::new("/opt/pa/prime-agent"))
+                Some(Path::new("/opt/pa/allspark-rust")),
+                Some(Path::new("/opt/pa/allspark"))
             ),
             HolderFlavor::ThisBuild
         );
         // A cargo dev build: the /target/ shape names this product.
         assert_eq!(
             classify_from(
-                Some(Path::new("/w/repo/target/release/prime-agent")),
+                Some(Path::new("/w/repo/target/release/allspark")),
                 Some(own)
             ),
             HolderFlavor::ThisBuild
@@ -657,9 +655,7 @@ Session: ts01ab";
         // mis-reject the flat takeover layout.
         assert_eq!(
             classify_from(
-                Some(Path::new(
-                    "/opt/releases/user/share/prime-agent/prime-agent"
-                )),
+                Some(Path::new("/opt/releases/user/share/allspark/allspark")),
                 Some(own)
             ),
             HolderFlavor::ThisBuild
@@ -667,7 +663,7 @@ Session: ts01ab";
         assert_eq!(
             classify_from(
                 Some(Path::new(
-                    "/Users/k/.local/share/prime-agent.old.123/prime-agent (deleted)"
+                    "/Users/k/.local/share/allspark.old.123/allspark (deleted)"
                 )),
                 Some(own)
             ),
@@ -716,7 +712,7 @@ Session: ts01ab";
             HolderFlavor::AnotherProcess
         );
         // The own-exe equality wins even under the prime-agent substring.
-        let dev = Path::new("/w/repo/target/debug/prime-agent");
+        let dev = Path::new("/w/repo/target/debug/allspark");
         assert_eq!(classify_from(Some(dev), Some(dev)), HolderFlavor::ThisBuild);
     }
 

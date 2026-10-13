@@ -22,8 +22,8 @@ fn run(args: &[&str], script: &serde_json::Value) -> (String, String, i32) {
     let output = Command::new(bin)
         .args(args)
         .env("HOME", home.path())
-        .env("PRIME_AGENT_AGENT_DIR", home.path().join("agent"))
-        .env("PRIME_AGENT_FAUX_SCRIPT", script.to_string())
+        .env("ALLSPARK_AGENT_DIR", home.path().join("agent"))
+        .env("ALLSPARK_FAUX_SCRIPT", script.to_string())
         .env_remove("RLM_DEPTH")
         .current_dir(home.path())
         .output()
@@ -114,11 +114,11 @@ fn run_in_home(
     let output = Command::new(bin)
         .args(args)
         .env("HOME", home)
-        .env("PRIME_AGENT_FAUX_SCRIPT", script.to_string())
+        .env("ALLSPARK_FAUX_SCRIPT", script.to_string())
         // Keep the isolated HOME authoritative: ambient dir overrides stay out.
-        .env_remove("PRIME_AGENT_CODING_AGENT_DIR")
-        .env_remove("PRIME_AGENT_SESSION_DIR")
-        .env_remove("PRIME_AGENT_CODING_AGENT_SESSION_DIR")
+        .env_remove("ALLSPARK_CODING_AGENT_DIR")
+        .env_remove("ALLSPARK_SESSION_DIR")
+        .env_remove("ALLSPARK_CODING_AGENT_SESSION_DIR")
         .env_remove("RLM_DEPTH")
         .current_dir(home)
         .output()
@@ -131,7 +131,7 @@ fn run_in_home(
 }
 
 fn session_files(home: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let dir = home.join(".prime/agent/sessions");
+    let dir = home.join(".allspark/sessions");
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
         .map(|entries| {
             entries
@@ -187,7 +187,7 @@ fn print_mode_goal_cap_reports_the_reason_and_exits_one() {
 /// under the agent dir's `session-leases`).
 fn leased_session_files(home: &std::path::Path) -> Vec<String> {
     let mut leased = Vec::new();
-    let Ok(entries) = std::fs::read_dir(home.join(".prime/agent/session-leases")) else {
+    let Ok(entries) = std::fs::read_dir(home.join(".allspark/session-leases")) else {
         return leased;
     };
     for entry in entries.flatten() {
@@ -885,10 +885,10 @@ fn run_in_home_cwd(
     let output = Command::new(bin)
         .args(args)
         .env("HOME", home)
-        .env("PRIME_AGENT_FAUX_SCRIPT", script.to_string())
-        .env_remove("PRIME_AGENT_CODING_AGENT_DIR")
-        .env_remove("PRIME_AGENT_SESSION_DIR")
-        .env_remove("PRIME_AGENT_CODING_AGENT_SESSION_DIR")
+        .env("ALLSPARK_FAUX_SCRIPT", script.to_string())
+        .env_remove("ALLSPARK_CODING_AGENT_DIR")
+        .env_remove("ALLSPARK_SESSION_DIR")
+        .env_remove("ALLSPARK_CODING_AGENT_SESSION_DIR")
         .env_remove("RLM_DEPTH")
         .current_dir(cwd)
         .output()
@@ -1031,7 +1031,7 @@ fn print_mode_fork_imports_a_global_session_into_this_cwd() {
 fn print_mode_fork_rejects_empty_sources_and_conflicting_flags() {
     let home = isolated_home();
     // An empty session file, addressed by path.
-    let sessions = home.path().join(".prime/agent/sessions");
+    let sessions = home.path().join(".allspark/sessions");
     std::fs::create_dir_all(&sessions).expect("sessions dir");
     let empty = sessions.join("empty-session.jsonl");
     std::fs::write(&empty, "").expect("empty session");

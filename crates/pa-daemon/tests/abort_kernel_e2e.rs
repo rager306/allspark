@@ -16,8 +16,8 @@ use serde_json::{json, Value};
 /// note) on machines without a live install.
 fn kernel_python() -> Option<PathBuf> {
     let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
+        |_| "/home/ubuntu/.allspark/kernel-venv/bin/python".to_string(),
+        |home| format!("{home}/.allspark/kernel-venv/bin/python"),
     ));
     if candidate.exists() {
         return Some(candidate);
@@ -86,10 +86,10 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, script: &Path) -> Superviso
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .env_remove("PRIME_API_KEY")
-        .env_remove("PRIME_AGENT_CODING_AGENT_DIR")
+        .env_remove("ALLSPARK_CODING_AGENT_DIR")
         .env(pa_daemon::worker::WORKER_SCRIPT_ENV, script)
         .env(
-            "PRIME_AGENT_KERNEL_PYTHON",
+            "ALLSPARK_KERNEL_PYTHON",
             kernel_python().expect("kernel python"),
         )
         .env(
@@ -157,7 +157,7 @@ impl Client {
         let envelope = json!({
             "type": "command",
             "id": id,
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
+            "protocol": { "name": "allspark.daemon", "version": 7 },
             "command": command,
         });
         let mut line = serde_json::to_string(&envelope).expect("serialize");

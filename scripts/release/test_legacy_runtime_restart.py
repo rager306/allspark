@@ -131,13 +131,13 @@ def main():
         endpoint = temporary / "daemon.sock"
         env = dict(os.environ)
         for key in list(env):
-            if key.startswith(("PI_", "PRIME_AGENT_")):
+            if key.startswith(("PI_", "ALLSPARK_")):
                 del env[key]
         env.update(HOME=str(home), TMPDIR=str(temporary), DO_NOT_TRACK="1",
                    XDG_CONFIG_HOME=str(home / ".config"), XDG_DATA_HOME=str(home / ".local/share"),
                    XDG_CACHE_HOME=str(home / ".cache"),
-                   PRIME_AGENT_CODING_AGENT_DIR=str(agent), PRIME_AGENT_OFFLINE="1",
-                   PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR=str(root / "owners"))
+                   ALLSPARK_CODING_AGENT_DIR=str(agent), ALLSPARK_OFFLINE="1",
+                   ALLSPARK_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR=str(root / "owners"))
         with (root / "old.log").open("w") as log:
             old = subprocess.Popen(old_command + ["--mode", "daemon", "--daemon-socket", str(endpoint)],
                                    env=env, cwd=root, stdout=log, stderr=subprocess.STDOUT)

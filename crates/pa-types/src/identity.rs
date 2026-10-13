@@ -17,12 +17,32 @@ pub const BINARY_NAME: &str = "allspark";
 /// (sessions, settings, auth, kernel venv, daemon sockets derive from it).
 pub const CONFIG_DIR_NAME: &str = ".allspark";
 
-/// The fork package-dir override checked before the legacy
-/// [`LEGACY_PACKAGE_DIR_ENV`] (`PI_PACKAGE_DIR`, kept for TS parity).
+/// The environment-variable prefix for every public and internal knob.
+/// No fallback to the upstream prefix: the fork must never read a
+/// `prime-agent` session's environment.
+pub const ENV_PREFIX: &str = "ALLSPARK_";
+
+/// The package-dir override (no upstream fallback).
 pub const PACKAGE_DIR_ENV: &str = "ALLSPARK_PACKAGE_DIR";
 
-/// The legacy package-dir environment variable from upstream.
-pub const LEGACY_PACKAGE_DIR_ENV: &str = "PI_PACKAGE_DIR";
+/// The ACP `_meta` namespace key.
+pub const META_NAMESPACE: &str = "ai.allspark.agent";
+
+/// The trace-upload auth provider id.
+pub const TRACE_PROVIDER_ID: &str = "allspark-traces";
+
+/// The trace-upload provider display name.
+pub const TRACE_PROVIDER_NAME: &str = "Allspark Traces";
+
+/// The per-user runtime directory prefix under the temp dir
+/// (`/tmp/allspark-<uid>`): daemon, worker, and supervisor sockets.
+pub const RUNTIME_DIR_PREFIX: &str = "allspark";
+
+/// The install prefix directory name under `~/.local/share`.
+pub const INSTALL_PREFIX_NAME: &str = "allspark";
+
+/// The channel marker file inside the install prefix's share dir.
+pub const INSTALL_MARKER: &str = ".allspark-install";
 
 #[cfg(test)]
 mod tests {

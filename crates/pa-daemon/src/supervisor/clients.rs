@@ -1151,7 +1151,7 @@ mod tests {
         let envelope = json!({
             "type": "command",
             "id": "installer-stop",
-            "protocol": {"name": "prime-agent.daemon", "version": 7},
+            "protocol": {"name": "allspark.daemon", "version": 7},
             "clientId": "install-rust-sh",
             "command": {"type": "shutdown", "force": true, "id": "installer-stop"},
         });
@@ -1284,7 +1284,7 @@ mod tests {
         let envelope = json!({
             "type": "command",
             "id": format!("{client_id}-command"),
-            "protocol": {"name": "prime-agent.daemon", "version": 7},
+            "protocol": {"name": "allspark.daemon", "version": 7},
             "clientId": client_id,
             "command": {"type": "roster_unsubscribe", "id": format!("{client_id}-command")},
         });

@@ -10,7 +10,7 @@ use tokio::net::TcpListener;
 
 /// `PI_OAUTH_CALLBACK_HOST` (default `127.0.0.1`).
 fn callback_host() -> String {
-    std::env::var("PI_OAUTH_CALLBACK_HOST").unwrap_or_else(|_| "127.0.0.1".to_string())
+    std::env::var("ALLSPARK_OAUTH_CALLBACK_HOST").unwrap_or_else(|_| "127.0.0.1".to_string())
 }
 
 /// A range (not one port) so a leaked or concurrent login cannot wedge all logins with one occupied

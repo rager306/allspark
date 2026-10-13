@@ -27,7 +27,6 @@ impl BundledAssets {
     /// (launcher symlinks resolve through [`exe_dir_of`]).
     pub fn package_dir() -> PathBuf {
         std::env::var_os(pa_types::identity::PACKAGE_DIR_ENV)
-            .or_else(|| std::env::var_os(pa_types::identity::LEGACY_PACKAGE_DIR_ENV))
             .filter(|value| !value.is_empty())
             .map_or_else(
                 || {

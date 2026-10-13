@@ -111,7 +111,7 @@ impl Client {
         let envelope = json!({
             "type": "command",
             "id": id,
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
+            "protocol": { "name": "allspark.daemon", "version": 7 },
             "command": command,
         });
         let mut line = serde_json::to_string(&envelope).expect("serialize command");
@@ -406,7 +406,7 @@ async fn subscribe_after_spawn_then_shutdown_seeds_the_passive_child() {
     client.send(&json!({
         "type": "command",
         "id": "k1",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
+        "protocol": { "name": "allspark.daemon", "version": 7 },
         "command": { "type": "kill", "activeSessionId": child_active_id },
     }));
     let mut kill_ok = false;

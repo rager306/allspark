@@ -10,7 +10,7 @@ async fn spawn_mock_daemon(listener: UnixListener) {
     let mut reader = BufReader::new(reader);
     let hello = json!({
         "type": "daemon_hello",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
+        "protocol": { "name": "allspark.daemon", "version": 7 },
         "clientId": "srv",
         "serverCapabilities": [],
     });
@@ -125,7 +125,7 @@ async fn request_timeout_reports_socket() {
         let mut writer = stream;
         let mut hello = json!({
             "type": "daemon_hello",
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
+            "protocol": { "name": "allspark.daemon", "version": 7 },
             "clientId": "srv",
             "serverCapabilities": [],
         })
@@ -170,7 +170,7 @@ async fn a_request_after_the_reader_died_refuses_instead_of_riding_the_budget() 
         let mut writer = stream;
         let mut hello = json!({
             "type": "daemon_hello",
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
+            "protocol": { "name": "allspark.daemon", "version": 7 },
             "clientId": "srv",
             "serverCapabilities": [],
         })
@@ -414,7 +414,7 @@ async fn spawn_mock_worker(listener: tokio::net::UnixListener) {
     let (mut reader, mut writer) = stream.into_split();
     let hello = pa_types::daemon::framing::encode_private_frame(
         &serde_json::json!({ "kind": "outbound", "outboundType": "daemon_hello" }),
-        br#"{"type":"daemon_hello","protocol":{"name":"prime-agent.daemon","version":7}}"#,
+        br#"{"type":"daemon_hello","protocol":{"name":"allspark.daemon","version":7}}"#,
         pa_types::daemon::framing::DEFAULT_PRIVATE_FRAME_LIMITS,
     )
     .unwrap();
@@ -523,7 +523,7 @@ async fn direct_upgrade_routes_attach_and_streams_events() {
         let mut line = String::new();
         let hello = serde_json::json!({
             "type": "daemon_hello",
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
+            "protocol": { "name": "allspark.daemon", "version": 7 },
             "serverCapabilities": ["direct_peer_transport"],
         });
         writer
@@ -633,7 +633,7 @@ async fn dead_connection_fails_pending_requests_immediately() {
         let mut writer = stream;
         let mut hello = json!({
             "type": "daemon_hello",
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
+            "protocol": { "name": "allspark.daemon", "version": 7 },
             "clientId": "srv",
             "serverCapabilities": [],
         })

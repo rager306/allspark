@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// Reverse-domain namespace for every prime-agent `_meta` payload.
-pub const PRIME_AGENT_META_NAMESPACE: &str = "ai.primeintellect.prime-agent";
+pub const ALLSPARK_META_NAMESPACE: &str = "ai.allspark.agent";
 
 /// A client-requested cwd that differs from the agent's actual startup cwd.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -244,7 +244,7 @@ pub fn acp_stop_reason_for_status(
 
 /// Wrap a prime-agent payload in its reverse-domain `_meta` envelope.
 pub fn prime_agent_meta(payload: &PrimeAgentSessionMeta) -> Value {
-    json!({ PRIME_AGENT_META_NAMESPACE: payload })
+    json!({ ALLSPARK_META_NAMESPACE: payload })
 }
 
 #[cfg(test)]
@@ -262,7 +262,7 @@ mod tests {
         });
         assert_eq!(
             wrapped,
-            json!({ "ai.primeintellect.prime-agent": {
+            json!({ "ai.allspark.agent": {
                 "promptTurnId": 1,
                 "eventSequence": 2,
                 "phase": "responseBoundary",
@@ -341,7 +341,7 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(
-            wrapped[PRIME_AGENT_META_NAMESPACE]["quiescence"],
+            wrapped[ALLSPARK_META_NAMESPACE]["quiescence"],
             json!({ "outstandingSubagents": 0, "remainingAutonomousContinuations": 0 })
         );
     }

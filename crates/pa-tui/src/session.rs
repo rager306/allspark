@@ -1,5 +1,5 @@
 //! Headless session-message stream: the same UI renders history JSONL
-//! (captured sessions under `~/.prime/agent/sessions`) and live events.
+//! (captured sessions under `~/.allspark/sessions`) and live events.
 //! `SessionStream` is the seam the interactive mode and the replay binary
 //! share; `JsonlSessionStream` implements it over pa-types session entries.
 
@@ -461,7 +461,7 @@ mod tests {
 
     #[test]
     fn loads_real_session() {
-        let dir = std::path::Path::new("/home/ubuntu/.prime/agent/sessions");
+        let dir = std::path::Path::new("/home/ubuntu/.allspark/sessions");
         if !dir.is_dir() {
             return; // sandbox without agent state
         }

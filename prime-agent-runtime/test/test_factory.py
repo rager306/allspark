@@ -2491,7 +2491,7 @@ class FactoryHelpTest(unittest.TestCase):
             "The machine library: machines are `MACHINE.md` files (frontmatter plus "
             "one fenced `machine-spec` block), one directory per machine, resolved "
             "from two levels — the bundled seeds shipped inside the runtime "
-            "(visible in every install; `PRIME_AGENT_MACHINES_DIR` redirects the "
+            "(visible in every install; `ALLSPARK_MACHINES_DIR` redirects the "
             "level at a team directory) first, the personal `machines/` library "
             "under the agent dir second",
             flat,
@@ -2565,14 +2565,14 @@ class FactorySettingReadTest(unittest.TestCase):
         temp = TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.settings_path = Path(temp.name) / "settings.json"
-        previous = os.environ.get("PRIME_AGENT_CODING_AGENT_DIR")
-        os.environ["PRIME_AGENT_CODING_AGENT_DIR"] = str(Path(temp.name))
+        previous = os.environ.get("ALLSPARK_CODING_AGENT_DIR")
+        os.environ["ALLSPARK_CODING_AGENT_DIR"] = str(Path(temp.name))
 
         def restore() -> None:
             if previous is None:
-                os.environ.pop("PRIME_AGENT_CODING_AGENT_DIR", None)
+                os.environ.pop("ALLSPARK_CODING_AGENT_DIR", None)
             else:
-                os.environ["PRIME_AGENT_CODING_AGENT_DIR"] = previous
+                os.environ["ALLSPARK_CODING_AGENT_DIR"] = previous
 
         self.addCleanup(restore)
 
@@ -3011,14 +3011,14 @@ class _ExecutorTestCase(unittest.TestCase):
         self.settings_path.write_text(json.dumps(document), encoding="utf-8")
 
     def _isolate_agent_dir(self, agent_dir: str) -> None:
-        previous = os.environ.get("PRIME_AGENT_CODING_AGENT_DIR")
-        os.environ["PRIME_AGENT_CODING_AGENT_DIR"] = agent_dir
+        previous = os.environ.get("ALLSPARK_CODING_AGENT_DIR")
+        os.environ["ALLSPARK_CODING_AGENT_DIR"] = agent_dir
 
         def restore() -> None:
             if previous is None:
-                os.environ.pop("PRIME_AGENT_CODING_AGENT_DIR", None)
+                os.environ.pop("ALLSPARK_CODING_AGENT_DIR", None)
             else:
-                os.environ["PRIME_AGENT_CODING_AGENT_DIR"] = previous
+                os.environ["ALLSPARK_CODING_AGENT_DIR"] = previous
 
         self.addCleanup(restore)
 
@@ -7892,8 +7892,8 @@ class MachineLibraryResolutionTest(unittest.TestCase):
 
     def test_env_overrides_drive_the_production_dirs(self) -> None:
         env = patch.dict(os.environ, {
-            "PRIME_AGENT_MACHINES_DIR": str(self.repo),
-            "PRIME_AGENT_CODING_AGENT_DIR": str(Path(self.repo).parent / "agent-home"),
+            "ALLSPARK_MACHINES_DIR": str(self.repo),
+            "ALLSPARK_CODING_AGENT_DIR": str(Path(self.repo).parent / "agent-home"),
         })
         env.start()
         self.addCleanup(env.stop)
@@ -7912,7 +7912,7 @@ class MachineLibraryResolutionTest(unittest.TestCase):
         repo_dir = repo_machines_dir()
         self.assertEqual(repo_dir, packaged)
         self.assertTrue(packaged.is_dir())
-        with patch.dict(os.environ, {"PRIME_AGENT_MACHINES_DIR": str(self.repo)}):
+        with patch.dict(os.environ, {"ALLSPARK_MACHINES_DIR": str(self.repo)}):
             self.assertEqual(repo_machines_dir(), self.repo)
 
     def test_the_shipped_seed_machines_validate_clean(self) -> None:
@@ -7939,8 +7939,8 @@ class MachineCliDispatchTest(unittest.TestCase):
 
     The payload carries only what the user typed (an op, a path, a name, an
     out target); the dispatch process resolves every library directory
-    itself through the production env seams (`PRIME_AGENT_MACHINES_DIR`,
-    `PRIME_AGENT_CODING_AGENT_DIR`), so these tests exercise the same
+    itself through the production env seams (`ALLSPARK_MACHINES_DIR`,
+    `ALLSPARK_CODING_AGENT_DIR`), so these tests exercise the same
     resolution a real CLI invocation runs.
     """
 
@@ -7959,8 +7959,8 @@ class MachineCliDispatchTest(unittest.TestCase):
         self.source_path = self.sources / "machine.MACHINE.md"
         self.source_path.write_text(self.source_text, encoding="utf-8")
         env = patch.dict(os.environ, {
-            "PRIME_AGENT_MACHINES_DIR": str(self.repo),
-            "PRIME_AGENT_CODING_AGENT_DIR": str(self.agent_home),
+            "ALLSPARK_MACHINES_DIR": str(self.repo),
+            "ALLSPARK_CODING_AGENT_DIR": str(self.agent_home),
         })
         env.start()
         self.addCleanup(env.stop)
@@ -8091,18 +8091,18 @@ class ExportMachineTest(unittest.TestCase):
 
     def write_settings(self, document: Any) -> None:
         """Write the agent-dir settings document (the real file shape)."""
-        settings_path = Path(os.environ["PRIME_AGENT_CODING_AGENT_DIR"]) / "settings.json"
+        settings_path = Path(os.environ["ALLSPARK_CODING_AGENT_DIR"]) / "settings.json"
         settings_path.write_text(json.dumps(document), encoding="utf-8")
 
     def _isolate_agent_dir(self, agent_dir: str) -> None:
-        previous = os.environ.get("PRIME_AGENT_CODING_AGENT_DIR")
-        os.environ["PRIME_AGENT_CODING_AGENT_DIR"] = agent_dir
+        previous = os.environ.get("ALLSPARK_CODING_AGENT_DIR")
+        os.environ["ALLSPARK_CODING_AGENT_DIR"] = agent_dir
 
         def restore() -> None:
             if previous is None:
-                os.environ.pop("PRIME_AGENT_CODING_AGENT_DIR", None)
+                os.environ.pop("ALLSPARK_CODING_AGENT_DIR", None)
             else:
-                os.environ["PRIME_AGENT_CODING_AGENT_DIR"] = previous
+                os.environ["ALLSPARK_CODING_AGENT_DIR"] = previous
 
         self.addCleanup(restore)
 
@@ -8285,8 +8285,8 @@ class FactoryRunFromLibraryTest(unittest.TestCase):
             json.dumps({"factory": {"enabled": True}}), encoding="utf-8"
         )
         env = patch.dict(os.environ, {
-            "PRIME_AGENT_MACHINES_DIR": str(self.library),
-            "PRIME_AGENT_CODING_AGENT_DIR": str(agent_home),
+            "ALLSPARK_MACHINES_DIR": str(self.library),
+            "ALLSPARK_CODING_AGENT_DIR": str(agent_home),
         })
         env.start()
         self.addCleanup(env.stop)
@@ -8412,7 +8412,7 @@ class FactoryRunFromLibraryTest(unittest.TestCase):
         # user machine the listing advertises; the invalid repo file never
         # shadows it and never masquerades as usable.
         self.store_machine_file("sweep", {"states": []})
-        agent_home = Path(os.environ["PRIME_AGENT_CODING_AGENT_DIR"])
+        agent_home = Path(os.environ["ALLSPARK_CODING_AGENT_DIR"])
         user_file = agent_home / "machines" / "sweep" / "MACHINE.md"
         user_file.parent.mkdir(parents=True)
         user_file.write_text(
@@ -8476,7 +8476,7 @@ class FactoryRunFromLibraryTest(unittest.TestCase):
         # one disabled message -- never an unknown-spec error, never a run
         # -- and nothing spawns.
         self.store_machine_file("sweep", {"nodes": [{"id": "a", "subagent": "worker"}]})
-        agent_home = Path(os.environ["PRIME_AGENT_CODING_AGENT_DIR"])
+        agent_home = Path(os.environ["ALLSPARK_CODING_AGENT_DIR"])
         (agent_home / "settings.json").write_text(
             json.dumps({"factory": {"enabled": False}}), encoding="utf-8"
         )
@@ -8698,7 +8698,7 @@ class InstalledRuntimeLibraryTest(unittest.TestCase):
             text=True,
             timeout=120,
             check=False,
-            env={**os.environ, "PRIME_AGENT_CODING_AGENT_DIR": str(agent_home)},
+            env={**os.environ, "ALLSPARK_CODING_AGENT_DIR": str(agent_home)},
         )
         self.assertEqual(
             run_result.returncode, 0,

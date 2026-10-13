@@ -20,7 +20,7 @@ fn supervisor_end_to_end_scripted_session_lifecycle() {
     assert_eq!(
         hello["protocol"],
         serde_json::json!({
-            "name": "prime-agent.daemon", "version": 7
+            "name": "allspark.daemon", "version": 7
         })
     );
     assert_eq!(

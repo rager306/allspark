@@ -4,7 +4,7 @@
 //! nightly: the download base's `install-beta.sh`; never a GitHub raw or
 //! workflow URL) and runs it; the script uninstalls the
 //! TypeScript version, installs the latest Rust build of the update
-//! channel, and never touches `~/.prime/agent` (the sessions and
+//! channel, and never touches `~/.allspark` (the sessions and
 //! configuration). The TUI's `/update` runs the same core out-of-band
 //! (`client_update.rs`); both consult pa-core's Homebrew detector before
 //! entering the installer funnel.
@@ -138,7 +138,7 @@ pub fn run(options: &UpdateOptions) -> i32 {
     if options.check {
         return runtime.block_on(run_check(options.channel));
     }
-    // The RESOLVED URL, not the const: a PRIME_AGENT_RUST_INSTALLER_URL
+    // The RESOLVED URL, not the const: a ALLSPARK_RUST_INSTALLER_URL
     // pin (a test or a pinned install) changes where the funnel actually
     // fetches from, and the banner must not claim a source the run will
     // not use.

@@ -5,7 +5,7 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 pub(super) static WORKER_SOCKET: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?:prime-agent-)?worker-[0-9a-f]+-([0-9a-f]{12})(?:\.sock)?$")
+    Regex::new(r"^(?:allspark-)?worker-[0-9a-f]+-([0-9a-f]{12})(?:\.sock)?$")
         .expect("valid worker socket pattern")
 });
 
@@ -15,7 +15,7 @@ pub(super) static STDERR_FORWARD: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 pub(super) static SUPERVISOR_LISTENING: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^Prime Agent daemon supervisor \S+ listening on \S+$")
+    Regex::new(r"^(?:Prime Agent|Allspark) daemon supervisor \S+ listening on \S+$")
         .expect("valid supervisor listening pattern")
 });
 

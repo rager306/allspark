@@ -178,7 +178,7 @@ pub struct AgentSession {
     /// resolves the `factory.enabled` opt-in from its settings.json on
     /// every run, immediately before the plan applies, mirroring the
     /// kernel-side factory gate that reads the same file through
-    /// `PRIME_AGENT_CODING_AGENT_DIR`. `None` until the engine wiring
+    /// `ALLSPARK_CODING_AGENT_DIR`. `None` until the engine wiring
     /// resolves it (verification harnesses building the session directly
     /// keep `None`, which reads as the fail-closed disabled default).
     agent_dir: Option<std::path::PathBuf>,

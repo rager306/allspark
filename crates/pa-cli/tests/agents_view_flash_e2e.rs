@@ -56,7 +56,7 @@ fn graceful_shutdown(socket: &Path) {
     let command = serde_json::json!({
         "type": "command",
         "id": "test-shutdown",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
+        "protocol": { "name": "allspark.daemon", "version": 7 },
         "command": { "type": "shutdown" },
     });
     let Ok(mut line) = serde_json::to_string(&command) else {
@@ -83,7 +83,7 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
     command
         .args(["--mode", "daemon", "--daemon-socket"])
         .arg(&socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
+        .env("ALLSPARK_CODING_AGENT_DIR", &agent_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -100,11 +100,11 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
         command.env_remove(var);
     }
     // The daemon's default sessions dir must stay the tempdir's agent dir: an
-    // ambient `PRIME_AGENT_SESSION_DIR` (fleet shells export one) would make
+    // ambient `ALLSPARK_SESSION_DIR` (fleet shells export one) would make
     // the family ledger resolve against the foreign dir, never registering the
     // seeded family.
-    command.env_remove("PRIME_AGENT_SESSION_DIR");
-    command.env_remove("PRIME_AGENT_CODING_AGENT_SESSION_DIR");
+    command.env_remove("ALLSPARK_SESSION_DIR");
+    command.env_remove("ALLSPARK_CODING_AGENT_SESSION_DIR");
     command.env(
         pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
         "15000",
@@ -218,7 +218,7 @@ impl Client {
         let envelope = json!({
             "type": "command",
             "id": id,
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
+            "protocol": { "name": "allspark.daemon", "version": 7 },
             "command": command,
         });
         let mut line = serde_json::to_string(&envelope).expect("serialize");

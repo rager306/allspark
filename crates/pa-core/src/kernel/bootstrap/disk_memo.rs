@@ -1,7 +1,7 @@
 //! The cross-process runtime-ready memo: a tiny on-disk map of probe verdicts
 //! keyed by the same identity composite as the in-process memo
 //! ([`super::venv::runtime_probe_key`]). Only the two interpreter probes are skipped
-//! on a hit; every I/O error is fail-open. A caller-owned `PRIME_AGENT_KERNEL_PYTHON`
+//! on a hit; every I/O error is fail-open. A caller-owned `ALLSPARK_KERNEL_PYTHON`
 //! override never reads or writes this memo (the d14 ruling).
 
 use std::path::{Path, PathBuf};

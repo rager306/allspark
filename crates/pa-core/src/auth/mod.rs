@@ -24,7 +24,7 @@ pub use prime_inference_login::{
 pub use prime_traces::{
     check_prime_agent_traces_access, login_prime_agent_traces, resolve_prime_agent_traces_base_url,
     PrimeAgentTracesCallbacks, PrimeAgentTracesLoginOptions, PrimeAgentTracesLoginSource,
-    PrimeAuthInfo, PRIME_AGENT_TRACES_PROVIDER_ID, PRIME_AGENT_TRACES_PROVIDER_NAME,
+    PrimeAuthInfo, ALLSPARK_TRACES_PROVIDER_ID, ALLSPARK_TRACES_PROVIDER_NAME,
 };
 pub use provider_oauth::{
     ProviderOAuth, ANTHROPIC_PROVIDER_ID, CODEBUDDY_PROVIDER_ID, GITHUB_COPILOT_PROVIDER_ID,

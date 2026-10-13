@@ -65,7 +65,7 @@ fn attributes_provider_failures_to_the_pid_owner() {
     let entries = vec![
         worker_start_line(
             "2026-09-10T19:42:09.064Z",
-            "/tmp/prime-agent-501/worker-98ed5cb228d2-5b1d3aeb91ee.sock",
+            "/tmp/allspark-501/worker-98ed5cb228d2-5b1d3aeb91ee.sock",
             53615,
         ),
         provider_failure_line("2026-09-10T20:02:53.374Z", 53615),
@@ -78,8 +78,8 @@ fn attributes_provider_failures_to_the_pid_owner() {
 
 #[test]
 fn attributes_provider_failures_to_the_worker_owning_the_pid_at_that_time() {
-    let worker_a = "/tmp/prime-agent-501/worker-98ed5cb228d2-aaaaaaaaaaaa.sock";
-    let worker_b = "/tmp/prime-agent-501/worker-98ed5cb228d2-bbbbbbbbbbbb.sock";
+    let worker_a = "/tmp/allspark-501/worker-98ed5cb228d2-aaaaaaaaaaaa.sock";
+    let worker_b = "/tmp/allspark-501/worker-98ed5cb228d2-bbbbbbbbbbbb.sock";
     let entries = vec![
         worker_start_line("2026-09-10T20:00:00.000Z", worker_a, 53615),
         provider_failure_line("2026-09-10T20:01:00.000Z", 53615),
@@ -104,7 +104,7 @@ fn attributes_provider_failures_to_the_worker_owning_the_pid_at_that_time() {
 
 #[test]
 fn a_later_sighting_never_owns_an_earlier_failure() {
-    let worker_b = "/tmp/prime-agent-501/worker-98ed5cb228d2-bbbbbbbbbbbb.sock";
+    let worker_b = "/tmp/allspark-501/worker-98ed5cb228d2-bbbbbbbbbbbb.sock";
     let entries = vec![
         provider_failure_line("2026-09-10T10:00:00.000Z", 53615),
         // A future sighting is never evidence of ownership.
@@ -126,18 +126,16 @@ fn a_later_sighting_never_owns_an_earlier_failure() {
 fn worker_ids_parse_from_unix_and_named_pipe_socket_paths() {
     assert_eq!(
         worker_id_from_socket_path(Some(
-            "/tmp/prime-agent-501/worker-98ed5cb228d2-5b1d3aeb91ee.sock"
+            "/tmp/allspark-501/worker-98ed5cb228d2-5b1d3aeb91ee.sock"
         )),
         Some("5b1d3aeb91ee")
     );
     assert_eq!(
-        worker_id_from_socket_path(Some(
-            r"\\.\pipe\prime-agent-worker-98ed5cb228d2-5b1d3aeb91ee"
-        )),
+        worker_id_from_socket_path(Some(r"\\.\pipe\allspark-worker-98ed5cb228d2-5b1d3aeb91ee")),
         Some("5b1d3aeb91ee")
     );
     assert_eq!(
-        worker_id_from_socket_path(Some("/tmp/prime-agent-501/daemon.sock")),
+        worker_id_from_socket_path(Some("/tmp/allspark-501/daemon.sock")),
         None
     );
     assert_eq!(worker_id_from_socket_path(None), None);
@@ -145,7 +143,7 @@ fn worker_ids_parse_from_unix_and_named_pipe_socket_paths() {
 
 #[test]
 fn classifies_worker_events_for_windows_named_pipe_sockets() {
-    let socket_path = r"\\.\pipe\prime-agent-worker-98ed5cb228d2-5b1d3aeb91ee";
+    let socket_path = r"\\.\pipe\allspark-worker-98ed5cb228d2-5b1d3aeb91ee";
     let entries = vec![
         worker_start_line("2026-09-10T20:00:00.000Z", socket_path, 53615),
         // The worker's own crash line: the daemon component with the named-pipe path.
@@ -173,7 +171,7 @@ fn classifies_worker_events_for_windows_named_pipe_sockets() {
 
 #[test]
 fn a_same_component_restart_within_two_seconds_is_a_real_event() {
-    let socket_path = "/tmp/prime-agent-501/worker-98ed5cb228d2-5b1d3aeb91ee.sock";
+    let socket_path = "/tmp/allspark-501/worker-98ed5cb228d2-5b1d3aeb91ee.sock";
     let entries = vec![
         worker_start_line("2026-09-10T20:00:00.000Z", socket_path, 100),
         worker_start_line("2026-09-10T20:00:01.000Z", socket_path, 200),
@@ -207,7 +205,7 @@ fn a_same_component_restart_within_two_seconds_is_a_real_event() {
 
 #[test]
 fn unknown_worker_diagnostics_key_on_the_worker_not_the_socket() {
-    let socket_path = "/tmp/prime-agent-501/worker-98ed5cb228d2-aaaaaaaaaaaa.sock";
+    let socket_path = "/tmp/allspark-501/worker-98ed5cb228d2-aaaaaaaaaaaa.sock";
     let entries: Vec<IncidentLogEntry> = (1..=3)
         .map(|index| {
             log_line(&[

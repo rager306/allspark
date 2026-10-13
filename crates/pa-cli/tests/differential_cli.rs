@@ -187,7 +187,7 @@ const CORPUS: &[&[&str]] = &[
     &["model", "list", "x", "y"],
     // Model catalog rows (`model list`): these need provider auth visible to
     // both binaries so the catalog, not the no-models guidance, prints;
-    // PI_OFFLINE keeps it deterministic (bundled, no network refresh).
+    // ALLSPARK_OFFLINE keeps it deterministic (bundled, no network refresh).
     &["model", "list"],
     &["model", "list", "gpt"],
     &["model", "list", "claude"],
@@ -332,7 +332,7 @@ fn run(binary: &Path, args: &[&str], sandbox: &Path) -> InvocationOutput {
         // Isolate the agent state dir: the TS binary resolves the real home
         // through passwd rather than $HOME, so the env override is the only
         // reliable isolation for both binaries.
-        .env("PRIME_AGENT_CODING_AGENT_DIR", sandbox.join("agent"))
+        .env("ALLSPARK_CODING_AGENT_DIR", sandbox.join("agent"))
         // Isolate TMPDIR too: without it the
         // TS daemon census escapes into the box's ambient daemons and
         // `shutdown --force` kills unrelated sockets (containment contract).
@@ -341,7 +341,7 @@ fn run(binary: &Path, args: &[&str], sandbox: &Path) -> InvocationOutput {
         // doctor, shutdown) must never see this box's real sockets, and
         // `shutdown --force` on the TS binary has no containment guard.
         .env("TMPDIR", sandbox.join("tmp"))
-        .env("PI_OFFLINE", "1")
+        .env("ALLSPARK_OFFLINE", "1")
         .current_dir(sandbox.join("cwd"))
         .current_dir(sandbox.join("cwd"))
         .output()
@@ -500,8 +500,8 @@ fn run_with_env(
         .arg("20")
         .arg(binary)
         .args(args)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", sandbox.join("agent"))
-        .env("PI_OFFLINE", "1")
+        .env("ALLSPARK_CODING_AGENT_DIR", sandbox.join("agent"))
+        .env("ALLSPARK_OFFLINE", "1")
         .current_dir(sandbox.join("cwd"));
     for (key, value) in envs {
         command.env(key, value);
@@ -527,8 +527,18 @@ fn differential_env_flag_cases_match_ts_binary() {
 
     // PI_STARTUP_BENCHMARK is rejected outside interactive mode.
     for case in [&["-p", "hi"][..], &["--print"][..], &["--mode", "json"][..]] {
-        let ts_out = run_with_env(&ts, case, &ts_sandbox, &[("PI_STARTUP_BENCHMARK", "1")]);
-        let rs_out = run_with_env(&rust, case, &rs_sandbox, &[("PI_STARTUP_BENCHMARK", "1")]);
+        let ts_out = run_with_env(
+            &ts,
+            case,
+            &ts_sandbox,
+            &[("ALLSPARK_STARTUP_BENCHMARK", "1")],
+        );
+        let rs_out = run_with_env(
+            &rust,
+            case,
+            &rs_sandbox,
+            &[("ALLSPARK_STARTUP_BENCHMARK", "1")],
+        );
         assert_eq!(
             ts_out.exit_code, rs_out.exit_code,
             "case {case:?} exit code"

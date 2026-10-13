@@ -64,9 +64,9 @@ fn spawn_worker(dir: &Path, socket: &Path, token: &str) -> WorkerGuard {
             dir.join("recovery.jsonl"),
         )
         .env(pa_daemon::worker::WORKER_CWD_ENV, dir)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", dir.join("agent"))
-        .env_remove("PRIME_AGENT_MODEL")
-        .env_remove("PRIME_AGENT_MODEL_PROVIDER")
+        .env("ALLSPARK_CODING_AGENT_DIR", dir.join("agent"))
+        .env_remove("ALLSPARK_MODEL")
+        .env_remove("ALLSPARK_MODEL_PROVIDER")
         // A supervisor killed at teardown must not leak this worker into later test
         // binaries: the orphan exit runs on this short window.
         .env(

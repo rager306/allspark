@@ -73,7 +73,7 @@ pub async fn run_update_command(options: &UpdateCommandOptions) -> Result<i32> {
     let mut phases = PhaseTelemetry::open();
     writer.set_state(UpdateState::Planning)?;
     let budget = UpdateTimeoutBudget::from_env();
-    let download_base = std::env::var("PRIME_AGENT_DOWNLOAD_BASE_URL").ok();
+    let download_base = std::env::var("ALLSPARK_DOWNLOAD_BASE_URL").ok();
     let planned = if options.archive.is_some() {
         plan_direct(&install_root, options).await
     } else {
@@ -123,8 +123,8 @@ pub async fn run_update_command(options: &UpdateCommandOptions) -> Result<i32> {
                 base_url.as_str(),
             )?;
             let _ = std::fs::remove_file(&archive);
-            super::swap::validate_candidate(&release_dir.join("prime-agent"), &version).await?;
-            (release_dir.join("prime-agent"), release_dir)
+            super::swap::validate_candidate(&release_dir.join("allspark"), &version).await?;
+            (release_dir.join("allspark"), release_dir)
         }
         Ok(UpdatePlan::Direct {
             version,

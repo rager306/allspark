@@ -55,8 +55,8 @@ fn kernel_python() -> Option<PathBuf> {
         return Some(explicit);
     }
     let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
+        |_| "/home/ubuntu/.allspark/kernel-venv/bin/python".to_string(),
+        |home| format!("{home}/.allspark/kernel-venv/bin/python"),
     ));
     if candidate.exists() {
         return Some(candidate);
@@ -81,15 +81,15 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
         .arg(socket)
         .arg("--agent-dir")
         .arg(agent_dir)
-        .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
+        .env("ALLSPARK_KERNEL_PYTHON", kernel_python)
+        .env("ALLSPARK_CODING_AGENT_DIR", agent_dir)
         // The fetch lane is live in the supervisor (hourly refreshes of this very cache
-        // file): PI_OFFLINE keeps those off the network so a live fetch can never race
+        // file): ALLSPARK_OFFLINE keeps those off the network so a live fetch can never race
         // the cache state arranged on disk.
-        .env("PI_OFFLINE", "1")
+        .env("ALLSPARK_OFFLINE", "1")
         // The tests own catalog availability through the agent dir alone; a stray
         // package dir's bundled snapshot must never leak in.
-        .env_remove("PI_PACKAGE_DIR")
+        .env_remove(pa_types::identity::PACKAGE_DIR_ENV)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .env(
@@ -143,7 +143,7 @@ impl Client {
         self.send(&json!({
             "type": "command",
             "id": id,
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
+            "protocol": { "name": "allspark.daemon", "version": 7 },
             "command": command,
         }));
     }

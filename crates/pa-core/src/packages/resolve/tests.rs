@@ -9,7 +9,7 @@ use crate::packages::source::SourceScope;
 use crate::packages::{PackageManager, PackageManagerOptions};
 use crate::settings::SettingsManager;
 
-/// Environment mutations (HOME, `PI_OFFLINE`) are process-wide: tests that
+/// Environment mutations (HOME, `ALLSPARK_OFFLINE`) are process-wide: tests that
 /// touch them, and tests that read the env-sensitive update flows,
 /// serialize through the shared packages lock.
 use crate::packages::test_support::ENV_MUTEX;
@@ -417,7 +417,7 @@ fn skill_directories_respect_gitignore() {
 #[test]
 fn parent_gitignore_does_not_apply_to_auto_discovery() {
     let mut fixture = Fixture::new();
-    write(&fixture.temp_dir.join(".gitignore"), ".prime/agent\n");
+    write(&fixture.temp_dir.join(".gitignore"), ".allspark\n");
 
     let project_dir = fixture.manager.cwd().join(crate::settings::CONFIG_DIR_NAME);
     let skill_path = skill_md(&project_dir.join("skills"), "auto-skill", "Auto");
@@ -826,8 +826,8 @@ fn different_packages_in_both_scopes_both_resolve() {
 #[test]
 fn offline_mode_skips_installing_missing_sources() {
     let _guard = ENV_MUTEX.lock().unwrap();
-    let previous = std::env::var("PI_OFFLINE").ok();
-    std::env::set_var("PI_OFFLINE", "1");
+    let previous = std::env::var("ALLSPARK_OFFLINE").ok();
+    std::env::set_var("ALLSPARK_OFFLINE", "1");
     let mut fixture = Fixture::new();
     fixture.set_user_packages(serde_json::json!(["npm:missing-package"]));
     let project_dir = fixture.manager.cwd().join(crate::settings::CONFIG_DIR_NAME);
@@ -848,8 +848,8 @@ fn offline_mode_skips_installing_missing_sources() {
         .any(|r| r.metadata.origin == ResourceOrigin::Package));
 
     match previous {
-        Some(value) => std::env::set_var("PI_OFFLINE", value),
-        None => std::env::remove_var("PI_OFFLINE"),
+        Some(value) => std::env::set_var("ALLSPARK_OFFLINE", value),
+        None => std::env::remove_var("ALLSPARK_OFFLINE"),
     }
 }
 

@@ -9,8 +9,8 @@ use pa_telemetry::parse_bool_override;
 use crate::settings::SettingsManager;
 
 /// What decides whether telemetry is on, in precedence order (TS
-/// `isTelemetryEnabled`): `PI_OFFLINE` / `DO_NOT_TRACK` force off,
-/// `PRIME_AGENT_TELEMETRY` forces either way, then settings
+/// `isTelemetryEnabled`): `ALLSPARK_OFFLINE` / `DO_NOT_TRACK` force off,
+/// `ALLSPARK_TELEMETRY` forces either way, then settings
 /// `telemetry.enabled`, then the default (on).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TelemetrySwitch {
@@ -39,10 +39,10 @@ impl TelemetrySwitch {
             Self::Settings(true) => "turned on in settings".to_string(),
             Self::Settings(false) => "turned off in settings".to_string(),
             Self::Env {
-                var: "PRIME_AGENT_TELEMETRY",
+                var: "ALLSPARK_TELEMETRY",
                 enabled,
             } => format!(
-                "forced {} by PRIME_AGENT_TELEMETRY={}",
+                "forced {} by ALLSPARK_TELEMETRY={}",
                 if enabled { "on" } else { "off" },
                 if enabled { "1" } else { "0" }
             ),
@@ -61,7 +61,7 @@ pub fn telemetry_switch(settings: &SettingsManager) -> TelemetrySwitch {
 }
 
 fn switch_from(env: impl Fn(&str) -> Option<String>, setting: Option<bool>) -> TelemetrySwitch {
-    for var in ["PI_OFFLINE", "DO_NOT_TRACK"] {
+    for var in ["ALLSPARK_OFFLINE", "DO_NOT_TRACK"] {
         if parse_bool_override(env(var).as_deref()) == Some(true) {
             return TelemetrySwitch::Env {
                 var,
@@ -69,9 +69,9 @@ fn switch_from(env: impl Fn(&str) -> Option<String>, setting: Option<bool>) -> T
             };
         }
     }
-    if let Some(enabled) = parse_bool_override(env("PRIME_AGENT_TELEMETRY").as_deref()) {
+    if let Some(enabled) = parse_bool_override(env("ALLSPARK_TELEMETRY").as_deref()) {
         return TelemetrySwitch::Env {
-            var: "PRIME_AGENT_TELEMETRY",
+            var: "ALLSPARK_TELEMETRY",
             enabled,
         };
     }
@@ -169,15 +169,15 @@ mod tests {
             TelemetrySwitch::Settings(false)
         );
         assert_eq!(
-            switch_from(env(&[("PRIME_AGENT_TELEMETRY", "1")]), Some(false)),
+            switch_from(env(&[("ALLSPARK_TELEMETRY", "1")]), Some(false)),
             TelemetrySwitch::Env {
-                var: "PRIME_AGENT_TELEMETRY",
+                var: "ALLSPARK_TELEMETRY",
                 enabled: true
             }
         );
         assert_eq!(
             switch_from(
-                env(&[("PRIME_AGENT_TELEMETRY", "1"), ("DO_NOT_TRACK", "1")]),
+                env(&[("ALLSPARK_TELEMETRY", "1"), ("DO_NOT_TRACK", "1")]),
                 None
             ),
             TelemetrySwitch::Env {
@@ -186,12 +186,12 @@ mod tests {
             }
         );
         assert_eq!(
-            switch_from(env(&[("PI_OFFLINE", "true")]), Some(true)).reason(),
-            "forced off by PI_OFFLINE"
+            switch_from(env(&[("ALLSPARK_OFFLINE", "true")]), Some(true)).reason(),
+            "forced off by ALLSPARK_OFFLINE"
         );
         assert_eq!(
-            switch_from(env(&[("PRIME_AGENT_TELEMETRY", "0")]), None).reason(),
-            "forced off by PRIME_AGENT_TELEMETRY=0"
+            switch_from(env(&[("ALLSPARK_TELEMETRY", "0")]), None).reason(),
+            "forced off by ALLSPARK_TELEMETRY=0"
         );
         // Falsy DO_NOT_TRACK is no override.
         assert_eq!(

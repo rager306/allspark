@@ -37,7 +37,7 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Supervisor {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .env_remove("PRIME_API_KEY")
-        .env_remove("PRIME_AGENT_CODING_AGENT_DIR")
+        .env_remove("ALLSPARK_CODING_AGENT_DIR")
         // A supervisor killed at teardown must not leak its session workers: the worker's
         // supervisor-lost exit (TS `exitIfSupervisorOrphanedForTooLong`) runs on this short
         // window, not the 5-minute default.
@@ -108,7 +108,7 @@ impl Client {
         let envelope = json!({
             "type": "command",
             "id": id,
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
+            "protocol": { "name": "allspark.daemon", "version": 7 },
             "command": command,
         });
         let mut line = serde_json::to_string(&envelope).expect("serialize");

@@ -3,7 +3,7 @@
 
 use super::*;
 
-const DAEMON_SOCKET: &str = "/tmp/prime-agent-501/daemon.sock";
+const DAEMON_SOCKET: &str = "/tmp/allspark-501/daemon.sock";
 
 fn log_line(fields: &[(&str, serde_json::Value)]) -> IncidentLogEntry {
     let mut record = serde_json::Map::new();
@@ -92,8 +92,8 @@ const BASE_MS: i64 = 1_789_597_800_000; // 2026-09-16T22:30:00Z
 fn anchors_each_subjects_timeout_burst_at_its_own_clusters_latest_timeout() {
     // Several daemon sockets, each with its own stall: the per-subject
     // cluster lookup must never leak or mis-anchor across subjects.
-    let other_socket = "/tmp/prime-agent-501/daemon-other.sock";
-    let spaced_socket = "/tmp/prime-agent-501/daemon-spaced.sock";
+    let other_socket = "/tmp/allspark-501/daemon-other.sock";
+    let spaced_socket = "/tmp/allspark-501/daemon-spaced.sock";
     let mut entries = Vec::new();
     for minutes in [200, 190, 180, 30, 29] {
         entries.push(command_timeout_line(BASE_MS, minutes, spaced_socket));

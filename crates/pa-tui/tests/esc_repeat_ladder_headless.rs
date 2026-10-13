@@ -39,7 +39,7 @@ impl MockSupervisor {
 
         let hello = json!({
             "type": "daemon_hello",
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
+            "protocol": { "name": "allspark.daemon", "version": 7 },
             "serverCapabilities": [],
             "clientId": "mock",
         });
@@ -89,7 +89,7 @@ impl MockSupervisor {
                             "command": "attach",
                             "success": true,
                             "data": {
-                                "protocol": { "name": "prime-agent.daemon", "version": 7 },
+                                "protocol": { "name": "allspark.daemon", "version": 7 },
                                 "activeSessionId": "s1",
                                 "snapshot": {
                                     "activeSessionId": "s1",

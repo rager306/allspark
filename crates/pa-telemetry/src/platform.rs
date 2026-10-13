@@ -97,11 +97,11 @@ fn build_channel() -> &'static str {
     "release"
 }
 
-/// `PRIME_AGENT_TELEMETRY_ORIGIN=internal|test` wins; otherwise interactive
+/// `ALLSPARK_TELEMETRY_ORIGIN=internal|test` wins; otherwise interactive
 /// is `interactive` and headless is `automated` (the mode alone never
 /// identifies internal populations).
 fn workload_origin(execution_mode: &str) -> &'static str {
-    match std::env::var("PRIME_AGENT_TELEMETRY_ORIGIN")
+    match std::env::var("ALLSPARK_TELEMETRY_ORIGIN")
         .ok()
         .as_deref()
         .map(str::trim)

@@ -348,7 +348,7 @@ fn tool_execution_start_reports_the_tool_name() {
 
 fn slim_attach() -> Value {
     json!({
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
+        "protocol": { "name": "allspark.daemon", "version": 7 },
         "activeSessionId": "abc123def456",
         "snapshot": {
             "activeSessionId": "abc123def456",
@@ -1974,7 +1974,7 @@ fn goal_update_decodes_the_goal_payload() {
 #[test]
 fn attach_snapshot_carries_the_goal_state() {
     let attach = json!({
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
+        "protocol": { "name": "allspark.daemon", "version": 7 },
         "activeSessionId": "abc123def456",
         "snapshot": {
             "activeSessionId": "abc123def456",

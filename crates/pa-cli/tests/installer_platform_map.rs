@@ -476,22 +476,22 @@ fn install_ps1_adds_bin_to_the_user_path_and_the_session_path() {
 /// reviewer's finding: BOTH e2e routes must be isolatable - the sh route's
 /// Git Bash run would otherwise still write the shared ~/.local/bin): the
 /// operator-set dir wins, the Windows C:\ spelling normalizes through
-/// cygpath exactly like `PRIME_AGENT_RUST_PREFIX`, and the knob is
+/// cygpath exactly like `ALLSPARK_RUST_PREFIX`, and the knob is
 /// documented in the header's Configuration block.
 #[test]
 fn install_rust_sh_honors_the_uv_bin_dir_knob() {
     let text =
         std::fs::read_to_string(repo_root().join("install-rust.sh")).expect("read install-rust.sh");
     assert!(
-        text.contains("[ -n \"${PRIME_AGENT_UV_BIN_DIR:-}\" ]"),
-        "install-rust.sh must honor PRIME_AGENT_UV_BIN_DIR (both e2e routes isolate)"
+        text.contains("[ -n \"${ALLSPARK_UV_BIN_DIR:-}\" ]"),
+        "install-rust.sh must honor ALLSPARK_UV_BIN_DIR (both e2e routes isolate)"
     );
     assert!(
         text.contains("cygpath -u \"$uv_bin_dir\""),
-        "the Windows spelling of the knob must normalize exactly like PRIME_AGENT_RUST_PREFIX"
+        "the Windows spelling of the knob must normalize exactly like ALLSPARK_RUST_PREFIX"
     );
     assert!(
-        text.contains("#   PRIME_AGENT_UV_BIN_DIR"),
+        text.contains("#   ALLSPARK_UV_BIN_DIR"),
         "the knob must be documented in the header's Configuration block"
     );
     assert!(
@@ -507,11 +507,11 @@ fn install_rust_sh_honors_the_uv_bin_dir_knob() {
         "every target probe must use the platform uv name, never a bare /uv (uv.exe misses on Windows)"
     );
     assert!(
-        text.contains("case \"$uv_bin_dir\" in\n    /*) ;;\n    *) die \"PRIME_AGENT_UV_BIN_DIR must be an absolute path: ${PRIME_AGENT_UV_BIN_DIR}\" ;;\n  esac"),
+        text.contains("case \"$uv_bin_dir\" in\n    /*) ;;\n    *) die \"ALLSPARK_UV_BIN_DIR must be an absolute path: ${ALLSPARK_UV_BIN_DIR}\" ;;\n  esac"),
         "a relative knob must be refused outright (a relative target in PATH guidance breaks every later shell)"
     );
     assert!(
-        text.contains("PRIME_AGENT_UV_BIN_DIR must not contain a colon"),
+        text.contains("ALLSPARK_UV_BIN_DIR must not contain a colon"),
         "the knob must refuse the PATH separator (a target with a colon corrupts every PATH export and prepend)"
     );
     assert!(
@@ -691,8 +691,8 @@ fn install_ps1_installs_uv_like_the_linux_installer() {
     let section = &text[section_start..section_end];
     let markers: [(&str, &str); 11] = [
         (
-            "the uv target knob (install-rust.sh's own PRIME_AGENT_UV_BIN_DIR parity: an operator-set dir wins - a packaged install keeps uv inside its own tree, the e2e harnesses point it at their scratch so a run never touches the shared ~/.local/bin; the knob validated early with the other knobs)",
-            "if ($env:PRIME_AGENT_UV_BIN_DIR) { $uvInstallDir = $env:PRIME_AGENT_UV_BIN_DIR }",
+            "the uv target knob (install-rust.sh's own ALLSPARK_UV_BIN_DIR parity: an operator-set dir wins - a packaged install keeps uv inside its own tree, the e2e harnesses point it at their scratch so a run never touches the shared ~/.local/bin; the knob validated early with the other knobs)",
+            "if ($env:ALLSPARK_UV_BIN_DIR) { $uvInstallDir = $env:ALLSPARK_UV_BIN_DIR }",
         ),
         (
             "the default-location presence check (a uv that predates the knob at ~/.local/bin is still honored: no duplicate install)",
@@ -775,7 +775,7 @@ fn install_ps1_installs_uv_like_the_linux_installer() {
 fn install_ps1_validates_the_uv_knob_before_any_side_effect() {
     let text = std::fs::read_to_string(repo_root().join("install.ps1")).expect("read install.ps1");
     let validation_at = text
-        .find("PRIME_AGENT_UV_BIN_DIR must be a fully qualified absolute path")
+        .find("ALLSPARK_UV_BIN_DIR must be a fully qualified absolute path")
         .expect("the fully-qualified validation message exists");
     let stage_at = text
         .find("$stage = Join-Path (Join-Path $prefix 'share')")
@@ -785,7 +785,7 @@ fn install_ps1_validates_the_uv_knob_before_any_side_effect() {
         "the knob validation must fail before the publish stage (a late refusal leaves a half-applied install)"
     );
     assert!(
-        text.contains("PRIME_AGENT_UV_BIN_DIR -notmatch '^[a-zA-Z]:[\\\\/]'"),
+        text.contains("ALLSPARK_UV_BIN_DIR -notmatch '^[a-zA-Z]:[\\\\/]'"),
         "the validation demands a drive-based spelling (drive + separator)"
     );
     assert!(
@@ -797,7 +797,7 @@ fn install_ps1_validates_the_uv_knob_before_any_side_effect() {
         "the rooted-only check is gone: it accepts drive-relative spellings like C:uv-bin"
     );
     assert!(
-        text.contains("PRIME_AGENT_UV_BIN_DIR must not contain a semicolon"),
+        text.contains("ALLSPARK_UV_BIN_DIR must not contain a semicolon"),
         "the knob must refuse the PATH separator (a target carrying a semicolon corrupts the registry PATH append)"
     );
 }
@@ -942,7 +942,7 @@ fn install_ps1_download_survives_a_stalled_body() {
 /// finding) and must make the uv the installer ACTUALLY knows about
 /// findable (the reviewer's finding): the product's `ensure_uv` searches
 /// PATH and `~/.local/bin/uv(.exe)` - it does NOT know the
-/// `PRIME_AGENT_UV_BIN_DIR` target - so the prepend serves the uv THIS
+/// `ALLSPARK_UV_BIN_DIR` target - so the prepend serves the uv THIS
 /// RUN installed or found at the target when nothing usable is on PATH,
 /// while a working PATH uv is never shadowed (a stale target file cannot
 /// displace it) and a uv at the canonical `~/.local/bin` needs no prepend
@@ -994,7 +994,7 @@ fn install_ps1_passes_the_uv_installer_path_as_process_data() {
         .expect("the PATH-add section follows");
     let section = &text[section_start..section_end];
     assert!(
-        section.contains("& `$env:PRIME_AGENT_UV_INSTALLER"),
+        section.contains("& `$env:ALLSPARK_UV_INSTALLER"),
         "the child script must invoke the fetched installer through the handoff variable, never an embedded literal"
     );
     assert!(
@@ -1008,12 +1008,12 @@ fn install_ps1_passes_the_uv_installer_path_as_process_data() {
         "the child-shell fallback must resolve to an ABSOLUTE executable (a bare 'powershell' can be intercepted by a caller alias or function)"
     );
     assert!(
-        section.contains("$env:PRIME_AGENT_UV_INSTALLER = $uvInstallerPath"),
+        section.contains("$env:ALLSPARK_UV_INSTALLER = $uvInstallerPath"),
         "the parent must hand the installer path to the child through the environment"
     );
     assert!(
-        section.contains("$callerUvInstaller = $env:PRIME_AGENT_UV_INSTALLER")
-            && section.contains("$env:PRIME_AGENT_UV_INSTALLER = $callerUvInstaller"),
+        section.contains("$callerUvInstaller = $env:ALLSPARK_UV_INSTALLER")
+            && section.contains("$env:ALLSPARK_UV_INSTALLER = $callerUvInstaller"),
         "the handoff must save and restore the caller's value like UV_INSTALL_DIR beside it"
     );
     assert!(
@@ -1031,7 +1031,7 @@ fn install_ps1_passes_the_uv_installer_path_as_process_data() {
 /// never be proven airtightly (a transcript's uv-branch line proves an
 /// attempt, not the landing; a concurrent external install races the
 /// attribution) - so the harnesses never touch the shared dir at all:
-/// both installers honor the `PRIME_AGENT_UV_BIN_DIR` knob and the
+/// both installers honor the `ALLSPARK_UV_BIN_DIR` knob and the
 /// harnesses point it at their own scratch dir, with the caller's value
 /// saved and restored. The cleanup has no uv work left to do, and the
 /// user's ~/.local/bin is referenced only by the read-only pre-state
@@ -1050,13 +1050,13 @@ fn windows_e2e_harnesses_isolate_the_uv_install() {
         )
         .unwrap_or_else(|_| panic!("read {harness_name}"));
         assert!(
-            harness.contains("$env:PRIME_AGENT_UV_BIN_DIR = Join-Path $scratch 'uv-bin'"),
+            harness.contains("$env:ALLSPARK_UV_BIN_DIR = Join-Path $scratch 'uv-bin'"),
             "{harness_name} must steer BOTH installers' uv installs into its own scratch dir (ownership of shared-profile files is unprovable; isolation removes the class)"
         );
         assert!(
-            harness.contains("$callerUvBinDir = $env:PRIME_AGENT_UV_BIN_DIR")
-                && harness.contains("$env:PRIME_AGENT_UV_BIN_DIR = $callerUvBinDir"),
-            "{harness_name} must save and restore the caller's PRIME_AGENT_UV_BIN_DIR like the other override knobs"
+            harness.contains("$callerUvBinDir = $env:ALLSPARK_UV_BIN_DIR")
+                && harness.contains("$env:ALLSPARK_UV_BIN_DIR = $callerUvBinDir"),
+            "{harness_name} must save and restore the caller's ALLSPARK_UV_BIN_DIR like the other override knobs"
         );
         // The cleanup finally must never touch the user's uv binaries at
         // all: no snapshot, no restore, no delete, no ownership guess.
@@ -1150,7 +1150,7 @@ fn windows_e2e_harnesses_keep_the_kernel_prewarm_writes_in_scratch() {
         for (what, marker) in [
             (
                 "the venv redirect",
-                "$env:PRIME_AGENT_KERNEL_VENV = Join-Path $scratch 'kernel-venv'",
+                "$env:ALLSPARK_KERNEL_VENV = Join-Path $scratch 'kernel-venv'",
             ),
             (
                 "the uv cache redirect",
@@ -1162,11 +1162,11 @@ fn windows_e2e_harnesses_keep_the_kernel_prewarm_writes_in_scratch() {
             ),
             (
                 "the caller's venv value saved",
-                "$callerKernelVenv = $env:PRIME_AGENT_KERNEL_VENV",
+                "$callerKernelVenv = $env:ALLSPARK_KERNEL_VENV",
             ),
             (
                 "the caller's venv value restored",
-                "$env:PRIME_AGENT_KERNEL_VENV = $callerKernelVenv",
+                "$env:ALLSPARK_KERNEL_VENV = $callerKernelVenv",
             ),
         ] {
             assert!(
@@ -1175,7 +1175,7 @@ fn windows_e2e_harnesses_keep_the_kernel_prewarm_writes_in_scratch() {
             );
         }
         assert!(
-            !harness.contains("Remove-Item 'Env:PRIME_AGENT_KERNEL_VENV'"),
+            !harness.contains("Remove-Item 'Env:ALLSPARK_KERNEL_VENV'"),
             "{harness_name}'s cleanup must RESTORE the caller's override values, never delete the knobs (a caller with its own redirect loses it on an in-process run)"
         );
     }

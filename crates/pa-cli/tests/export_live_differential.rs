@@ -29,15 +29,15 @@ use serde_json::{json, Value};
 /// Environment identity that would leak an ambient daemon/worker/session
 /// into the spawned supervisors or change model resolution.
 const SCRUB_ENV: &[&str] = &[
-    "PRIME_AGENT_INTERNAL_DAEMON_WORKER",
-    "PRIME_AGENT_INTERNAL_DAEMON_WORKER_TOKEN",
-    "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID",
-    "PRIME_AGENT_INTERNAL_DAEMON_WORKER_INSTANCE_ID",
-    "PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL",
-    "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET",
-    "PRIME_AGENT_INTERNAL_ORPHAN_PROCESS_JOURNAL",
-    "PRIME_AGENT_INTERNAL_SESSION_LEASES",
-    "PRIME_AGENT_INTERNAL_SESSION_LEASE_OWNER_ID",
+    "ALLSPARK_INTERNAL_DAEMON_WORKER",
+    "ALLSPARK_INTERNAL_DAEMON_WORKER_TOKEN",
+    "ALLSPARK_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID",
+    "ALLSPARK_INTERNAL_DAEMON_WORKER_INSTANCE_ID",
+    "ALLSPARK_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL",
+    "ALLSPARK_INTERNAL_DAEMON_SUPERVISOR_SOCKET",
+    "ALLSPARK_INTERNAL_ORPHAN_PROCESS_JOURNAL",
+    "ALLSPARK_INTERNAL_SESSION_LEASES",
+    "ALLSPARK_INTERNAL_SESSION_LEASE_OWNER_ID",
     "PRIME_TEAM_ID",
 ];
 
@@ -136,7 +136,7 @@ fn graceful_shutdown(socket: &Path) {
     let command = json!({
         "type": "command",
         "id": "test-shutdown",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
+        "protocol": { "name": "allspark.daemon", "version": 7 },
         "command": { "type": "shutdown" },
     });
     let mut line = serde_json::to_string(&command).expect("serialize");
@@ -161,7 +161,7 @@ fn spawn_supervisor(binary: &Path, dir: &Path) -> Supervisor {
     command
         .args(["--mode", "daemon", "--daemon-socket"])
         .arg(&socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
+        .env("ALLSPARK_CODING_AGENT_DIR", &agent_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -219,7 +219,7 @@ impl Wire {
         let envelope = json!({
             "type": "command",
             "id": id,
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
+            "protocol": { "name": "allspark.daemon", "version": 7 },
             "command": command,
         });
         let mut line = serde_json::to_string(&envelope).expect("serialize");
