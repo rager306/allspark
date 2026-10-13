@@ -734,6 +734,18 @@ fn extract_parts_from_http(error: &ProviderHttpError) -> ExtractedParts {
             .or(Some(error.message.as_str())),
         error.status,
     );
+    // A structured credit/balance signal is a payment failure whatever the
+    // status: a drained wallet reported inside a 5xx envelope must reroute
+    // (failover keys on `payment_required`), not read as a retryable server
+    // fault. The classifier only maps these through an explicit 402, so pin
+    // the kind here — the same rule `from_error_frame` applies to frames.
+    if kind != StreamFailureKind::PaymentRequired
+        && provider_error_type
+            .as_deref()
+            .is_some_and(crate::provider_errors::is_payment_signal)
+    {
+        kind = StreamFailureKind::PaymentRequired;
+    }
     // Message text is too weak for these verdicts: without a structured type, only the status decides.
     if (kind == StreamFailureKind::Auth || kind == StreamFailureKind::Permission)
         && provider_error_type.is_none()

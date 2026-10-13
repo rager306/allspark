@@ -28,7 +28,7 @@
 #      uninstall) never leave the machine without a
 #      working prime-agent if the install aborts mid-way. The probed
 #      candidates: the TS daemon's default socket
-#      (${TMPDIR:-/tmp}/prime-agent-$(id -u)/daemon.sock),
+#      (${TMPDIR:-/tmp}/allspark-$(id -u)/daemon.sock),
 #      ALLSPARK_DAEMON_SOCKET when a profile exported it (the
 #      non-default socket the first field install had), and this
 #      product's own pinned rust socket. The daemon that answers a
@@ -90,7 +90,7 @@
 #          the product binary/package — the user can remove it by hand).
 #   3. WHY DAEMON CONFLICTS ARE GONE AFTER THIS INSTALL: the launcher
 #      pins a rust-only daemon socket
-#      (${TMPDIR:-/tmp}/allspark-rust-$(id -u)/daemon.sock) — a
+#      (${TMPDIR:-/tmp}/allspark-$(id -u)/daemon.sock) — a
 #      different path than the TS daemon's own — so BY DEFAULT this CLI
 #      and the TS daemon never meet (each product's default socket is its
 #      own), and the install-time stop-when-idle above retires a TS daemon
@@ -800,7 +800,7 @@ esac
 if [ "$WINDOWS" = "yes" ]; then
   BINARY_NAME="allspark.exe"
 else
-  BINARY_NAME="prime-agent"
+  BINARY_NAME="allspark"
 fi
 
 # --- glibc floor (Linux) ------------------------------------------------------
@@ -1341,7 +1341,7 @@ done
 
 share_dir="${PREFIX}/share/allspark"
 bin_dir="${PREFIX}/bin"
-launcher="${bin_dir}/prime-agent"
+launcher="${bin_dir}/allspark"
 old_layout_dir="${PREFIX}/share/allspark-rust"
 legacy_dir="${PREFIX}/share/allspark-legacy"
 lock_link="${PREFIX}/share/.allspark-install.lock"
@@ -1605,7 +1605,7 @@ ts_stop_refused=""
 ts_stop_rust_stopped=""
 windows_stop_summary=""
 ts_socket="${TMPDIR:-/tmp}/prime-agent-$(id -u)/daemon.sock"
-rust_socket="${TMPDIR:-/tmp}/allspark-rust-$(id -u)/daemon.sock"
+rust_socket="${TMPDIR:-/tmp}/allspark-$(id -u)/daemon.sock"
 env_socket="${ALLSPARK_DAEMON_SOCKET:-}"
 # THE TILDE EXPANSION (the CLI's own spelling: the products' clients
 # expand a leading ~/ in ALLSPARK_DAEMON_SOCKET before connecting, so
@@ -1804,10 +1804,14 @@ if listening_only:
 # unread parks the line reader on it), then sends the command and reads
 # the reply.
 def envelope(request_id, body):
+    # The protocol name follows the daemon we classified: our daemon only
+    # accepts `allspark.daemon`, the TypeScript daemon only its own
+    # `prime-agent.daemon` (each answers ProtocolTooOld to the other's name).
+    protocol_name = "prime-agent.daemon" if owner == "ts" else "allspark.daemon"
     return json.dumps({
         "type": "command",
         "id": request_id,
-        "protocol": {"name": "prime-agent.daemon", "version": 7},
+        "protocol": {"name": protocol_name, "version": 7},
         "clientId": "install-rust-sh",
         "command": dict(body, id=request_id),
     }) + "\n"
@@ -2838,11 +2842,14 @@ export ALLSPARK_CODING_AGENT_DIR="${ALLSPARK_CODING_AGENT_DIR:-$HOME/.allspark}"
 # An npm migration restores the running TS daemon into its existing namespace.
 # The durable marker survives payload replacement and later curl updates.
 if [ -f "$(dirname "$0")/../share/.allspark-npm-bridge/legacy-daemon-socket" ]; then
+  # The npm-bridge migration case: the running TypeScript daemon is restored
+  # into ITS OWN namespace, so the bridge deliberately pins the upstream
+  # socket (the TS product's default), not this fork's.
   export ALLSPARK_DAEMON_SOCKET="${ALLSPARK_DAEMON_SOCKET:-${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/prime-agent-$(id -u)/daemon.sock}"
 else
-  export ALLSPARK_DAEMON_SOCKET="${ALLSPARK_DAEMON_SOCKET:-${TMPDIR:-/tmp}/allspark-rust-$(id -u)/daemon.sock}"
+  export ALLSPARK_DAEMON_SOCKET="${ALLSPARK_DAEMON_SOCKET:-${TMPDIR:-/tmp}/allspark-$(id -u)/daemon.sock}"
 fi
-exec "$(dirname "$0")/../share/allspark/prime-agent" "$@"
+exec "$(dirname "$0")/../share/allspark/allspark" "$@"
 EOF
 fi
 chmod 0755 "$launcher_tmp"

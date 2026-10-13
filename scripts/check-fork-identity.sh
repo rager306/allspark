@@ -12,6 +12,7 @@ allow() {
         | grep -v 'crates/pa-cli/src/lib.rs' \
         | grep -v 'crates/pa-core/src/auth/prime_inference.rs' \
         | grep -v 'crates/pa-daemon/src/hold_refusal.rs' \
+        | grep -v 'install-rust.sh:.*protocol_name' \
         | grep -v 'PRIME_API_KEY' \
         | grep -v 'DO_NOT_TRACK' \
         | grep -v 'testdata/acp/'

@@ -78,8 +78,13 @@ pub use interactive_mode::{
 /// when the fork's config dir does not exist yet and the legacy
 /// `~/.prime/agent` does, copy the small user-owned files (settings, auth,
 /// models overlay) so the first `allspark` start keeps the user's logins.
-/// Sessions are deliberately NOT copied; a `.migrated-from-prime` marker
-/// records that the check ran.
+///
+/// `auth.json` is NOT copied: a rotating OAuth refresh token (CodeBuddy and
+/// friends mint a new one on every refresh) would be shared by two products,
+/// and the first refresh in either would invalidate the other's copy. The
+/// user re-runs `/login` for those providers; API keys survive in
+/// `settings.json`. Sessions are deliberately NOT copied. A
+/// `.migrated-from-prime` marker records that the check ran.
 fn migrate_from_legacy_once() {
     use pa_types::platform::home_dir;
     let Some(home) = home_dir() else { return };
@@ -91,19 +96,24 @@ fn migrate_from_legacy_once() {
     if !legacy.is_dir() {
         return;
     }
-    for name in ["settings.json", "auth.json", "models.json"] {
+    for name in ["settings.json", "models.json"] {
         let from = legacy.join(name);
         if from.is_file() {
-            let _ = std::fs::create_dir_all(&new_dir);
-            let _ = std::fs::copy(&from, new_dir.join(name));
+            if let Err(error) = std::fs::create_dir_all(&new_dir) {
+                eprintln!("note: could not create {}: {error}", new_dir.display());
+                return;
+            }
+            if let Err(error) = std::fs::copy(&from, new_dir.join(name)) {
+                eprintln!("note: could not import {name} from ~/.prime/agent: {error}");
+            }
         }
     }
     let _ = std::fs::write(
         new_dir.join(".migrated-from-prime"),
-        "copied settings/auth/models from ~/.prime/agent\n",
+        "copied settings/models from ~/.prime/agent (auth.json left: rotating refresh tokens)\n",
     );
     eprintln!(
-        "note: imported settings/auth/models from ~/.prime/agent into {} (sessions were left in place)",
+        "note: imported settings/models from ~/.prime/agent into {} (sessions and auth.json were left in place; re-run /login for OAuth providers)",
         new_dir.display()
     );
 }
@@ -400,5 +410,74 @@ fn node_style_error(error: &std::io::Error, syscall: &str, from: &str, to: &str)
             format!("EACCES: permission denied, {syscall} '{from}' -> '{to}'")
         }
         _ => error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::migrate_from_legacy_once;
+    use std::path::Path;
+
+    /// Run the migration against a synthetic HOME.
+    fn run(home: &Path) {
+        // The function reads HOME through pa_types::platform::home_dir().
+        // SAFETY: single-threaded test; HOME is restored by the guard below.
+        let previous = std::env::var_os("HOME");
+        std::env::set_var("HOME", home);
+        migrate_from_legacy_once();
+        match previous {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    /// The rotating-refresh regression: auth.json must NOT be copied, or the
+    /// first refresh in either product invalidates the other's copy.
+    #[test]
+    fn migration_skips_auth_json_and_copies_settings_and_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join(".prime/agent");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("settings.json"), r#"{"theme":"prime"}"#).unwrap();
+        std::fs::write(legacy.join("models.json"), r#"{"providers":{}}"#).unwrap();
+        std::fs::write(
+            legacy.join("auth.json"),
+            r#"{"codebuddy":{"refresh":"r1"}}"#,
+        )
+        .unwrap();
+
+        run(dir.path());
+
+        let new_dir = dir.path().join(".allspark");
+        assert!(new_dir.join("settings.json").is_file(), "settings imported");
+        assert!(new_dir.join("models.json").is_file(), "models imported");
+        assert!(
+            !new_dir.join("auth.json").exists(),
+            "auth.json is never copied: a rotating refresh token would be shared"
+        );
+        assert!(
+            new_dir.join(".migrated-from-prime").is_file(),
+            "marker written"
+        );
+    }
+
+    /// A second run is a no-op: the fork dir now exists.
+    #[test]
+    fn migration_is_one_shot() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join(".prime/agent");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("settings.json"), "{}").unwrap();
+        let new_dir = dir.path().join(".allspark");
+        std::fs::create_dir_all(&new_dir).unwrap();
+        std::fs::write(new_dir.join("settings.json"), r#"{"kept":true}"#).unwrap();
+
+        run(dir.path());
+
+        assert_eq!(
+            std::fs::read_to_string(new_dir.join("settings.json")).unwrap(),
+            r#"{"kept":true}"#,
+            "an existing fork dir is left untouched"
+        );
     }
 }

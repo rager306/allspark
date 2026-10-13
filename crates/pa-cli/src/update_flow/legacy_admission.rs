@@ -24,7 +24,8 @@ impl Admission {
             let home =
                 pa_types::platform::home_dir().context("resolve supervisor registry home")?;
             vec![
-                home.join(".allspark/supervisor-owners"),
+                home.join(pa_types::identity::CONFIG_DIR_NAME)
+                    .join("supervisor-owners"),
                 pa_daemon::socket::default_daemon_socket_path()
                     .parent()
                     .context("resolve legacy supervisor registry")?

@@ -147,6 +147,8 @@ debug = "line-tables-only"
 inherits = "release"
 debug = false
 strip = "symbols"
-panic = "abort"
+# panic = "unwind" (release default) on purpose: a panicking protocol-reader
+# task in a session worker must unwind and settle, not abort the whole
+# worker process mid-turn.
 lto = "fat"
 codegen-units = 1

@@ -133,6 +133,19 @@ fn normalize_codebuddy(mut http: ProviderHttpError, parsed: &Value) -> ProviderE
                 .and_then(Value::as_str)
                 .map(str::to_string)
         });
+    // The text markers are checked before the code default: the gateway
+    // wraps upstream failures in its own envelope, and a credit/quota
+    // message is a payment failure even when the numeric code is one we
+    // do not enumerate. A 5xx status is a server fault, never a request
+    // rejection (an invalid_request_error there would never be retried).
+    let msg_lower = msg.as_deref().unwrap_or("").to_lowercase();
+    let credits_exhausted = [
+        "insufficient credit",
+        "insufficient_balance",
+        "quota exceeded",
+    ]
+    .iter()
+    .any(|marker| msg_lower.contains(marker));
     let error_type = match code {
         Some(6004) => "rate_limit_exceeded",
         // 11128 is the gateway's security-policy block ("Illegal API invocation
@@ -142,6 +155,8 @@ fn normalize_codebuddy(mut http: ProviderHttpError, parsed: &Value) -> ProviderE
         Some(11128) => "prohibited_content",
         // 11101 (non-stream), 11102 (delisted model), and friends are request
         // rejections.
+        _ if credits_exhausted => "insufficient_credits",
+        _ if http.status.is_some_and(|status| status >= 500) => "server_error",
         _ => "invalid_request_error",
     };
 
@@ -179,11 +194,26 @@ fn normalize_genspark(mut http: ProviderHttpError, parsed: &Value) -> ProviderEr
     // LiteLLM reports auth failures as HTTP 401 with the plain detail string; the
     // shared classifier already maps 401 -> auth, so the type only adds the
     // human-readable text.
+    // A 5xx carries a server-side failure even when the JSON body is a
+    // plain detail string: classifying it as invalid_request_error would
+    // make the retry ladder treat a transient gateway fault as permanent.
+    // The credit markers in the text still win (a drained wallet is a
+    // payment failure at any status).
+    let detail_lower = detail.to_lowercase();
+    let credits_exhausted = [
+        "insufficient credit",
+        "insufficient_balance",
+        "quota exceeded",
+    ]
+    .iter()
+    .any(|marker| detail_lower.contains(marker));
     let error_type = match http.status {
         Some(401) => "authentication_error",
         Some(403) => "permission_error",
         Some(402) => "insufficient_credits",
         Some(429) => "rate_limit_exceeded",
+        _ if credits_exhausted => "insufficient_credits",
+        Some(status) if status >= 500 => "server_error",
         _ => "invalid_request_error",
     };
     http.message = format!("{} {detail}", http.status.unwrap_or(0));
@@ -491,7 +521,7 @@ fn is_rate_limit_text(message: &str) -> bool {
 
 /// Credit/balance exhaustion markers gateways use in `error.type`/`error.code`
 /// without an HTTP 402 (`LiteLLM`, and the fork gateways that mirror it).
-fn is_payment_signal(provider_error_type: &str) -> bool {
+pub(crate) fn is_payment_signal(provider_error_type: &str) -> bool {
     let kind = provider_error_type.to_lowercase();
     kind.contains("insufficient_credits")
         || kind.contains("insufficient_balance")
@@ -739,12 +769,65 @@ mod tests {
 
     #[test]
     fn parses_the_reset_stamp_with_offsets() {
-        let stamp = "2026-10-13 00:00:00 UTC+8";
+        // A stamp far in the future: the wait is measured from `now`, so a
+        // near-date literal would turn this into a time bomb.
+        let stamp = "2099-01-01 00:00:00 UTC+8";
         let wait = parse_reset_stamp_ms(stamp).expect("stamp parses");
-        // 2026-10-13T00:00:00+08:00 == 2026-10-12T16:00:00Z.
         assert!(wait > 0);
         assert_eq!(parse_offset_minutes("+8"), Some(480));
         assert_eq!(parse_offset_minutes("+08:00"), Some(480));
         assert_eq!(parse_offset_minutes("-05:30"), Some(-330));
+    }
+    #[test]
+    fn genspark_5xx_detail_is_a_server_fault_not_a_request_rejection() {
+        // A gateway fault carrying a plain detail string must classify as a
+        // server error so the retry ladder retries it; before the fix the
+        // `_` arm made it invalid_request_error (never retried).
+        let error = normalize_provider_http_error(
+            "genspark",
+            http_error(500, r#"{"detail":"upstream connect error"}"#),
+        );
+        assert_eq!(
+            extract_stream_failure_info(&error).kind,
+            StreamFailureKind::ServerError
+        );
+    }
+
+    #[test]
+    fn genspark_5xx_with_credit_text_still_classifies_as_payment() {
+        // The credit markers win over the status: a drained wallet is a
+        // payment failure at any status, so failover reroutes it.
+        let error = normalize_provider_http_error(
+            "genspark",
+            http_error(500, r#"{"detail":"Insufficient credits"}"#),
+        );
+        assert_eq!(
+            extract_stream_failure_info(&error).kind,
+            StreamFailureKind::PaymentRequired
+        );
+    }
+
+    #[test]
+    fn codebuddy_5xx_is_a_server_fault_not_a_request_rejection() {
+        let error = normalize_provider_http_error(
+            "codebuddy",
+            http_error(500, r#"{"code":9999,"msg":"internal error"}"#),
+        );
+        assert_eq!(
+            extract_stream_failure_info(&error).kind,
+            StreamFailureKind::ServerError
+        );
+    }
+
+    #[test]
+    fn codebuddy_credit_text_classifies_as_payment_at_any_status() {
+        let error = normalize_provider_http_error(
+            "codebuddy",
+            http_error(500, r#"{"code":9999,"msg":"Insufficient credits"}"#),
+        );
+        assert_eq!(
+            extract_stream_failure_info(&error).kind,
+            StreamFailureKind::PaymentRequired
+        );
     }
 }

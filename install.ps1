@@ -11,7 +11,7 @@
 # The Git Bash route is the same channel through install-rust.sh (the sh
 # one-liner `curl -fsSL .../install.sh | sh` under Git Bash/MSYS2/Cygwin);
 # this script is the PowerShell-native form. Both routes publish the SAME
-# layout — $PREFIX\share\prime-agent\ (the payload) and $PREFIX\bin\
+# layout — $PREFIX\share\allspark\ (the payload) and $PREFIX\bin\
 # (the launcher pair) — so either route can update the other's install.
 #
 # THE CHANNEL (install-rust.sh parity): the channel pointer (<base>/stable
@@ -247,7 +247,7 @@ if ($effectiveArchitecture -ne 'AMD64') {
 # the channel manifest must carry for this platform (the reader's own rule,
 # pa-core::update::release::parse_channel_manifest).
 function ExpectedFileName($version, $platform) {
-    return "prime-agent-$version-$platform.tar.gz"
+    return "allspark-$version-$platform.tar.gz"
 }
 
 # --- resolve the version (the channel pointer, or the pinned version) --------
@@ -321,7 +321,7 @@ $manifest = $null
 $row = $null
 if ($versionPin) {
     $version = $versionPin.Trim().TrimStart('v')
-    Write-Host "installing prime-agent $version (pinned) from the $channel channel ($platform)"
+    Write-Host "installing allspark $version (pinned) from the $channel channel ($platform)"
 } else {
     $pair = Read-ChannelPair $channel
     $version = $pair.Version
@@ -331,7 +331,7 @@ if ($versionPin) {
         Fail "no artifact row for platform $platform in the $channel manifest; the installer will not switch release channels automatically"
     }
     if ($row.sha256 -notmatch '^[0-9a-f]{64}$') { Fail "the channel manifest's sha256 for $(ExpectedFileName $version $platform) is malformed" }
-    Write-Host "installing prime-agent $version from the $channel channel ($platform)"
+    Write-Host "installing allspark $version from the $channel channel ($platform)"
 }
 
 # --- the channel manifest row (unpinned) / the naming contract (pinned) ------
@@ -342,7 +342,7 @@ if ($versionPin) {
 
 # --- the tarball + SHA256SUMS from the versioned release prefix ----------------
 $releasePrefix = "releases/v$version"
-$download = Join-Path ([IO.Path]::GetTempPath()) ("prime-agent-download-{0}" -f [Guid]::NewGuid().ToString('N'))
+$download = Join-Path ([IO.Path]::GetTempPath()) ("allspark-download-{0}" -f [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $download | Out-Null
 $script:primeAgentInstallScratch = $download
 # THE DOWNLOAD SWEEP: the scratch (the tarball + the sums) is removed when
@@ -390,7 +390,7 @@ Step-Ok 'checksum verified' "$expectedFile ($version, the $channel channel)"
 
 # --- extract to a staging dir inside the prefix (same volume: the final swap
 # --- is a rename, not a copy) -----------------------------------------------------
-$share = Join-Path $prefix 'share\prime-agent'
+$share = Join-Path $prefix 'share\allspark'
 $bin = Join-Path $prefix 'bin'
 New-Item -ItemType Directory -Path (Join-Path $prefix 'share') -Force | Out-Null
 New-Item -ItemType Directory -Path $bin -Force | Out-Null
@@ -414,18 +414,18 @@ $marker = "$channelLine`nversion $version"
 # encoding follows $PSDefaultParameterValues['*:Encoding'] (UTF-16 or a
 # BOM), and the update funnel's channel-stickiness read + the rollback's
 # marker validation grep the raw ASCII line.
-Set-Content -LiteralPath (Join-Path $stage '.prime-agent-install') -Value $marker -Encoding Ascii -NoNewline
+Set-Content -LiteralPath (Join-Path $stage '.allspark-install') -Value $marker -Encoding Ascii -NoNewline
 
 # The launcher paths (the section below the publish writes both).
-$launcher = Join-Path $bin 'prime-agent.cmd'
-$shLauncher = Join-Path $bin 'prime-agent'
+$launcher = Join-Path $bin 'allspark.cmd'
+$shLauncher = Join-Path $bin 'allspark'
 
 # --- the publication lock (one writer): a lock DIRECTORY is the atomic
 # --- claim on Windows (mkdir wins exactly once); the holder's pid rides a
 # --- file inside, and a stale lock is never auto-stolen. THE LOCK COMES
 # --- FIRST: a failed lock claim must never have stopped a daemon (the
 # --- bots' finding - the stop-for-nothing downtime).
-$lockDir = Join-Path (Join-Path $prefix 'share') '.prime-agent-install.lock.d'
+$lockDir = Join-Path (Join-Path $prefix 'share') '.allspark-install.lock.d'
 try {
     New-Item -ItemType Directory -Path $lockDir -ErrorAction Stop | Out-Null
 } catch {
@@ -455,12 +455,12 @@ $script:daemonStopped = $false
 # bots' finding: the stop-then-refuse order was the avoidable downtime).
 $rollback = Join-Path (Join-Path $prefix 'share') 'allspark.old'
 if (Test-Path $share -PathType Container) {
-    $markerPath = Join-Path $share '.prime-agent-install'
+    $markerPath = Join-Path $share '.allspark-install'
     if (-not (Test-Path $markerPath -PathType Leaf)) {
-        Fail "refusing to take ownership of ${share}: it is not a marked prime-agent payload tree (.prime-agent-install); move it aside and re-run"
+        Fail "refusing to take ownership of ${share}: it is not a marked allspark payload tree (.allspark-install); move it aside and re-run"
     }
     if (Test-Path $rollback) {
-        $rollbackMarker = Join-Path $rollback '.prime-agent-install'
+        $rollbackMarker = Join-Path $rollback '.allspark-install'
         if (-not (Test-Path $rollbackMarker -PathType Leaf)) {
             Fail "refusing to delete the unmarked rollback directory: $rollback (move it aside and re-run)"
         }
@@ -473,18 +473,18 @@ try {
     # otherwise left behind). THE TRUSTED STOP: the previous payload's own
     # binary (the marked share tree's allspark.exe), never the launcher -
     # a launcher this installer has not verified is the unowned-execution
-    # shape (an attacker-placed bin\prime-agent.cmd would otherwise run
+    # shape (an attacker-placed bin\allspark.cmd would otherwise run
     # with the installer's inherited environment); the share's ownership
     # marker gates the stop, and a fresh install (no marked payload yet)
     # has no daemon the stop could reach.
     $payloadStopExe = Join-Path $share 'allspark.exe'
-    $shareMarker = Join-Path $share '.prime-agent-install'
+    $shareMarker = Join-Path $share '.allspark-install'
     if ((Test-Path $shareMarker -PathType Leaf) -and (Test-Path $payloadStopExe -PathType Leaf)) {
         Write-Host 'stopping the running Rust daemon before the publish (a Windows process holds its binary open)'
         # THE SCRIPTED FORM: the CLI's bare `shutdown` prompts for
         # confirmation in an interactive terminal and REFUSES a
         # non-interactive one ("Shutdown requires confirmation in an
-        # interactive terminal. Use prime-agent shutdown --force") - the
+        # interactive terminal. Use allspark shutdown --force") - the
         # installer's context is the scripted one, so `--force` is the
         # documented non-interactive stop (the daemon's own forced
         # shutdown drains its workers with its internal budgets).
@@ -492,7 +492,7 @@ try {
         if ($LASTEXITCODE -eq 0) {
             $script:daemonStopped = $true
         } else {
-            Write-Warning "no daemon answered the shutdown request; if a daemon is running, stop it by hand (prime-agent shutdown --force) and re-run"
+            Write-Warning "no daemon answered the shutdown request; if a daemon is running, stop it by hand (allspark shutdown --force) and re-run"
         }
     }
 
@@ -512,7 +512,7 @@ try {
     # tree is valid; the restored launchers point at ../share/allspark/
     # allspark.exe - the new payload - and keep working).
     $published = $true
-    Step-Ok 'published' "prime-agent $version to $prefix"
+    Step-Ok 'published' "allspark $version to $prefix"
 
     # --- the launcher pair: the cmd shim (cmd.exe + PowerShell) and the sh
     # --- launcher (Git Bash) - the same payload, both shells, the same
@@ -558,15 +558,15 @@ try {
     try {
         $cmdShim = @'
 @echo off
-rem prime-agent - launcher written by install-rust.sh.
-if not defined ALLSPARK_CODING_AGENT_DIR set "ALLSPARK_CODING_AGENT_DIR=%USERPROFILE%\.prime\agent"
-"%~dp0..\share\prime-agent\allspark.exe" %*
+rem allspark - launcher written by install-rust.sh.
+if not defined ALLSPARK_CODING_AGENT_DIR set "ALLSPARK_CODING_AGENT_DIR=%USERPROFILE%\.allspark"
+"%~dp0..\share\allspark\allspark.exe" %*
 '@
         Set-Content -LiteralPath $launcher -Value $cmdShim
 
         $shBody = @'
 #!/bin/sh
-# prime-agent — launcher written by install-rust.sh.
+# allspark — launcher written by install-rust.sh.
 export ALLSPARK_CODING_AGENT_DIR="${ALLSPARK_CODING_AGENT_DIR:-$HOME/.allspark}"
 exec "$(dirname "$0")/../share/allspark/allspark.exe" "$@"
 '@
@@ -625,7 +625,7 @@ exec "$(dirname "$0")/../share/allspark/allspark.exe" "$@"
         # the user never guesses - the next invocation boots the old
         # payload's daemon again.
         if ($script:daemonStopped) {
-            Write-Warning "the daemon stopped for this failed install stays down until the next prime-agent invocation boots it from the restored payload"
+            Write-Warning "the daemon stopped for this failed install stays down until the next allspark invocation boots it from the restored payload"
         }
     }
     Remove-Item -Recurse -Force $lockDir -ErrorAction SilentlyContinue
@@ -786,7 +786,7 @@ if ($uvKnown) {
 # Windows has a canonical user-PATH setting (the registry's User scope —
 # no admin needed), so the installer ADDS the launcher's bin dir there
 # itself: idempotent (appended only when the entry is absent, never
-# duplicated), mirrored into the CURRENT session so prime-agent works in
+# duplicated), mirrored into the CURRENT session so allspark works in
 # this console immediately, and a new terminal picks it up (the
 # WM_SETTINGCHANGE broadcast tells the running shells the environment
 # changed, the same way setx does — best-effort; the registry write is
@@ -819,7 +819,7 @@ $pathAdded = $false
 foreach ($binDir in $pathDirs) {
     if (-not (Test-PathEntry $env:PATH $binDir)) {
         $env:PATH = "$env:PATH;$binDir"
-        Write-Host "PATH: added $binDir to this session - prime-agent works in this console now"
+        Write-Host "PATH: added $binDir to this session - allspark works in this console now"
     }
     $envKey = $null
     try {
@@ -892,7 +892,7 @@ try {
 }
 Write-Host "launcher:  $launcher"
 Write-Host "payload:   $share"
-Write-Host "source:    the $channel channel at $baseUrl (prime-agent $version)"
+Write-Host "source:    the $channel channel at $baseUrl (allspark $version)"
 Write-Host 'next steps: the README''s Install section ships inside the payload:'
 Write-Host "  $share\README.md"
 
