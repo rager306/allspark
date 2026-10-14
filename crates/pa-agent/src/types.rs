@@ -490,6 +490,46 @@ impl AgentToolResult {
 /// Callback used by tools to publish partial execution updates.
 pub type AgentToolUpdateCallback = Arc<dyn Fn(AgentToolResult) + Send + Sync>;
 
+/// Capability/availability markers a tool may declare (Serena `ToolMarker`).
+///
+/// Markers let the tool surface be filtered by capability (read-only
+/// contexts, optional tools, beta tools, project-free tools) instead of by
+/// hard-coded name lists. They mirror Serena's `ToolMarker` subclasses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolMarker {
+    /// The tool may modify files (editing surface).
+    CanEdit,
+    /// The tool reads symbols rather than whole files (symbolic read).
+    SymbolicRead,
+    /// The tool edits symbols rather than whole files (symbolic edit).
+    SymbolicEdit,
+    /// The tool is opt-in: excluded unless a context explicitly includes it.
+    Optional,
+    /// The tool is beta: excluded unless a context explicitly includes it.
+    Beta,
+    /// The tool works without an active project (project-free surface).
+    DoesNotRequireActiveProject,
+}
+
+impl ToolMarker {
+    /// The marker's class name as it appears in prompt templates
+    /// (`available_markers`, e.g. `ToolMarkerSymbolicRead`).
+    #[must_use]
+    pub fn class_name(self) -> &'static str {
+        match self {
+            ToolMarker::CanEdit => "ToolMarkerCanEdit",
+            ToolMarker::SymbolicRead => "ToolMarkerSymbolicRead",
+            ToolMarker::SymbolicEdit => "ToolMarkerSymbolicEdit",
+            ToolMarker::Optional => "ToolMarkerOptional",
+            ToolMarker::Beta => "ToolMarkerBeta",
+            ToolMarker::DoesNotRequireActiveProject => {
+                "ToolMarkerDoesNotRequireActiveProject"
+            }
+        }
+    }
+}
+
 /// Tool definition used by the agent runtime.
 ///
 /// The schema is a plain JSON Schema `Value` (TS validates against a `TypeBox`
@@ -512,6 +552,11 @@ pub trait AgentTool: Send + Sync {
     /// win.
     fn accepts_alias(&self, _name: &str) -> bool {
         false
+    }
+    /// Capability/availability markers used to filter the tool surface
+    /// (Serena `ToolMarker`). Default: no markers.
+    fn markers(&self) -> &[ToolMarker] {
+        &[]
     }
     /// Execute the tool call. Return `Err` on failure instead of encoding
     /// errors in `content`, like a `throw` in the TS reference.

@@ -181,6 +181,18 @@ fn mcp_gating_blocking(
     crate::mcp::McpManager::prompt_gating(user_servers, agent_dir)
 }
 
+/// Join the host's append-system-prompt sources with any Phase-7 profile
+/// addenda (context first, then modes). Returns the joined prompt (empty when
+/// there is nothing to append).
+fn profile_append_prompt(sources: &[String], addenda: &[String]) -> String {
+    sources
+        .iter()
+        .chain(addenda.iter())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 /// Assemble a session: load resources, build the system prompt, and start the
 /// loop with persistence wiring.
 ///
@@ -267,6 +279,12 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let lsp_enabled = settings.get_lsp_enabled();
     let graph_enabled = settings.get_graph_enabled();
     let graph_db_path = settings.get_graph_db_path();
+    // Phase-7 tool-surface profile, captured before `settings` moves into the
+    // resource loader (the profile selects a context and modes).
+    let resolved_profile = crate::tool_profile::resolve_profile(
+        settings.settings().tool_profile.as_ref(),
+        false,
+    );
     let (mcp_skill_overrides, mcp_generic_servers, built_manager) =
         mcp_gating(&settings, config.agent_dir.clone()).await?;
     let mcp_manager = config
@@ -488,6 +506,12 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             cwd.clone(),
         )));
     }
+    // Phase-7 tool-surface profile: the resolved pipeline filters the roster
+    // before the prompt is built (so `active_tool_names` matches the effective
+    // surface).
+    if !resolved_profile.layers.is_empty() {
+        tools = crate::tool_profile::apply_layers(&tools, &resolved_profile.layers);
+    }
     let active_tool_names: Vec<String> = tools.iter().map(|tool| tool.name().to_string()).collect();
 
     // The snapshot arm is not depth-gated: a resumed session prewarms even
@@ -563,7 +587,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             daemonless: config.daemonless,
             can_spawn: config.rlm_subagent_host.is_some(),
             generic_mcp_servers,
-            append_system_prompt: Some(resources.append_system_prompt.join("\n\n")),
+            append_system_prompt: Some(profile_append_prompt(
+                &resources.append_system_prompt,
+                &resolved_profile.prompt_addenda,
+            )),
             ..Default::default()
         },
     );

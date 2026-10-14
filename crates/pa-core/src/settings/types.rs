@@ -310,6 +310,27 @@ pub enum McpServerConfig {
     },
 }
 
+/// Phase-7 tool-surface profile (fork-only): the active context, the modes
+/// layered on top of it, and a project-local delta. Resolved into a
+/// [`crate::tool_profile::ToolsetLayer`] pipeline at session creation
+/// (`config -> context -> base modes -> dynamic modes -> single-project ->
+/// project`). Unset reads as the full default surface.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ToolProfileSettings {
+    /// Context preset name (`coding`, `query`, `minimal`, `debug`).
+    pub context: Option<String>,
+    /// Mode names applied after the context (any of the nine Serena modes).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modes: Vec<String>,
+    /// Project-local tool exclusions (the last layer).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded_tools: Vec<String>,
+    /// Project-local tool inclusions (an inclusion beats any exclusion).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub included_tools: Vec<String>,
+}
+
 /// The settings document: every known field optional; unknown keys preserved.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -345,6 +366,8 @@ pub struct Settings {
     pub lsp: Option<LspSettings>,
     /// Native `graph` code-graph tool settings (fork-only; `enabled` defaults on).
     pub graph: Option<GraphSettings>,
+    /// Tool-surface profile (fork-only; Phase 7 config isolation).
+    pub tool_profile: Option<ToolProfileSettings>,
     pub factory: Option<FactorySettings>,
     pub telemetry: Option<TelemetrySettings>,
     pub branch_summary: Option<BranchSummarySettings>,

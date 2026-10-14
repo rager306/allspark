@@ -72,6 +72,9 @@ pub mod resources;
 pub mod session;
 pub mod session_engine;
 pub mod settings;
+// Serena-pattern tool-surface profiles (Phase 7: contexts/modes/markers/
+// layering/registry/disclosure; fork-only).
+pub mod tool_profile;
 pub mod skills;
 pub mod slash_command_args;
 pub mod update;

@@ -21,6 +21,6 @@ pub use storage::{
 };
 pub use types::{
     AutoRefineSettings, AutonomousSettings, CompactionSettings, GraphSettings, LspSettings,
-    McpServerConfig, QueueModeSetting, Settings, ThinkingLevelSetting, TransportSetting,
-    UpdateChannel,
+    McpServerConfig, QueueModeSetting, Settings, ThinkingLevelSetting, ToolProfileSettings,
+    TransportSetting, UpdateChannel,
 };
