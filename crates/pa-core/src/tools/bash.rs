@@ -444,11 +444,16 @@ pub async fn execute_bash(
         Ok(exit_code) => {
             let formatted = format_output(&snapshot, last_line_bytes, "(no output)");
             let text = formatted.text;
-            if exit_code.is_some_and(|code| code != 0) {
-                anyhow::bail!(append_status(
+            // `None` means the child was killed by a signal (not a clean
+            // exit): that is a failure, not a success. Treating it as success
+            // reported a signalled run as a passing command.
+            match exit_code {
+                Some(0) => {}
+                Some(code) => anyhow::bail!(append_status(
                     &text,
-                    &format!("Command exited with code {}", exit_code.unwrap())
-                ));
+                    &format!("Command exited with code {code}")
+                )),
+                None => anyhow::bail!(append_status(&text, "Command was killed by a signal")),
             }
             Ok(ToolExecutionResult {
                 content: vec![ToolContentBlock::text(text)],
@@ -550,3 +555,40 @@ pub fn create_bash_tool_definition_with_options(
 /// Refusal text for discard commands whose target repository cannot be
 /// resolved safely (TS: `formatRelocationRefusal`).
 const RELOCATION_REFUSAL: &str = "Refusing to run this destructive git command: it changes directory (or repository) first, and the uncommitted changes of the repository it targets cannot be checked safely.\n\nRun the discard as its own command from the target directory, or retry with allowDestructiveGit: true, or set PI_BASH_ALLOW_DESTRUCTIVE_GIT=1.";
+
+#[cfg(test)]
+mod signal_exit_tests {
+    use super::*;
+
+    /// Operations that resolve with `Ok(None)` — the child was killed by a
+    /// signal (the `BashOperations` contract for that case).
+    struct SignalledOps;
+
+    impl BashOperations for SignalledOps {
+        fn exec<'a>(
+            &'a self,
+            _command: &'a str,
+            _cwd: &'a str,
+            _options: ExecOptions<'a>,
+        ) -> ExecFuture<'a> {
+            Box::pin(async move { Ok(None) })
+        }
+    }
+
+    /// The reported regression: a child killed by a signal (`exit_code =
+    /// None`) was treated as a SUCCESS because `is_some_and(|code| code != 0)`
+    /// is false for `None`. It must be a failure.
+    #[tokio::test]
+    async fn a_signal_killed_command_is_a_failure_not_a_success() {
+        let options = BashToolOptions {
+            operations: Some(std::sync::Arc::new(SignalledOps)),
+            ..Default::default()
+        };
+        let result = execute_bash("/tmp", &options, "sleep 100", None, None, None, None).await;
+        let error = result.expect_err("a signalled child is a failure");
+        assert!(
+            error.to_string().contains("killed by a signal"),
+            "the failure names the signal kill: {error}"
+        );
+    }
+}

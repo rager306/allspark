@@ -509,7 +509,7 @@ BEGIN {
 # BANNER_AWK_END
 '
 
-dl="$(mktemp -d "${TMPDIR:-/tmp}/prime-agent-download.XXXXXX")"
+dl="$(mktemp -d "${TMPDIR:-/tmp}/allspark-download.XXXXXX")"
 # The renderer's inputs: the active step (label, detail, the file being
 # downloaded, its size), the finished lines, the title's version text, and
 # the stop flag. Warnings wait in ui_notes and print in full once the
@@ -906,7 +906,7 @@ case "$VERSION" in
     ;;
 esac
 step_clear
-say "installing prime-agent ${VERSION} from the ${CHANNEL} channel (${CHANNEL_PLATFORM})"
+say "installing allspark ${VERSION} from the ${CHANNEL} channel (${CHANNEL_PLATFORM})"
 title "${VERSION} (${CHANNEL})"
 elif [ "$MODE" = archive ]; then
 # --- --archive: a local release archive ------------------------------------------
@@ -936,7 +936,7 @@ elif [ "$MODE" = archive ]; then
     *[!0-9A-Za-z.-]*) die "invalid version in the archive name ${archive_name}: ${VERSION}" ;;
   esac
   asset="$ARCHIVE"
-  say "installing prime-agent ${VERSION} from the local archive ${ARCHIVE}"
+  say "installing allspark ${VERSION} from the local archive ${ARCHIVE}"
   title "${VERSION} (local archive)"
   step_ok "Using the local archive" "$(tilde "$ARCHIVE")"
 fi
@@ -1440,7 +1440,7 @@ if [ "$MODE" = rollback ]; then
   marker="$(marker_text "${rollback_from}/.allspark-install")"
   CHANNEL="$(printf '%s\n' "$marker" | sed -n '1s/^install-rust.sh channel //p')"
   VERSION="$(printf '%s\n' "$marker" | sed -n '2s/^version //p')"
-  say "rolling back to prime-agent ${VERSION} (${rollback_from})"
+  say "rolling back to allspark ${VERSION} (${rollback_from})"
   title "${VERSION} (rollback)"
   step_ok "Found the previous version" "${VERSION}"
 fi
@@ -1497,7 +1497,7 @@ ROW_PY
            sleep 1
            VERSION="$(read_channel_version)"
            [ -n "$VERSION" ] || die "could not resolve the latest ${CHANNEL} version from ${BASE_URL}/${CHANNEL}"
-           say "installing prime-agent ${VERSION} from the ${CHANNEL} channel (${CHANNEL_PLATFORM})"
+           say "installing allspark ${VERSION} from the ${CHANNEL} channel (${CHANNEL_PLATFORM})"
            continue
          fi
          die "the ${CHANNEL} channel manifest is not usable: ${BASE_URL}/${CHANNEL_MANIFEST} (${manifest_err})"; }
@@ -2169,7 +2169,7 @@ stop_daemon_candidate() {
       note "! A different daemon took ${socket_path} mid-stop (${daemon_name} was"
       note "  identified there); nothing was stopped and the newcomer was never"
       note "  commanded. Stop it with:"
-      todo "prime-agent shutdown --force"
+      todo "allspark shutdown --force"
       ts_stop_summary="${ts_stop_summary}daemon: WARNING replaced on ${socket_path} (the classified ${daemon_name} was swapped mid-stop; the replacement was never commanded; stop it by hand: prime-agent shutdown --force)
 "
       ;;
@@ -2197,7 +2197,7 @@ stop_daemon_candidate() {
           manual_stop="re-run the installer with --force to kill it, or stop it by hand: prime-agent shutdown --force"
           ;;
       esac
-      todo "prime-agent shutdown --force"
+      todo "allspark shutdown --force"
       ts_stop_summary="${ts_stop_summary}daemon: WARNING still running on ${socket_path} (${daemon_name}, ${sessions_label}; the graceful and forced requests did not bring it down; ${stop_failed_reason}; ${manual_stop})
 "
       ;;
@@ -2206,7 +2206,7 @@ stop_daemon_candidate() {
       ts_stop_found_any="yes"
       note "! An unknown daemon is listening on ${socket_path} (schema ${schema_id});"
       note "  nothing was stopped. Stop it with:"
-      todo "prime-agent shutdown --force"
+      todo "allspark shutdown --force"
       ts_stop_summary="${ts_stop_summary}daemon: WARNING unrecognized on ${socket_path} (schema ${schema_id}; left running; stop it by hand: prime-agent shutdown --force)
 "
       ;;
@@ -2214,7 +2214,7 @@ stop_daemon_candidate() {
       ts_stop_found_any="yes"
       note "! Something is listening on ${socket_path} but did not greet as a"
       note "  daemon; nothing was stopped. Stop it with:"
-      todo "prime-agent shutdown --force"
+      todo "allspark shutdown --force"
       ts_stop_summary="${ts_stop_summary}daemon: WARNING unidentified on ${socket_path} (no daemon hello; left running; stop it by hand: prime-agent shutdown --force)
 "
       ;;
@@ -2225,7 +2225,7 @@ stop_daemon_candidate() {
       ts_stop_found_any="yes"
       note "! Could not check ${socket_path} for a running daemon; nothing was"
       note "  stopped. If one is running there, stop it with:"
-      todo "prime-agent shutdown --force"
+      todo "allspark shutdown --force"
       ts_stop_summary="${ts_stop_summary}daemon: WARNING unprobed on ${socket_path} (nothing was stopped; stop it by hand: prime-agent shutdown --force)
 "
       ;;
@@ -2487,7 +2487,7 @@ if [ "$WINDOWS" = "yes" ]; then
     if [ -n "$held_by" ] && [ -n "$TASKLIST" ] \
        && MSYS2_ARG_CONV_EXCL='*' "$TASKLIST" /FI "PID eq ${held_by}" /NH 2>/dev/null \
           | grep -qw "$held_by"; then
-      { [ -z "${rollback_from:-}" ] && rm -rf "$stage"; die "another prime-agent installer (Windows pid ${held_by}) is publishing to ${PREFIX}; retry when it finishes"; }
+      { [ -z "${rollback_from:-}" ] && rm -rf "$stage"; die "another allspark installer (Windows pid ${held_by}) is publishing to ${PREFIX}; retry when it finishes"; }
     fi
     { [ -z "${rollback_from:-}" ] && rm -rf "$stage"; die "a publication lock (Windows pid ${held_by:-unknown}) is held at ${lock_dir}. If no prime-agent installer (install-rust.sh or install.ps1) is running, it is stale (a crashed install); remove it and retry:
   rm -rf \"${lock_dir}\""; }
@@ -2531,7 +2531,7 @@ if [ "$WINDOWS" = "yes" ] \
   else
     windows_stop_summary="daemon: WARNING no shutdown answer (if a daemon is running, stop it by hand: prime-agent shutdown --force)"
     note "! No daemon answered the shutdown request. If one is running, stop it and re-run:"
-    todo "prime-agent shutdown --force"
+    todo "allspark shutdown --force"
   fi
 fi
 launcher_tmp=""
@@ -2975,7 +2975,7 @@ verify_stopped_socket() {
       rust_leftover="yes"
     fi
     note "! The daemon on $1 came back after it was stopped. Stop it with:"
-    todo "prime-agent shutdown --force"
+    todo "allspark shutdown --force"
     ts_stop_summary="${ts_stop_summary}daemon: WARNING still running on $1 (it answered the post-stop verification — the earlier stop line for this socket is superseded; stop it by hand: prime-agent shutdown --force)
 "
   fi
