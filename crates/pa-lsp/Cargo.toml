@@ -13,6 +13,9 @@ pa-ast = { path = "../pa-ast" }
 tree-sitter = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# L14 mux identity: `sha256(command, args, cwd, sorted env)`. `sha2` is already
+# a workspace dependency (pa-graph hashes files with it).
+sha2 = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

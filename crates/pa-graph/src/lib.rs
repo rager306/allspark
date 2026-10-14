@@ -68,6 +68,19 @@
 //!   and checksum-driven self-reconstruction (R21).
 //! - [`adr`] / [`pdx`] — Architecture Decision Records in SQLite (G10) and the
 //!   columnar PDX vector layout (V20).
+//!
+//! ## Phase 8: mux / scopes / masking
+//!
+//! - [`scoped_context`] — physically isolated per-scope SQLite shards with
+//!   fail-closed recovery and quarantine (R1).
+//! - [`observation_masking`] — append-only log projected for the model with
+//!   dereferenceable recall ids (R7).
+//! - [`cypher`] — a read-only Cypher subset compiled to SQL over the graph,
+//!   with predicate pushdown and join reordering (G14).
+//! - [`prometheus_metrics`] — counters/gauges/histograms with a hand-rolled
+//!   exposition format plus health/readiness (R14).
+//! - [`mcp_brain`] — an in-process shared collective memory: share/search/vote/
+//!   transfer/drift/partition (R20).
 
 #![forbid(unsafe_code)]
 // SQLite's row domain is i64 for every INTEGER column and the schema stores
@@ -132,6 +145,13 @@ pub mod temporal;
 pub mod two_random;
 pub mod witness;
 pub mod witness_cache;
+
+// ── Phase 8: mux / scopes / masking (R1, R7) ─────────────────────────────
+pub mod cypher;
+pub mod mcp_brain;
+pub mod observation_masking;
+pub mod prometheus_metrics;
+pub mod scoped_context;
 
 pub use architecture::{
     architecture, Architecture, ArchitectureView, Cluster, Cycle, EntryPoint, Hotspot, Layer,
@@ -199,3 +219,22 @@ pub use temporal::{decay, TemporalDecay, Weighted};
 pub use two_random::TwoRandomCache;
 pub use witness::{ReceiptChain, WitnessReceipt};
 pub use witness_cache::WitnessKeyedCache;
+
+// ── Phase 8 re-exports ──────────────────────────────────────────────────
+pub use observation_masking::{
+    truncate_result, Content, MaskedMessages, Message, ObservationMasker, Role,
+};
+pub use scoped_context::{
+    ContextHit, ContextIndexError, ContextIndexResult, QuarantineMark, RecoveryReport,
+    ScopedContextIndex, Shard,
+};
+pub use cypher::{
+    CypherEngine, CypherError, CypherResult, CypherValue, Optimization, QueryPlan, Row, Rows,
+};
+pub use prometheus_metrics::{
+    Counter, CounterHandle, Gauge, GaugeHandle, Health, HealthStatus, Histogram, HistogramHandle,
+    MetricKind, MetricsRegistry, Readiness, DEFAULT_BUCKETS,
+};
+pub use mcp_brain::{
+    BrainEntry, BrainHit, BrainPartition, DriftFinding, SharedBrain,
+};

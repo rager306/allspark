@@ -30,6 +30,7 @@ pub mod client;
 pub mod diagnostics_flow;
 pub mod ledger;
 pub mod manager;
+pub mod mux;
 pub mod render;
 pub mod retriever;
 pub mod servers;
@@ -59,6 +60,10 @@ pub use ledger::{
 };
 pub use manager::{
     Clock, InitFailureBackoff, LspManager, ServerStatus, SystemClock, INIT_FAILURE_BACKOFF,
+};
+pub use mux::{
+    Connection, Handler, LspMux, MuxDaemon, MuxError, MuxIdentity, MuxRequest, MuxResponse,
+    MuxResult, MAX_FRAME_BYTES,
 };
 pub use render::{
     render_kind_counts, render_overview, render_reference_counts, render_reference_locations,
