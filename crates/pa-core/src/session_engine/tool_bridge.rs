@@ -98,18 +98,22 @@ impl AgentTool for ToolDefinitionBridge {
                         content: convert_content_blocks(update.content),
                         details: update.details.unwrap_or(serde_json::Value::Null),
                         terminate: None,
+                        is_error: false,
                     });
                 }));
             let f = definition.execute.clone();
             let result: ToolExecutionResult =
                 f(&tool_call_id, params, Some(abort), tool_on_update).await?;
             let details = result.details.clone().unwrap_or(serde_json::Value::Null);
+            // Carry the tool's own error flag across the bridge: a failing
+            // cell or an aborted bash run must reach the model as an error
+            // result, not be recorded as a success.
             let is_error = result.is_error;
-            let _ = is_error;
             Ok(AgentToolResult {
                 content: convert_content(result),
                 details,
                 terminate: None,
+                is_error,
             })
         })
     }
@@ -260,5 +264,59 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("echo failed"));
+    }
+
+    /// The reported regression: a tool that reports failure in its result
+    /// (rather than returning `Err`) must carry `is_error` across the bridge.
+    #[tokio::test]
+    async fn a_tool_reported_error_keeps_its_flag_across_the_bridge() {
+        let definition = ToolDefinition {
+            name: "failing".to_string(),
+            label: "Failing".to_string(),
+            description: "Reports an error in its result".to_string(),
+            prompt_snippet: String::new(),
+            parameters: serde_json::json!({ "type": "object" }),
+            execution_mode: None,
+            prepare_arguments: None,
+            execute: Arc::new(|_id, _params, _signal, _on_update| {
+                Box::pin(async move {
+                    let mut result = ToolExecutionResult::text("it failed");
+                    result.is_error = true;
+                    Ok(result)
+                })
+            }),
+        };
+        let tool = bridge_tool(definition);
+        let result = tool
+            .clone()
+            .execute(
+                "call-1".to_string(),
+                serde_json::json!({}),
+                AbortSignal::default(),
+                Arc::new(|_result| {}),
+            )
+            .await
+            .unwrap();
+        assert!(
+            result.is_error,
+            "the tool's own is_error must survive the bridge, not be dropped"
+        );
+    }
+
+    /// A successful tool keeps `is_error = false`.
+    #[tokio::test]
+    async fn a_successful_tool_reports_no_error() {
+        let tool = bridge_tool(echo_definition(false));
+        let result = tool
+            .clone()
+            .execute(
+                "call-1".to_string(),
+                serde_json::json!({ "text": "ok" }),
+                AbortSignal::default(),
+                Arc::new(|_result| {}),
+            )
+            .await
+            .unwrap();
+        assert!(!result.is_error);
     }
 }

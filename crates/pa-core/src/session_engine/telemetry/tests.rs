@@ -191,6 +191,7 @@ fn tool_execution_event(tool: &str, is_error: bool) -> (AgentEvent, AgentEvent) 
             tool_call_id: format!("{tool}-1"),
             tool_name: tool.to_string(),
             result: pa_agent::types::AgentToolResult {
+                is_error: false,
                 content: vec![ToolResultContent::text("private tool output")],
                 details: serde_json::Value::Null,
                 terminate: None,

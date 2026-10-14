@@ -100,9 +100,12 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
         std::env::set_var(crate::config::ENV_OFFLINE, "1");
     }
 
-    // Install-time kernel preparation: the installer invokes `--prime-agent-bootstrap`
-    // after extracting a release, so the venv is ready before the first session.
-    if args.len() == 1 && args[0] == "--prime-agent-bootstrap" {
+    // Install-time kernel preparation: the installer invokes
+    // `--allspark-bootstrap` after extracting a release, so the venv is ready
+    // before the first session. The upstream spelling is accepted too, so an
+    // older installer's invocation still works.
+    if args.len() == 1 && matches!(args[0].as_str(), "--allspark-bootstrap" | "--prime-agent-bootstrap")
+    {
         return run_runtime_bootstrap();
     }
 

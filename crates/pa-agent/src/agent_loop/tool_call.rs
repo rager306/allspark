@@ -201,10 +201,11 @@ pub(crate) async fn execute_prepared_tool_call(
                     }
                 }
             }
-            ExecutedToolCallOutcome {
-                result,
-                is_error: false,
-            }
+            // A tool that reported its own failure in the result (rather
+            // than returning `Err`) keeps that flag: it must reach the model
+            // as an error tool result.
+            let is_error = result.is_error;
+            ExecutedToolCallOutcome { result, is_error }
         }
         Err(error) => {
             // TS drains the pending update emissions on the error path,
