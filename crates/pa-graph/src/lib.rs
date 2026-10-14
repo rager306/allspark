@@ -49,6 +49,25 @@
 //! - [`condenser`] — lazy streaming condensation behind a dirty flag (R12).
 //! - [`fs_watcher`] — mtime-polling and native filesystem watchers emitting
 //!   LSP `didChangeWatchedFiles` (+ open/close for created files) (S16).
+//!
+//! ## Phase 6-A: memory & optimization
+//!
+//! - [`coherence`] / [`temporal`] — coherence-weighted compaction (M1) and
+//!   exponential temporal decay (M2).
+//! - [`tarl`] / [`lineage`] — trajectory-aware reward ledger (M4) and record
+//!   lineage (M5).
+//! - [`witness`] / [`proof_gate`] — hash-linked witness receipts (M6) and the
+//!   proof gate that accepts a result only on valid receipts + envelope (R17).
+//! - [`bounded_rag`] / [`quality`] — budgeted context selection (M8) and the
+//!   quality envelope with degradation flags (M9).
+//! - [`query_cache`] / [`witness_cache`] / [`two_random`] — semantic query cache
+//!   (M10), witness-keyed cache (M11), 2-random eviction (M3).
+//! - [`sparsifier`] / [`ann_repair`] / [`snapcompact`] — graph sparsification
+//!   (R13), ANN-graph repair (M7), snapshot compaction (O11).
+//! - [`conformal`] / [`self_reconstruct`] — conformal prediction intervals (R18)
+//!   and checksum-driven self-reconstruction (R21).
+//! - [`adr`] / [`pdx`] — Architecture Decision Records in SQLite (G10) and the
+//!   columnar PDX vector layout (V20).
 
 #![forbid(unsafe_code)]
 // SQLite's row domain is i64 for every INTEGER column and the schema stores
@@ -92,6 +111,27 @@ pub mod tokenize;
 pub mod trace;
 pub mod tri_modal;
 pub mod types;
+
+// ── Phase 6-A: memory & optimization techniques (M1-M11, R13/R17/R18/R21,
+// G10, V20, O11) ──────────────────────────────────────────────────────────
+pub mod adr;
+pub mod ann_repair;
+pub mod bounded_rag;
+pub mod coherence;
+pub mod conformal;
+pub mod lineage;
+pub mod pdx;
+pub mod proof_gate;
+pub mod quality;
+pub mod query_cache;
+pub mod self_reconstruct;
+pub mod snapcompact;
+pub mod sparsifier;
+pub mod tarl;
+pub mod temporal;
+pub mod two_random;
+pub mod witness;
+pub mod witness_cache;
 
 pub use architecture::{
     architecture, Architecture, ArchitectureView, Cluster, Cycle, EntryPoint, Hotspot, Layer,
@@ -139,3 +179,23 @@ pub use tri_modal::{tri_modal, tri_modal_search, TriModalHit, TriModalOptions};
 pub use types::{
     CallArg, CallCandidate, CallStrategy, Edge, EdgeType, FileChange, IndexReport, Label, Node,
 };
+
+// ── Phase 6-A re-exports ────────────────────────────────────────────────
+pub use adr::{Adr, AdrQuery, AdrStatus, AdrStore};
+pub use ann_repair::{repair_ann, RepairStats};
+pub use bounded_rag::{bounded_select, Candidate, RagBudget};
+pub use coherence::{coherence, CoherenceCompactor, CoherencePolicy, Entry};
+pub use conformal::ConformalPredictor;
+pub use lineage::Lineage;
+pub use pdx::{PdxError, PdxLayout, PDX_HEADER_LEN, PDX_MAGIC};
+pub use proof_gate::{GateDecision, ProofGate, RejectReason};
+pub use quality::{DegradationFlag, QualityEnvelope, QualityPolicy};
+pub use query_cache::{normalize_query, CachedResult, QueryCache};
+pub use self_reconstruct::{checksum_of, ChecksumKind, Part, SelfReconstructingIndex};
+pub use snapcompact::SnapCompact;
+pub use sparsifier::{sparsify, Graph, WeightedEdge};
+pub use tarl::{LedgerStats, Outcome, TarlLedger, TarlRecord};
+pub use temporal::{decay, TemporalDecay, Weighted};
+pub use two_random::TwoRandomCache;
+pub use witness::{ReceiptChain, WitnessReceipt};
+pub use witness_cache::WitnessKeyedCache;

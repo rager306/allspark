@@ -758,3 +758,215 @@ fn streaming_condenser_and_tri_modal_and_watcher() {
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0].kind, pa_graph::FileEventKind::Created);
 }
+
+
+
+// ── Phase 6-A: memory & optimization techniques ─────────────────────────
+
+#[test]
+fn phase6a_compaction_decay_and_ledgers() {
+    use pa_graph::{
+        decay, CoherenceCompactor, CoherencePolicy, Entry, Lineage, Outcome, QualityEnvelope,
+        QualityPolicy, TarlLedger, TemporalDecay, Weighted,
+    };
+
+    // M1 coherence compaction merges duplicates and keeps provenance.
+    let entries = vec![
+        Entry::new("a", "parse config", vec![1.0, 0.0]).with_provenance(vec!["idx".into()]),
+        Entry::new("b", "parse config file", vec![0.999, 0.001]).with_provenance(vec!["git".into()]),
+        Entry::new("c", "render widget", vec![0.0, 1.0]),
+    ];
+    let compacted = CoherenceCompactor::compact(&entries, &CoherencePolicy::new());
+    assert_eq!(compacted.len(), 2);
+    let merged = compacted.iter().find(|e| e.id == "a").expect("a");
+    assert_eq!(merged.provenance, vec!["git", "idx"]);
+
+    // M2 temporal decay halves the weight after one half-life.
+    assert!((decay(1.0, 10.0, 10.0) - 0.5).abs() < 1e-12);
+    let ranked = TemporalDecay::new(10.0)
+        .rank(&[Weighted::new("old", 4.0, 30.0), Weighted::new("new", 1.0, 0.0)]);
+    assert_eq!(ranked[0].0, "new");
+
+    // M4 TARL ledger aggregates and tracks outcomes.
+    let mut ledger = TarlLedger::new();
+    ledger.record("edit", 1.0, 1, Outcome::Accepted);
+    ledger.record("edit", 3.0, 2, Outcome::Rejected);
+    assert!((ledger.aggregate().mean - 2.0).abs() < 1e-12);
+    assert_eq!(ledger.count_outcome(Outcome::Rejected), 1);
+
+    // M5 lineage walks transitive ancestors.
+    let mut lineage = Lineage::new();
+    lineage.record("edit", &["file"]);
+    lineage.record("fact", &["edit"]);
+    assert_eq!(lineage.ancestors("fact"), vec!["edit", "file"]);
+
+    // M9 quality envelope flags degradation.
+    let policy = QualityPolicy::new()
+        .with_min_acceptable(0.5)
+        .with_max_spread(2.0);
+    let envelope = QualityEnvelope::from_samples(&[0.1, 9.0], &policy);
+    assert!(envelope.is_degraded());
+}
+
+#[test]
+fn phase6a_caches_witness_and_gates() {
+    use pa_graph::{
+        bounded_select, Candidate, GateDecision, PdxLayout, ProofGate, QualityEnvelope,
+        QualityPolicy, QueryCache, RagBudget, ReceiptChain, RejectReason, TwoRandomCache,
+        WitnessKeyedCache,
+    };
+
+    // M6 witness receipts: a tampered chain fails verification.
+    let mut chain = ReceiptChain::new();
+    chain.append("q1", "r1", 1);
+    chain.append("q2", "r2", 2);
+    assert!(chain.verify_chain());
+    chain.receipts_mut()[0].result_hash = "forged".into();
+    assert!(!chain.verify_chain());
+
+    // M8 bounded RAG picks the best fragments within a token budget.
+    let picked = bounded_select(
+        &[Candidate::new("big", 0.9, 100), Candidate::new("small", 0.8, 5)],
+        RagBudget::tokens(10),
+    );
+    assert_eq!(picked.len(), 1);
+    assert_eq!(picked[0].id, "small");
+
+    // M10 semantic query cache honours TTL and generation.
+    let mut cache = QueryCache::new(100);
+    cache.put("Parse Config", "emb", "result", 0);
+    assert!(cache.get("  parse config ", "emb", 10).is_some());
+    assert_eq!(cache.invalidate(1), 1);
+    assert!(cache.get("parse config", "emb", 10).is_none());
+
+    // M11 witness-keyed cache auto-invalidates on a witness change.
+    let mut wcache = WitnessKeyedCache::new();
+    wcache.put("w1", "q", "a");
+    assert_eq!(wcache.get("w1", "q"), Some("a"));
+    assert_eq!(wcache.get("w2", "q"), None);
+
+    // M3 2-random eviction respects capacity.
+    let mut two_random = TwoRandomCache::new(2);
+    two_random.insert("a", "1");
+    two_random.insert("b", "2");
+    assert!(two_random.insert("c", "3").is_some());
+    assert_eq!(two_random.len(), 2);
+
+    // R17 proof gate accepts a valid chain and rejects a missing one.
+    let mut gate_chain = ReceiptChain::new();
+    gate_chain.append("q", "r", 1);
+    let healthy_policy = QualityPolicy::new()
+        .with_min_acceptable(0.5)
+        .with_max_acceptable(0.5)
+        .with_max_spread(1.0)
+        .with_mean_floor(0.5);
+    let healthy = QualityEnvelope::from_samples(&[0.9, 1.0], &healthy_policy);
+    assert_eq!(
+        ProofGate::new().check_chain(&gate_chain, Some(&healthy)),
+        GateDecision::Accept
+    );
+    assert_eq!(
+        ProofGate::new().check_chain(&ReceiptChain::new(), None),
+        GateDecision::Reject(RejectReason::NoReceipts)
+    );
+
+    // V20 PDX columnar layout round-trips.
+    let blob = PdxLayout::pack(&[vec![1.0, 2.0], vec![3.0, 4.0]]);
+    assert_eq!(
+        PdxLayout::unpack(&blob).expect("unpack"),
+        vec![vec![1.0, 2.0], vec![3.0, 4.0]]
+    );
+}
+
+#[test]
+fn phase6a_graph_repair_and_snapshots() {
+    use pa_graph::{
+        sparsify, ConformalPredictor, EdgeDelta, EdgeType as ET, Graph, GraphDelta, NodeDelta,
+        NodeOp, SelfReconstructingIndex, SnapCompact,
+    };
+
+    // R13 sparsifier keeps a connected backbone.
+    let mut graph = Graph::new();
+    graph.add_edge(1, 2, 1.0);
+    graph.add_edge(2, 3, 2.0);
+    graph.add_edge(1, 3, 0.1);
+    let sparse = sparsify(&graph, 0.0);
+    assert_eq!(sparse.node_count(), 3);
+    assert!(sparse.edge_count() >= 2, "backbone spans all nodes");
+
+    // R18 conformal interval covers calibration points at the target rate.
+    let pairs: Vec<(f64, f64)> = (0..20).map(|i| (f64::from(i), f64::from(i) + 1.0)).collect();
+    let predictor = ConformalPredictor::calibrate(&pairs, 0.1);
+    let covered = pairs.iter().filter(|(p, a)| predictor.covers(*p, *a)).count();
+    assert!(covered * 10 >= pairs.len() * 9, "coverage below the target");
+
+    // R21 self-reconstructing index detects and repairs corruption.
+    let mut index = SelfReconstructingIndex::new(pa_graph::ChecksumKind::Blake3);
+    index.insert("part", b"hello".to_vec());
+    index
+        .parts_mut()
+        .get_mut("part")
+        .expect("part")
+        .bytes = b"jello".to_vec();
+    assert_eq!(index.verify(), vec!["part".to_string()]);
+    let mut source = std::collections::BTreeMap::new();
+    source.insert("part".to_string(), b"hello".to_vec());
+    index.rebuild_corrupt(&source);
+    assert!(index.is_healthy());
+
+    // O11 snapshot compaction folds increments, last write per key wins.
+    let base = GraphDelta {
+        nodes: vec![NodeDelta::add(1, "n1")],
+        edges: vec![EdgeDelta::add(1, 2, ET::Calls)],
+    };
+    let increments = vec![GraphDelta {
+        nodes: vec![NodeDelta::remove(1, "n1")],
+        edges: vec![],
+    }];
+    let compacted = SnapCompact::compact(&base, &increments);
+    assert_eq!(compacted.nodes.len(), 1);
+    assert_eq!(compacted.nodes[0].op, NodeOp::Remove);
+}
+
+#[test]
+fn adr_store_persists_across_reopen() {
+    use pa_graph::{Adr, AdrQuery, AdrStatus, AdrStore, GraphStore};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("graph.db");
+
+    // Record an ADR through a store bound to a real on-disk database.
+    let first = GraphStore::open(&db).expect("open");
+    let old_id = {
+        let store = AdrStore::new(first.connection()).expect("schema");
+        store
+            .record_adr(&Adr::new(
+                "Embed SQLite",
+                "need persistence",
+                "use rusqlite",
+                "bundled",
+            ))
+            .expect("record old")
+    };
+    let new_id = {
+        let store = AdrStore::new(first.connection()).expect("schema");
+        store
+            .record_adr(
+                &Adr::new("Use WAL", "concurrency", "enable WAL", "readers unblocked")
+                    .with_status(AdrStatus::Accepted)
+                    .superseding(old_id),
+            )
+            .expect("record new")
+    };
+    drop(first);
+
+    // Reopen: the records are still there and the supersession link holds.
+    let second = GraphStore::open(&db).expect("reopen");
+    let store = AdrStore::new(second.connection()).expect("schema");
+    assert_eq!(store.superseded_by(old_id).expect("query"), Some(new_id));
+    let accepted = store
+        .query_adr(&AdrQuery::new().with_status(AdrStatus::Accepted))
+        .expect("query");
+    assert_eq!(accepted.len(), 1);
+    assert_eq!(accepted[0].title, "Use WAL");
+}
