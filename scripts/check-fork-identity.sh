@@ -1,42 +1,44 @@
 #!/bin/bash
-# Fork identity guard (isolated-by-default scheme): the fork must not read
-# upstream PRIME_AGENT_* / PI_* env vars or write upstream paths. Run after
-# every upstream merge; any hit means a merge re-introduced a collision.
+# Fork identity guard: verifies that critical isolation markers survived an
+# upstream merge. Does NOT flag upstream names in code (that is the B+ scheme:
+# co-existence by HOME isolation, not by renaming every string).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 fail=0
-check() {
-    local label="$1" pattern="$2"
-    local hits
-    hits=$(rg -n -e "$pattern" crates prime-agent-runtime install-rust.sh install.ps1 skills \
-            -g '*.rs' -g '*.py' -g '*.toml' -g '*.sh' -g '*.ps1' 2>/dev/null \
-        | grep -v 'docs/fork-identity.md' \
-        | grep -v 'migrate_from_legacy_once\|legacy = home.join' \
-        | grep -v 'PRIME_API_KEY' \
-        | grep -v 'DO_NOT_TRACK' \
-        | wc -l)
-    if [ "$hits" -gt 0 ]; then
-        echo "IDENTITY LEAK [$label]: $hits site(s)"
-        rg -n -e "$pattern" crates prime-agent-runtime install-rust.sh install.ps1 skills \
-            -g '*.rs' -g '*.py' -g '*.toml' -g '*.sh' -g '*.ps1' 2>/dev/null \
-            | grep -v 'migrate_from_legacy_once\|legacy = home.join' \
-            | grep -v 'PRIME_API_KEY' \
-            | grep -v 'DO_NOT_TRACK' | head -5
+
+# 1. Fork-only files must exist and carry the FORK-ONLY marker.
+for f in crates/pa-ai/src/models_fork.rs docs/fork-identity.md; do
+    if [ ! -f "$f" ]; then
+        echo "MISSING fork file: $f"
         fail=1
     fi
-}
+done
+if [ -f crates/pa-ai/src/models_fork.rs ] && ! grep -q 'FORK-ONLY' crates/pa-ai/src/models_fork.rs; then
+    echo "MISSING FORK-ONLY marker in crates/pa-ai/src/models_fork.rs"
+    fail=1
+fi
 
-check 'upstream-env-dir'    'PRIME_AGENT_CODING_AGENT_DIR'
-check 'upstream-env-socket' 'PRIME_AGENT_DAEMON_SOCKET'
-check 'upstream-env-sess'   'PRIME_AGENT_SESSION_DIR'
-check 'upstream-env-pkg'    '"PI_PACKAGE_DIR"'
-check 'config-dir'          '\.prime/agent'
-check 'runtime-socket'      '/tmp/prime-agent-'
-check 'install-share'       'share/prime-agent'
+# 2. The fork's runtime dir must not use the upstream name.
+if grep -q 'prime-agent-{uid}' crates/pa-daemon/src/platform/paths.rs 2>/dev/null; then
+    echo "REGRESSION: socket_dir uses prime-agent-{uid} (must be allspark-{uid})"
+    fail=1
+fi
+
+# 3. The dist profile must exist.
+if ! grep -q 'profile.dist' Cargo.toml 2>/dev/null; then
+    echo "MISSING [profile.dist] in Cargo.toml"
+    fail=1
+fi
+
+# 4. The migration must skip auth.json.
+if grep -q 'for name in \["settings.json", "auth.json"' crates/pa-cli/src/lib.rs 2>/dev/null; then
+    echo "REGRESSION: migration copies auth.json (rotating refresh)"
+    fail=1
+fi
 
 if [ "$fail" -eq 0 ]; then
-    echo "identity guard: clean (isolated-by-default)"
+    echo "fork identity: clean"
 else
     exit 1
 fi

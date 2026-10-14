@@ -1,4 +1,6 @@
 //! Fork-only provider error normalization.
+// FORK-ONLY EXTENSIONS: normalize_genspark/normalize_codebuddy/is_fork_provider
+// are fork-specific. Upstream has no Genspark/CodeBuddy/Muse providers.
 //!
 //! The fork's providers (`muse`, `codebuddy`, `genspark`) ship error envelopes
 //! the shared OpenAI/Anthropic classifiers do not read:
@@ -27,6 +29,7 @@ use crate::utils_inner::stream_failure::{
 
 /// The providers this module normalizes.
 #[must_use]
+// FORK-ONLY: not in upstream.
 pub fn is_fork_provider(provider: &str) -> bool {
     matches!(provider, "muse" | "codebuddy" | "genspark")
 }
@@ -120,6 +123,7 @@ fn extract_message_text(body: &str) -> Option<String> {
 /// The gateway returns HTTP 400 for every class, so the numeric `code` decides
 /// the canonical `type` the shared classifier reads; the message prefers `msg`
 /// (carries the reset time for 6004) and falls back to `displayMsg.en`.
+// FORK-ONLY: not in upstream.
 fn normalize_codebuddy(mut http: ProviderHttpError, parsed: &Value) -> ProviderError {
     let code = parsed.get("code").and_then(Value::as_i64);
     let msg = parsed
@@ -187,6 +191,7 @@ fn normalize_codebuddy(mut http: ProviderHttpError, parsed: &Value) -> ProviderE
 }
 
 /// `Genspark` (`LiteLLM`): `{"detail":"Invalid or expired token"}`.
+// FORK-ONLY: not in upstream.
 fn normalize_genspark(mut http: ProviderHttpError, parsed: &Value) -> ProviderError {
     let Some(detail) = parsed.get("detail").and_then(Value::as_str) else {
         return ProviderError::Http(http);

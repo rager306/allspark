@@ -1,4 +1,5 @@
 //! Fork-only built-in provider catalog.
+// FORK-ONLY: this file does not exist upstream. See docs/fork-identity.md.
 //!
 //! The upstream catalog chain (remote fetch -> disk cache -> bundled snapshot ->
 //! [`crate::models_generated`]) never carries this fork's providers, so their

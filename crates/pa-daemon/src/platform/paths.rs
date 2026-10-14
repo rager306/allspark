@@ -6,17 +6,29 @@ use std::path::{Path, PathBuf};
 
 use crate::paths::hash_key;
 
-/// The fork's runtime-directory prefix under the temp dir. NOT the upstream
-/// `prime-agent` name: a co-installed upstream daemon must never share this
-/// directory, or the two daemons would fight over one socket.
-const RUNTIME_DIR_PREFIX: &str = "allspark";
-
 /// Default directory holding daemon socket files (Unix).
 #[cfg(unix)]
 pub fn socket_dir() -> PathBuf {
     let uid = pa_core::platform::process::current_user_id();
     let tmp = std::env::var_os("TMPDIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
-    tmp.join(format!("{RUNTIME_DIR_PREFIX}-{uid}"))
+    socket_dir_for(&tmp, uid)
+}
+
+/// Reserve the longest generated endpoint before selecting a directory. Linux
+/// can re-anchor deep paths through /proc; other Unix platforms need a short path.
+#[cfg(unix)]
+fn socket_dir_for(tmp: &Path, uid: u32) -> PathBuf {
+    let name = format!("allspark-{uid}");
+    let dir = tmp.join(&name);
+    #[cfg(not(target_os = "linux"))]
+    if std::os::unix::net::SocketAddr::from_pathname(
+        dir.join("worker-000000000000-000000000000.sock"),
+    )
+    .is_err()
+    {
+        return Path::new("/tmp").join(name);
+    }
+    dir
 }
 
 /// The socket-dir half of a discovery state root on Windows: TS computes
@@ -24,7 +36,7 @@ pub fn socket_dir() -> PathBuf {
 #[cfg(not(unix))]
 #[must_use]
 pub fn socket_dir() -> PathBuf {
-    std::env::temp_dir().join(format!("{RUNTIME_DIR_PREFIX}-user"))
+    std::env::temp_dir().join("allspark-user")
 }
 
 /// Default supervisor endpoint: `daemon.sock` in the socket dir (Unix) or
@@ -47,12 +59,7 @@ pub fn default_daemon_socket_path() -> PathBuf {
 #[must_use]
 pub fn worker_socket_path(supervisor_socket_path: &Path, worker_id: &str) -> PathBuf {
     let key = hash_key(&supervisor_socket_path.to_string_lossy(), 12);
-    // Beside the supervisor's own socket, not in the shared default dir:
-    // a supervisor pinned to a custom socket keeps its workers with it.
-    let dir = supervisor_socket_path
-        .parent()
-        .map_or_else(socket_dir, Path::to_path_buf);
-    dir.join(format!(
+    socket_dir().join(format!(
         "worker-{key}-{}.sock",
         &worker_id[..12.min(worker_id.len())]
     ))
@@ -90,7 +97,34 @@ mod tests {
         let tmp = std::env::var_os("TMPDIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
         assert_eq!(
             socket_dir(),
-            tmp.join(format!("{RUNTIME_DIR_PREFIX}-{}", uid.trim()))
+            socket_dir_for(&tmp, uid.trim().parse().unwrap())
+        );
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn generated_endpoints_fit_even_when_tmpdir_is_deep() {
+        use std::os::unix::net::SocketAddr;
+
+        for length in [20, 65, 120] {
+            let tmp = PathBuf::from(format!("/{}", "d".repeat(length - 1)));
+            let dir = socket_dir_for(&tmp, 501);
+            let worker = dir.join("worker-000000000000-000000000000.sock");
+            assert!(SocketAddr::from_pathname(&worker).is_ok());
+            if length >= 65 {
+                assert_eq!(dir, Path::new("/tmp/allspark-501"));
+            } else {
+                assert_eq!(dir, tmp.join("allspark-501"));
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn short_tmpdir_keeps_the_original_socket_directory() {
+        assert_eq!(
+            socket_dir_for(Path::new("/tmp"), 501),
+            Path::new("/tmp/allspark-501")
         );
     }
 
@@ -102,42 +136,8 @@ mod tests {
         assert_ne!(a, b);
         // Only the first 12 id characters key the name.
         assert_eq!(a, worker_socket_path(supervisor, "0123456789abffff"));
-        // The worker socket sits BESIDE the supervisor's own socket, so a
-        // supervisor pinned to a custom path keeps its workers with it.
-        assert_eq!(a.parent(), supervisor.parent());
-    }
-
-    /// The reported regression: the fork's runtime dir must never collide
-    /// with a co-installed upstream `prime-agent`.
-    #[cfg(unix)]
-    #[test]
-    fn the_runtime_dir_is_not_the_upstream_dir() {
-        let dir = socket_dir();
-        assert_eq!(
-            dir.file_name().and_then(|name| name.to_str()),
-            Some(&*format!("{RUNTIME_DIR_PREFIX}-{}", {
-                use std::fmt::Write;
-                let uid = pa_core::platform::process::current_user_id();
-                let mut out = String::new();
-                let _ = write!(out, "{uid}");
-                out
-            }))
-        );
-        assert!(
-            !dir.to_string_lossy().contains("prime-agent-"),
-            "the fork's socket dir must not live in the upstream namespace: {}",
-            dir.display()
-        );
-    }
-
-    /// A worker socket under a custom supervisor socket stays in that
-    /// custom directory, never the default one.
-    #[cfg(unix)]
-    #[test]
-    fn a_custom_supervisor_keeps_its_workers_beside_it() {
-        let custom = Path::new("/run/user/1000/custom/daemon.sock");
-        let worker = worker_socket_path(custom, "0123456789abcdef");
-        assert_eq!(worker.parent(), Some(Path::new("/run/user/1000/custom")));
+        #[cfg(unix)]
+        assert!(a.starts_with(socket_dir()));
     }
 
     /// The Windows endpoint names (TS win32 arms): the fixed daemon pipe

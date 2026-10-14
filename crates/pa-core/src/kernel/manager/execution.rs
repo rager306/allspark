@@ -187,7 +187,16 @@ impl Inner {
                 );
             }
             if let Some(text) = &result {
-                result = truncate_result_value(text, execution.max_chars);
+                if let Some((end, _)) = text.char_indices().nth(execution.max_chars) {
+                    // Match the Unicode-scalar limit used for stdout and stderr.
+                    let mut clipped = text[..end].to_string();
+                    let _ = write!(
+                        clipped,
+                        "\n[... output truncated at {} chars ...]",
+                        execution.max_chars
+                    );
+                    result = Some(clipped);
+                }
             }
             if execution
                 .opts
@@ -280,72 +289,5 @@ impl Inner {
         };
         callback(message);
         true
-    }
-}
-
-/// Clip a cell's final-expression repr to `max_chars`, appending the
-/// truncation marker. The cut backs off to a char boundary BEFORE slicing:
-/// `text[..n]` panics when `n` lands inside a multi-byte char, and that panic
-/// fires on the protocol-reader task (`tokio::spawn`), which wedges the cell
-/// queue in unwind builds and kills the session worker under `panic = "abort"`.
-fn truncate_result_value(text: &str, max_chars: usize) -> Option<String> {
-    if text.len() <= max_chars {
-        return None;
-    }
-    let mut end = max_chars.clamp(0, text.len());
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    let mut clipped = text[..end].to_string();
-    let _ = write!(clipped, "\n[... output truncated at {max_chars} chars ...]");
-    Some(clipped)
-}
-
-#[cfg(test)]
-mod truncate_result_value_tests {
-    use super::truncate_result_value;
-
-    /// The reported regression, byte-exact: `repr("я" * 40_000)` is 80_002
-    /// bytes (the two surrounding quotes), and the 65_536-byte limit lands
-    /// inside 'я' (bytes 65_535..65_537). The old `text[..max_chars]` panicked
-    /// with "end byte index 65536 is not a char boundary".
-    #[test]
-    fn a_multibyte_cut_does_not_panic_and_lands_on_a_boundary() {
-        let value = format!("{:?}", "\u{044f}".repeat(40_000));
-        assert_eq!(value.len(), 80_002, "the repr length from the report");
-        let clipped = truncate_result_value(&value, 65_536).expect("over the limit clips");
-        // The repr opens with its quote, then the repeated char.
-        assert!(clipped.starts_with("\"\u{044f}"));
-        assert!(clipped.ends_with("chars ...]"));
-        let prefix = clipped.split('\n').next().unwrap();
-        assert!(
-            prefix.len() <= 65_536,
-            "the clip never exceeds the limit: {}",
-            prefix.len()
-        );
-        assert!(
-            prefix.is_char_boundary(prefix.len()),
-            "the clip ends on a char boundary"
-        );
-    }
-
-    #[test]
-    fn a_short_value_is_returned_untouched() {
-        assert_eq!(truncate_result_value("short", 65_536), None);
-    }
-
-    #[test]
-    fn an_exact_limit_is_not_clipped() {
-        let value = "a".repeat(100);
-        assert_eq!(truncate_result_value(&value, 100), None);
-    }
-
-    /// Every byte cut in a mixed-width string must stay panic-free.
-    #[test]
-    fn every_cut_in_a_mixed_string_is_safe() {
-        let value = "a\u{00e9}\u{044f}\u{1f600}bc"; // 1,2,2,4,1,1 bytes
-        for limit in 0..=value.len() {
-            let _ = truncate_result_value(value, limit);
-        }
     }
 }

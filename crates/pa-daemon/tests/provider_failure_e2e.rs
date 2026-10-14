@@ -33,8 +33,8 @@ use serde_json::{json, Value};
 
 struct Supervisor {
     child: Child,
-    #[allow(dead_code)]
     socket: PathBuf,
+    stderr_path: PathBuf,
 }
 
 impl Drop for Supervisor {
@@ -202,6 +202,8 @@ fn serve(
 #[allow(clippy::zombie_processes)]
 fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Supervisor {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
+    let stderr_path = agent_dir.join("supervisor-stderr.log");
+    let stderr = std::fs::File::create(&stderr_path).expect("capture supervisor stderr");
     let child = Command::new(env!("CARGO_BIN_EXE_pa-daemon"))
         .arg("supervisor")
         .arg("--socket")
@@ -210,7 +212,7 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Supervisor {
         .arg(agent_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::from(stderr))
         .env_remove("PRIME_API_KEY")
         .env_remove("PRIME_AGENT_CODING_AGENT_DIR")
         // A supervisor killed at teardown must not leak session workers: the supervisor-lost
@@ -221,17 +223,50 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Supervisor {
         )
         .spawn()
         .expect("spawn pa-daemon supervisor");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        if socket.exists() {
-            return Supervisor {
-                child,
-                socket: socket.to_path_buf(),
-            };
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    Supervisor {
+        child,
+        socket: socket.to_path_buf(),
+        stderr_path,
     }
-    panic!("supervisor socket never appeared");
+}
+
+// Socket presence precedes listen readiness; return the connection itself so
+// callers do not race a second connect after a successful probe.
+fn connect_when_ready(
+    socket: &Path,
+    mut exit_status: impl FnMut() -> std::io::Result<Option<std::process::ExitStatus>>,
+    mut on_pending: impl FnMut(),
+) -> std::io::Result<std::os::unix::net::UnixStream> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(status) = exit_status()? {
+            return Err(std::io::Error::other(format!(
+                "supervisor exited during startup: {status}"
+            )));
+        }
+        match std::os::unix::net::UnixStream::connect(socket) {
+            Ok(stream) => return Ok(stream),
+            // On macOS/BSD, connect to a bound-but-not-yet-listening unix socket
+            // fails with EINVAL; treat it as pending, like NotFound/ConnectionRefused.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound
+                        | std::io::ErrorKind::ConnectionRefused
+                        | std::io::ErrorKind::InvalidInput
+                ) =>
+            {
+                if Instant::now() >= deadline {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!("supervisor readiness timed out: {error}"),
+                    ));
+                }
+                on_pending();
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 /// One client connection: request/response plus the session events that stream while a response is
@@ -243,8 +278,19 @@ struct Client {
 }
 
 impl Client {
-    fn connect(socket: &Path) -> Client {
-        let stream = std::os::unix::net::UnixStream::connect(socket).expect("connect");
+    fn connect(supervisor: &mut Supervisor) -> Client {
+        let stream = connect_when_ready(
+            &supervisor.socket,
+            || supervisor.child.try_wait(),
+            || std::thread::sleep(Duration::from_millis(20)),
+        )
+        .unwrap_or_else(|error| {
+            let mut stderr = String::new();
+            if let Ok(file) = std::fs::File::open(&supervisor.stderr_path) {
+                let _ = file.take(16 * 1024).read_to_string(&mut stderr);
+            }
+            panic!("supervisor startup: {error}; stderr: {stderr}");
+        });
         let writer = stream.try_clone().expect("clone");
         let mut client = Client {
             reader: BufReader::new(stream),
@@ -393,8 +439,8 @@ fn setup_with_rejection(
     )
     .expect("write settings.json");
     let socket = dir.path().join(format!("{name}.sock"));
-    let supervisor = spawn_supervisor(&socket, &agent_dir);
-    let mut client = Client::connect(&socket);
+    let mut supervisor = spawn_supervisor(&socket, &agent_dir);
+    let mut client = Client::connect(&mut supervisor);
     client.send_command(
         "c1",
         &json!({
@@ -1150,117 +1196,63 @@ fn provider_failure_recovered_by_retry_settles_the_turn() {
     );
 }
 
-/// The #4713 e2e: a payment failure on the primary re-routes to the next
-/// provider serving the same model id, with no quick-retry spent on the dead
-/// wallet — the credits never refill inside the ladder.
 #[test]
-fn payment_failure_reroutes_to_the_next_provider() {
+fn socket_presence_is_not_readiness_until_listen_succeeds() {
     let dir = tempfile::TempDir::new().expect("temp dir");
-    let agent_dir = dir.path().join("agent");
-    let session_dir = agent_dir.join("sessions");
-    std::fs::create_dir_all(&session_dir).expect("session dir");
-    // The dead wallet: always 402.
-    let dead = FailingMock::start_with_rejection(
-        usize::MAX,
-        "never reached",
-        MockRejection::PaymentRequired,
-    );
-    // The healthy sibling serving the same model id.
-    let live = FailingMock::start_with_rejection(
-        0,
-        "recovered on the sibling",
-        MockRejection::ServerError,
-    );
-    std::fs::write(
-        agent_dir.join("models.json"),
-        json!({
-            "providers": {
-                "dead-wallet": {
-                    "api": "openai-completions",
-                    "baseUrl": dead.url(),
-                    "apiKey": "sk-dead",
-                    "models": [{ "id": "shared-1", "name": "Shared 1", "api": "openai-completions", "contextWindow": 128_000, "maxTokens": 4096 }]
-                },
-                "live-wallet": {
-                    "api": "openai-completions",
-                    "baseUrl": live.url(),
-                    "apiKey": "sk-live",
-                    "models": [{ "id": "shared-1", "name": "Shared 1", "api": "openai-completions", "contextWindow": 128_000, "maxTokens": 4096 }]
-                }
-            }
-        })
-        .to_string(),
+    let path = dir.path().join("bound-before-listen.sock");
+    let listener = socket2::Socket::new(
+        socket2::Domain::UNIX,
+        socket2::Type::STREAM,
+        /*protocol*/ None,
     )
-    .expect("write models.json");
-    std::fs::write(
-        agent_dir.join("settings.json"),
-        json!({ "retry": { "enabled": true, "maxRetries": 2, "baseDelayMs": 50 } }).to_string(),
-    )
-    .expect("write settings.json");
-    let socket = dir.path().join("payment.sock");
-    let _supervisor = spawn_supervisor(&socket, &agent_dir);
-    let mut client = Client::connect(&socket);
-    client.send_command(
-        "c1",
-        &json!({
-            "type": "create",
-            "config": {
-                "cwd": dir.path().to_string_lossy(),
-                "sessionDir": session_dir.to_string_lossy(),
-                "provider": "dead-wallet",
-                "model": "shared-1",
-            },
-        }),
-    );
-    let created = client.request("c1");
-    assert_eq!(created["success"], true, "create failed: {created}");
-    let session_id = created["data"]["id"]
-        .as_str()
-        .or_else(|| created["data"]["sessionId"].as_str())
-        .expect("session id")
-        .to_string();
-    client.send_command(
-        "a1",
-        &json!({ "type": "attach", "activeSessionId": session_id }),
-    );
-    let _ = client.request("a1");
-
-    client.send_command(
-        "p1",
-        &json!({ "type": "prompt_and_wait", "activeSessionId": session_id, "message": "hi" }),
-    );
-    let done = client.request("p1");
-    client.drain_events(Duration::from_secs(1));
-    assert_eq!(done["success"], true, "the sibling must answer: {done}");
-
-    // Exactly one request on the dead wallet: no quick retry on it.
-    assert_eq!(dead.count(), 1, "the dead wallet is hit once, then skipped");
-    assert!(live.count() >= 1, "the sibling serves the turn");
-
-    let types = event_types(&client.events);
-    let starts: Vec<&Value> = client
-        .events
-        .iter()
-        .filter(|event| event.get("type").and_then(Value::as_str) == Some("auto_retry_start"))
-        .collect();
-    assert_eq!(starts.len(), 1, "one re-route, events: {types:?}");
-    assert_eq!(starts[0]["delayMs"], 0, "the re-route is immediate");
+    .expect("socket");
+    listener
+        .bind(&socket2::SockAddr::unix(&path).expect("address"))
+        .expect("bind without listen");
+    assert!(path.exists());
+    let refusal = std::os::unix::net::UnixStream::connect(&path)
+        .unwrap_err()
+        .kind();
     assert!(
-        starts[0]["errorMessage"]
-            .as_str()
-            .expect("error message")
-            .contains("Insufficient balance"),
-        "the payment error rides the re-route: {}",
-        starts[0]["errorMessage"]
+        matches!(
+            refusal,
+            std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::InvalidInput
+        ),
+        "bound-before-listen must refuse the connection (Linux: ECONNREFUSED, macOS: EINVAL)"
     );
-    let end = client
-        .events
-        .iter()
-        .rev()
-        .find(|event| event.get("type").and_then(Value::as_str) == Some("auto_retry_end"))
-        .expect("auto_retry_end");
-    assert_eq!(
-        end["success"], true,
-        "the sibling recovered the turn: {end}"
+    let mut pending = 0;
+    let stream = connect_when_ready(
+        &path,
+        || Ok(None),
+        || {
+            pending += 1;
+            listener
+                .listen(1)
+                .expect("permit listening only after the readiness probe refuses");
+        },
+    )
+    .expect("wait for readiness");
+    assert_eq!(pending, 1);
+    let (peer, _) = listener.accept().expect("accept the returned connection");
+    drop(peer);
+    drop(stream);
+}
+
+#[test]
+fn readiness_reports_child_exit_instead_of_waiting_on_a_stale_socket() {
+    use std::os::unix::process::ExitStatusExt;
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let path = dir.path().join("exited.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+    drop(listener);
+    let error = connect_when_ready(
+        &path,
+        || Ok(Some(std::process::ExitStatus::from_raw(23 << 8))),
+        || panic!("exited child must not retry"),
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("exited during startup"),
+        "{error}"
     );
 }

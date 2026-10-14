@@ -1,3 +1,4 @@
+<!-- FORK-ONLY: upstream merge must not overwrite this file -->
 # Allspark fork: isolated-by-default coexistence with prime-agent
 
 The fork and upstream `prime-agent` run in the same environment. Isolation is
