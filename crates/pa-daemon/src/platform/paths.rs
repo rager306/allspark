@@ -11,7 +11,6 @@ use crate::paths::hash_key;
 /// directory, or the two daemons would fight over one socket.
 const RUNTIME_DIR_PREFIX: &str = "allspark";
 
-
 /// Default directory holding daemon socket files (Unix).
 #[cfg(unix)]
 pub fn socket_dir() -> PathBuf {

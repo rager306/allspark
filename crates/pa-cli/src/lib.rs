@@ -74,7 +74,6 @@ pub use interactive_mode::{
 /// Entry point shared by the binary and the integration tests. Returns the
 /// process exit code.
 
-
 /// One-time import of the core settings from a legacy upstream install:
 /// when the fork's config dir does not exist yet and the legacy
 /// `~/.prime/agent` does, copy the small user-owned files (settings, auth,
@@ -150,7 +149,11 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
     // `--allspark-bootstrap` after extracting a release, so the venv is ready
     // before the first session. The upstream spelling is accepted too, so an
     // older installer's invocation still works.
-    if args.len() == 1 && matches!(args[0].as_str(), "--allspark-bootstrap" | "--prime-agent-bootstrap")
+    if args.len() == 1
+        && matches!(
+            args[0].as_str(),
+            "--allspark-bootstrap" | "--prime-agent-bootstrap"
+        )
     {
         return run_runtime_bootstrap();
     }
