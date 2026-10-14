@@ -10,4 +10,5 @@ fmt-*.log
 tests-*.log
 test-compile-*.log
 
-\n# fork-local research scratch (recovered reports; never committed)\n.research/\n
+# fork-local research scratch (recovered reports; never committed)
+.research/

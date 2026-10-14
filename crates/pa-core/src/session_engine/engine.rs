@@ -142,6 +142,11 @@ pub struct SessionEngine {
     /// loops the graph and keeps a dropped session's kernel process alive
     /// until the process exits.
     pub(crate) provisioner: std::sync::Arc<crate::kernel::provisioner::IpythonKernelProvisioner>,
+    /// The native `lsp` tool's language-server manager, when `lsp.enabled`.
+    /// The engine holds it so the live clients (each a child process) live
+    /// for the whole session and can be shut down explicitly; dropping the
+    /// engine also drops them (the client kills its process on drop).
+    pub lsp_manager: Option<std::sync::Arc<pa_lsp::LspManager>>,
 }
 
 /// Skill overrides for built-in integrations the user is not logged into,
@@ -256,6 +261,12 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // factory host bridge's preflight facts (the daemon `allowedModels`
     // pin), like the request-timing snapshot above.
     let factory_allowed_models = settings.get_allowed_models();
+    // Captured before `settings` moves into the resource loader: the fork
+    // native-tool gates (`lsp.enabled` / `graph.enabled`, both default ON)
+    // and the graph store path (`graph.dbPath`, defaulting under agentDir).
+    let lsp_enabled = settings.get_lsp_enabled();
+    let graph_enabled = settings.get_graph_enabled();
+    let graph_db_path = settings.get_graph_db_path();
     let (mcp_skill_overrides, mcp_generic_servers, built_manager) =
         mcp_gating(&settings, config.agent_dir.clone()).await?;
     let mcp_manager = config
@@ -455,6 +466,27 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         tools.push(Arc::new(
             crate::session_engine::tool_bridge::ToolDefinitionBridge::new(definition),
         ));
+    }
+    // The fork native tools (gated by `lsp.enabled` / `graph.enabled`, both
+    // default ON). The `LspManager` is created here and held by the engine
+    // (`SessionEngine::lsp_manager`) so its live language-server clients live
+    // for the whole session and can be shut down on teardown; the tool holds a
+    // second `Arc` clone. The graph store opens lazily inside the tool.
+    let mut lsp_manager = None;
+    if lsp_enabled {
+        let manager = Arc::new(pa_lsp::LspManager::new());
+        tools.push(Arc::new(pa_lsp::LspTool::new(
+            Arc::clone(&manager),
+            cwd.clone(),
+        )));
+        lsp_manager = Some(manager);
+    }
+    if graph_enabled {
+        let db_path = graph_db_path.unwrap_or_else(|| config.agent_dir.join("graph.db"));
+        tools.push(Arc::new(crate::tools::graph::GraphTool::new(
+            db_path,
+            cwd.clone(),
+        )));
     }
     let active_tool_names: Vec<String> = tools.iter().map(|tool| tool.name().to_string()).collect();
 
@@ -828,6 +860,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         factory_host,
         rlm_progress_notes: Arc::clone(&wiring.rlm.notes),
         provisioner,
+        lsp_manager,
     })
 }
 
@@ -888,8 +921,13 @@ impl SessionEngine {
 
     /// Tear the kernel down now with a final namespace snapshot, for a host that
     /// ends the session but keeps the engine alive; dropping the engine tears the kernel down too.
+    /// The native `lsp` tool's language-server clients are shut down here too
+    /// (each owns a child process that must not outlive the session).
     pub async fn dispose_kernel(&self) {
         self.provisioner.dispose(None).await;
+        if let Some(manager) = &self.lsp_manager {
+            manager.shutdown_all().await;
+        }
     }
 
     /// Release the kernel with a final namespace snapshot, revivable: the next

@@ -17,6 +17,12 @@ pa-types.workspace = true
 pa-ai.workspace = true
 pa-models = { path = "../pa-models" }
 pa-agent.workspace = true
+# Native fork tools wired into the session engine's tool roster:
+# `lsp` (language servers + tree-sitter symbol layer) and `graph` (the
+# on-disk code graph). Both are gated by the `lsp.enabled` / `graph.enabled`
+# settings (default on).
+pa-lsp.workspace = true
+pa-graph.workspace = true
 pa-telemetry.workspace = true
 base64 = "0.22"
 fancy-regex = "0.14"

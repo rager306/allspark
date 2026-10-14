@@ -1,0 +1,39 @@
+[package]
+name = "pa-lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native Rust LSP tool for the allspark fork: symbol-aware navigation, diagnostics, and renames over stdio language servers."
+
+[dependencies]
+pa-agent = { path = "../pa-agent" }
+pa-types = { path = "../pa-types" }
+# Symbol-layer (S9/S10/S13/S15): tree-sitter parsing for overview/find/body edits.
+pa-ast = { path = "../pa-ast" }
+tree-sitter = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+# tokio<->futures-io bridge: async-lsp drives `futures::AsyncRead/Write`,
+# the child pipes are tokio's, so `compat()`/`compat_write()` meet in the middle.
+tokio-util = { workspace = true, features = ["compat"] }
+tracing = { version = "0.1", features = ["attributes"] }
+# omni-trait: the typed `LanguageServer` client methods (initialize/hover/...).
+# tracing: async-lsp's own spans. We drive the server over tokio process pipes,
+# so the `stdio`/`client-monitor` features (rustix, waitpid-any) stay off.
+async-lsp = { version = "0.2", default-features = false, features = ["omni-trait", "tracing"] }
+lsp-types = "0.95"
+tower-layer = "0.3"
+tower-service = "0.3"
+pin-project-lite = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+# `test-util`: `#[tokio::test(start_paused = true)]` for the L16 budget test.
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

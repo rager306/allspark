@@ -205,6 +205,18 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
         environment_section(options),
     ));
 
+    // The fork's native tools (lsp, graph) are top-level tools, not REPL
+    // programmatic tools; a short section tells the model they exist only
+    // when they are on this session's roster.
+    let native = native_tools_section(&tools);
+    if !native.is_empty() {
+        segments.push(PromptSegment::dynamic_segment(
+            "native-tools",
+            "native fork tools",
+            native,
+        ));
+    }
+
     let role = session_role_section(options, has_ipython);
     if !role.is_empty() {
         segments.push(PromptSegment::dynamic_segment(
@@ -286,6 +298,36 @@ fn environment_section(options: &BuildSystemPromptOptions) -> String {
             "Image input: this model cannot see images; `attach_image` errors for it.".to_string(),
         ),
         None => {}
+    }
+    lines.join("\n")
+}
+
+/// The native fork tools (`lsp`, `graph`) present on this session's roster.
+/// Empty when neither is active, so the segment never renders for sessions
+/// that keep only the REPL surface.
+fn native_tools_section(tools: &[&str]) -> String {
+    let has_lsp = tools.contains(&"lsp");
+    let has_graph = tools.contains(&"graph");
+    if !has_lsp && !has_graph {
+        return String::new();
+    }
+    let mut lines = vec![
+        "# Native tools".to_string(),
+        String::new(),
+        "These native tools are callable directly (top-level tool calls), not through the Python REPL."
+            .to_string(),
+    ];
+    if has_lsp {
+        lines.push(
+            "- `lsp`: language-server queries and a tree-sitter symbol layer over a file or the workspace. Actions: `status`, `diagnostics`, `definition`/`declaration`/`type_definition`/`implementation`, `references`, `hover`, `symbols` (file or workspace), `find_symbol`, `find_referencing_symbols`, `find_implementations`, `rename`, `code_actions`, and symbol-aware edits (`replace_symbol_body`, `insert_before_symbol`/`insert_after_symbol`, `safe_delete_symbol`). Address a symbol by a `Class/method` name path (`symbol`) or a 1-based `line`."
+                .to_string(),
+        );
+    }
+    if has_graph {
+        lines.push(
+            "- `graph`: the on-disk code graph for the working directory. Actions: `index`/`reindex` (build or incrementally repair the symbol/call/import graph), `search` (hybrid symbol search), `trace` (callers/callees from a symbol), `architecture` (overview/structure/layers/clusters/cycles/hotspots/entry_points/file_tree), `coverage` (index honesty report), `changes` (git-diff to affected symbols), `status` (store counts)."
+                .to_string(),
+        );
     }
     lines.join("\n")
 }

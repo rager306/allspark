@@ -883,6 +883,45 @@ impl SettingsManager {
         self.merged.request_timing.unwrap_or(false)
     }
 
+    /// The native `lsp` tool's gate: unset means ON (the fork wires the tool
+    /// by default; `lsp.enabled = false` opts out).
+    #[must_use]
+    pub fn get_lsp_enabled(&self) -> bool {
+        self.merged
+            .lsp
+            .as_ref()
+            .and_then(|lsp| lsp.enabled)
+            .unwrap_or(true)
+    }
+
+    /// The native `graph` tool's gate: unset means ON.
+    #[must_use]
+    pub fn get_graph_enabled(&self) -> bool {
+        self.merged
+            .graph
+            .as_ref()
+            .and_then(|graph| graph.enabled)
+            .unwrap_or(true)
+    }
+
+    /// The code-graph store path (`graph.dbPath`), resolved against `~/`
+    /// when prefixed; `None` lets the caller default to `<agentDir>/graph.db`.
+    #[must_use]
+    pub fn get_graph_db_path(&self) -> Option<std::path::PathBuf> {
+        let raw = self.merged.graph.as_ref()?.db_path.as_ref()?;
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        if raw == "~" {
+            return pa_types::platform::home_dir();
+        }
+        if let Some(rest) = raw.strip_prefix("~/") {
+            return pa_types::platform::home_dir().map(|home| home.join(rest));
+        }
+        Some(std::path::PathBuf::from(raw))
+    }
+
     #[must_use]
     pub fn get_session_dir(&self) -> Option<std::path::PathBuf> {
         let session_dir = self.merged.session_dir.as_ref()?;
@@ -1307,5 +1346,36 @@ mod tests {
         assert_eq!(manager.get_image_model(), None);
         let manager = SettingsManager::in_memory(&Settings::default());
         assert_eq!(manager.get_image_model(), None);
+    }
+    #[test]
+    fn native_tool_gates_default_on_and_honour_disable() {
+        let manager = SettingsManager::in_memory(&Settings::default());
+        assert!(manager.get_lsp_enabled(), "lsp defaults on");
+        assert!(manager.get_graph_enabled(), "graph defaults on");
+        assert_eq!(manager.get_graph_db_path(), None);
+
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "lsp": { "enabled": false },
+            "graph": { "enabled": false, "dbPath": "/tmp/custom-graph.db" },
+        }))
+        .unwrap();
+        let manager = SettingsManager::in_memory(&settings);
+        assert!(!manager.get_lsp_enabled());
+        assert!(!manager.get_graph_enabled());
+        assert_eq!(
+            manager.get_graph_db_path(),
+            Some(std::path::PathBuf::from("/tmp/custom-graph.db"))
+        );
+    }
+
+    #[test]
+    fn graph_db_path_expands_a_home_prefix() {
+        let home = pa_types::platform::home_dir().expect("home dir");
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "graph": { "dbPath": "~/graph.db" },
+        }))
+        .unwrap();
+        let manager = SettingsManager::in_memory(&settings);
+        assert_eq!(manager.get_graph_db_path(), Some(home.join("graph.db")));
     }
 }

@@ -472,3 +472,124 @@ async fn create_session_appends_missing_resume_settings_rows() {
         "entries: {entries:?}"
     );
 }
+
+
+/// The fork native tools wire into the roster by default: `create_session`
+/// pushes `lsp` (with its engine-owned manager) and `graph` when the
+/// settings leave `lsp.enabled` / `graph.enabled` unset.
+#[tokio::test]
+async fn native_tools_are_on_by_default() {
+    let model = pa_agent::types::Model {
+        id: "m".into(),
+        name: "m".into(),
+        api: "test".into(),
+        provider: "test".into(),
+        base_url: "http://localhost".into(),
+        reasoning: false,
+        cost: pa_agent::types::UsageCost::default(),
+        context_window: 1_000,
+        max_tokens: 100,
+        max_tokens_explicit: false,
+    };
+    let provider = Arc::new(ScriptedProvider::new(model.clone()));
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    let agent_dir = tmp.path().join("agent");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    let engine = create_session(SessionEngineConfig {
+        cwd: cwd.clone(),
+        agent_dir: agent_dir.clone(),
+        model: Some(model),
+        stream_fn: Some(provider.stream_fn()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let names: Vec<String> = engine
+        .session
+        .agent()
+        .state()
+        .await
+        .tools
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect();
+    assert!(names.iter().any(|name| name == "lsp"), "tools: {names:?}");
+    assert!(names.iter().any(|name| name == "graph"), "tools: {names:?}");
+    assert!(
+        engine.lsp_manager.is_some(),
+        "the engine owns the lsp manager so its clients live for the session"
+    );
+    // The prompt advertises the native tools the roster carries.
+    assert!(engine.system_prompt.contains("# Native tools"));
+    assert!(engine.system_prompt.contains("- `lsp`:"));
+    assert!(engine.system_prompt.contains("- `graph`:"));
+    // The graph tool opens its store lazily on first use, so no DB exists
+    // merely from session creation.
+    assert!(!agent_dir.join("graph.db").exists());
+}
+
+/// `lsp.enabled = false` and `graph.enabled = false` drop both tools from
+/// the roster (and the prompt section with them).
+#[tokio::test]
+async fn native_tools_honour_their_disable_flags() {
+    let model = pa_agent::types::Model {
+        id: "m".into(),
+        name: "m".into(),
+        api: "test".into(),
+        provider: "test".into(),
+        base_url: "http://localhost".into(),
+        reasoning: false,
+        cost: pa_agent::types::UsageCost::default(),
+        context_window: 1_000,
+        max_tokens: 100,
+        max_tokens_explicit: false,
+    };
+    let provider = Arc::new(ScriptedProvider::new(model.clone()));
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    let agent_dir = tmp.path().join("agent");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(
+        agent_dir.join("settings.json"),
+        serde_json::json!({
+            "lsp": { "enabled": false },
+            "graph": { "enabled": false },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let engine = create_session(SessionEngineConfig {
+        cwd: cwd.clone(),
+        agent_dir: agent_dir.clone(),
+        model: Some(model),
+        stream_fn: Some(provider.stream_fn()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let names: Vec<String> = engine
+        .session
+        .agent()
+        .state()
+        .await
+        .tools
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect();
+    assert!(
+        !names.iter().any(|name| name == "lsp"),
+        "lsp must be dropped: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|name| name == "graph"),
+        "graph must be dropped: {names:?}"
+    );
+    assert!(engine.lsp_manager.is_none());
+    assert!(!engine.system_prompt.contains("# Native tools"));
+    assert!(!agent_dir.join("graph.db").exists());
+}

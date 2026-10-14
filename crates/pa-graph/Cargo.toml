@@ -1,0 +1,37 @@
+[package]
+name = "pa-graph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "On-disk SQLite code graph with FTS5 symbol search, RRF hybrid ranking, graph tracing, and incremental file classification."
+
+[dependencies]
+# `bundled` vendors SQLite (FTS5 compiled in) so no system libsqlite3 is
+# linked; the Rust side stays inside `#![forbid(unsafe_code)]` (the FFI lives
+# entirely in libsqlite3-sys).
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+blake3.workspace = true
+sha2.workspace = true
+rayon.workspace = true
+ignore.workspace = true
+regex.workspace = true
+unicode-segmentation.workspace = true
+# Symbol extraction walks the same tree-sitter tree `pa-ast` parses.
+pa-ast.workspace = true
+tree-sitter.workspace = true
+# Graph algorithms for the architecture view (G6): SCC/condensation, connected
+# components, cycle detection. Safe-only.
+petgraph.workspace = true
+# Native filesystem events for the S16 watcher backend (the polling backend
+# needs no dependency; this one uses the OS notifier when it is available).
+notify.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -6,6 +6,11 @@ members = [
     "crates/pa-ai",
     "crates/pa-models",
     "crates/pa-agent",
+    "crates/pa-lsp",
+    "crates/pa-diff",
+    "crates/pa-ast",
+    "crates/pa-edit",
+    "crates/pa-graph",
     "crates/pa-core",
     "crates/pa-daemon",
     "crates/pa-tui",
@@ -17,11 +22,18 @@ members = [
 # but cap the query poll to 250ms (late real-terminal replies still get a chance).
 [patch.crates-io]
 crossterm = { path = "vendor/crossterm" }
+# tree-sitter-go 0.25.0 (latest release) rejects Go 1.26 `new(expr)`; the
+# vendored copy carries the upstream grammar fix (see its README.md). Remove
+# this entry once a crates.io release parses `new(expr)`.
+tree-sitter-go = { path = "vendor/tree-sitter-go" }
 
 [workspace.package]
 version = "0.10.0"
 edition = "2021"
 license = "MIT"
+authors = ["Stencil Labs, Inc."]
+homepage = "https://omp.sh/"
+repository = "https://github.com/can1357/oh-my-pi"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -44,6 +56,79 @@ futures = "0.3"
 toml = "0.9"
 # Dev-only; the default fork/timeout features are unused.
 proptest = { version = "1.11", default-features = false, features = ["std"] }
+
+# ── pa-ast / pa-diff (fork port of oh-my-pi's pi-ast / pi-diff) ──────────
+# Versions mirror the upstream oh-my-pi workspace that these crates came from
+# (its Cargo.lock), so the vendored sources compile unchanged.
+pa-ast = { path = "crates/pa-ast" }
+pa-diff = { path = "crates/pa-diff" }
+# pa-edit: edit engine (fork port of oh-my-pi's pi-edit); depends on
+# pa-ast/pa-diff but NOT on the unsafe pi-walker/pi-vfs crates.
+pa-edit = { path = "crates/pa-edit" }
+# pa-graph: on-disk SQLite code graph + FTS5 symbol search (leaf crate).
+pa-graph = { path = "crates/pa-graph" }
+# pa-lsp: native Rust language-server tool (stdio LSP clients + tree-sitter
+# symbol layer); leaf crate over pa-agent/pa-ast/async-lsp.
+pa-lsp = { path = "crates/pa-lsp" }
+# AST & tree-sitter: `ast-grep-core` without its default grammar features —
+# pa-ast links the grammars itself and loads the rest as wasm.
+ast-grep-core = { version = "0.39", default-features = false, features = [
+    "tree-sitter",
+] }
+tree-sitter = "0.25"
+tree-sitter-bash = "0.25"
+tree-sitter-c = "0.24"
+tree-sitter-cpp = "0.23"
+tree-sitter-css = "0.25"
+tree-sitter-diff = "0.1"
+tree-sitter-go = "0.25"
+tree-sitter-html = "0.23"
+tree-sitter-java = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-json = "0.24"
+tree-sitter-md = "0.5"
+tree-sitter-python = "0.25"
+tree-sitter-regex = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-toml-ng = "0.7"
+tree-sitter-typescript = "0.23"
+tree-sitter-yaml = "0.7"
+# Test-only stand-ins for wasm grammars (pa-ast dev-dependencies).
+tree-sitter-elisp = "1.7.2"
+tree-sitter-fortran = "0.6.0"
+tree-sitter-ruby = "0.23"
+tree-sitter-swift = "0.7"
+tree-sitter-lua = "0.5"
+phf = { version = "0.14", features = ["macros"] }
+globset = "0.4"
+ignore = "0.4"
+xxhash-rust = { version = "0.8", features = ["xxh64", "xxh32"] }
+# NOTE: upstream pi-edit used `xutf`, which unconditionally requires the
+# nightly `portable_simd` feature and cannot compile on this workspace's
+# pinned stable toolchain. pa-edit uses `unicode-normalization` (already a
+# pa-core dependency) for its single NFC call instead.
+unicode-normalization = "0.1"
+# pa-edit runtime deps: async-trait for the host EditWriter trait, parking_lot
+# for the EditStore mutex (std Mutex would work too but the port uses this).
+async-trait = "0.1"
+parking_lot = "0.12"
+
+# ── pa-graph (on-disk SQLite code graph) ────────────────────────────────
+# bundled = vendored SQLite (FTS5 enabled, no system libsqlite3, no unsafe
+# Rust in our crate); the FTS5 build flag is what the symbol index rides on.
+rusqlite = { version = "0.40", features = ["bundled"] }
+blake3 = "1.8"
+sha2 = "0.10"
+rayon = "1.12"
+regex = "1"
+unicode-segmentation = "1"
+# petgraph: SCC/condensation/connected-components for the architecture view
+# (G6 layers/cycles/clusters). Default features only; `graphmap`/`stable_graph`
+# are unused but are part of petgraph's default set.
+petgraph = "0.8.3"
+# notify: native filesystem-event backend for pa-graph's S16 watcher (the
+# mtime-polling backend needs no dependency; this one uses the OS notifier).
+notify = "8"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -222,6 +222,30 @@ pub struct AgentTracesSettings {
     pub enabled: Option<bool>,
 }
 
+/// The native `lsp` tool's opt-in gate and tuning (fork-only). `enabled`
+/// unset reads as `true` (the tool is on by default); `servers` reserves a
+/// per-server override map and `idle_timeout_ms` a client-idle bound.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LspSettings {
+    pub enabled: Option<bool>,
+    /// Per-server overrides, keyed by server name (reserved; the built-in
+    /// server table applies until a key is set).
+    pub servers: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Idle timeout for a live language-server client, in milliseconds.
+    pub idle_timeout_ms: Option<u64>,
+}
+
+/// The native `graph` tool's opt-in gate and store location (fork-only).
+/// `enabled` unset reads as `true`; `db_path` defaults to
+/// `<agentDir>/graph.db`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphSettings {
+    pub enabled: Option<bool>,
+    pub db_path: Option<String>,
+}
+
 /// `factory` (the agent factory's opt-in gate): `factory.enabled` is
 /// unset/false by default, and the `/factory on` client command persists
 /// it. Both the daemon's `factory_activity` lane advertisement and the
@@ -317,6 +341,10 @@ pub struct Settings {
     pub compaction: Option<CompactionSettings>,
     pub auto_refine: Option<AutoRefineSettings>,
     pub agent_traces: Option<AgentTracesSettings>,
+    /// Native `lsp` tool settings (fork-only; `enabled` defaults on).
+    pub lsp: Option<LspSettings>,
+    /// Native `graph` code-graph tool settings (fork-only; `enabled` defaults on).
+    pub graph: Option<GraphSettings>,
     pub factory: Option<FactorySettings>,
     pub telemetry: Option<TelemetrySettings>,
     pub branch_summary: Option<BranchSummarySettings>,

@@ -1,0 +1,36 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["Cargo.toml"])
+
+# On-disk SQLite code graph + FTS5 symbol search. `rusqlite` is built with
+# `bundled` (vendored SQLite, FTS5 compiled in), so no system libsqlite3 is
+# linked; the crate itself is `#![forbid(unsafe_code)]`.
+rust_library(
+    name = "pa-graph",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_name = "pa_graph",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    version = "0.10.0",
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "pa-graph_test",
+    crate = ":pa-graph",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+)
+
+rust_test(
+    name = "pa-graph_integration_test",
+    srcs = ["tests/integration.rs"],
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+    deps = all_crate_deps(normal = True) + [":pa-graph"],
+)
