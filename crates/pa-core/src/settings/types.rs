@@ -89,6 +89,16 @@ pub enum AutonomousLimitSetting {
     Unlimited(String),
 }
 
+/// FORK-ONLY: the fork's rotating debug-log overlay (`debugLog`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugLogSettings {
+    pub enabled: Option<bool>,
+    pub level: Option<String>,
+    pub max_files: Option<u32>,
+    pub max_bytes: Option<u64>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompactionSettings {
@@ -372,6 +382,8 @@ pub struct Settings {
     pub follow_up_mode: Option<QueueModeSetting>,
     pub theme: Option<String>,
     pub compaction: Option<CompactionSettings>,
+    /// FORK-ONLY: the rotating debug-log overlay (see `pa_daemon::debug_log`).
+    pub debug_log: Option<DebugLogSettings>,
     pub auto_refine: Option<AutoRefineSettings>,
     pub agent_traces: Option<AgentTracesSettings>,
     /// Native `lsp` tool settings (fork-only; `enabled` defaults on).

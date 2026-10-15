@@ -299,6 +299,9 @@ impl Supervisor {
     ///
     /// Panics when the telemetry mutex is poisoned (the holder panicked mid-lock).
     pub async fn run(self: Arc<Self>) -> Result<()> {
+        // FORK-ONLY: the rotating debug-log subscriber (debugLog.enabled).
+        let _debug_log =
+            crate::debug_log::init_from_settings(&self.options.agent_dir, "daemon");
         // Before any socket or worker exists: workers and their kernels
         // inherit the raised limit.
         let open_file_limit = pa_core::platform::process::raise_open_file_limit();

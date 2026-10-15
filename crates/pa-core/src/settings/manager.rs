@@ -41,6 +41,16 @@ pub struct SettingsManager {
     project_load_error: Option<String>,
 }
 
+/// FORK-ONLY: the resolved debug-log configuration handed to the
+/// rotating-subscriber installer (`pa_daemon::debug_log::init`).
+#[derive(Debug, Clone, Default)]
+pub struct DebugLogConfig {
+    pub enabled: bool,
+    pub level: String,
+    pub max_files: u32,
+    pub max_bytes: u64,
+}
+
 impl SettingsManager {
     pub fn from_storage(storage: Arc<dyn SettingsStorage>) -> Self {
         let mut errors = Vec::new();
@@ -902,6 +912,31 @@ impl SettingsManager {
             .as_ref()
             .and_then(|graph| graph.enabled)
             .unwrap_or(true)
+    }
+
+    /// FORK-ONLY: the resolved rotating debug-log configuration. `enabled`
+    /// is the `debugLog.enabled` setting or the `ALLSPARK_DEBUG=1` env; an
+    /// unknown `level` reads as `debug`.
+    #[must_use]
+    pub fn get_debug_log(&self) -> DebugLogConfig {
+        let cfg = self.merged.debug_log.as_ref();
+        let enabled = cfg.and_then(|d| d.enabled).unwrap_or(false)
+            || std::env::var("ALLSPARK_DEBUG").is_ok_and(|v| v == "1");
+        let raw_level = cfg
+            .and_then(|d| d.level.clone())
+            .unwrap_or_else(|| "debug".to_string());
+        let level = matches!(raw_level.as_str(), "trace" | "debug" | "info" | "warn" | "error")
+            .then_some(raw_level)
+            .unwrap_or_else(|| "debug".to_string());
+        DebugLogConfig {
+            enabled,
+            level,
+            max_files: cfg.and_then(|d| d.max_files).unwrap_or(10).max(1),
+            max_bytes: cfg
+                .and_then(|d| d.max_bytes)
+                .unwrap_or(10 * 1024 * 1024)
+                .max(1024),
+        }
     }
 
     /// The native `edit` tool's gate: unset means ON.

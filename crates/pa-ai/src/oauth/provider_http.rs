@@ -76,6 +76,13 @@ impl ProviderHttp for ReqwestProviderHttp {
                 ProviderHttpMethod::Get => reqwest::Method::GET,
                 ProviderHttpMethod::Post => reqwest::Method::POST,
             };
+            // FORK-ONLY debug-log trace: method/host/status only — never
+            // headers, bodies, or credentials.
+            tracing::debug!(
+                method = method.as_str(),
+                url = %request.url,
+                "provider http request"
+            );
             let client = crate::utils_inner::tls::http_client_builder()
                 .timeout(Duration::from_millis(timeout_ms))
                 .redirect(reqwest::redirect::Policy::custom(move |attempt| {
@@ -96,13 +103,26 @@ impl ProviderHttp for ReqwestProviderHttp {
             if let Some(body) = &request.body {
                 request_builder = request_builder.body(body.clone());
             }
+            let started = std::time::Instant::now();
             let response = request_builder.send().await.map_err(|error| {
-                if error.is_timeout() {
+                let message = if error.is_timeout() {
                     "the request timed out".to_string()
                 } else {
                     error.to_string()
-                }
+                };
+                tracing::warn!(
+                    url = %request.url,
+                    error = %message,
+                    elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    "provider http transport error"
+                );
+                message
             })?;
+            tracing::debug!(
+                status = response.status().as_u16(),
+                elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                "provider http response"
+            );
             let status = response.status().as_u16();
             let body = response.text().await.map_err(|error| error.to_string())?;
             Ok(ProviderHttpResponse { status, body })

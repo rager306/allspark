@@ -1042,6 +1042,8 @@ pub async fn run_worker() -> Result<()> {
         return Err(anyhow!("worker mode requires {WORKER_ROLE_ENV}=1"));
     }
     let config = WorkerConfig::from_env()?;
+    // FORK-ONLY: the rotating debug-log subscriber (debugLog.enabled).
+    let _debug_log = crate::debug_log::init_from_settings(&config.agent_dir, "worker");
     // Self-registration: the supervisor's roster survives its own restarts
     // because workers re-present their identity (liveness watch + backoff).
     let registration = crate::registration::start(&config);
