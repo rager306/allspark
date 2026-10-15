@@ -191,6 +191,11 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
     }
 
     let app_mode = mode::AppMode::resolve(&parsed, std::io::stdin().is_terminal());
+    // FORK-ONLY: the rotating debug-log subscriber (debugLog.enabled or
+    // ALLSPARK_DEBUG=1); the /login provider flows run in this process. It
+    // installs before every early-return so all commands are covered.
+    let _debug_log = pa_types::platform::dirs::agent_dir()
+        .and_then(|dir| pa_daemon::debug_log::init_from_settings(&dir, "cli"));
 
     // Enable Windows VT processing before raw ANSI mode writes.
     pa_types::platform::console_init();
@@ -379,10 +384,6 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
         attach_agent: public_command.attach_agent,
     };
 
-    // FORK-ONLY: the rotating debug-log subscriber (debugLog.enabled or
-    // ALLSPARK_DEBUG=1); the /login provider flows run in this process.
-    let _debug_log = pa_types::platform::dirs::agent_dir()
-        .and_then(|dir| pa_daemon::debug_log::init_from_settings(&dir, "cli"));
     match runtime.run(&options) {
         Ok(exit_code) => Ok(exit_code),
         Err(missing) => Err(missing.error_message()),
