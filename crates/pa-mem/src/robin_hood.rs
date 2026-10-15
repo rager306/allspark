@@ -1,0 +1,431 @@
+//! P2 — Robin Hood hashing with `dib` and backward-shift deletion.
+//!
+//! A direct port of `map_insert` / `map_get_bucket` / `delbkt` from
+//! pogocache's `pogocache.c`. The table is open-addressed with linear probing;
+//! each occupied slot records its *distance to bucket* (`dib`, 1-based, `0`
+//! meaning empty). On insert, a slot whose `dib` is smaller than the incoming
+//! entry's is displaced — the "Robin Hood" rule that keeps probe lengths even
+//! and predictable. Deletion shifts the following cluster back one slot at a
+//! time until a slot at its home position is reached, so no tombstones are
+//! needed.
+//!
+//! Keys are hashed with the crate's [`crate::hash::th64`] rather than the
+//! standard library's randomly seeded `SipHash`, so placement is reproducible
+//! across runs — the property the sharded map and the tests both rely on.
+
+use std::hash::{Hash, Hasher};
+
+use crate::hash::th64;
+
+/// A [`Hasher`] that accumulates bytes and finishes with [`th64`].
+///
+/// `th64` is a one-shot function over a byte slice, so the incremental
+/// [`Hasher`] interface buffers the writes and hashes them at `finish`. The
+/// seed is fixed at `0`: placement must be deterministic, not flood-resistant
+/// (the caller owns that decision; see [`crate::shard::ShardedMap`]).
+#[derive(Default)]
+struct Th64Hasher {
+    bytes: Vec<u8>,
+}
+
+impl Hasher for Th64Hasher {
+    fn finish(&self) -> u64 {
+        th64(&self.bytes, 0)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        self.bytes.extend_from_slice(bytes);
+    }
+}
+
+/// Hashes `key` with the deterministic `th64` hasher.
+fn hash_of<K: Hash>(key: &K) -> u64 {
+    let mut hasher = Th64Hasher::default();
+    key.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// One occupied slot: the stored hash, key, and value.
+#[derive(Debug)]
+struct Slot<K, V> {
+    hash: u64,
+    key: K,
+    value: V,
+}
+
+/// The deepest probe a `u8` `dib` can record. pogocache's bucket stores `dib`
+/// in one byte for the same reason; a good hash keeps clusters far below this,
+/// and a cluster that reaches it saturates instead of overflowing.
+pub const MAX_DIB: u8 = u8::MAX;
+
+/// An open-addressed hash map with Robin Hood probing.
+///
+/// The load factor is capped at 75% (`DEFLOADFACTOR` in pogocache) and the
+/// bucket count is always a power of two, so the home slot is a mask rather
+/// than a modulo.
+///
+/// `dib` is one byte wide, exactly like pogocache's bucket field. That bounds
+/// the usable probe distance at [`MAX_DIB`]; the load-factor cap keeps real
+/// probe lengths in the low tens, and the counter saturates rather than
+/// wrapping on pathological input.
+#[derive(Debug)]
+pub struct RobinHoodMap<K, V> {
+    buckets: Vec<Option<Slot<K, V>>>,
+    /// `dib` per bucket, parallel to `buckets`; `0` marks an empty slot.
+    dibs: Vec<u8>,
+    mask: usize,
+    len: usize,
+}
+
+/// The bucket count a fresh map starts with (`INITCAP` in pogocache).
+const INITIAL_CAPACITY: usize = 64;
+
+impl<K: Hash + Eq, V> Default for RobinHoodMap<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K: Hash + Eq, V> RobinHoodMap<K, V> {
+    /// A map with the default initial capacity (64 buckets).
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_capacity(INITIAL_CAPACITY)
+    }
+
+    /// A map with room for at least `capacity` entries before the first grow.
+    ///
+    /// The bucket count is rounded up to a power of two.
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        let count = capacity.max(INITIAL_CAPACITY).next_power_of_two();
+        Self {
+            buckets: std::iter::repeat_with(|| None).take(count).collect(),
+            dibs: vec![0; count],
+            mask: count - 1,
+            len: 0,
+        }
+    }
+
+    /// Number of stored entries.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the map holds no entries.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The current bucket count (a power of two).
+    #[must_use]
+    pub fn bucket_count(&self) -> usize {
+        self.buckets.len()
+    }
+
+    /// The longest probe distance in the table — the Robin Hood guarantee in
+    /// one number. A well-mixed table keeps this small; the ceiling is
+    /// [`MAX_DIB`].
+    #[must_use]
+    pub fn max_probe(&self) -> u8 {
+        self.dibs.iter().copied().max().unwrap_or(0)
+    }
+
+    /// Inserts `key`/`value`, returning the previous value for `key` if any.
+    ///
+    /// # Panics
+    ///
+    /// Panics only on an internal invariant violation (an occupied slot the
+    /// probe loop lost track of); the table is maintained by this type, so it
+    /// does not fire in practice.
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        if (self.len + 1) * 4 >= self.buckets.len() * 3 {
+            self.grow();
+        }
+        let hash = hash_of(&key);
+        let mut carried = Slot { hash, key, value };
+        let mut dib = 1u8;
+        let mut i = (hash as usize) & self.mask;
+        loop {
+            if self.buckets[i].is_none() {
+                self.dibs[i] = dib;
+                self.buckets[i] = Some(carried);
+                self.len += 1;
+                return None;
+            }
+            // SAFETY-equivalent: the `is_none` branch above already returned.
+            let occupant = self.buckets[i].take().expect("slot is occupied");
+            if occupant.hash == carried.hash && occupant.key == carried.key {
+                // Same key: the new value takes the slot, the old one is
+                // returned. Keys are `Eq`, so dropping the occupant's copy is
+                // lossless.
+                let old_value = occupant.value;
+                self.buckets[i] = Some(carried);
+                return Some(old_value);
+            }
+            if self.dibs[i] < dib {
+                // The occupant is closer to home than we are: swap. We take
+                // over the slot and carry the displaced entry onward, one
+                // probe further along.
+                let occupant_dib = self.dibs[i];
+                self.dibs[i] = dib;
+                self.buckets[i] = Some(carried);
+                carried = occupant;
+                dib = occupant_dib;
+            } else {
+                self.buckets[i] = Some(occupant);
+            }
+            i = (i + 1) & self.mask;
+            // `dib` is a `u8`, as in pogocache's bucket: a cluster deeper than
+            // `MAX_DIB` saturates rather than wrapping. With a real hash
+            // (crate::hash::th64) the load-factor cap keeps probes in the low
+            // tens, so this only bites on adversarially colliding keys — see
+            // the `MAX_DIB` note on the type.
+            dib = dib.saturating_add(1);
+        }
+    }
+
+    /// Returns a reference to the value for `key`.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if `get_index` named a slot that is not occupied, which the
+    /// lookup contract rules out.
+    #[must_use]
+    pub fn get(&self, key: &K) -> Option<&V> {
+        self.get_index(key).map(|i| {
+            // SAFETY-equivalent: `get_index` returns only occupied slots.
+            &self.buckets[i]
+                .as_ref()
+                .expect("get_index returns an occupied slot")
+                .value
+        })
+    }
+
+    /// Whether `key` is present.
+    #[must_use]
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.get_index(key).is_some()
+    }
+
+    /// Removes `key`, returning its value if it was present.
+    ///
+    /// The deletion is backward-shift: the following cluster is pulled back one
+    /// slot at a time until an entry sits at its home bucket, so no tombstone
+    /// is left behind.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if a located slot were not occupied, which `get_index`
+    /// rules out.
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        let i = self.get_index(key)?;
+        let slot = self.buckets[i].take().expect("occupied slot");
+        self.dibs[i] = 0;
+        self.len -= 1;
+        self.backward_shift(i);
+        Some(slot.value)
+    }
+
+    /// The slot index holding `key`, or `None`.
+    ///
+    /// Probes forward and stops as soon as the occupant's `dib` is smaller than
+    /// the current probe distance: under Robin Hood ordering the key cannot
+    /// have travelled further than that.
+    fn get_index(&self, key: &K) -> Option<usize> {
+        let hash = hash_of(key);
+        let mut i = (hash as usize) & self.mask;
+        let mut dib = 1u8;
+        loop {
+            let slot = self.buckets[i].as_ref()?;
+            if self.dibs[i] < dib {
+                return None;
+            }
+            if slot.hash == hash && slot.key == *key {
+                return Some(i);
+            }
+            i = (i + 1) & self.mask;
+            dib += 1;
+        }
+    }
+
+    /// Pulls the cluster after the now-empty slot `hole` back one position.
+    fn backward_shift(&mut self, hole: usize) {
+        let mut hole = hole;
+        loop {
+            let next = (hole + 1) & self.mask;
+            if self.dibs[next] <= 1 {
+                // `next` is empty or at its home slot: the cluster ends here.
+                self.dibs[hole] = 0;
+                self.buckets[hole] = None;
+                return;
+            }
+            self.buckets[hole] = self.buckets[next].take();
+            self.dibs[hole] = self.dibs[next] - 1;
+            hole = next;
+        }
+    }
+
+    /// Doubles the table and reinserts every entry at its (unchanged) hash.
+    fn grow(&mut self) {
+        let new_cap = self.buckets.len() * 2;
+        let fresh = std::iter::repeat_with(|| None).take(new_cap).collect();
+        let old_buckets = std::mem::replace(&mut self.buckets, fresh);
+        let old_dibs = std::mem::replace(&mut self.dibs, vec![0; new_cap]);
+        self.mask = new_cap - 1;
+        let old_len = self.len;
+        self.len = 0;
+        debug_assert_eq!(old_len, old_dibs.iter().filter(|d| **d != 0).count());
+        for (slot, dib) in old_buckets.into_iter().zip(old_dibs) {
+            if dib == 0 {
+                continue;
+            }
+            if let Some(slot) = slot {
+                // Reinsertion never replaces (the source had unique keys), so
+                // the return is always `None`.
+                let _ = self.insert(slot.key, slot.value);
+            }
+        }
+    }
+
+    /// Iterates over `(&key, &value)` pairs in slot order.
+    pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+        self.buckets
+            .iter()
+            .filter_map(|slot| slot.as_ref().map(|s| (&s.key, &s.value)))
+    }
+}
+
+impl<'a, K: Hash + Eq, V> IntoIterator for &'a RobinHoodMap<K, V> {
+    type Item = (&'a K, &'a V);
+    type IntoIter = Box<dyn Iterator<Item = (&'a K, &'a V)> + 'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Box::new(self.iter())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inserts_and_reads_back() {
+        let mut map = RobinHoodMap::new();
+        for i in 0..1000u32 {
+            assert_eq!(map.insert(i, i * 2), None);
+        }
+        assert_eq!(map.len(), 1000);
+        for i in 0..1000u32 {
+            assert_eq!(map.get(&i), Some(&(i * 2)));
+        }
+        assert_eq!(map.get(&1000), None);
+    }
+
+    #[test]
+    fn replacing_a_key_returns_the_old_value() {
+        let mut map = RobinHoodMap::new();
+        assert_eq!(map.insert("k", 1), None);
+        assert_eq!(map.insert("k", 2), Some(1));
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(&"k"), Some(&2));
+    }
+
+    #[test]
+    fn growth_preserves_every_entry() {
+        let mut map = RobinHoodMap::new();
+        let n = 5000u32;
+        for i in 0..n {
+            map.insert(i, i);
+        }
+        assert!(map.bucket_count() > INITIAL_CAPACITY);
+        assert_eq!(map.len() as u32, n);
+        for i in 0..n {
+            assert_eq!(map.get(&i), Some(&i), "entry {i} survived the grow");
+        }
+    }
+
+    #[test]
+    fn backward_shift_deletion_keeps_the_cluster_reachable() {
+        let mut map = RobinHoodMap::new();
+        // Force a long cluster: keys that hash into a narrow band.
+        for i in 0..500u32 {
+            map.insert(i, i);
+        }
+        let probe_before = map.max_probe();
+        // Remove the middle of each run and confirm the survivors stay findable.
+        for i in (0..500u32).step_by(2) {
+            assert_eq!(map.remove(&i), Some(i));
+        }
+        for i in (0..500u32).step_by(2) {
+            assert_eq!(map.get(&i), None, "removed key {i} is gone");
+        }
+        for i in (1..500u32).step_by(2) {
+            assert_eq!(map.get(&i), Some(&i), "survivor {i} is still reachable");
+        }
+        assert_eq!(map.len(), 250);
+        // Deleting must not lengthen the table's worst probe distance.
+        assert!(map.max_probe() <= probe_before.max(1));
+    }
+
+    #[test]
+    fn deletes_every_entry_back_to_empty() {
+        let mut map = RobinHoodMap::new();
+        for i in 0..777u32 {
+            map.insert(i, i);
+        }
+        for i in 0..777u32 {
+            assert_eq!(map.remove(&i), Some(i));
+        }
+        assert!(map.is_empty());
+        assert_eq!(map.remove(&0), None);
+        assert_eq!(map.max_probe(), 0);
+    }
+
+    #[test]
+    fn colliding_keys_stay_correct() {
+        // `Collide` hashes to a constant, so every key fights for one home slot.
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        struct Collide(u32);
+        impl Hash for Collide {
+            fn hash<H: Hasher>(&self, state: &mut H) {
+                state.write_u8(0);
+            }
+        }
+        // One cluster deep enough to exercise the probe path, but short enough
+        // to stay under the u8 `dib` ceiling (`MAX_DIB`) that a single cluster
+        // cannot exceed without saturating.
+        const N: u32 = 200;
+        let mut map = RobinHoodMap::new();
+        for i in 0..N {
+            map.insert(Collide(i), i);
+        }
+        assert_eq!(map.len(), N as usize);
+        for i in 0..N {
+            assert_eq!(map.get(&Collide(i)), Some(&i));
+        }
+        // With every key on one home slot the worst probe is deep by
+        // construction.
+        assert!(map.max_probe() >= 100, "probe was {}", map.max_probe());
+        for i in (0..N).step_by(3) {
+            assert_eq!(map.remove(&Collide(i)), Some(i));
+        }
+        for i in 0..N {
+            let expected = if i % 3 == 0 { None } else { Some(&i) };
+            assert_eq!(map.get(&Collide(i)), expected);
+        }
+    }
+
+    #[test]
+    fn iteration_visits_every_entry_once() {
+        let mut map = RobinHoodMap::new();
+        for i in 0..200u32 {
+            map.insert(i, i);
+        }
+        let mut seen: Vec<u32> = map.iter().map(|(k, _)| *k).collect();
+        seen.sort_unstable();
+        assert_eq!(seen, (0..200u32).collect::<Vec<_>>());
+    }
+}

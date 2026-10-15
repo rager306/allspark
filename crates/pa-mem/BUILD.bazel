@@ -1,0 +1,36 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["Cargo.toml"])
+
+# Low-level RAM layout structures ported safely from pogocache (C11):
+# sharded maps, Robin Hood hashing, 48-bit packed pointers, entry arenas,
+# spinlock/refcount, and block-LZ4 snapshots. `#![forbid(unsafe_code)]`.
+rust_library(
+    name = "pa-mem",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_name = "pa_mem",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    version = "0.10.0",
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "pa-mem_test",
+    crate = ":pa-mem",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+)
+
+rust_test(
+    name = "pa-mem_integration_test",
+    srcs = ["tests/integration.rs"],
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+    deps = all_crate_deps(normal = True) + [":pa-mem"],
+)

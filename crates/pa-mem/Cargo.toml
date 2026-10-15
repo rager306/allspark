@@ -1,0 +1,22 @@
+[package]
+name = "pa-mem"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Low-level RAM layout structures ported safely from pogocache: sharded maps, Robin Hood hashing, 48-bit packed pointers, entry arenas, spinlocks, refcounts, and block-LZ4 snapshots."
+
+[dependencies]
+thiserror.workspace = true
+# SHA-256 fingerprints for the P8 build-artifact cache.
+sha2.workspace = true
+# P7: pure-Rust LZ4 block codec (safe-only encode/decode; `frame` is off so the
+# twox-hash dependency it would pull in stays out of the tree).
+lz4_flex.workspace = true
+# P7: per-block CRC32 (same polynomial pogocache uses in util.c).
+crc32fast.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
