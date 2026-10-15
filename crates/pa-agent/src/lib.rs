@@ -7,6 +7,7 @@ pub mod agent;
 pub mod agent_loop;
 pub mod proxy;
 pub mod scripted;
+pub mod speculative;
 pub mod stream;
 pub mod types;
 pub mod validation;

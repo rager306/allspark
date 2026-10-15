@@ -153,6 +153,24 @@ pub mod observation_masking;
 pub mod prometheus_metrics;
 pub mod scoped_context;
 
+// ── Phase 6-D: governance / misc (R2, R3, R5, R6, R19, R22, G18) ─────────
+pub mod capgated;
+pub mod cognitive_container;
+pub mod collections;
+pub mod homology;
+pub mod ns_routing;
+pub mod schema_cache;
+pub mod voi;
+
+// ── Phase 6-C: ANN algorithms (V10, V13, V15, V16, V17, V19, R11) ─────────
+pub mod acorn;
+pub mod bounded;
+pub mod drifting;
+pub mod gnn_rerank;
+pub mod lsm_bloom;
+pub mod speculative;
+pub mod targeted;
+
 pub use architecture::{
     architecture, Architecture, ArchitectureView, Cluster, Cycle, EntryPoint, Hotspot, Layer,
     ModuleEdge, Overview, TreeNode,
@@ -238,3 +256,21 @@ pub use prometheus_metrics::{
 pub use mcp_brain::{
     BrainEntry, BrainHit, BrainPartition, DriftFinding, SharedBrain,
 };
+
+// ── Phase 6-D re-exports ────────────────────────────────────────────────
+pub use capgated::{CapGatedIndex, CapMask, NodeId};
+pub use cognitive_container::{CognitiveContainer, Witness};
+pub use collections::{CollectionStats, Collections, CollectionsError};
+pub use homology::{betti0_curve, bottleneck, h0_persistence};
+pub use ns_routing::{NsRouter, ShardId};
+pub use schema_cache::{canonicalize, default_compiler, resource_id, Compiled, ResourceId, SchemaCache};
+pub use voi::{Costs, Incident, Ladder, Outcome as VoiOutcome, Policy, Stage};
+
+// ── Phase 6-C re-exports (ANN algorithms) ───────────────────────────────
+pub use acorn::AcornIndex;
+pub use bounded::{bounded_search, HOP_DECAY};
+pub use drifting::{jaccard_distance, DriftMonitor};
+pub use gnn_rerank::{edge_nodes, gnn_rerank};
+pub use lsm_bloom::{LsmIndex, Tier};
+pub use speculative::{speculative_search, speculative_search_with_factor, OVER_FETCH};
+pub use targeted::RecallTargeter;

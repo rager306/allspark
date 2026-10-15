@@ -33,6 +33,17 @@
 //! - [`hash`] — [`th64`] and [`mix13`], the sharding/hashmap primitives.
 //! - [`varint`] — the varint codec the entry layout uses.
 //!
+//! ## Quantization (phase F6-B)
+//!
+//! Pure-`std` vector codecs and similarity scores, no dependencies:
+//!
+//! - [`int8`] — V4 [`Int8Quantizer`]: symmetric and asymmetric int8 codes.
+//! - [`rabitq`] — V5 [`RabitqVector`]: 1-bit sign codes with an error bound.
+//! - [`turbovec`] — V7 [`MultiBitQuantizer`]: 2/4-bit uniform codebooks.
+//! - [`turboquant`] — V8 [`Block4Quantizer`]: 4-bit with per-32-dim scales.
+//! - [`matryoshka`] — V11 [`MatryoshkaVector`]: prefix cosine and ranking.
+//! - [`maxsim`] — V12 [`maxsim`]: late-interaction `MaxSim` scoring.
+//!
 //! ## Example
 //!
 //! ```
@@ -79,6 +90,12 @@
 pub mod entry;
 pub mod error;
 pub mod hash;
+pub mod int8;
+pub mod matryoshka;
+pub mod maxsim;
+pub mod rabitq;
+pub mod turboquant;
+pub mod turbovec;
 pub mod ptr48;
 pub mod refcount;
 pub mod robin_hood;
@@ -91,6 +108,12 @@ pub mod varint;
 pub use entry::{EntryArena, EntryOpts, EntryRef, EntryView, SizePrefix};
 pub use error::{MemError, MemResult};
 pub use hash::{mix13, th64};
+pub use int8::{Int8Quantizer, Int8Vector};
+pub use matryoshka::{MatryoshkaVector, DEFAULT_PREFIXES};
+pub use maxsim::{cosine, maxsim, maxsim_batch};
+pub use rabitq::RabitqVector;
+pub use turboquant::{Block4Quantizer, Block4Vector, BLOCK_DIM};
+pub use turbovec::{MultiBitQuantizer, MultiBitVector};
 pub use ptr48::{Bucket, SixBytePtr, BUCKET_BYTES, HASH_BYTES, MAX_INDEX, PTR_BITS, PTR_BYTES};
 pub use refcount::{RefCounted, Retained, SnapshotList};
 pub use robin_hood::{RobinHoodMap, MAX_DIB};
