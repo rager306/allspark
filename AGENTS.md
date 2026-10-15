@@ -201,9 +201,11 @@ model — do not "fix" either half.
   binaries are told apart by this id. The differential CLI test strips the
   branding before comparing against the upstream TypeScript binary; the words
   are the accepted divergence.
-- **First run seeds** `settings.json` / `models.json` from the upstream
-  install; `auth.json` is deliberately NOT copied (rotating refresh tokens
-  invalidate each other) — run `allspark login` for authenticated providers.
+- **No seeding from the upstream install.** The fork starts standalone: its
+  own providers catalog, settings and auth only. Nothing under `$HOME/.prime`
+  is ever read or copied (upstream `models.json` providers must never leak
+  into the fork's picker); `auth.json` in particular stays upstream-only
+  (rotating refresh tokens invalidate each other) — run `allspark login`.
 - The full in-binary rebrand (branch `feat/allspark-identity`, re-land attempt
   `feat/allspark-identity-reland`) is the **abandoned** alternative: it breaks
   the launcher's upstream-name socket pin and drags ~700 rename sites into

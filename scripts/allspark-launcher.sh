@@ -27,17 +27,9 @@ fi
 
 mkdir -p "$ALLSPARK_HOME"
 
-# First run: seed the isolated home with settings/models from the upstream
-# install so config survives. auth.json is intentionally NOT copied (a
-# rotating refresh token shared by two products invalidates the other's
-# copy on first refresh); run allspark login for those providers.
-if [ ! -f "$ALLSPARK_HOME/.prime/agent/settings.json" ] \
-   && [ -f "$HOME/.prime/agent/settings.json" ]; then
-    mkdir -p "$ALLSPARK_HOME/.prime/agent"
-    cp "$HOME/.prime/agent/settings.json" "$ALLSPARK_HOME/.prime/agent/" 2>/dev/null
-    cp "$HOME/.prime/agent/models.json" "$ALLSPARK_HOME/.prime/agent/" 2>/dev/null
-    echo "allspark: seeded settings/models from ~/.prime/agent (auth: run allspark login)"
-fi
+# No seeding from the upstream install by design: the fork starts with its
+# own providers, settings and auth only. Nothing under $HOME/.prime is ever
+# read, so upstream providers (their models.json) can never leak in.
 
 export HOME="$ALLSPARK_HOME"
 
