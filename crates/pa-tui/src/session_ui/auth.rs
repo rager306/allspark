@@ -111,11 +111,7 @@ impl SessionUi {
                     .await;
                 } else {
                     let auth = self.provider_auth.clone().expect("the selector was open");
-                    if provider.id.starts_with("mcp:")
-                        || provider.id == crate::provider_auth::PRIME_INFERENCE_PROVIDER_ID
-                        || crate::provider_auth::SUBSCRIPTION_PROVIDER_IDS
-                            .contains(&provider.id.as_str())
-                    {
+                    if crate::provider_auth::routes_to_panel_login(&provider.id) {
                         self.start_provider_panel_login(&provider, auth, view);
                     } else {
                         // A row reaching here answers the silent cancel — no after-selection
@@ -164,9 +160,10 @@ impl SessionUi {
         if let Some(previous) = self.auth_panel_cancel.take() {
             previous.store(true, std::sync::atomic::Ordering::Relaxed);
         }
-        self.auth_panel_cancel = crate::provider_auth::SUBSCRIPTION_PROVIDER_IDS
+        let cooperative_cancel = crate::provider_auth::SUBSCRIPTION_PROVIDER_IDS
             .contains(&provider.id.as_str())
-            .then(|| panel.cancel_flag());
+            || crate::provider_auth::FORK_PANEL_LOGIN_PROVIDER_IDS.contains(&provider.id.as_str());
+        self.auth_panel_cancel = cooperative_cancel.then(|| panel.cancel_flag());
         let provider = provider.clone();
         tokio::spawn(async move {
             let outcome = auth.0.login_on_panel(&provider, panel.clone()).await;

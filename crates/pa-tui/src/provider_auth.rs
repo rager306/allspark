@@ -140,6 +140,23 @@ pub const SUBSCRIPTION_PROVIDER_IDS: [&str; 4] = [
     OPENAI_CODEX_PROVIDER_ID,
     XAI_PROVIDER_ID,
 ];
+
+/// The allspark fork providers: their logins are device flows (Muse's Meta
+/// device flow, the `Genspark` and `CodeBuddy` plan logins) that run on the
+/// inline auth panel exactly like the upstream subscription rows.
+pub const FORK_PANEL_LOGIN_PROVIDER_IDS: [&str; 3] = ["muse", "genspark", "codebuddy"];
+
+/// Whether Enter on this `/login` row must run the provider's flow on the
+/// inline auth panel (device/OAuth flows) instead of the terminal key store.
+/// Rows that miss both routes dead-end in the terminal key store's silent
+/// OAuth cancel - the "selecting the provider does nothing" failure.
+#[must_use]
+pub fn routes_to_panel_login(provider_id: &str) -> bool {
+    provider_id.starts_with("mcp:")
+        || provider_id == PRIME_INFERENCE_PROVIDER_ID
+        || SUBSCRIPTION_PROVIDER_IDS.contains(&provider_id)
+        || FORK_PANEL_LOGIN_PROVIDER_IDS.contains(&provider_id)
+}
 const PREFERRED_VISIBLE_PROVIDERS: usize = 8;
 
 const SEARCH_PLACEHOLDER: &str = "Search providers";
@@ -918,5 +935,37 @@ mod tests {
         assert!(text
             .iter()
             .any(|row| row.contains("No providers available")));
+    }
+}
+
+#[cfg(test)]
+mod fork_routing_tests {
+    use super::{
+        routes_to_panel_login, FORK_PANEL_LOGIN_PROVIDER_IDS, PRIME_INFERENCE_PROVIDER_ID,
+        SUBSCRIPTION_PROVIDER_IDS,
+    };
+
+    #[test]
+    fn fork_provider_rows_route_to_the_panel_login() {
+        // Without this route the device-flow rows dead-end in the terminal
+        // key store's silent OAuth cancel (the reported /login no-op).
+        for id in FORK_PANEL_LOGIN_PROVIDER_IDS {
+            assert!(routes_to_panel_login(id), "{id} must route to the panel");
+        }
+    }
+
+    #[test]
+    fn upstream_panel_rows_keep_their_route() {
+        assert!(routes_to_panel_login("mcp:linear"));
+        assert!(routes_to_panel_login(PRIME_INFERENCE_PROVIDER_ID));
+        for id in SUBSCRIPTION_PROVIDER_IDS {
+            assert!(routes_to_panel_login(id), "{id} must route to the panel");
+        }
+    }
+
+    #[test]
+    fn api_key_rows_stay_terminal() {
+        assert!(!routes_to_panel_login("openai"));
+        assert!(!routes_to_panel_login("groq"));
     }
 }
