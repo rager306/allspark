@@ -205,7 +205,14 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
     }
 
     if parsed.version {
-        println!("{}", crate::config::version());
+        // Fork identity: the payload keeps the upstream binary name for merge
+        // parity, but `--version` names the product the user actually runs.
+        // The differential CLI test normalizes this marker away when
+        // comparing against the upstream TypeScript binary.
+        println!(
+            "allspark {} (fork of prime-agent)",
+            crate::config::version()
+        );
         return Ok(0);
     }
     if parsed.help {

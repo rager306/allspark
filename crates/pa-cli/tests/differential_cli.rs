@@ -370,6 +370,10 @@ fn normalize(text: &str, sandbox_roots: &[&Path]) -> String {
     // surface still compares equal. When the TS product adopts the command,
     // drop this normalizer.
     text = normalize_prompt_command_rows(&text);
+    // Fork-only divergence: `--version` names the fork product. Strip the
+    // allspark marker so the remaining version numbers compare structurally;
+    // the marker itself is the deliberate fork difference this test accepts.
+    text = normalize_fork_version_marker(&text);
     normalize_versions(&text)
 }
 
@@ -400,6 +404,20 @@ fn normalize_docs_paths(text: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Strip the fork's `--version` branding (`allspark <version> (fork of
+/// prime-agent)` -> `<version>`): the words are the fork's deliberate
+/// divergence; the version number stays for `normalize_versions`.
+fn normalize_fork_version_marker(text: &str) -> String {
+    const MARKER: &str = " (fork of prime-agent)";
+    text.strip_suffix(MARKER).map_or_else(
+        || text.to_string(),
+        |rest| {
+            rest.strip_prefix("allspark ")
+                .map_or_else(|| text.to_string(), str::to_string)
+        },
+    )
 }
 
 fn normalize_versions(text: &str) -> String {

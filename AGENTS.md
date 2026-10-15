@@ -170,6 +170,45 @@ identifiers in the PR body so the reviewer can verify none were wrongly scrubbed
 
 EXPLICIT EXCEPTION: wire-protocol identifiers that must stay byte-compatible with the TS product (e.g. the PI_PACKAGE_DIR env var, settings keys, provider IDs like prime-inference, harness _meta namespaces like ai.primeintellect.prime-agent, lockfile names) stay until/unless the TS side renames them — PARITY BEATS BRANDING ON THE WIRE.
 
+## Fork identity and isolation (allspark overlay)
+
+The fork's user-facing name is **allspark**; the compiled binary deliberately
+keeps the upstream name **prime-agent**. This split is the fork's identity
+model — do not "fix" either half.
+
+- **Payload name stays `prime-agent`** (`crates/pa-cli/Cargo.toml` `[[bin]]`).
+  Upstream merges and TS-parity diffs stay clean when the tree keeps upstream
+  names. Never rename the binary, the `pa-*` crates, or the `rlm.*` kernel API
+  as part of branding.
+- **The user-facing entry is the `allspark` launcher**
+  (`scripts/allspark-launcher.sh`, the tracked source of truth; deployed as
+  `bin/allspark` with the payload at `libexec/prime-agent`). A hand-copied
+  launcher that drifts from the tracked script is a bug — edit the script and
+  redeploy.
+- **Isolation is structural, one knob: `HOME`.** The launcher points `HOME` at
+  `~/.allspark-home` (`ALLSPARK_HOME` overrides) and pins the daemon socket
+  with `PRIME_AGENT_DAEMON_SOCKET=${TMPDIR:-/tmp}/allspark-daemon.sock`. Every
+  product path derives from `$HOME`, so a co-installed upstream `prime-agent`
+  shares no sessions, auth, config, kernel venv, or socket. Keep upstream
+  env-var names (`PRIME_AGENT_*`, `PI_*` wire names) — the collision is
+  avoided by the isolated `HOME`, so renaming env vars buys nothing and breaks
+  the launcher's socket pin plus parity diffs.
+- **`--version` names the fork**: `allspark <version> (fork of prime-agent)`.
+  The differential CLI test strips this marker before comparing against the
+  upstream TypeScript binary; the marker is the accepted divergence.
+- **First run seeds** `settings.json` / `models.json` from the upstream
+  install; `auth.json` is deliberately NOT copied (rotating refresh tokens
+  invalidate each other) — run `allspark login` for authenticated providers.
+- The full in-binary rebrand (branch `feat/allspark-identity`, re-land attempt
+  `feat/allspark-identity-reland`) is the **abandoned** alternative: it breaks
+  the launcher's upstream-name socket pin and drags ~700 rename sites into
+  every future upstream merge. Keep it unmerged.
+
+Changes to the launcher, the payload name, or the isolation variables must say
+so in the PR and re-verify the no-shared-state property: run the launcher
+against a populated upstream `~/.prime` and confirm nothing upstream is
+written and no upstream socket is contacted.
+
 
 
 ## Surface contract (must not change)
