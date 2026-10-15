@@ -218,7 +218,10 @@ async fn send_request(
         if message.contains("timed out") {
             "Muse OAuth request timed out. Try signing in again.".to_string()
         } else {
-            "Muse OAuth request failed. Check your connection and try again.".to_string()
+            // The underlying transport error (DNS, TLS, connection reset) is
+            // the only clue to WHY Meta was unreachable - surface it instead
+            // of the catch-all that hid the cause.
+            format!("Muse OAuth request failed ({message}). Check your connection and try again.")
         }
     })?;
     if ui.is_cancelled() {
@@ -705,6 +708,23 @@ mod tests {
         assert_eq!(
             error,
             "Muse Code subscription requires payment — open https://muse.ai/subscribe"
+        );
+    }
+
+    #[test]
+    fn a_transport_failure_names_the_underlying_error() {
+        // The catch-all must keep the transport's own clue (DNS vs TLS vs
+        // reset): the ScriptedHttp "not scripted" error stands in for it.
+        let http = ScriptedHttp::new();
+        let outcome = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(login_muse(&http, &ScriptedUi::new()));
+        let error = outcome.expect_err("an unscripted flow must fail");
+        assert!(
+            error.contains("Muse OAuth request failed") && error.contains("was not scripted"),
+            "the transport clue must survive: {error}"
         );
     }
 }
