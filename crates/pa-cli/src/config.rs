@@ -46,6 +46,14 @@ pub const ENV_LEGACY_SESSION_DIR: &str = "PRIME_AGENT_CODING_AGENT_SESSION_DIR";
 /// overrides it.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// The splash version: the product version carrying the fork build id
+/// (`0.10.0-fork.3` stamped, `0.10.0-dev` unstamped), so the brand splash
+/// distinguishes fork binaries at a glance.
+#[must_use]
+pub fn splash_version() -> String {
+    format!("{}-{}", version(), fork_build())
+}
+
 /// The fork build identifier: stamped at build time via
 /// `ALLSPARK_FORK_BUILD=fork.N cargo build` (matching the
 /// `allspark-v<version>-fork.N` release tags). `"dev"` means an unstamped
@@ -149,6 +157,21 @@ pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn splash_version_carries_the_fork_build_id() {
+        // The splash must distinguish fork binaries: the compiled-in product
+        // version followed by the fork build id (stamped or "dev").
+        let splash = crate::config::splash_version();
+        assert!(
+            splash.starts_with(&format!("{}-", crate::config::version())),
+            "splash version must extend the product version: {splash}"
+        );
+        assert!(
+            splash.ends_with(crate::config::fork_build()),
+            "splash version must end with the fork build id: {splash}"
+        );
+    }
+
     use super::*;
 
     /// The flag/env/default order is the co-existence contract (the launcher pins the env).

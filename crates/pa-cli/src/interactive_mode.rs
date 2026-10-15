@@ -503,7 +503,7 @@ fn build_tui_options(
             config.cwd.clone(),
             config.agent_dir.clone(),
         )),
-        version: crate::config::version().to_string(),
+        version: crate::config::splash_version(),
         onboarding,
         telemetry_disabled: crate::mode::create_telemetry_disabled(config),
         // `/mcp login` / `/mcp logout`: the client-side auth flows run in
