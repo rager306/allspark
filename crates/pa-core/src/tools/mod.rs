@@ -11,6 +11,9 @@ pub(crate) mod code_preview;
 pub(crate) mod code_preview_python;
 pub(crate) mod edit;
 pub(crate) mod edit_diff;
+// The native `edit` tool over the pa-edit engine (fork-only; gated by
+// `editHybrid.enabled`, default ON).
+pub(crate) mod edit_hybrid;
 pub(crate) mod file_mutation_queue;
 pub(crate) mod golden_replay;
 // The native code-graph tool (fork-only; gated by `graph.enabled`).

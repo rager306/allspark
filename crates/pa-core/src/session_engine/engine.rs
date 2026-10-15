@@ -279,6 +279,11 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let lsp_enabled = settings.get_lsp_enabled();
     let graph_enabled = settings.get_graph_enabled();
     let graph_db_path = settings.get_graph_db_path();
+    // The native `edit` tool's gate + mode policy (`editHybrid.*`; enabled
+    // defaults ON, default mode `replace`).
+    let edit_hybrid_enabled = settings.get_edit_hybrid_enabled();
+    let edit_hybrid_default_mode = settings.get_edit_hybrid_default_mode();
+    let edit_hybrid_allow_modes = settings.get_edit_hybrid_allow_modes();
     // Phase-7 tool-surface profile, captured before `settings` moves into the
     // resource loader (the profile selects a context and modes).
     let resolved_profile = crate::tool_profile::resolve_profile(
@@ -504,6 +509,43 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         tools.push(Arc::new(crate::tools::graph::GraphTool::new(
             db_path,
             cwd.clone(),
+        )));
+    }
+    if edit_hybrid_enabled {
+        // The store is in-memory and `Clone`; the tool holds one shared
+        // instance so seen-line / no-op guards live for the whole session.
+        let store = Arc::new(std::sync::Mutex::new(pa_edit::EditStore::new()));
+        let default_mode = edit_hybrid_default_mode
+            .as_deref()
+            .and_then(pa_edit::EditMode::parse)
+            .unwrap_or(pa_edit::EditMode::Replace);
+        let allow_modes: Vec<pa_edit::EditMode> = if edit_hybrid_allow_modes.is_empty() {
+            vec![
+                pa_edit::EditMode::Replace,
+                pa_edit::EditMode::Patch,
+                pa_edit::EditMode::ApplyPatch,
+                pa_edit::EditMode::Hashline,
+                pa_edit::EditMode::Sloppy,
+            ]
+        } else {
+            edit_hybrid_allow_modes
+                .iter()
+                .filter_map(|mode| pa_edit::EditMode::parse(mode))
+                .collect()
+        };
+        // The default mode must be requestable; otherwise fall back to the
+        // first allowed mode so a misconfigured pair never drops the tool.
+        let default_mode = if allow_modes.contains(&default_mode) {
+            default_mode
+        } else {
+            allow_modes.first().copied().unwrap_or(pa_edit::EditMode::Replace)
+        };
+        tools.push(Arc::new(crate::tools::edit_hybrid::EditHybridTool::new(
+            store,
+            lsp_manager.clone(),
+            cwd.clone(),
+            default_mode,
+            allow_modes,
         )));
     }
     // Phase-7 tool-surface profile: the resolved pipeline filters the roster

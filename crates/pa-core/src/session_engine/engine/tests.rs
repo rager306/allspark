@@ -518,6 +518,7 @@ async fn native_tools_are_on_by_default() {
         .collect();
     assert!(names.iter().any(|name| name == "lsp"), "tools: {names:?}");
     assert!(names.iter().any(|name| name == "graph"), "tools: {names:?}");
+    assert!(names.iter().any(|name| name == "edit"), "tools: {names:?}");
     assert!(
         engine.lsp_manager.is_some(),
         "the engine owns the lsp manager so its clients live for the session"
@@ -526,6 +527,7 @@ async fn native_tools_are_on_by_default() {
     assert!(engine.system_prompt.contains("# Native tools"));
     assert!(engine.system_prompt.contains("- `lsp`:"));
     assert!(engine.system_prompt.contains("- `graph`:"));
+    assert!(engine.system_prompt.contains("- `edit`:"));
     // The graph tool opens its store lazily on first use, so no DB exists
     // merely from session creation.
     assert!(!agent_dir.join("graph.db").exists());
@@ -558,6 +560,7 @@ async fn native_tools_honour_their_disable_flags() {
         serde_json::json!({
             "lsp": { "enabled": false },
             "graph": { "enabled": false },
+            "editHybrid": { "enabled": false },
         })
         .to_string(),
     )
@@ -589,7 +592,129 @@ async fn native_tools_honour_their_disable_flags() {
         !names.iter().any(|name| name == "graph"),
         "graph must be dropped: {names:?}"
     );
+    assert!(
+        !names.iter().any(|name| name == "edit"),
+        "edit must be dropped: {names:?}"
+    );
     assert!(engine.lsp_manager.is_none());
     assert!(!engine.system_prompt.contains("# Native tools"));
     assert!(!agent_dir.join("graph.db").exists());
+}
+
+
+/// The native `edit` tool honours `editHybrid.defaultMode` / `allowModes`:
+/// the roster keeps `edit`, the prompt carries the hashline docs, and the
+/// tool's schema enum reflects the restricted mode set.
+#[tokio::test]
+async fn edit_tool_honours_its_mode_policy() {
+    let model = pa_agent::types::Model {
+        id: "m".into(),
+        name: "m".into(),
+        api: "test".into(),
+        provider: "test".into(),
+        base_url: "http://localhost".into(),
+        reasoning: false,
+        cost: pa_agent::types::UsageCost::default(),
+        context_window: 1_000,
+        max_tokens: 100,
+        max_tokens_explicit: false,
+    };
+    let provider = Arc::new(ScriptedProvider::new(model.clone()));
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    let agent_dir = tmp.path().join("agent");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(
+        agent_dir.join("settings.json"),
+        serde_json::json!({
+            "editHybrid": { "defaultMode": "hashline", "allowModes": ["hashline"] },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let engine = create_session(SessionEngineConfig {
+        cwd: cwd.clone(),
+        agent_dir: agent_dir.clone(),
+        model: Some(model),
+        stream_fn: Some(provider.stream_fn()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let tools = engine.session.agent().state().await.tools;
+    let edit = tools
+        .iter()
+        .find(|tool| tool.name() == "edit")
+        .expect("edit tool present");
+    let mode_names: Vec<String> = edit.parameters()["properties"]["mode"]["enum"]
+        .as_array()
+        .expect("mode enum")
+        .iter()
+        .filter_map(|value| value.as_str().map(str::to_string))
+        .collect();
+    assert_eq!(mode_names, vec!["hashline".to_string()]);
+    // The prompt advertises the tool and its hashline format docs.
+    assert!(engine.system_prompt.contains("- `edit`:"));
+    assert!(engine
+        .system_prompt
+        .contains("Hashline patches existing files"));
+}
+
+/// `editHybrid.enabled = false` drops only the `edit` tool, leaving the
+/// other native tools in place.
+#[tokio::test]
+async fn edit_tool_disable_flag_drops_only_edit() {
+    let model = pa_agent::types::Model {
+        id: "m".into(),
+        name: "m".into(),
+        api: "test".into(),
+        provider: "test".into(),
+        base_url: "http://localhost".into(),
+        reasoning: false,
+        cost: pa_agent::types::UsageCost::default(),
+        context_window: 1_000,
+        max_tokens: 100,
+        max_tokens_explicit: false,
+    };
+    let provider = Arc::new(ScriptedProvider::new(model.clone()));
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    let agent_dir = tmp.path().join("agent");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(
+        agent_dir.join("settings.json"),
+        serde_json::json!({ "editHybrid": { "enabled": false } }).to_string(),
+    )
+    .unwrap();
+    let engine = create_session(SessionEngineConfig {
+        cwd: cwd.clone(),
+        agent_dir: agent_dir.clone(),
+        model: Some(model),
+        stream_fn: Some(provider.stream_fn()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let names: Vec<String> = engine
+        .session
+        .agent()
+        .state()
+        .await
+        .tools
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect();
+    assert!(
+        !names.iter().any(|name| name == "edit"),
+        "edit must be dropped: {names:?}"
+    );
+    assert!(names.iter().any(|name| name == "lsp"), "tools: {names:?}");
+    assert!(names.iter().any(|name| name == "graph"), "tools: {names:?}");
+    // The section still renders for lsp/graph but never advertises edit.
+    assert!(engine.system_prompt.contains("# Native tools"));
+    assert!(!engine.system_prompt.contains("- `edit`:"));
 }

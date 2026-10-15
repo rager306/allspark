@@ -246,6 +246,18 @@ pub struct GraphSettings {
     pub db_path: Option<String>,
 }
 
+/// The native `edit` tool's opt-in gate and mode policy (fork-only).
+/// `enabled` unset reads as `true` (the tool is on by default);
+/// `defaultMode` picks the mode a call omits `mode` for; `allowModes`
+/// restricts the requestable set (all five when unset).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditHybridSettings {
+    pub enabled: Option<bool>,
+    pub default_mode: Option<String>,
+    pub allow_modes: Option<Vec<String>>,
+}
+
 /// `factory` (the agent factory's opt-in gate): `factory.enabled` is
 /// unset/false by default, and the `/factory on` client command persists
 /// it. Both the daemon's `factory_activity` lane advertisement and the
@@ -366,6 +378,8 @@ pub struct Settings {
     pub lsp: Option<LspSettings>,
     /// Native `graph` code-graph tool settings (fork-only; `enabled` defaults on).
     pub graph: Option<GraphSettings>,
+    /// Native `edit` tool settings (fork-only; `enabled` defaults on).
+    pub edit_hybrid: Option<EditHybridSettings>,
     /// Tool-surface profile (fork-only; Phase 7 config isolation).
     pub tool_profile: Option<ToolProfileSettings>,
     pub factory: Option<FactorySettings>,

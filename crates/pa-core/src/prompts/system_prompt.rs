@@ -302,13 +302,14 @@ fn environment_section(options: &BuildSystemPromptOptions) -> String {
     lines.join("\n")
 }
 
-/// The native fork tools (`lsp`, `graph`) present on this session's roster.
-/// Empty when neither is active, so the segment never renders for sessions
-/// that keep only the REPL surface.
+/// The native fork tools (`lsp`, `graph`, `edit`) present on this session's
+/// roster. Empty when none is active, so the segment never renders for
+/// sessions that keep only the REPL surface.
 fn native_tools_section(tools: &[&str]) -> String {
     let has_lsp = tools.contains(&"lsp");
     let has_graph = tools.contains(&"graph");
-    if !has_lsp && !has_graph {
+    let has_edit = tools.contains(&"edit");
+    if !has_lsp && !has_graph && !has_edit {
         return String::new();
     }
     let mut lines = vec![
@@ -317,6 +318,15 @@ fn native_tools_section(tools: &[&str]) -> String {
         "These native tools are callable directly (top-level tool calls), not through the Python REPL."
             .to_string(),
     ];
+    if has_edit {
+        // The `edit` tool drives the pa-edit engine: a short replace
+        // summary plus the engine's own hashline-format prompt.
+        lines.push(
+            "- `edit`: edit files through the pa-edit engine. `replace` (the default) takes `path` + `edits` (`[{ oldText, newText, replaceAll? }]`); `patch`/`apply_patch`/`hashline`/`sloppy` take a raw `payload` string."
+                .to_string(),
+        );
+        lines.push(pa_edit::description(pa_edit::EditMode::Hashline).to_string());
+    }
     if has_lsp {
         lines.push(
             "- `lsp`: language-server queries and a tree-sitter symbol layer over a file or the workspace. Actions: `status`, `diagnostics`, `definition`/`declaration`/`type_definition`/`implementation`, `references`, `hover`, `symbols` (file or workspace), `find_symbol`, `find_referencing_symbols`, `find_implementations`, `rename`, `code_actions`, and symbol-aware edits (`replace_symbol_body`, `insert_before_symbol`/`insert_after_symbol`, `safe_delete_symbol`). Address a symbol by a `Class/method` name path (`symbol`) or a 1-based `line`."

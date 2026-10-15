@@ -23,6 +23,10 @@ pa-agent.workspace = true
 # settings (default on).
 pa-lsp.workspace = true
 pa-graph.workspace = true
+# pa-edit: the native `edit` tool's engine (fork port of oh-my-pi's pi-edit).
+pa-edit.workspace = true
+# async-trait: the host `EditWriter` impl for the native edit tool.
+async-trait.workspace = true
 pa-telemetry.workspace = true
 base64 = "0.22"
 fancy-regex = "0.14"

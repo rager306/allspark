@@ -904,6 +904,43 @@ impl SettingsManager {
             .unwrap_or(true)
     }
 
+    /// The native `edit` tool's gate: unset means ON.
+    #[must_use]
+    pub fn get_edit_hybrid_enabled(&self) -> bool {
+        self.merged
+            .edit_hybrid
+            .as_ref()
+            .and_then(|edit| edit.enabled)
+            .unwrap_or(true)
+    }
+
+    /// The native `edit` tool's default mode (`editHybrid.defaultMode`),
+    /// unset meaning `replace` (the caller applies the fallback).
+    #[must_use]
+    pub fn get_edit_hybrid_default_mode(&self) -> Option<String> {
+        self.merged
+            .edit_hybrid
+            .as_ref()
+            .and_then(|edit| edit.default_mode.clone())
+            .map(|mode| mode.trim().to_ascii_lowercase())
+            .filter(|mode| !mode.is_empty())
+    }
+
+    /// The native `edit` tool's requestable modes
+    /// (`editHybrid.allowModes`); `None`/empty means all modes.
+    #[must_use]
+    pub fn get_edit_hybrid_allow_modes(&self) -> Vec<String> {
+        self.merged
+            .edit_hybrid
+            .as_ref()
+            .and_then(|edit| edit.allow_modes.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|mode| mode.trim().to_ascii_lowercase())
+            .filter(|mode| !mode.is_empty())
+            .collect()
+    }
+
     /// The code-graph store path (`graph.dbPath`), resolved against `~/`
     /// when prefixed; `None` lets the caller default to `<agentDir>/graph.db`.
     #[must_use]
@@ -1365,6 +1402,33 @@ mod tests {
         assert_eq!(
             manager.get_graph_db_path(),
             Some(std::path::PathBuf::from("/tmp/custom-graph.db"))
+        );
+    }
+
+    #[test]
+    fn edit_hybrid_gate_and_mode_policy() {
+        let manager = SettingsManager::in_memory(&Settings::default());
+        assert!(manager.get_edit_hybrid_enabled(), "edit defaults on");
+        assert_eq!(manager.get_edit_hybrid_default_mode(), None);
+        assert_eq!(manager.get_edit_hybrid_allow_modes(), Vec::<String>::new());
+
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "editHybrid": {
+                "enabled": false,
+                "defaultMode": "  Hashline  ",
+                "allowModes": ["replace", "  hashline ", ""],
+            },
+        }))
+        .unwrap();
+        let manager = SettingsManager::in_memory(&settings);
+        assert!(!manager.get_edit_hybrid_enabled());
+        assert_eq!(
+            manager.get_edit_hybrid_default_mode(),
+            Some("hashline".to_string())
+        );
+        assert_eq!(
+            manager.get_edit_hybrid_allow_modes(),
+            vec!["replace".to_string(), "hashline".to_string()]
         );
     }
 

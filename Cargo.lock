@@ -1942,6 +1942,7 @@ name = "pa-core"
 version = "0.10.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64 0.22.1",
  "fancy-regex",
  "flate2",
@@ -1954,6 +1955,7 @@ dependencies = [
  "nix",
  "pa-agent",
  "pa-ai",
+ "pa-edit",
  "pa-graph",
  "pa-lsp",
  "pa-models",
