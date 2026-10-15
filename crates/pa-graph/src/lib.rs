@@ -1,3 +1,4 @@
+// FORK-ONLY: allspark fork crate; do not push upstream.
 //! # pa-graph
 //!
 //! On-disk SQLite code graph + full-text symbol search, a native Rust port of

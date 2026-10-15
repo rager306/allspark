@@ -1,3 +1,4 @@
+// FORK-ONLY: ported into the allspark fork; do not push upstream.
 //! jsdiff-compatible diff primitives without an FFI dependency.
 //!
 //! The Myers O(ND) core and line, word, and structured-patch helpers preserve

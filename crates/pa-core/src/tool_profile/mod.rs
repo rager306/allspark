@@ -1,3 +1,4 @@
+// FORK-ONLY: allspark fork overlay (config profiles); do not push upstream.
 //! Serena-pattern tool-surface profiles (Phase 7 — config profiles /
 //! isolation).
 //!

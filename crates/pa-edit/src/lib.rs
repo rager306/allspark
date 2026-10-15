@@ -1,3 +1,4 @@
+// FORK-ONLY: ported into the allspark fork; do not push upstream.
 // Ported from oh-my-pi's `pi-edit` (the edit engine: exact-match, AST/hashline,
 // apply_patch, sloppy and replace modes plus the streaming session). The
 // workspace pedantic gate rides in via `[lints] workspace = true`; these

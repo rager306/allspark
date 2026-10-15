@@ -1,3 +1,4 @@
+// FORK-ONLY: ported into the allspark fork; do not push upstream.
 // Ported verbatim from oh-my-pi's `pi-ast` (ast-grep structural search +
 // tree-sitter parsing). The workspace pedantic gate rides in via
 // `[lints] workspace = true`; these crate-wide exceptions are the classes the

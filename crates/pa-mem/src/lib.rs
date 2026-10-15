@@ -1,3 +1,4 @@
+// FORK-ONLY: allspark fork crate; do not push upstream.
 //! # pa-mem
 //!
 //! Low-level RAM layout structures, ported safely from
