@@ -210,8 +210,10 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
         // The differential CLI test normalizes this marker away when
         // comparing against the upstream TypeScript binary.
         println!(
-            "allspark {} (fork of prime-agent)",
-            crate::config::version()
+            "allspark {} (fork build {}; upstream prime-agent {})",
+            crate::config::version(),
+            crate::config::fork_build(),
+            env!("CARGO_PKG_VERSION")
         );
         return Ok(0);
     }

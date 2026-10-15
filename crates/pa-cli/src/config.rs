@@ -46,6 +46,14 @@ pub const ENV_LEGACY_SESSION_DIR: &str = "PRIME_AGENT_CODING_AGENT_SESSION_DIR";
 /// overrides it.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// The fork build identifier: stamped at build time via
+/// `ALLSPARK_FORK_BUILD=fork.N cargo build` (matching the
+/// `allspark-v<version>-fork.N` release tags). `"dev"` means an unstamped
+/// local build. This is how two allspark binaries are told apart.
+pub fn fork_build() -> &'static str {
+    option_env!("ALLSPARK_FORK_BUILD").unwrap_or("dev")
+}
+
 /// The product version: the packaged `package.json` manifest next to the
 /// executable wins, falling back to the compiled-in version.
 pub fn version() -> &'static str {

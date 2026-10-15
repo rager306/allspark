@@ -406,18 +406,15 @@ fn normalize_docs_paths(text: &str) -> String {
         .join("\n")
 }
 
-/// Strip the fork's `--version` branding (`allspark <version> (fork of
-/// prime-agent)` -> `<version>`): the words are the fork's deliberate
-/// divergence; the version number stays for `normalize_versions`.
+/// Strip the fork's `--version` branding down to the bare version: the
+/// fork-build id and the upstream note are the fork's deliberate divergence;
+/// the leading version number stays for `normalize_versions`.
 fn normalize_fork_version_marker(text: &str) -> String {
-    const MARKER: &str = " (fork of prime-agent)";
-    text.strip_suffix(MARKER).map_or_else(
-        || text.to_string(),
-        |rest| {
-            rest.strip_prefix("allspark ")
-                .map_or_else(|| text.to_string(), str::to_string)
-        },
-    )
+    let Some(rest) = text.strip_prefix("allspark ") else {
+        return text.to_string();
+    };
+    let version = rest.split(" (fork build").next().unwrap_or(rest);
+    version.to_string()
 }
 
 fn normalize_versions(text: &str) -> String {
