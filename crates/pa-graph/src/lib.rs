@@ -268,9 +268,25 @@ pub use voi::{Costs, Incident, Ladder, Outcome as VoiOutcome, Policy, Stage};
 
 // ── Phase 6-C re-exports (ANN algorithms) ───────────────────────────────
 pub use acorn::AcornIndex;
+// ── Phase 6-E: cut / condensation / decompile / diverse beam / SPANN ────
+pub mod beam;
+pub mod condense;
+pub mod decompiler;
+pub mod mincut;
+pub mod spann;
+
 pub use bounded::{bounded_search, HOP_DECAY};
 pub use drifting::{jaccard_distance, DriftMonitor};
 pub use gnn_rerank::{edge_nodes, gnn_rerank};
 pub use lsm_bloom::{LsmIndex, Tier};
 pub use speculative::{speculative_search, speculative_search_with_factor, OVER_FETCH};
 pub use targeted::RecallTargeter;
+
+// ── Phase 6-E re-exports ────────────────────────────────────────────────
+pub use beam::diverse_beam;
+pub use condense::{condense, CondensedGraph, SuperEdge, SuperNode};
+pub use decompiler::{decompile, Community, Decomposition, Role as SymbolRole, WitnessNode};
+pub use mincut::{
+    certify_cut, community_map, label_propagation, stoer_wagner, CommunityId, Cut, CutWitness,
+};
+pub use spann::{spann_build, spann_search, ClusterId, Partitions, PointId};
