@@ -925,9 +925,12 @@ impl SettingsManager {
         let raw_level = cfg
             .and_then(|d| d.level.clone())
             .unwrap_or_else(|| "debug".to_string());
-        let level = matches!(raw_level.as_str(), "trace" | "debug" | "info" | "warn" | "error")
-            .then_some(raw_level)
-            .unwrap_or_else(|| "debug".to_string());
+        let level = matches!(
+            raw_level.as_str(),
+            "trace" | "debug" | "info" | "warn" | "error"
+        )
+        .then_some(raw_level)
+        .unwrap_or_else(|| "debug".to_string());
         DebugLogConfig {
             enabled,
             level,
@@ -1163,6 +1166,79 @@ fn load_scope(
 mod tests {
     use super::*;
     use crate::settings::types::MarkdownSettings;
+
+    /// Serializes the debug-log tests that touch the process-wide
+    /// `ALLSPARK_DEBUG` variable (`std::env` is shared across test threads).
+    fn debug_log_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Runs `body` with `ALLSPARK_DEBUG` unset, restoring the prior value.
+    fn without_debug_log_env<T>(body: impl FnOnce() -> T) -> T {
+        let saved = std::env::var_os("ALLSPARK_DEBUG");
+        std::env::remove_var("ALLSPARK_DEBUG");
+        let outcome = body();
+        match saved {
+            Some(value) => std::env::set_var("ALLSPARK_DEBUG", value),
+            None => std::env::remove_var("ALLSPARK_DEBUG"),
+        }
+        outcome
+    }
+
+    /// The `debugLog` block reads its level/rotation bounds; an invalid level
+    /// normalizes to `debug` and unset bounds fall back to the defaults.
+    #[test]
+    fn debug_log_settings_resolve() {
+        let _lock = debug_log_env_lock();
+        without_debug_log_env(|| {
+            // Unset: off, with the default level and bounds.
+            let cfg = SettingsManager::in_memory(&Settings::default()).get_debug_log();
+            assert!(!cfg.enabled);
+            assert_eq!(cfg.level, "debug");
+            assert_eq!(cfg.max_files, 10);
+            assert_eq!(cfg.max_bytes, 10 * 1024 * 1024);
+
+            // The settings block: enabled + custom level/bounds.
+            let settings: Settings = serde_json::from_value(serde_json::json!({
+                "debugLog": { "enabled": true, "level": "warn", "maxFiles": 3, "maxBytes": 2048 }
+            }))
+            .unwrap();
+            let cfg = SettingsManager::in_memory(&settings).get_debug_log();
+            assert!(cfg.enabled);
+            assert_eq!(cfg.level, "warn");
+            assert_eq!(cfg.max_files, 3);
+            assert_eq!(cfg.max_bytes, 2048);
+
+            // An invalid level reads as `debug`.
+            let settings: Settings = serde_json::from_value(serde_json::json!({
+                "debugLog": { "enabled": true, "level": "verbose" }
+            }))
+            .unwrap();
+            assert_eq!(
+                SettingsManager::in_memory(&settings).get_debug_log().level,
+                "debug",
+                "an unknown level falls back to debug"
+            );
+        });
+    }
+
+    /// `ALLSPARK_DEBUG=1` enables the log even with no settings block.
+    #[test]
+    fn debug_log_env_flag_forces_enablement() {
+        let _lock = debug_log_env_lock();
+        let saved = std::env::var_os("ALLSPARK_DEBUG");
+        std::env::set_var("ALLSPARK_DEBUG", "1");
+        let enabled = SettingsManager::in_memory(&Settings::default())
+            .get_debug_log()
+            .enabled;
+        match saved {
+            Some(value) => std::env::set_var("ALLSPARK_DEBUG", value),
+            None => std::env::remove_var("ALLSPARK_DEBUG"),
+        }
+        assert!(enabled, "ALLSPARK_DEBUG=1 forces the debug log on");
+    }
 
     #[test]
     fn in_memory_loads_merges_and_saves() {

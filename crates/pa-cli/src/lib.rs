@@ -191,10 +191,24 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
     }
 
     let app_mode = mode::AppMode::resolve(&parsed, std::io::stdin().is_terminal());
+    // Daemon worker processes start with the worker role env var set: detected
+    // here (before the debug-log install) so the worker launch is recognized
+    // and does not claim the `cli` component below.
+    let is_worker_process =
+        std::env::var(pa_daemon::worker::WORKER_ROLE_ENV).unwrap_or_default() == "1";
+    let is_worker_launch = is_worker_process
+        && (args.first().map(String::as_str) == Some("worker")
+            || args.windows(2).any(|pair| pair == ["--mode", "daemon"]));
     // FORK-ONLY: the rotating debug-log subscriber (debugLog.enabled or
     // ALLSPARK_DEBUG=1); the /login provider flows run in this process. It
-    // installs before every early-return so all commands are covered.
-    let _debug_log = pa_types::platform::dirs::agent_dir()
+    // installs before every early-return so all client commands are covered.
+    // The daemon/worker launches are excluded: they install their own
+    // `daemon`/`worker` component inside `run_supervisor`/`run_worker`, and a
+    // second global subscriber would be rejected — collapsing every component
+    // into the `cli` file.
+    let _debug_log = (app_mode != mode::AppMode::Daemon && !is_worker_launch)
+        .then(pa_types::platform::dirs::agent_dir)
+        .flatten()
         .and_then(|dir| pa_daemon::debug_log::init_from_settings(&dir, "cli"));
 
     // Enable Windows VT processing before raw ANSI mode writes.
@@ -241,14 +255,9 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
         return Err("@file arguments are not supported in RPC, daemon, or ACP mode".to_string());
     }
 
-    // Daemon worker processes start with the worker role env var set: route
-    // straight into the worker runtime.
-    let is_worker_process =
-        std::env::var(pa_daemon::worker::WORKER_ROLE_ENV).unwrap_or_default() == "1";
-    if is_worker_process
-        && (args.first().map(String::as_str) == Some("worker")
-            || args.windows(2).any(|pair| pair == ["--mode", "daemon"]))
-    {
+    // Daemon worker processes route straight into the worker runtime (the
+    // role/args pair detected above, before the debug-log install).
+    if is_worker_launch {
         return run_worker_mode();
     }
 

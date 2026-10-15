@@ -124,7 +124,11 @@ impl ProviderHttp for ReqwestProviderHttp {
                 "provider http response"
             );
             let status = response.status().as_u16();
-            let body = response.text().await.map_err(|error| error.to_string())?;
+            let body = response.text().await.map_err(|error| {
+                let message = error.to_string();
+                tracing::warn!(error = %message, "provider http transport error");
+                message
+            })?;
             Ok(ProviderHttpResponse { status, body })
         })
     }
