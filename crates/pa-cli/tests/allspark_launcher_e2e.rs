@@ -115,7 +115,10 @@ fn launcher_substitutes_home_and_pins_the_socket() {
         .expect("AGENT_DIR in probe output");
     assert_eq!(
         agent_line,
-        format!("AGENT_DIR={}", expected_home.join(".prime").join("agent").display()),
+        format!(
+            "AGENT_DIR={}",
+            expected_home.join(".prime").join("agent").display()
+        ),
         "the agent dir must pin into the isolated home: {agent_line}"
     );
 
