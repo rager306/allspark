@@ -9,9 +9,9 @@ use std::pin::Pin;
 
 use pa_ai::oauth::{
     login_anthropic, login_codebuddy, login_genspark, login_github_copilot, login_muse, login_xai,
-    AnthropicCredentials, CodeBuddyCredentials, GensparkCredentials, MuseCredentials, OAuthLoginUi,
-    OAuthPrompt, ProviderHttp, ANTHROPIC_LOGIN_CANCELLED, CODEBUDDY_LOGIN_CANCELLED,
-    COPILOT_LOGIN_CANCELLED, GENSPARK_LOGIN_CANCELLED, MUSE_LOGIN_CANCELLED, XAI_LOGIN_CANCELLED,
+    AnthropicCredentials, CodeBuddyCredentials, MuseCredentials, OAuthLoginUi, OAuthPrompt,
+    ProviderHttp, ANTHROPIC_LOGIN_CANCELLED, CODEBUDDY_LOGIN_CANCELLED, COPILOT_LOGIN_CANCELLED,
+    GENSPARK_LOGIN_CANCELLED, MUSE_LOGIN_CANCELLED, XAI_LOGIN_CANCELLED,
 };
 use pa_core::auth::{
     AuthCredential, AuthStorage, ANTHROPIC_PROVIDER_ID, CODEBUDDY_PROVIDER_ID,
@@ -167,7 +167,7 @@ fn store_anthropic_login(
     login_status(agent_dir, provider_name)
 }
 
-/// Run the CodeBuddy device flow, store the credential, and report the status.
+/// Run the `CodeBuddy` device flow, store the credential, and report the status.
 pub(crate) async fn run_codebuddy_login(
     agent_dir: &Path,
     provider_name: &str,
@@ -191,7 +191,7 @@ pub(crate) async fn run_codebuddy_login(
     store_codebuddy_login(agent_dir, provider_name, credentials)
 }
 
-/// Store the CodeBuddy plugin OAuth credential. Login requires a refresh token
+/// Store the `CodeBuddy` plugin OAuth credential. Login requires a refresh token
 /// because the provider rotates it during the existing refresh flow.
 fn store_codebuddy_login(
     agent_dir: &Path,
@@ -415,7 +415,7 @@ mod tests {
     use super::*;
     use std::collections::{HashMap, VecDeque};
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use pa_ai::oauth::ProviderHttpResponse;
 
@@ -589,7 +589,7 @@ mod tests {
             )
     }
 
-    /// The CodeBuddy happy flow's scripted endpoints.
+    /// The `CodeBuddy` happy flow's scripted endpoints.
     fn codebuddy_http() -> ScriptedHttp {
         ScriptedHttp::new()
             .queue(

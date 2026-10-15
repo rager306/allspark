@@ -72,20 +72,22 @@ pub use interactive_mode::{
     ensure_daemon_running, ensure_daemon_running_with, resolve_socket_path,
 };
 
-/// Entry point shared by the binary and the integration tests. Returns the
-/// process exit code.
-
 /// One-time import of the core settings from a legacy upstream install:
 /// when the fork's config dir does not exist yet and the legacy
 /// `~/.prime/agent` does, copy the small user-owned files (settings, auth,
 /// models overlay) so the first `allspark` start keeps the user's logins.
 ///
-/// `auth.json` is NOT copied: a rotating OAuth refresh token (CodeBuddy and
+/// `auth.json` is NOT copied: a rotating OAuth refresh token (`CodeBuddy` and
 /// friends mint a new one on every refresh) would be shared by two products,
 /// and the first refresh in either would invalidate the other's copy. The
 /// user re-runs `/login` for those providers; API keys survive in
 /// `settings.json`. Sessions are deliberately NOT copied. A
 /// `.migrated-from-prime` marker records that the check ran.
+///
+/// No production call site yet (the merge left it unwired); the migration
+/// tests below exercise it, and docs/fork-identity.md documents the behavior,
+/// so keep it compiled rather than gating it to tests.
+#[allow(dead_code)]
 fn migrate_from_legacy_once() {
     use pa_types::platform::home_dir;
     let Some(home) = home_dir() else { return };
@@ -119,6 +121,8 @@ fn migrate_from_legacy_once() {
     );
 }
 
+/// Entry point shared by the binary and the integration tests. Returns the
+/// process exit code.
 pub fn main_with_runtime(args: &[String], runtime: &dyn mode::Runtime) -> i32 {
     match main_impl(args, runtime) {
         Ok(code) => code,

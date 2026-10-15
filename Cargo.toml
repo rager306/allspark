@@ -157,6 +157,12 @@ unsafe_code = "forbid"
 # (the design-choice classes, each with its in-code justification) keep
 # their force under the manifest route.
 pedantic = "warn"
+# test-side intent asserts: `assert!(x.is_empty())` / `assert!(!x.is_empty())`
+# state the shape under test more directly than the `assert_eq!(x, [] as [_; 0])`
+# rewrite clippy 1.99 suggests. The ported crates (pa-ast, pa-edit) carry the
+# same crate-level allow for this class; `priority = 1` outranks the `pedantic`
+# group above so the allow survives the manifest route.
+assert_is_empty = { level = "allow", priority = 1 }
 redundant_clone = "warn"
 clone_on_copy = "warn"
 assigning_clones = "warn"
