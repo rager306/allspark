@@ -96,11 +96,18 @@ Extras:
 ```
 
 - `ALLSPARK_DEBUG=1` force-enables regardless of the setting;
-- per-process files under `<agentDir>/logs/`: `debug-daemon.log`,
-  `debug-worker.log`, `debug-cli.log`;
+- `ALLSPARK_DEBUG_FILTER=pa_ai=debug,pa_daemon=trace` switches to the full
+  directive grammar (per-module control);
+- one file per process component under `<agentDir>/logs/`:
+  `debug-daemon.log`, `debug-worker.log`, `debug-cli.log` — the daemon/worker
+  launches install their own component and never claim `cli` (a second
+  process-global subscriber is rejected, so the components cannot collapse
+  into one file);
 - size-based rotation: `debug.log` → `.1` → `.N` (oldest dropped);
-- includes provider HTTP trace (method, host, status, elapsed, transport
-  error) — never headers/bodies/tokens.
+- includes provider HTTP trace (method, url, status, elapsed, transport
+  error) — never headers/bodies/tokens;
+- OAuth transport failures surface their underlying cause in the panel
+  message too (`Muse OAuth request failed (<cause>). …`).
 
 Existing logs (unchanged): daemon supervisor log
 (`allspark-daemon.sock.*.log`), `worker-*.stderr.log`, the session JSONL
