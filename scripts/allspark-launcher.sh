@@ -33,6 +33,12 @@ mkdir -p "$ALLSPARK_HOME"
 
 export HOME="$ALLSPARK_HOME"
 
+# Pin the agent state dir to the isolated home: an inherited upstream
+# PRIME_AGENT_CODING_AGENT_DIR (launching allspark from inside a
+# prime-agent session) would otherwise point the fork at the upstream
+# config/models/auth.
+export PRIME_AGENT_CODING_AGENT_DIR="$ALLSPARK_HOME/.prime/agent"
+
 # Pin the daemon socket to the fork's own file so it cannot fight the
 # upstream daemon (which uses the product default $TMPDIR/prime-agent-<uid>).
 export PRIME_AGENT_DAEMON_SOCKET="${PRIME_AGENT_DAEMON_SOCKET:-${TMPDIR:-/tmp}/allspark-daemon.sock}"

@@ -52,8 +52,8 @@ fn deploy_launcher(dir: &Path, payload: &Path) -> PathBuf {
 /// must substitute: `HOME` and `PRIME_AGENT_DAEMON_SOCKET`.
 fn write_env_probe_payload_at(payload: &Path) {
     let mut f = fs::File::create(payload).expect("create probe payload");
-    let script = "#!/bin/sh\nprintf 'HOME=%s\\nSOCKET=%s\\n' \"$HOME\" \
-        \"$PRIME_AGENT_DAEMON_SOCKET\"\n";
+    let script = "#!/bin/sh\nprintf 'HOME=%s\\nSOCKET=%s\\nAGENT_DIR=%s\\n' \"$HOME\" \
+        \"$PRIME_AGENT_DAEMON_SOCKET\" \"$PRIME_AGENT_CODING_AGENT_DIR\"\n";
     f.write_all(script.as_bytes()).expect("write probe payload");
     f.sync_all().expect("sync probe payload");
     #[cfg(unix)]
@@ -81,6 +81,9 @@ fn launcher_substitutes_home_and_pins_the_socket() {
     let out = Command::new(&launcher)
         .env("HOME", &upstream_home)
         .env_remove("ALLSPARK_HOME")
+        // An ambient upstream state dir (launched inside a prime-agent
+        // session) must be overridden by the launcher's own pin.
+        .env("PRIME_AGENT_CODING_AGENT_DIR", "/root/.prime/agent")
         // An ambient pin (e.g. launched inside a running prime-agent session)
         // is respected by design; remove it so the launcher's own default is
         // what lands in the payload's environment.
@@ -103,6 +106,18 @@ fn launcher_substitutes_home_and_pins_the_socket() {
         socket_line.ends_with("allspark-daemon.sock"),
         "the daemon socket must pin to the fork's own file: {socket_line}"
     );
+    // An ambient upstream agent-dir override must be pinned to the isolated
+    // home: otherwise the fork reads the upstream models.json/auth (the
+    // reported "the fork sees upstream providers" leak).
+    let agent_line = text
+        .lines()
+        .find(|l| l.starts_with("AGENT_DIR="))
+        .expect("AGENT_DIR in probe output");
+    assert_eq!(
+        agent_line,
+        format!("AGENT_DIR={}", expected_home.join(".prime").join("agent").display()),
+        "the agent dir must pin into the isolated home: {agent_line}"
+    );
 
     // Override: ALLSPARK_HOME wins over the HOME-derived path.
     let override_home = tmp.path().join("custom-home");
@@ -119,17 +134,17 @@ fn launcher_substitutes_home_and_pins_the_socket() {
     );
 }
 
-/// First run seeds upstream `settings.json`/`models.json` into the isolated
-/// home and deliberately leaves `auth.json` behind (rotating refresh tokens
-/// invalidate each other).
+/// No seeding by design: the fork starts standalone — upstream
+/// `settings.json` / `models.json` / `auth.json` must NOT be copied into the
+/// isolated home (upstream providers and credentials must never leak in).
 #[test]
-fn launcher_seeds_settings_but_never_auth() {
+fn launcher_never_seeds_upstream_state() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let upstream_home = tmp.path().join("upstream-home");
     let upstream_config = upstream_home.join(".prime").join("agent");
     fs::create_dir_all(&upstream_config).expect("upstream config dir");
     fs::write(upstream_config.join("settings.json"), "{\"a\":1}").expect("settings");
-    fs::write(upstream_config.join("models.json"), "{}").expect("models");
+    fs::write(upstream_config.join("models.json"), "{\"providers\":{}}").expect("models");
     fs::write(upstream_config.join("auth.json"), "{\"secret\":true}").expect("auth");
 
     let payload = env!("CARGO_BIN_EXE_prime-agent");
@@ -146,18 +161,12 @@ fn launcher_seeds_settings_but_never_auth() {
         .join(".allspark-home")
         .join(".prime")
         .join("agent");
-    assert!(
-        isolated_config.join("settings.json").exists(),
-        "settings.json must be seeded"
-    );
-    assert!(
-        isolated_config.join("models.json").exists(),
-        "models.json must be seeded"
-    );
-    assert!(
-        !isolated_config.join("auth.json").exists(),
-        "auth.json must NOT be seeded (rotating refresh tokens)"
-    );
+    for name in ["settings.json", "models.json", "auth.json"] {
+        assert!(
+            !isolated_config.join(name).exists(),
+            "{name} must NOT be seeded from the upstream install"
+        );
+    }
 }
 
 /// The real compiled fork binary answers `--version` through the launcher
