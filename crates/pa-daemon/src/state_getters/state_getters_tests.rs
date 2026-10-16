@@ -4,6 +4,7 @@
 //! shared `created_worker` fixtures.
 
 use super::*;
+use crate::engine::SessionEngine;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -762,3 +763,165 @@ async fn model_catalog_and_available_models_match_the_ts_shapes() {
     );
     assert!(models.iter().any(|model| model["id"] == json!("mock-1")));
 }
+
+/// FORK-ONLY: an engine that reports a fixed fork-native roster, so the
+/// `nativeTools` surfacing on `get_session_stats` is observable without
+/// building a real agent session.
+struct NativeToolsEngine(Vec<String>);
+
+impl SessionEngine for NativeToolsEngine {
+    fn run_prompt(
+        &self,
+        _: usize,
+        _: crate::engine::PromptRequest,
+        _: &dyn Fn() -> bool,
+        _: &mut dyn FnMut(crate::engine::EngineEvent) -> bool,
+    ) {
+    }
+    fn run_side_question(
+        &self,
+        request: crate::engine::SideQuestionRequest,
+        signal: &pa_agent::abort::AbortSignal,
+        sink: &pa_core::session_engine::side_question::SideQuestionSink,
+    ) -> crate::engine::SideQuestionOutcome {
+        crate::engine::ScriptedEngine::default().run_side_question(request, signal, sink)
+    }
+    fn run_compaction(
+        &self,
+        request: crate::engine::CompactionRequest,
+        signal: &pa_agent::abort::AbortSignal,
+    ) -> crate::engine::CompactionOutcome {
+        crate::engine::ScriptedEngine::default().run_compaction(request, signal)
+    }
+    fn run_branch_summary(
+        &self,
+        request: crate::engine::BranchSummaryRequest,
+        signal: &pa_agent::abort::AbortSignal,
+    ) -> crate::engine::BranchSummaryOutcome {
+        crate::engine::ScriptedEngine::default().run_branch_summary(request, signal)
+    }
+    fn rebuild_session_context(
+        &self,
+        _: Vec<pa_types::session::FileEntry>,
+        _: pa_core::session_engine::goal_driver::GoalBranchReload,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn native_tool_names(&self) -> Option<Vec<String>> {
+        Some(self.0.clone())
+    }
+}
+
+/// FORK-ONLY: `get_session_stats` carries the engine's fork-native roster
+/// (`nativeTools`); an engine that reports none omits the key.
+#[tokio::test]
+async fn get_session_stats_surfaces_native_tools() {
+    let dir = std::env::temp_dir().join(format!("pa-worker-nt-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut worker = Worker::new(
+        crate::worker::WorkerConfig {
+            socket_path: dir.join("worker.sock"),
+            supervisor_socket_path: std::path::PathBuf::new(),
+            token: "token".to_string(),
+            worker_instance_id: String::new(),
+            active_session_id: "getter-session".to_string(),
+            agent_dir: dir.join("agent"),
+            recovery_journal_path: dir.join("recovery.jsonl"),
+            telemetry_disabled: None,
+            script: Some(json!({ "responses": ["ack"] })),
+        },
+        None,
+    );
+    worker.engine = Arc::new(NativeToolsEngine(vec![
+        "lsp".to_string(),
+        "graph".to_string(),
+        "edit".to_string(),
+    ]));
+    let created = worker
+        .dispatch("create", &json!({ "noSession": true, "cwd": "/tmp" }))
+        .await;
+    assert!(created.success, "create failed: {created:?}");
+    let response = worker
+        .dispatch(
+            "get_session_stats",
+            &json!({ "activeSessionId": "getter-session" }),
+        )
+        .await;
+    assert!(response.success, "failed: {response:?}");
+    let stats = response.data.expect("data");
+    assert_eq!(stats["nativeTools"], json!(["lsp", "graph", "edit"]));
+}
+
+/// FORK-ONLY: an engine without a fork roster (the default `None`) omits the
+/// `nativeTools` key entirely, so a non-fork daemon path is unchanged.
+#[tokio::test]
+async fn get_session_stats_omits_native_tools_when_absent() {
+    let dir = std::env::temp_dir().join(format!("pa-worker-nt0-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let worker = Arc::new(Worker::new(
+        crate::worker::WorkerConfig {
+            socket_path: dir.join("worker.sock"),
+            supervisor_socket_path: std::path::PathBuf::new(),
+            token: "token".to_string(),
+            worker_instance_id: String::new(),
+            active_session_id: "getter-session".to_string(),
+            agent_dir: dir.join("agent"),
+            recovery_journal_path: dir.join("recovery.jsonl"),
+            telemetry_disabled: None,
+            script: Some(json!({ "responses": ["ack"] })),
+        },
+        None,
+    ));
+    let created = worker
+        .dispatch("create", &json!({ "noSession": true, "cwd": "/tmp" }))
+        .await;
+    assert!(created.success, "create failed: {created:?}");
+    let response = worker
+        .dispatch(
+            "get_session_stats",
+            &json!({ "activeSessionId": "getter-session" }),
+        )
+        .await;
+    assert!(response.success, "failed: {response:?}");
+    let stats = response.data.expect("data");
+    assert!(stats.get("nativeTools").is_none(), "stats: {stats}");
+}
+
+/// FORK-ONLY: `get_cache_stats` folds the branch's per-model cache usage
+/// (input/cacheRead/cacheWrite + costs), in first-seen model order.
+#[tokio::test]
+async fn get_cache_stats_folds_per_model_cache_usage() {
+    let root = std::env::temp_dir().join(format!("pa-worker-cache-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let session_file = root.join("cache.jsonl");
+    let lines = [
+        json!({"type": "session", "version": 3, "id": "cache-0001", "timestamp": "2026-09-24T00:00:00.000Z", "cwd": "/tmp"}),
+        json!({"type": "message", "id": "e1", "parentId": null, "timestamp": "2026-09-24T00:00:01.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}], "provider": "anthropic", "model": "claude-opus-4-6", "stopReason": "stop", "usage": {"input": 1000, "output": 100, "cacheRead": 9000, "cacheWrite": 0, "totalTokens": 10100, "cost": {"input": 0.005, "output": 0.0025, "cacheRead": 0.0045, "cacheWrite": 0.0, "total": 0.012}}}}),
+    ];
+    let content = lines
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&session_file, content).unwrap();
+    let worker = created_worker_at(&root, &session_file).await;
+    let response = worker
+        .dispatch(
+            "get_cache_stats",
+            &json!({ "activeSessionId": "getter-session" }),
+        )
+        .await;
+    assert!(response.success, "failed: {response:?}");
+    let data = response.data.expect("data");
+    let models = data["models"].as_array().expect("models array");
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0]["provider"], json!("anthropic"));
+    assert_eq!(models[0]["id"], json!("claude-opus-4-6"));
+    assert_eq!(models[0]["input"], json!(1000));
+    assert_eq!(models[0]["cacheRead"], json!(9000));
+    assert_eq!(models[0]["cacheWrite"], json!(0));
+    assert_eq!(models[0]["totalTokens"], json!(10100));
+    assert_eq!(models[0]["cost"]["input"].as_f64(), Some(0.005));
+    assert_eq!(models[0]["cost"]["cacheRead"].as_f64(), Some(0.0045));
+}
+

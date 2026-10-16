@@ -137,6 +137,24 @@ impl Worker {
         response_success(None, "get_context_tree", Some(tree))
     }
 
+    /// FORK-ONLY `get_cache_stats`: the per-model cache statistics
+    /// (input/cacheRead/cacheWrite tokens + costs) over the persisted branch,
+    /// mirroring the context tree's `ownUsageByModel` fold. `models` is empty
+    /// when the fold is unresolved.
+    pub(crate) fn handle_get_cache_stats(&self) -> DaemonResponse {
+        if let Err(response) = self.require_created("get_cache_stats") {
+            return response;
+        }
+        let models = {
+            let core = self.core.lock().unwrap();
+            core.store
+                .as_ref()
+                .and_then(cache_breakdown)
+                .unwrap_or_default()
+        };
+        response_success(None, "get_cache_stats", Some(json!({ "models": models })))
+    }
+
     /// Arm the background context-tree walk (the inputs resolve against the
     /// current store): called on reads older than the TTL and as the warm at open.
     pub(crate) fn poke_context_tree_refresh(&self) {
@@ -285,7 +303,8 @@ impl Worker {
 mod usage;
 
 pub(crate) use usage::{
-    compute_own_and_total_usage, compute_own_usage_by_model, empty_usage, worker_model_registry,
+    cache_breakdown, compute_own_and_total_usage, compute_own_usage_by_model, empty_usage,
+    worker_model_registry,
 };
 
 // The getter battery lives in state_getters::state_getters_tests.

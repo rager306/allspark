@@ -286,6 +286,55 @@ pub(crate) fn compute_own_usage_by_model(
     )
 }
 
+/// FORK-ONLY: the per-model cache statistics over the persisted branch — the
+/// `ownUsageByModel` fold projected to the fields `/cache` reads
+/// (input/cacheRead/cacheWrite/totalTokens plus the cost block). `None` when
+/// the per-model fold is unresolved (a foreign file, an oversized child
+/// attribution), matching the context tree's own `ownUsageByModel` gate.
+pub(crate) fn cache_breakdown(store: &crate::session_store::SessionFile) -> Option<Vec<Value>> {
+    let branch = store.branch_bridged();
+    let all_entries = store.entries();
+    let (own_usage, _total_usage) = compute_own_and_total_usage(&branch, all_entries);
+    let by_model = compute_own_usage_by_model(
+        &branch,
+        all_entries,
+        &own_usage,
+        store.window_boundary_model().as_ref(),
+    )?;
+    Some(
+        by_model
+            .into_iter()
+            .map(|bucket| {
+                let provider = bucket.get("provider").cloned().unwrap_or(Value::Null);
+                let id = bucket.get("id").cloned().unwrap_or(Value::Null);
+                let usage = bucket.get("ownUsage").cloned().unwrap_or_else(empty_usage);
+                let u64_field = |field: &str| usage.get(field).cloned().unwrap_or(json!(0));
+                let cost_field = |field: &str| {
+                    usage
+                        .get("cost")
+                        .and_then(|cost| cost.get(field))
+                        .cloned()
+                        .unwrap_or(json!(0))
+                };
+                json!({
+                    "provider": provider,
+                    "id": id,
+                    "input": u64_field("input"),
+                    "cacheRead": u64_field("cacheRead"),
+                    "cacheWrite": u64_field("cacheWrite"),
+                    "totalTokens": u64_field("totalTokens"),
+                    "cost": {
+                        "input": cost_field("input"),
+                        "cacheRead": cost_field("cacheRead"),
+                        "cacheWrite": cost_field("cacheWrite"),
+                        "total": cost_field("total"),
+                    },
+                })
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod usage_tests {
     use super::*;

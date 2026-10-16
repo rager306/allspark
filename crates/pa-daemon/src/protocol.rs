@@ -165,6 +165,8 @@ pub const KNOWN_COMMAND_TYPES: &[&str] = &[
     "set_mcp_static_token",
     "remove_mcp_connection",
     "mark_anthropic_warning_shown",
+    // FORK-ONLY Rust-native frames (not in the TS accept list).
+    "get_cache_stats",
 ];
 
 /// Parsed client command envelope.
@@ -711,6 +713,9 @@ pub fn command_active_session_id(command: &DaemonCommand) -> Option<&str> {
         | DaemonCommand::GetContextTree {
             active_session_id, ..
         }
+        | DaemonCommand::GetCacheStats {
+            active_session_id, ..
+        }
         | DaemonCommand::GetCommands {
             active_session_id, ..
         }
@@ -986,6 +991,7 @@ pub fn command_type_name(command: &DaemonCommand) -> &'static str {
         DaemonCommand::GetRlmChildren { .. } => "get_rlm_children",
         DaemonCommand::GetSessionStats { .. } => "get_session_stats",
         DaemonCommand::GetContextTree { .. } => "get_context_tree",
+        DaemonCommand::GetCacheStats { .. } => "get_cache_stats",
         DaemonCommand::GetCommands { .. } => "get_commands",
         DaemonCommand::GetResourceSnapshot { .. } => "get_resource_snapshot",
         DaemonCommand::GetMcpConnections { .. } => "get_mcp_connections",

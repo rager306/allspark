@@ -894,3 +894,63 @@ fn truncate_plain_matches_truncate_to_width() {
     assert_eq!(truncate_plain("abcdef", 2), "..");
     assert_eq!(truncate_plain("abcdef", 1), ".");
 }
+
+#[test]
+fn cache_rows_report_hit_rate_savings_and_current_model() {
+    // Two models: opus with a strong cache hit, gpt with none. The cost block
+    // carries the per-token prices the savings estimate reads.
+    let tree = json(
+        r#"{
+                "models": [
+                    {"provider": "anthropic", "id": "claude-opus-4-6",
+                     "input": 1000, "cacheRead": 9000, "cacheWrite": 0,
+                     "totalTokens": 10000,
+                     "cost": {"input": 0.005, "cacheRead": 0.0045,
+                              "cacheWrite": 0.0, "total": 0.0095}},
+                    {"provider": "openai", "id": "gpt-5.6-sol",
+                     "input": 2000, "cacheRead": 0, "cacheWrite": 500,
+                     "totalTokens": 2500,
+                     "cost": {"input": 0.02, "cacheRead": 0.0,
+                              "cacheWrite": 0.005, "total": 0.025}}
+                ]
+            }"#,
+    );
+    let rows = plain(&cache_rows(&tree, Some("anthropic/claude-opus-4-6")));
+    assert_eq!(
+        rows,
+        vec![
+            "Cache Stats",
+            "",
+            "anthropic/claude-opus-4-6  input=1000  cached=9000 (90%)  write=0  total=10000 \u{2190} current",
+            "openai/gpt-5.6-sol  input=2000  cached=0 (0%)  write=500  total=2500",
+            "",
+            "Total: input=3000  cached=9000 (75%)  write=500  total=12500",
+            "Saved: $0.04 (cache hit pricing)",
+        ]
+    );
+    // The current-model flag matches on a bare id suffix too.
+    let rows = plain(&cache_rows(&tree, Some("gpt-5.6-sol")));
+    assert!(rows[3].ends_with("\u{2190} current"), "rows: {rows:?}");
+    assert!(!rows[2].contains("current"), "rows: {rows:?}");
+}
+
+#[test]
+fn cache_rows_empty_state_without_activity() {
+    let tree = json(r#"{"models": []}"#);
+    assert_eq!(
+        plain(&cache_rows(&tree, None)),
+        vec!["Cache Stats", "", "No cache activity recorded for this session."]
+    );
+    // A model row with no input and no cache read is skipped, so a lone
+    // write-only model still renders the empty state.
+    let tree = json(
+        r#"{"models": [{"provider": "p", "id": "m", "input": 0, "cacheRead": 0,
+                        "cacheWrite": 10, "totalTokens": 10,
+                        "cost": {"input": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}}]}"#,
+    );
+    assert_eq!(
+        plain(&cache_rows(&tree, None)),
+        vec!["Cache Stats", "", "No cache activity recorded for this session."]
+    );
+}
+

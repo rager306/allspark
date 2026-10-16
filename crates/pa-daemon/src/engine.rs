@@ -193,6 +193,14 @@ pub trait SessionEngine: Send + Sync {
     fn model_context_window(&self) -> Option<u64> {
         None
     }
+
+    /// FORK-ONLY: the fork native tools (lsp/graph/edit) the live session
+    /// registered, in push order. `None` when no session is built yet or the
+    /// engine is not a real agent session; the daemon surfaces it on
+    /// `get_session_stats` (`nativeTools`).
+    fn native_tool_names(&self) -> Option<Vec<String>> {
+        None
+    }
     /// The worker's turn loop completed: engines hosting RLM children
     /// release prompt tasks spawned mid-turn, so the parent's continuation
     /// request always reaches the provider before a child's first turn.

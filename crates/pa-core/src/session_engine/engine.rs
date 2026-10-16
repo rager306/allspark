@@ -147,6 +147,11 @@ pub struct SessionEngine {
     /// for the whole session and can be shut down explicitly; dropping the
     /// engine also drops them (the client kills its process on drop).
     pub lsp_manager: Option<std::sync::Arc<pa_lsp::LspManager>>,
+    /// FORK-ONLY: the names of the fork native tools (lsp/graph/edit) that
+    /// `create_session` actually pushed into the roster, in push order. Empty
+    /// when every gate was disabled. The daemon surfaces it on
+    /// `get_session_stats` (`nativeTools`) so the TUI can show the roster.
+    pub native_tool_names: Vec<String>,
 }
 
 /// Skill overrides for built-in integrations the user is not logged into,
@@ -496,6 +501,8 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // for the whole session and can be shut down on teardown; the tool holds a
     // second `Arc` clone. The graph store opens lazily inside the tool.
     let mut lsp_manager = None;
+    // FORK-ONLY: collect the fork tool names actually pushed, in push order.
+    let mut native_tool_names: Vec<String> = Vec::new();
     if lsp_enabled {
         let manager = Arc::new(pa_lsp::LspManager::new());
         tools.push(Arc::new(pa_lsp::LspTool::new(
@@ -503,6 +510,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             cwd.clone(),
         )));
         lsp_manager = Some(manager);
+        native_tool_names.push("lsp".to_string());
     }
     if graph_enabled {
         let db_path = graph_db_path.unwrap_or_else(|| config.agent_dir.join("graph.db"));
@@ -510,6 +518,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             db_path,
             cwd.clone(),
         )));
+        native_tool_names.push("graph".to_string());
     }
     if edit_hybrid_enabled {
         // The store is in-memory and `Clone`; the tool holds one shared
@@ -547,6 +556,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             default_mode,
             allow_modes,
         )));
+        native_tool_names.push("edit".to_string());
     }
     // Phase-7 tool-surface profile: the resolved pipeline filters the roster
     // before the prompt is built (so `active_tool_names` matches the effective
@@ -555,6 +565,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         tools = crate::tool_profile::apply_layers(&tools, &resolved_profile.layers);
     }
     let active_tool_names: Vec<String> = tools.iter().map(|tool| tool.name().to_string()).collect();
+    // FORK-ONLY: keep only the fork tools that survived the profile filter, so
+    // `native_tool_names` mirrors the effective surface the prompt advertises.
+    native_tool_names.retain(|name| active_tool_names.iter().any(|active| active == name));
 
     // The snapshot arm is not depth-gated: a resumed session prewarms even
     // when the config flag is off, so its namespace revives before the first turn.
@@ -930,6 +943,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         rlm_progress_notes: Arc::clone(&wiring.rlm.notes),
         provisioner,
         lsp_manager,
+        native_tool_names,
     })
 }
 
@@ -946,6 +960,13 @@ impl SessionEngine {
             },
             (model.context_window > 0).then_some(model.context_window),
         );
+    }
+
+    /// FORK-ONLY: the fork native tools (lsp/graph/edit) this session
+    /// actually registered, in push order. Empty when every gate was off.
+    #[must_use]
+    pub fn native_tool_names(&self) -> &[String] {
+        &self.native_tool_names
     }
 
     /// A weak reference for lock-free kernel liveness probes without

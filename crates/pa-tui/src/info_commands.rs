@@ -13,6 +13,7 @@ use crate::theme::{Theme, ThemeColor};
 use crate::{Line, Span};
 use ratatui::style::Style;
 
+mod cache;
 mod context_tree;
 #[cfg(test)]
 mod tests;
@@ -20,6 +21,7 @@ mod tests;
 #[cfg(test)]
 use context_tree::truncate_plain;
 
+pub use cache::cache_rows;
 pub use context_tree::{context_tree_rows, ContextTreeScope};
 
 /// One styled segment of a client info row: text plus its theme color
@@ -143,6 +145,19 @@ pub fn session_info_rows(stats: &Value, session_name: Option<&str>) -> Vec<Clien
     }
     rows.push(vec![dim("File:"), raw_span(format!(" {session_file}"))]);
     rows.push(vec![dim("ID:"), raw_span(format!(" {session_id}"))]);
+    // FORK-ONLY: the fork native tools (lsp/graph/edit) the session registered,
+    // comma-joined; the row is omitted when the daemon reports none.
+    let native_tools: Vec<&str> = stats
+        .get("nativeTools")
+        .and_then(Value::as_array)
+        .map(|tools| tools.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    if !native_tools.is_empty() {
+        rows.push(vec![
+            dim("Native tools:"),
+            raw_span(format!(" {}", native_tools.join(", "))),
+        ]);
+    }
     rows.push(vec![]);
     rows.push(vec![raw_span("Messages")]);
     for (label, value) in [

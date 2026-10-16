@@ -339,6 +339,13 @@ fn native_tools_section(tools: &[&str]) -> String {
                 .to_string(),
         );
     }
+    // Prefer the native tools in their domains: they are structured and
+    // cheaper than reaching the same answer through the Python REPL.
+    lines.push(String::new());
+    lines.push(
+        "Prefer these native tools over `python_repl` for their domains: `lsp` for code navigation (symbols/references/definitions), `edit` for file edits, `graph` for project-structure questions."
+            .to_string(),
+    );
     lines.join("\n")
 }
 

@@ -627,6 +627,16 @@ pub enum DaemonCommand {
         #[serde(flatten)]
         rest: JsonMap,
     },
+    /// FORK-ONLY: the per-model cache statistics (input/cacheRead/cacheWrite
+    /// tokens plus their costs) over the persisted branch, so the TUI can
+    /// render a cache-hit readout on `/cache`.
+    GetCacheStats {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        active_session_id: String,
+        #[serde(flatten)]
+        rest: JsonMap,
+    },
     GetCommands {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,

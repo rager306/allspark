@@ -531,6 +531,13 @@ async fn native_tools_are_on_by_default() {
     // The graph tool opens its store lazily on first use, so no DB exists
     // merely from session creation.
     assert!(!agent_dir.join("graph.db").exists());
+    // FORK-ONLY: the engine records the fork roster it actually pushed.
+    let native: Vec<&str> = engine
+        .native_tool_names()
+        .iter()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(native, ["lsp", "graph", "edit"]);
 }
 
 /// `lsp.enabled = false` and `graph.enabled = false` drop both tools from
@@ -599,6 +606,8 @@ async fn native_tools_honour_their_disable_flags() {
     assert!(engine.lsp_manager.is_none());
     assert!(!engine.system_prompt.contains("# Native tools"));
     assert!(!agent_dir.join("graph.db").exists());
+    // FORK-ONLY: every gate off leaves the recorded roster empty.
+    assert!(engine.native_tool_names().is_empty());
 }
 
 
@@ -717,4 +726,11 @@ async fn edit_tool_disable_flag_drops_only_edit() {
     // The section still renders for lsp/graph but never advertises edit.
     assert!(engine.system_prompt.contains("# Native tools"));
     assert!(!engine.system_prompt.contains("- `edit`:"));
+    // FORK-ONLY: dropping `edit` removes it from the recorded roster too.
+    let native: Vec<&str> = engine
+        .native_tool_names()
+        .iter()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(native, ["lsp", "graph"]);
 }

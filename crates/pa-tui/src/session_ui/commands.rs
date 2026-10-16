@@ -636,6 +636,39 @@ impl SessionUi {
                     }
                 }
             }
+            // FORK-ONLY `/cache`: the per-model cache statistics (hit rate,
+            // cached/written tokens, savings) over the persisted branch.
+            "cache" => {
+                if !resolved.args.is_empty() {
+                    view.editor.set_text(text);
+                    self.error_row("Usage: /cache", view);
+                    return Ok(());
+                }
+                let tree = self
+                    .bounded_request(
+                        Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
+                        DaemonCommand::GetCacheStats {
+                            id: None,
+                            active_session_id: self.active_session_id.clone(),
+                            rest: Map::default(),
+                        },
+                    )
+                    .await;
+                match tree {
+                    Ok(tree) => {
+                        let current = view.chrome.model_id.clone();
+                        self.open_info_panel(
+                            view,
+                            None,
+                            InfoContent::Rows(info_commands::cache_rows(&tree, current.as_deref())),
+                        );
+                        self.track_menu_opened("cache", "command");
+                    }
+                    Err(error) => {
+                        self.error_row(&format!("{error:#}"), view);
+                    }
+                }
+            }
             // The exact assembled prompt is unbounded, so it renders in the
             // scrollable info panel instead of flooding the transcript.
             "system-prompt" => {

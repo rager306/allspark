@@ -244,6 +244,16 @@ impl SessionEngine for AgentSessionEngine {
         self.resolve_model().ok().map(|model| model.context_window)
     }
 
+    /// FORK-ONLY: the fork native tools the built core session registered
+    /// (`create_session`'s gates), in push order. `None` when the session is
+    /// unbuilt; `Some(empty)` when every gate was off.
+    fn native_tool_names(&self) -> Option<Vec<String>> {
+        let session = self.session.try_lock().ok()?;
+        session
+            .as_deref()
+            .map(|core| core.native_tool_names().to_vec())
+    }
+
     fn creation_model(&self) -> Option<(String, String)> {
         let model = self.resolve_registry_model().ok()?;
         Some((model.provider.clone(), model.id))

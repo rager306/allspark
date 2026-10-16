@@ -278,6 +278,10 @@ const WIRE_FIXTURES: &[(&str, &str)] = &[
         r#"{"type": "get_context_tree", "activeSessionId": "sess"}"#,
     ),
     (
+        "get_cache_stats",
+        r#"{"type": "get_cache_stats", "activeSessionId": "sess"}"#,
+    ),
+    (
         "get_commands",
         r#"{"type": "get_commands", "activeSessionId": "sess"}"#,
     ),
@@ -548,6 +552,7 @@ fn known_command_types_match_the_ts_list() {
                     | "tail_kernel_bash"
                     | "kill_kernel_bash"
                     | "mark_anthropic_warning_shown"
+                    | "get_cache_stats"
             ),
             "unexpected non-TS command type: {extra}"
         );
