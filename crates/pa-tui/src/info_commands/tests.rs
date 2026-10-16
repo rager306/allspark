@@ -939,7 +939,11 @@ fn cache_rows_empty_state_without_activity() {
     let tree = json(r#"{"models": []}"#);
     assert_eq!(
         plain(&cache_rows(&tree, None)),
-        vec!["Cache Stats", "", "No cache activity recorded for this session."]
+        vec![
+            "Cache Stats",
+            "",
+            "No cache activity recorded for this session."
+        ]
     );
     // A model row with no input and no cache read is skipped, so a lone
     // write-only model still renders the empty state.
@@ -950,7 +954,10 @@ fn cache_rows_empty_state_without_activity() {
     );
     assert_eq!(
         plain(&cache_rows(&tree, None)),
-        vec!["Cache Stats", "", "No cache activity recorded for this session."]
+        vec![
+            "Cache Stats",
+            "",
+            "No cache activity recorded for this session."
+        ]
     );
 }
-

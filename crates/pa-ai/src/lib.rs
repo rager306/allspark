@@ -17,6 +17,12 @@ pub mod provider_errors;
 pub mod registry;
 pub mod types;
 
+/// FORK-ONLY: wire-level test infrastructure. Compiled for this crate's own
+/// tests and for dependents that opt in through the `testing` feature
+/// (dev-dependencies only); never part of a production build.
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 mod event_stream;
 mod providers;
 mod stream;

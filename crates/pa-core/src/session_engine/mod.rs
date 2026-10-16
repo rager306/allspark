@@ -12,6 +12,8 @@ pub mod compaction;
 pub mod compaction_exec;
 pub mod compaction_trace;
 pub mod compaction_utils;
+// FORK-ONLY: context snapshot for test/diagnostic assertions (not in upstream).
+pub mod context_snapshot;
 pub mod engine;
 pub mod error_classify;
 pub mod factory_host;
@@ -252,6 +254,13 @@ impl AgentSession {
         };
         this.ensure_harness_digest_context().await?;
         Ok(this)
+    }
+
+    /// The session's agent dir (the settings root), when the engine wired
+    /// one; `None` in verification harnesses that build the loop directly.
+    #[must_use]
+    pub fn agent_dir(&self) -> Option<&std::path::Path> {
+        self.agent_dir.as_deref()
     }
 
     /// The underlying agent loop (steering, state, subscriptions).

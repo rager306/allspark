@@ -40,34 +40,73 @@ pub struct FacadeMethod {
 pub fn default_facades() -> Vec<Facade> {
     const TABLE: &[(&str, &[&str])] = &[
         ("cfg", &["get_config", "set_config"]),
-        ("fs", &["read_file", "list_dir", "find_file", "create_text_file", "delete_file"]),
+        (
+            "fs",
+            &[
+                "read_file",
+                "list_dir",
+                "find_file",
+                "create_text_file",
+                "delete_file",
+            ],
+        ),
         (
             "edit",
             &[
-                "replace_content", "replace_in_files", "insert_at_line", "replace_lines",
-                "delete_lines", "replace_symbol_body", "insert_before_symbol",
+                "replace_content",
+                "replace_in_files",
+                "insert_at_line",
+                "replace_lines",
+                "delete_lines",
+                "replace_symbol_body",
+                "insert_before_symbol",
                 "insert_after_symbol",
             ],
         ),
         (
             "mem",
             &[
-                "write_memory", "read_memory", "list_memories", "edit_memory", "delete_memory",
-                "rename_memory", "embed_memory",
+                "write_memory",
+                "read_memory",
+                "list_memories",
+                "edit_memory",
+                "delete_memory",
+                "rename_memory",
+                "embed_memory",
             ],
         ),
         ("shell", &["execute_shell_command"]),
-        ("ext", &["list_queryable_projects", "query_project", "project_context"]),
+        (
+            "ext",
+            &[
+                "list_queryable_projects",
+                "query_project",
+                "project_context",
+            ],
+        ),
         (
             "lsp",
             &[
-                "find_symbol", "find_referencing_symbols", "get_symbols_overview",
-                "find_implementations", "find_declaration", "rename_symbol",
-                "safe_delete_symbol", "replace_symbol_body", "insert_before_symbol",
+                "find_symbol",
+                "find_referencing_symbols",
+                "get_symbols_overview",
+                "find_implementations",
+                "find_declaration",
+                "rename_symbol",
+                "safe_delete_symbol",
+                "replace_symbol_body",
+                "insert_before_symbol",
                 "insert_after_symbol",
             ],
         ),
-        ("jb", &["jet_brains_find_symbol", "jet_brains_move", "jet_brains_inline"]),
+        (
+            "jb",
+            &[
+                "jet_brains_find_symbol",
+                "jet_brains_move",
+                "jet_brains_inline",
+            ],
+        ),
     ];
     TABLE
         .iter()
@@ -152,9 +191,7 @@ impl FacadeRegistry {
                 let methods = facade
                     .methods
                     .iter()
-                    .filter(|method| {
-                        dropped.is_none_or(|set| !set.contains(method.name.as_str()))
-                    })
+                    .filter(|method| dropped.is_none_or(|set| !set.contains(method.name.as_str())))
                     .cloned()
                     .collect();
                 Facade {

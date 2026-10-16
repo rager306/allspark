@@ -207,11 +207,7 @@ impl ToolRegistry {
     ///
     /// A key already present under its current name is left untouched.
     #[must_use]
-    pub fn apply_param_aliases(
-        &self,
-        tool: &str,
-        args: &serde_json::Value,
-    ) -> serde_json::Value {
+    pub fn apply_param_aliases(&self, tool: &str, args: &serde_json::Value) -> serde_json::Value {
         let Some(aliases) = self.param_aliases.get(tool) else {
             return args.clone();
         };

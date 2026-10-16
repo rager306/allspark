@@ -473,7 +473,6 @@ async fn create_session_appends_missing_resume_settings_rows() {
     );
 }
 
-
 /// The fork native tools wire into the roster by default: `create_session`
 /// pushes `lsp` (with its engine-owned manager) and `graph` when the
 /// settings leave `lsp.enabled` / `graph.enabled` unset.
@@ -609,7 +608,6 @@ async fn native_tools_honour_their_disable_flags() {
     // FORK-ONLY: every gate off leaves the recorded roster empty.
     assert!(engine.native_tool_names().is_empty());
 }
-
 
 /// The native `edit` tool honours `editHybrid.defaultMode` / `allowModes`:
 /// the roster keeps `edit`, the prompt carries the hashline docs, and the

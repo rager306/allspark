@@ -6,6 +6,8 @@ mod catalog_plugin_views;
 mod catalog_schema;
 mod catalog_status_views;
 mod catalog_views;
+#[cfg(test)]
+mod conformance_tests;
 mod connection_store;
 mod fetch_lane;
 mod local_catalog;

@@ -68,8 +68,17 @@ fn roster() -> Vec<Arc<dyn AgentTool>> {
         MockTool::make("bash", &[ToolMarker::CanEdit]),
         MockTool::make("edit", &[ToolMarker::CanEdit]),
         MockTool::make("find_symbol", &[ToolMarker::SymbolicRead]),
-        MockTool::make("replace_symbol_body", &[ToolMarker::SymbolicEdit, ToolMarker::CanEdit]),
-        MockTool::make("graph", &[ToolMarker::Optional, ToolMarker::DoesNotRequireActiveProject]),
+        MockTool::make(
+            "replace_symbol_body",
+            &[ToolMarker::SymbolicEdit, ToolMarker::CanEdit],
+        ),
+        MockTool::make(
+            "graph",
+            &[
+                ToolMarker::Optional,
+                ToolMarker::DoesNotRequireActiveProject,
+            ],
+        ),
         MockTool::make("experimental", &[ToolMarker::Beta]),
     ]
 }
@@ -133,15 +142,25 @@ fn context_single_project_excludes_activation() {
         ..Context::default()
     };
     let delta = context.delta();
-    assert!(delta.excluded_tools.contains(&"activate_project".to_string()));
-    assert!(delta.excluded_tools.contains(&"get_current_config".to_string()));
+    assert!(delta
+        .excluded_tools
+        .contains(&"activate_project".to_string()));
+    assert!(delta
+        .excluded_tools
+        .contains(&"get_current_config".to_string()));
 }
 
 #[test]
 fn context_presets_resolve() {
     assert!(Context::preset(CONTEXT_CODING).is_some());
-    assert_eq!(Context::preset(CONTEXT_QUERY).unwrap().excluded_tools.len(), 2);
-    assert_eq!(Context::preset(CONTEXT_MINIMAL).unwrap().fixed_tools.len(), 2);
+    assert_eq!(
+        Context::preset(CONTEXT_QUERY).unwrap().excluded_tools.len(),
+        2
+    );
+    assert_eq!(
+        Context::preset(CONTEXT_MINIMAL).unwrap().fixed_tools.len(),
+        2
+    );
     assert!(Context::preset("nope").is_none());
 }
 
@@ -191,7 +210,10 @@ fn mode_context_allowlist() {
 #[test]
 fn filter_by_required_and_denied_markers() {
     let editable = filter_by_markers(&roster(), &[ToolMarker::CanEdit], &[]);
-    assert_eq!(names(&editable), vec!["bash", "edit", "replace_symbol_body"]);
+    assert_eq!(
+        names(&editable),
+        vec!["bash", "edit", "replace_symbol_body"]
+    );
 
     let read_only = filter_by_markers(&roster(), &[], &[ToolMarker::CanEdit]);
     assert!(!names(&read_only).contains(&"edit".to_string()));
@@ -253,7 +275,10 @@ fn registry_register_and_instantiate() {
     registry.register_tool(Arc::clone(&tool)).unwrap();
     assert!(registry.contains("bash"));
     assert_eq!(registry.instantiate("bash").unwrap().name(), "bash");
-    assert!(matches!(registry.instantiate("nope"), Err(RegistryError::Unknown(_))));
+    assert!(matches!(
+        registry.instantiate("nope"),
+        Err(RegistryError::Unknown(_))
+    ));
 }
 
 #[test]
@@ -354,7 +379,9 @@ fn disclosure_dedups_within_session() {
     let _ = disclosure.expand("LanguageServerSymbol", DisclosureLevel::Full);
     let second = disclosure.expand("LanguageServerSymbol", DisclosureLevel::Full);
     assert!(second.contains("documented earlier in this session"));
-    assert!(disclosure.described_names().contains(&"LanguageServerSymbol"));
+    assert!(disclosure
+        .described_names()
+        .contains(&"LanguageServerSymbol"));
 }
 
 #[test]
@@ -369,11 +396,11 @@ fn disclosure_unknown_item() {
 
 #[test]
 fn template_substitutes_tool_names() {
-    let vars = PromptTemplateVars::from_surface(
-        ["lsp", "edit"],
-        &["find_symbol", "edit"],
+    let vars = PromptTemplateVars::from_surface(["lsp", "edit"], &["find_symbol", "edit"]);
+    let rendered = render_template(
+        "Use {{ tool_names[\"find_symbol\"] }} and {{ tool_names['edit'] }}.",
+        &vars,
     );
-    let rendered = render_template("Use {{ tool_names[\"find_symbol\"] }} and {{ tool_names['edit'] }}.", &vars);
     assert_eq!(rendered, "Use find_symbol and edit.");
 }
 
@@ -402,7 +429,12 @@ fn template_renders_lists_and_keeps_unknown() {
 #[test]
 fn anti_hijack_section_is_forbidden_and_maps_tools() {
     let vars = PromptTemplateVars::from_surface(
-        ["get_symbols_overview", "find_symbol", "replace_symbol_body", "rename_symbol"],
+        [
+            "get_symbols_overview",
+            "find_symbol",
+            "replace_symbol_body",
+            "rename_symbol",
+        ],
         &["find_symbol"],
     );
     let section = anti_hijack_section(&vars);
@@ -435,7 +467,10 @@ fn anti_grep_rate_limits_denies() {
     let suppressed = hook.observe_at(GuardKind::Grep, start + Duration::from_secs(1));
     assert!(!suppressed.is_deny());
     // After the interval, it fires again.
-    let again = hook.observe_at(GuardKind::Grep, start + MIN_DENY_INTERVAL + Duration::from_secs(1));
+    let again = hook.observe_at(
+        GuardKind::Grep,
+        start + MIN_DENY_INTERVAL + Duration::from_secs(1),
+    );
     assert!(again.is_deny());
 }
 
@@ -606,8 +641,17 @@ fn minimizer_filter_table_has_25() {
 #[test]
 fn minimizer_selects_filter_by_prefix() {
     let minimizer = BashMinimizer::new();
-    assert_eq!(minimizer.select_filter("cargo build --release").unwrap().name, "cargo-build");
-    assert_eq!(minimizer.select_filter("git status").unwrap().name, "git-status");
+    assert_eq!(
+        minimizer
+            .select_filter("cargo build --release")
+            .unwrap()
+            .name,
+        "cargo-build"
+    );
+    assert_eq!(
+        minimizer.select_filter("git status").unwrap().name,
+        "git-status"
+    );
     assert!(minimizer.select_filter("echo hi").is_none());
 }
 
@@ -656,16 +700,16 @@ fn facade_registry_has_eight_facades() {
     let registry = FacadeRegistry::with_defaults();
     let mut names = registry.names();
     names.sort_unstable();
-    assert_eq!(names, vec!["cfg", "edit", "ext", "fs", "jb", "lsp", "mem", "shell"]);
+    assert_eq!(
+        names,
+        vec!["cfg", "edit", "ext", "fs", "jb", "lsp", "mem", "shell"]
+    );
 }
 
 #[test]
 fn facade_scope_excludes_facade_and_method() {
     let registry = FacadeRegistry::with_defaults();
-    let scoped = registry.apply_scope(
-        &["mem".to_string(), "lsp.rename_symbol".to_string()],
-        &[],
-    );
+    let scoped = registry.apply_scope(&["mem".to_string(), "lsp.rename_symbol".to_string()], &[]);
     assert!(!scoped.iter().any(|f| f.name == "mem"));
     let lsp = scoped.iter().find(|f| f.name == "lsp").unwrap();
     assert!(!lsp.methods.iter().any(|m| m.name == "rename_symbol"));
@@ -705,7 +749,10 @@ fn toolset_delta_defaults_structured_output_true() {
 fn marker_set_used_for_availability() {
     let markers: BTreeSet<ToolMarker> = available_markers(&roster());
     assert!(markers.contains(&ToolMarker::Optional));
-    assert_eq!(ToolMarker::SymbolicRead.class_name(), "ToolMarkerSymbolicRead");
+    assert_eq!(
+        ToolMarker::SymbolicRead.class_name(),
+        "ToolMarkerSymbolicRead"
+    );
 }
 
 // ── Phase-7 resolve + settings wiring ──────────────────────────────────────
@@ -727,7 +774,11 @@ fn resolve_profile_context_and_modes_build_layers() {
         included_tools: vec!["bash".into()],
     };
     let resolved = resolve_profile(Some(&settings), false);
-    assert_eq!(resolved.layers.len(), 3, "context + 1 known mode + project delta");
+    assert_eq!(
+        resolved.layers.len(),
+        3,
+        "context + 1 known mode + project delta"
+    );
     assert_eq!(resolved.prompt_addenda.len(), 1);
     // Unknown mode is skipped, so planning's editing exclusions apply.
     let kept = names(&apply_layers(&roster(), &resolved.layers));

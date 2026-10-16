@@ -176,8 +176,8 @@ impl Context {
                     return false;
                 }
                 let markers = tool.markers();
-                let optional = markers.contains(&ToolMarker::Optional)
-                    || markers.contains(&ToolMarker::Beta);
+                let optional =
+                    markers.contains(&ToolMarker::Optional) || markers.contains(&ToolMarker::Beta);
                 !optional || included.contains(tool.name())
             })
             .cloned()
@@ -187,7 +187,9 @@ impl Context {
     /// The effective description for a tool under this context.
     #[must_use]
     pub fn description_override(&self, tool: &str) -> Option<&str> {
-        self.tool_description_overrides.get(tool).map(String::as_str)
+        self.tool_description_overrides
+            .get(tool)
+            .map(String::as_str)
     }
 
     /// The delta this context contributes to the layering pipeline.
@@ -195,7 +197,11 @@ impl Context {
     pub fn delta(&self) -> ToolsetDelta {
         let mut excluded = self.excluded_tools.clone();
         if self.single_project {
-            excluded.extend(SINGLE_PROJECT_EXCLUDED_TOOLS.iter().map(|s| (*s).to_string()));
+            excluded.extend(
+                SINGLE_PROJECT_EXCLUDED_TOOLS
+                    .iter()
+                    .map(|s| (*s).to_string()),
+            );
         }
         ToolsetDelta {
             excluded_tools: excluded,
@@ -295,8 +301,13 @@ impl Mode {
     ];
 
     /// The memory/onboarding tool names.
-    const MEMORY_TOOLS: &'static [&'static str] =
-        &["write_memory", "read_memory", "list_memories", "edit_memory", "delete_memory"];
+    const MEMORY_TOOLS: &'static [&'static str] = &[
+        "write_memory",
+        "read_memory",
+        "list_memories",
+        "edit_memory",
+        "delete_memory",
+    ];
 
     /// Resolve a mode by name (Serena `mode.yml` presets).
     #[must_use]
@@ -316,7 +327,10 @@ impl Mode {
             Mode {
                 name: MODE_PLANNING.into(),
                 prompt_addendum: Some("Analyse only; do not write code.".into()),
-                excluded_tools: Self::EDITING_TOOLS.iter().map(|s| (*s).to_string()).collect(),
+                excluded_tools: Self::EDITING_TOOLS
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect(),
                 ..Self::default()
             },
             Mode {
@@ -332,13 +346,19 @@ impl Mode {
             Mode {
                 name: MODE_ONBOARDING.into(),
                 prompt_addendum: Some("First run: gather memories as you explore.".into()),
-                excluded_tools: Self::EDITING_TOOLS.iter().map(|s| (*s).to_string()).collect(),
+                excluded_tools: Self::EDITING_TOOLS
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect(),
                 ..Self::default()
             },
             Mode {
                 name: MODE_NO_MEMORIES.into(),
                 prompt_addendum: Some("Memory tools are disabled.".into()),
-                excluded_tools: Self::MEMORY_TOOLS.iter().map(|s| (*s).to_string()).collect(),
+                excluded_tools: Self::MEMORY_TOOLS
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect(),
                 excluded_apis: vec!["mem".into()],
                 ..Self::default()
             },
@@ -351,7 +371,9 @@ impl Mode {
             },
             Mode {
                 name: MODE_BENCHMARK.into(),
-                prompt_addendum: Some("Benchmark run: autonomous, no memories, no onboarding.".into()),
+                prompt_addendum: Some(
+                    "Benchmark run: autonomous, no memories, no onboarding.".into(),
+                ),
                 excluded_tools: Self::MEMORY_TOOLS
                     .iter()
                     .chain(std::iter::once(&"onboarding"))
@@ -371,8 +393,7 @@ impl Mode {
     /// Whether this mode is compatible with a context (empty allowlist = all).
     #[must_use]
     pub fn allows_context(&self, context: &str) -> bool {
-        self.allowed_contexts.is_empty()
-            || self.allowed_contexts.iter().any(|c| c == context)
+        self.allowed_contexts.is_empty() || self.allowed_contexts.iter().any(|c| c == context)
     }
 
     /// Apply the mode's exclusions on top of a context-filtered tool list.
@@ -433,7 +454,9 @@ impl ToolsetLayer {
             ToolsetLayer::Context(context) => context.delta(),
             ToolsetLayer::BaseMode(mode) | ToolsetLayer::DynamicMode(mode) => mode.delta(),
             ToolsetLayer::SingleProject => ToolsetDelta::excluding(
-                SINGLE_PROJECT_EXCLUDED_TOOLS.iter().map(|s| (*s).to_string()),
+                SINGLE_PROJECT_EXCLUDED_TOOLS
+                    .iter()
+                    .map(|s| (*s).to_string()),
             ),
         }
     }
@@ -488,5 +511,8 @@ pub fn filter_by_markers(
 /// (Serena `available_markers`).
 #[must_use]
 pub fn available_markers(tools: &[Arc<dyn AgentTool>]) -> BTreeSet<ToolMarker> {
-    tools.iter().flat_map(|tool| tool.markers().iter().copied()).collect()
+    tools
+        .iter()
+        .flat_map(|tool| tool.markers().iter().copied())
+        .collect()
 }

@@ -33,7 +33,10 @@ pub struct ResolvedProfile {
 /// mirroring Serena's tombstone handling) rather than failing session
 /// creation.
 #[must_use]
-pub fn resolve_profile(settings: Option<&ToolProfileSettings>, single_project: bool) -> ResolvedProfile {
+pub fn resolve_profile(
+    settings: Option<&ToolProfileSettings>,
+    single_project: bool,
+) -> ResolvedProfile {
     let Some(settings) = settings else {
         return ResolvedProfile {
             structured_tool_output: true,

@@ -264,14 +264,16 @@ impl GraphTool {
         let root = self.resolve_root(params);
         let project = project_name(&root);
         let mut opts = TraceOptions::new(&project, symbol);
-        opts.direction = parse_direction(params.get("direction").and_then(serde_json::Value::as_str));
+        opts.direction =
+            parse_direction(params.get("direction").and_then(serde_json::Value::as_str));
         if let Some(depth) = params.get("depth").and_then(serde_json::Value::as_u64) {
             opts.depth = depth as usize;
         }
         if let Some(limit) = params.get("limit").and_then(serde_json::Value::as_u64) {
             opts.limit = limit as usize;
         }
-        let edge_types = parse_edge_types(params.get("edge_types").and_then(serde_json::Value::as_str));
+        let edge_types =
+            parse_edge_types(params.get("edge_types").and_then(serde_json::Value::as_str));
         if !edge_types.is_empty() {
             opts.edge_types = edge_types;
         }
@@ -634,7 +636,10 @@ mod tests {
         let error = tool
             .dispatch(&serde_json::json!({ "action": "nope" }))
             .unwrap_err();
-        assert!(error.to_string().contains("unknown graph action"), "{error}");
+        assert!(
+            error.to_string().contains("unknown graph action"),
+            "{error}"
+        );
     }
 
     #[test]

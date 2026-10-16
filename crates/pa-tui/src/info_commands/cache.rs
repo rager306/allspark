@@ -167,7 +167,10 @@ pub fn cache_rows(tree: &Value, current_model: Option<&str>) -> Vec<ClientLine> 
     ]);
 
     // The savings estimate: summed over the model rows that carry a rate.
-    let savings: f64 = active.iter().filter_map(|model| model.saved_dollars()).sum();
+    let savings: f64 = active
+        .iter()
+        .filter_map(|model| model.saved_dollars())
+        .sum();
     if savings > 0.0 {
         rows.push(vec![
             dim("Saved:"),

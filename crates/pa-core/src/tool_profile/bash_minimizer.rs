@@ -10,15 +10,43 @@ use std::collections::BTreeSet;
 
 /// Filters keep lines carrying one of these markers.
 const KEEP_MARKERS: &[&str] = &[
-    "error", "Error", "ERROR", "warning", "Warning", "WARNING", "fail", "FAIL", "Fail",
-    "panic", "PANIC", "fatal", "FATAL", "cannot", "Cannot", "undefined", "not found",
-    "No such file", "abort", "ABORT", "E0", "TS0", "expected", "-->",
+    "error",
+    "Error",
+    "ERROR",
+    "warning",
+    "Warning",
+    "WARNING",
+    "fail",
+    "FAIL",
+    "Fail",
+    "panic",
+    "PANIC",
+    "fatal",
+    "FATAL",
+    "cannot",
+    "Cannot",
+    "undefined",
+    "not found",
+    "No such file",
+    "abort",
+    "ABORT",
+    "E0",
+    "TS0",
+    "expected",
+    "-->",
 ];
 
 /// Lines that are pure noise for every filter.
 const DROP_MARKERS: &[&str] = &[
-    "Compiling ", "Finished ", "Running ", "Blocking waiting for file lock",
-    "Downloading ", "Downloaded ", "Updating ", "Adding ", "note: build finished",
+    "Compiling ",
+    "Finished ",
+    "Running ",
+    "Blocking waiting for file lock",
+    "Downloading ",
+    "Downloaded ",
+    "Updating ",
+    "Adding ",
+    "note: build finished",
 ];
 
 /// How many trailing context lines a reduction keeps after the last kept line.

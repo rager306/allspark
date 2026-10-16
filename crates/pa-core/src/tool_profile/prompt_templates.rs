@@ -41,7 +41,9 @@ impl PromptTemplateVars {
             tool_names.insert((*name).to_string(), mapped);
         }
         for name in &effective {
-            tool_names.entry(name.clone()).or_insert_with(|| name.clone());
+            tool_names
+                .entry(name.clone())
+                .or_insert_with(|| name.clone());
         }
         Self {
             available_tools: effective,
@@ -129,7 +131,13 @@ pub fn render_template(template: &str, vars: &PromptTemplateVars) -> String {
 
 fn evaluate(expr: &str, vars: &PromptTemplateVars) -> Option<String> {
     if expr == "available_tools" {
-        return Some(vars.available_tools.iter().cloned().collect::<Vec<_>>().join(", "));
+        return Some(
+            vars.available_tools
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
     }
     if expr == "available_markers" {
         return Some(

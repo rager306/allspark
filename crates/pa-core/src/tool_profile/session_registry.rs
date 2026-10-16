@@ -113,7 +113,9 @@ impl SessionRegistry {
                 .entries
                 .iter()
                 .min_by(|(id_a, a), (id_b, b)| {
-                    a.last_used_ms.cmp(&b.last_used_ms).then_with(|| id_a.cmp(id_b))
+                    a.last_used_ms
+                        .cmp(&b.last_used_ms)
+                        .then_with(|| id_a.cmp(id_b))
                 })
                 .map(|(id, _)| id.clone())
             else {

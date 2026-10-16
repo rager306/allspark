@@ -291,10 +291,8 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let edit_hybrid_allow_modes = settings.get_edit_hybrid_allow_modes();
     // Phase-7 tool-surface profile, captured before `settings` moves into the
     // resource loader (the profile selects a context and modes).
-    let resolved_profile = crate::tool_profile::resolve_profile(
-        settings.settings().tool_profile.as_ref(),
-        false,
-    );
+    let resolved_profile =
+        crate::tool_profile::resolve_profile(settings.settings().tool_profile.as_ref(), false);
     let (mcp_skill_overrides, mcp_generic_servers, built_manager) =
         mcp_gating(&settings, config.agent_dir.clone()).await?;
     let mcp_manager = config
@@ -547,7 +545,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         let default_mode = if allow_modes.contains(&default_mode) {
             default_mode
         } else {
-            allow_modes.first().copied().unwrap_or(pa_edit::EditMode::Replace)
+            allow_modes
+                .first()
+                .copied()
+                .unwrap_or(pa_edit::EditMode::Replace)
         };
         tools.push(Arc::new(crate::tools::edit_hybrid::EditHybridTool::new(
             store,

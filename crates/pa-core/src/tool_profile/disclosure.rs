@@ -128,7 +128,11 @@ impl Disclosure {
 
     fn overview(&self) -> String {
         let mut out = String::from("Available facades:\n");
-        for facade in self.items.values().filter(|i| i.kind == DisclosureKind::Facade) {
+        for facade in self
+            .items
+            .values()
+            .filter(|i| i.kind == DisclosureKind::Facade)
+        {
             out.push_str(&render_overview_line(facade));
             out.push('\n');
             for method in self.methods_of(&facade.path) {
@@ -139,7 +143,6 @@ impl Disclosure {
         }
         out
     }
-
 }
 
 fn render_overview_line(item: &DisclosureItem) -> String {

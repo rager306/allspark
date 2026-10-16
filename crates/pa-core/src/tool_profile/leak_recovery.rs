@@ -99,11 +99,7 @@ fn recover_harmony(text: &str) -> (Vec<RecoveredCall>, String) {
         if let Some(call) = parse_call_json(body) {
             calls.push(call);
         }
-        rest = if end < after.len() {
-            &after[end..]
-        } else {
-            ""
-        };
+        rest = if end < after.len() { &after[end..] } else { "" };
         if rest.starts_with("<|end|>") {
             rest = &rest["<|end|>".len()..];
         }
@@ -130,10 +126,9 @@ fn recover_dsml(text: &str) -> (Vec<RecoveredCall>, String) {
                 .find("</|DSML|invoke>")
                 .map_or(after.len(), |offset| body_start + offset);
             let body = &after[body_start..body_end];
-            if let (Some(name), Ok(arguments)) = (
-                name,
-                serde_json::from_str::<serde_json::Value>(body.trim()),
-            ) {
+            if let (Some(name), Ok(arguments)) =
+                (name, serde_json::from_str::<serde_json::Value>(body.trim()))
+            {
                 calls.push(RecoveredCall { name, arguments });
             }
             rest = &after[body_end..];
