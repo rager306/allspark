@@ -169,9 +169,9 @@ async fn post_form(
             url: url.to_string(),
             headers: form_headers(),
             body: Some(body),
-            // The Meta auth edge intermittently 302s the device endpoints; following
-            // lands on the same JSON API (verified live against auth.meta.com).
-            follow_redirects: true,
+            // The official launcher sends --max-redirs 0 and treats a 3xx as
+            // "the sign-in service redirected the request; not following it".
+            follow_redirects: false,
         },
         timeout_ms.min(REQUEST_TIMEOUT_MS),
     )
@@ -195,14 +195,15 @@ async fn post_json_raw(
                     "Authorization".to_string(),
                     format!("Bearer {access_token}"),
                 ),
+                ("User-Agent".to_string(), muse_user_agent()),
                 ("Accept".to_string(), "application/json".to_string()),
                 ("Content-Type".to_string(), "application/json".to_string()),
                 ("x-api-version".to_string(), API_VERSION.to_string()),
             ],
             body: Some(serde_json::json!({ "onboard": true }).to_string()),
-            // The Meta auth edge intermittently 302s the device endpoints; following
-            // lands on the same JSON API (verified live against auth.meta.com).
-            follow_redirects: true,
+            // The official launcher sends --max-redirs 0 and treats a 3xx as
+            // "the sign-in service redirected the request; not following it".
+            follow_redirects: false,
         },
         REQUEST_TIMEOUT_MS,
     )
@@ -234,14 +235,25 @@ async fn send_request(
     Ok(response)
 }
 
+/// The client identity, extracted verbatim from the official Muse launcher
+/// (`user_agent="muse-code/launcher-$launcher_version"`, `launcher_version` 3).
+/// Meta's auth edge serves an HTML interstitial (200) or a 400 to requests
+/// without this User-Agent.
+fn muse_user_agent() -> String {
+    "muse-code/launcher-3".to_string()
+}
+
 fn form_headers() -> Vec<(String, String)> {
+    // Verbatim launcher headers (`auth_post`): Accept + the UA; curl's
+    // --data-urlencode implies the form Content-Type. No x-api-version on
+    // auth.meta.com - that header belongs to the api.meta.ai key mint.
     vec![
+        ("User-Agent".to_string(), muse_user_agent()),
         ("Accept".to_string(), "application/json".to_string()),
         (
             "Content-Type".to_string(),
             "application/x-www-form-urlencoded".to_string(),
         ),
-        ("x-api-version".to_string(), API_VERSION.to_string()),
     ]
 }
 
@@ -577,10 +589,17 @@ mod tests {
         let device = &http.requests_for(DEVICE_CODE_URL)[0];
         assert_eq!(device.method, ProviderHttpMethod::Post);
         assert_eq!(device.body.as_deref(), Some("client_id=1031625952748946"));
+        // The launcher's auth.meta.com request carries the launcher UA and no
+        // x-api-version (that header belongs to the api.meta.ai key mint).
         assert!(device
             .headers
             .iter()
-            .any(|(name, value)| name == "x-api-version" && value == API_VERSION));
+            .any(|(name, value)| name == "User-Agent" && value == "muse-code/launcher-3"));
+        assert!(!device
+            .headers
+            .iter()
+            .any(|(name, _)| name == "x-api-version"));
+        assert!(!device.follow_redirects);
 
         let polls = http.requests_for(TOKEN_URL);
         assert_eq!(polls.len(), 2);
@@ -729,6 +748,31 @@ mod tests {
         assert!(
             error.contains("Muse OAuth request failed") && error.contains("was not scripted"),
             "the transport clue must survive: {error}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod muse_ua_tests {
+    use super::form_headers;
+
+    #[test]
+    fn muse_requests_carry_the_official_launcher_user_agent() {
+        // Extracted verbatim from the official Muse launcher
+        // (user_agent="muse-code/launcher-$launcher_version"): without it the
+        // auth edge serves an HTML interstitial instead of the JSON API.
+        let headers = form_headers();
+        let ua = headers
+            .iter()
+            .find(|(name, _)| name == "User-Agent")
+            .map(|(_, value)| value.clone())
+            .expect("User-Agent header");
+        assert_eq!(ua, "muse-code/launcher-3");
+        // The launcher's auth.meta.com requests carry no x-api-version (that
+        // header belongs to the api.meta.ai key mint).
+        assert!(
+            !headers.iter().any(|(name, _)| name == "x-api-version"),
+            "auth.meta.com requests must not carry x-api-version"
         );
     }
 }
