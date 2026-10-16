@@ -131,6 +131,23 @@ the session's own cost breakdown (no external pricing data needed).
 - `codebuddy` (IDE plan, `www.codebuddy.ai/v2`, stream-only), `genspark`
   (`genspark.ai` LiteLLM), `muse` (Muse Code via Meta device flow) — device
   flows run on the inline auth panel (`/login` → provider row);
+- **Muse specifics** (extracted from the official launcher + binary):
+  - device flow: POST `auth.meta.com/oidc/device/authorization/` with
+    `client_id=1031625952748946`, UA `muse-code/launcher-3` (no redirects,
+    3xx = hard error — matches the launcher's `--max-redirs 0`);
+  - token poll: POST `/oidc/device/token/` with the device code grant;
+    `slow_down` bumps the interval by 5s (launcher verbatim);
+  - key mint: POST `api.meta.ai/muse-code/key` with Bearer access token,
+    `x-api-version: 1.0.0`, body `{"onboard": true}` — returns the durable
+    `LLM|...` API key (no refresh path; re-login when it expires);
+  - error taxonomy from the muse binary: `MODEL_API__ONBOARDING_REQUIRED`
+    (470: finish onboarding at dev.meta.ai), "payment method required",
+    "saved login no longer valid" (token expiry → re-login), standard OAuth
+    errors (`access_denied`, `invalid_scope`, `unauthorized_client`);
+  - gateway chat headers (api.meta.ai/v1): `x-client-id` (tbh:<surface>),
+    `x-meta-ai-gateway-session-id`, `traceparent`, `x-fb-routing-control`,
+    `x-api-version` — these are on the roadmap for the muse provider's chat
+    transport (not needed for the login flow).
 - the fork's own model catalog lives in `models_fork.rs` (compiled) and can
   be overridden by `models.json` in the fork config dir (never seeded from
   upstream);
