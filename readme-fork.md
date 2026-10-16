@@ -62,8 +62,12 @@ Extras:
 - `lsp.servers`, `lsp.idleTimeoutMs`, `graph.dbPath`, `editHybrid.defaultMode`,
   `editHybrid.allowModes` refine the surfaces;
 - when any fork tool is in the roster, a dynamic **native-tools** prompt
-  section documents it (the prompt parity tests stay green because the
-  section only renders when the tools are present);
+  section documents it **and prefers these tools over `python_repl` for
+  their domains** (lsp = navigation, edit = edits, graph = structure);
+  the prompt parity tests stay green because the section only renders when
+  the tools are present;
+- `/session` renders a **Native tools:** row listing the registered fork
+  tools, so the operator sees the blocks are live;
 - the roster passes through the tool-surface profile before the prompt is
   built (see below).
 
@@ -109,10 +113,18 @@ Extras:
 - OAuth transport failures surface their underlying cause in the panel
   message too (`Muse OAuth request failed (<cause>). …`).
 
-Existing logs (unchanged): daemon supervisor log
+Existing surfaces (unchanged): daemon supervisor log
 (`allspark-daemon.sock.*.log`), `worker-*.stderr.log`, the session JSONL
 (every provider error with diagnostics), `requestTiming` → `logs/agent.jsonl`,
 and `allspark incident --since "1 hour ago"` for an operator timeline.
+
+### /cache — per-model cache statistics
+
+`/cache` renders per-model cache stats over the persisted session branch:
+input / cached (hit%) / write / total tokens per provider+model, the current
+model marked, and a **Saved: $X.XX** estimate — cached tokens priced at the
+full uncached input rate minus the actual cache-priced spend, computed from
+the session's own cost breakdown (no external pricing data needed).
 
 ## 7. Providers (fork overlay)
 
@@ -123,7 +135,12 @@ and `allspark incident --since "1 hour ago"` for an operator timeline.
   be overridden by `models.json` in the fork config dir (never seeded from
   upstream);
 - OAuth refresh + failover behave per provider; transport errors now surface
-  their underlying cause (DNS/TLS/reset) in the panel message.
+  their underlying cause (DNS/TLS/reset) in the panel message;
+- the Muse device flow sends the canonical launcher identity
+  (`User-Agent: muse-code/launcher-3`, extracted from the official
+  launcher script) — without it Meta serves an HTML interstitial instead
+  of the JSON API; all three muse requests follow redirects (the edge
+  intermittently 302s them).
 
 ## 8. Conventions
 
