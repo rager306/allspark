@@ -924,4 +924,3 @@ async fn get_cache_stats_folds_per_model_cache_usage() {
     assert_eq!(models[0]["cost"]["input"].as_f64(), Some(0.005));
     assert_eq!(models[0]["cost"]["cacheRead"].as_f64(), Some(0.0045));
 }
-

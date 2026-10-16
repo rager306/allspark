@@ -913,6 +913,7 @@ impl AgentSessionEngine {
             std::fs::create_dir_all(session_dir)?;
         }
         let cwd = self.cwd();
+        let cwd_for_mcp = cwd.clone();
         let session_file = self
             .session_file
             .lock()
@@ -1022,7 +1023,21 @@ impl AgentSessionEngine {
             tools: vec![],
             custom_system_prompt: create_resources.system_prompt,
             prompt_guidelines: create_resources.append_system_prompt,
-            generic_mcp_servers: vec![],
+            // FORK-ONLY: pass the configured MCP server names so the system
+            // prompt mentions them and the kernel pre-imports the `mcp` object.
+            // Without this the daemon worker never exposes MCP to the model.
+            generic_mcp_servers: {
+                let settings = pa_core::settings::SettingsManager::create(
+                    &cwd_for_mcp,
+                    &self.config.agent_dir,
+                );
+                settings
+                    .settings()
+                    .mcp_servers
+                    .as_ref()
+                    .map(|servers| servers.keys().cloned().collect())
+                    .unwrap_or_default()
+            },
             allow_recursion: None,
             session_manager: Some(session_manager),
             extra_host_handlers: self.extra_host_handlers(),
