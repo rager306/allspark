@@ -169,7 +169,9 @@ async fn post_form(
             url: url.to_string(),
             headers: form_headers(),
             body: Some(body),
-            follow_redirects: false,
+            // The Meta auth edge intermittently 302s the device endpoints; following
+            // lands on the same JSON API (verified live against auth.meta.com).
+            follow_redirects: true,
         },
         timeout_ms.min(REQUEST_TIMEOUT_MS),
     )
@@ -198,7 +200,9 @@ async fn post_json_raw(
                 ("x-api-version".to_string(), API_VERSION.to_string()),
             ],
             body: Some(serde_json::json!({ "onboard": true }).to_string()),
-            follow_redirects: false,
+            // The Meta auth edge intermittently 302s the device endpoints; following
+            // lands on the same JSON API (verified live against auth.meta.com).
+            follow_redirects: true,
         },
         REQUEST_TIMEOUT_MS,
     )
