@@ -14,6 +14,17 @@ per-trial results, behavioral fingerprint) under `--out/<ts>/manifest.json`.
 `--baseline <manifest.json>` turns a run into a regression gate
 (-3pp trial pass-rate or >=2 stable tasks losing pass^N => exit 1).
 
+Level-2 is now log-aware and output-aware: the trial also captures the
+product's own telemetry (`logs/agent.jsonl` request timing and the rotating
+`logs/debug-*.log` tracing stream), normalizes the transcript into a timeline
+(`qa_logs.py`), checks the task's `logs:` invariants, records the transcript
+JSON schema so field drift between runs is a manifest delta, grades the final
+answer against the task's `output:` patterns (`qa_judge.py`), and - with
+`--judge` - asks one System One (SubQ Snap) judge call per task on the task
+rubric. The judge is advisory: it lands in the manifest and the A/B delta,
+never in the blocking gate (levels 3-4 in
+`.research/blackbox-qa-best-practices.md`).
+
 Python stdlib only. Task files are `qa-tasks/<id>/task.yaml` parsed by the
 strict mini-YAML subset documented in qa-tasks/README.md.
 
@@ -46,6 +57,22 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SUITE_DIR = REPO_ROOT / "qa-tasks"
 
+# Sibling modules (same directory; the runner is invoked as a script).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import qa_judge  # noqa: E402  - output oracle + judge tier
+import qa_logs  # noqa: E402   - transcript/timing/debug-log normalizers
+
+# The observability switches the log layer needs. Both are sandbox-local
+# (HOME is pinned inside the trial), so they never touch the host agent dir.
+LOG_ENV = {
+    "PI_REQUEST_TIMING": "1",
+    "ALLSPARK_DEBUG": "1",
+    # `warn` keeps the rotating log small; the admission/breaker events are
+    # INFO, so the pa_daemon target is raised explicitly. The directive
+    # grammar is `EnvFilter`, so unknown targets are harmless.
+    "ALLSPARK_DEBUG_FILTER": "warn,pa_daemon=info,pa_core=warn,pa_ai=warn,pa_agent=warn",
+}
+
 # ---------------------------------------------------------------------------
 # Minimal YAML subset parser (grammar: see qa-tasks/README.md).
 # ---------------------------------------------------------------------------
@@ -57,6 +84,12 @@ class MiniYamlError(ValueError):
 
 def _scalar(text: str):
     text = text.strip()
+    if not text.startswith(('"', "'")):
+        # A trailing ` #comment` on an unquoted scalar is a comment (real YAML
+        # strips it); quoted scalars keep their `#` verbatim.
+        hash_at = text.find(" #")
+        if hash_at > 0:
+            text = text[:hash_at].rstrip()
     if text.startswith('"') and text.endswith('"') and len(text) >= 2:
         return text[1:-1].replace('\\"', '"')
     if text.startswith("'") and text.endswith("'") and len(text) >= 2:
@@ -147,7 +180,7 @@ def _parse_map(lines, start, indent):
         if not _ok_key(key):
             raise MiniYamlError(f"bad key at line {i + 1}: {key!r}")
         rest = rest.strip()
-        if rest in ("|", "|-", "|+"):
+        if rest in ("|", "|-", "|+", ">", ">-", ">+"):
             body = []
             j = i + 1
             block_indent = None
@@ -166,8 +199,23 @@ def _parse_map(lines, start, indent):
                 j += 1
             while body and body[-1] == "":
                 body.pop()
-            text = "\n".join(body)
-            if rest == "|":
+            if rest.startswith(">"):
+                # Folded scalar: single newlines become spaces, blank lines
+                # stay as paragraph breaks (the YAML folding rule we need for
+                # prose rubrics).
+                folded, paragraph = [], []
+                for line in body:
+                    if line.strip():
+                        paragraph.append(line.strip())
+                    elif paragraph:
+                        folded.append(" ".join(paragraph))
+                        paragraph = []
+                if paragraph:
+                    folded.append(" ".join(paragraph))
+                text = "\n".join(folded)
+            else:
+                text = "\n".join(body)
+            if rest in ("|", ">"):
                 text += "\n"
             result[key] = text
             i = j
@@ -371,6 +419,14 @@ class Task:
         self.kill_worker = spec.get("kill_worker", None)
         self.setup = spec.get("setup", None)
         self.difficulty = spec.get("difficulty", "?")
+        # Level-2 expansion: log invariants, deterministic output patterns and
+        # the level-3 judge rubric. All optional; a task without them behaves
+        # exactly as before (backwards compatible task.yaml).
+        self.logs = spec.get("logs", {}) or {}
+        self.output = spec.get("output", []) or []
+        if isinstance(self.output, dict):
+            self.output = [self.output]
+        self.judge = spec.get("judge", {}) or {}
 
     @property
     def timeout_s(self) -> int:
@@ -758,6 +814,106 @@ def kill_worker_hook(task: Task, sandbox: Path, proc, needle: str) -> None:
             continue
 
 
+def _fmt_probs(probs) -> str:
+    if not isinstance(probs, dict) or not probs:
+        return "-"
+    return " ".join(f"{name}={value:.2f}" for name, value in
+                    sorted(probs.items(), key=lambda kv: -kv[1])[:3])
+
+
+def summarize_logs(trials: list[dict]) -> dict:
+    """Suite-facing roll-up of one task's log layer (per-trial detail stays in trials[])."""
+    first = trials[0].get("logs") if trials else {}
+    if not first:
+        return {"available": False}
+    timeline = first.get("timeline") or {}
+    requests = first.get("requests") or {}
+    debug = first.get("debug") or {}
+    checks = [c for t in trials for c in ((t.get("logs") or {}).get("checks") or [])]
+    failed = [c["id"] for c in checks if c["ok"] is False]
+    skipped = [c["id"] for c in checks if c["ok"] is None]
+    return {
+        "available": True,
+        "turns": timeline.get("turns", 0),
+        "tool_calls": timeline.get("tool_calls", 0),
+        "tool_errors": timeline.get("tool_errors", 0),
+        "error_turns": timeline.get("error_turns", 0),
+        "error_kinds": timeline.get("error_kinds", {}),
+        "max_consecutive_error_turns": timeline.get("max_consecutive_error_turns", 0),
+        "turn_ms_max": timeline.get("turn_ms_max", 0.0),
+        "tool_ms_total": timeline.get("tool_ms_total", 0.0),
+        "span_ms": timeline.get("span_ms", 0.0),
+        "requests": {
+            "present": requests.get("present", False),
+            "count": requests.get("count", 0),
+            "failed": requests.get("failed", 0),
+            "outcomes": requests.get("outcomes", []),
+            "max_consecutive_failed": requests.get("max_consecutive_failed", 0),
+            "total_ms": requests.get("total_ms", 0.0),
+            "max_total_ms": requests.get("max_total_ms", 0.0),
+        },
+        "debug_log": {
+            "present": debug.get("present", False),
+            "lines": debug.get("lines", 0),
+            "warning_count": debug.get("warning_count", 0),
+            "error_count": debug.get("error_count", 0),
+            "admission_events": debug.get("admission_events", 0),
+            "breaker_opens": debug.get("breaker_opens", 0),
+        },
+        "checks_failed": sorted(set(failed)),
+        "checks_skipped": sorted(set(skipped)),
+    }
+
+
+def summarize_schema(trials: list[dict]) -> dict:
+    """Transcript schema identity across trials + the delta against a baseline."""
+    hashes = [(t.get("logs") or {}).get("schema_sha256") for t in trials]
+    hashes = [h for h in hashes if h]
+    return {
+        "sha256": hashes[0] if hashes else None,
+        "stable_across_trials": len(set(hashes)) <= 1,
+        "field_count": (trials[0].get("logs") or {}).get("schema_fields") if trials else None,
+        "trials": len(hashes),
+    }
+
+
+def apply_schema_delta(manifest: dict, baseline: dict, report: list[str]) -> None:
+    """Transcript JSON-schema drift between runs (advisory, level-2 data)."""
+    base = {t.get("id"): t for t in baseline.get("tasks", [])}
+    drifted = []
+    for task in manifest.get("tasks", []):
+        other = base.get(task.get("id"))
+        if not other:
+            continue
+        cur = (task.get("schema") or {}).get("sha256")
+        prev = (other.get("schema") or {}).get("sha256")
+        if cur and prev and cur != prev:
+            drifted.append(task.get("id"))
+    if drifted:
+        report.append(
+            "schema: transcript field set drifted on "
+            f"{len(drifted)} task(s): {', '.join(drifted[:5])} (advisory)")
+    elif base:
+        report.append("schema: transcript field set identical to baseline")
+
+
+def apply_judge_delta(manifest: dict, baseline: dict, report: list[str]) -> None:
+    """Level-3 proto: how many tasks the judge graded worse/better than baseline."""
+    delta = qa_judge.compare_judge_deltas(manifest.get("tasks", []),
+                                          baseline.get("tasks", []))
+    if not delta.get("pairs"):
+        return
+    report.append(
+        f"judge delta: {delta['pairs']} comparable task(s) - "
+        f"{delta['better']} better, {delta['worse']} worse, {delta['same']} same, "
+        f"{delta['excluded']} excluded (unknown/skip)")
+    for row in delta["rows"]:
+        if row["delta"] != "same":
+            report.append(f"  judge: {row['id']} {row['baseline']} -> {row['current']} "
+                          f"({row['delta']})")
+    manifest["judge_delta"] = delta
+
+
 def run_trial(task: Task, binary: Path, index: int, out_root: Path, lane: str,
               model_cfg: dict | None, kernel_python: str | None, keep: bool) -> dict:
     trial_id = f"trial-{index + 1}"
@@ -800,6 +956,10 @@ def run_trial(task: Task, binary: Path, index: int, out_root: Path, lane: str,
             env[f"QA_MOCK_{mock.mock_name.upper()}_PORT"] = str(mock.port)
         env["QA_TASK_DIR"] = str(task.dir)
         env["QA_SANDBOX"] = str(sandbox)
+        # Observability: the sandbox-local request-timing JSONL and the
+        # rotating tracing log (see qa_logs.py). Both are read after the run
+        # and copied into the trial dir; neither is a product dependency.
+        env.update(LOG_ENV)
         env["QA_SUITE_CANARY"] = canary = f"qa-canary-{uuid.uuid4().hex}"
         for key, value in task.secrets_env.items():
             env[key] = str(value)
@@ -884,8 +1044,10 @@ def run_trial(task: Task, binary: Path, index: int, out_root: Path, lane: str,
         secrets = [canary] + [str(v) for v in task.secrets_env.values()]
         trace = {"calls": [], "turns": 0, "turns_with_tools": 0, "tokens": 0,
                  "row_types": {}, "raw": b"", "tool_calls": 0, "tool_errors": 0}
+        rows: list[dict] = []
         if transcript and (out_dir / "session.jsonl").is_file():
             trace = parse_transcript(out_dir / "session.jsonl")
+            rows = qa_logs.load_rows(out_dir / "session.jsonl")
             result["steps"] = trace["turns_with_tools"]
             result["tokens"] = trace["tokens"]
             result["tool_freq"] = dict(Counter(c["name"] for c in trace["calls"]))
@@ -893,6 +1055,49 @@ def run_trial(task: Task, binary: Path, index: int, out_root: Path, lane: str,
             result["reasons"].append("no session transcript was written")
         result["reasons"] += check_invariants(task, trace, stdout or "", stderr or "",
                                               duration, killed, secrets, task.network)
+
+        # ---- level-2 log layer (timeline, telemetry, schema, invariants) ----
+        timeline = qa_logs.build_timeline(rows)
+        agent_logs = home / ".prime" / "agent" / "logs"
+        requests = qa_logs.parse_request_log(agent_logs / "agent.jsonl")
+        debug = qa_logs.parse_debug_log(home / ".prime" / "agent")
+        schema = qa_logs.transcript_schema(rows)
+        log_checks = qa_logs.evaluate_log_invariants(
+            task.logs, timeline, requests, debug, task.timeout_s)
+        result["reasons"] += qa_logs.invariant_problems(log_checks)
+        result["logs"] = {
+            "timeline": timeline["summary"],
+            "requests": {k: v for k, v in requests.items() if k != "requests"},
+            "debug": {k: v for k, v in debug.items() if k != "admission_sample"},
+            "checks": log_checks,
+            "skipped_checks": qa_logs.skipped_checks(log_checks),
+            "schema_sha256": schema["sha256"],
+            "schema_fields": schema["field_count"],
+        }
+        (out_dir / "timeline.json").write_text(
+            json.dumps(timeline, indent=1) + "\n")
+        (out_dir / "telemetry.json").write_text(json.dumps(
+            {"requests": requests, "debug": debug, "schema": schema}, indent=1) + "\n")
+        for log_file in qa_logs.debug_log_paths(home / ".prime" / "agent"):
+            try:
+                text, hits = qa_logs.redact(log_file.read_text(errors="replace"), secrets)
+                (out_dir / f"product-{log_file.name}.txt").write_text(text)
+                if hits:
+                    result["reasons"].append(
+                        f"secret: a planted secret value appears in {log_file.name}")
+            except OSError:
+                pass
+
+        # ---- output layer (deterministic patterns + judge) ----
+        answer = qa_judge.extract_final_answer(rows)
+        outcome_text = (stdout or "") + (stderr or "")
+        result["answer"] = {"chars": len(answer), "sha256": hashlib.sha256(
+            answer.encode()).hexdigest()[:12], "preview": answer[:280]}
+        if task.output:
+            output_problems = qa_judge.evaluate_output_patterns(task.output, answer, outcome_text)
+            result["reasons"] += output_problems
+        else:
+            output_problems = []
 
         ctx = {"home": home, "work": work, "out_dir": out_dir,
                "transcript_path": out_dir / "session.jsonl" if transcript else None,
@@ -906,6 +1111,14 @@ def run_trial(task: Task, binary: Path, index: int, out_root: Path, lane: str,
             result["reasons"].append(f"unknown oracle type {task.oracle.get('type')!r}")
 
         result["ok"] = not result["reasons"]
+        # Judge input for the single per-task call in main() (never persisted raw).
+        result["_judge_input"] = {
+            "answer": answer,
+            "outcome": (stdout or "")[-1200:] + (stderr or "")[-800:],
+            "oracle_problems": [r for r in result["reasons"]
+                                if not r.startswith("log:")][:6],
+            "log_summary": timeline["summary"],
+        }
         return result
     finally:
         for mock in mocks.values():
@@ -1027,6 +1240,18 @@ def main() -> int:
                             "QA_KERNEL_PYTHON",
                             str(Path.home() / ".prime" / "agent" / "kernel-venv" / "bin" / "python")),
                         help="kernel interpreter for ipython-lane tasks")
+    parser.add_argument("--judge", nargs="?", const="auto", default=None,
+                        choices=["auto", "live", "scripted"],
+                        help="grade each task's final answer with ONE System One "
+                             "(SubQ Snap) judge call: 'auto' (default when the flag is "
+                             "given) uses the live API when SUBQ_API_KEY / "
+                             "--judge-key-file resolves, else a labelled scripted stub; "
+                             "'live' forces the API; 'scripted' forces the stub")
+    parser.add_argument("--judge-key-file", default=os.environ.get("QA_JUDGE_KEY_FILE"),
+                        help="file holding the SubQ key (default: $QA_JUDGE_KEY_FILE; "
+                             "SUBQ_API_KEY wins). The key is never logged or persisted")
+    parser.add_argument("--judge-timeout", type=float, default=25.0,
+                        help="per-call judge timeout in seconds")
     parser.add_argument("--keep", action="store_true", help="keep trial sandboxes for inspection")
     parser.add_argument("--strict", action="store_true",
                         help="exit 1 when any task fails (without --baseline)")
@@ -1046,6 +1271,13 @@ def main() -> int:
 
     binary = resolve_binary(args.bin)
     kernel_python = args.kernel_python if Path(args.kernel_python).exists() else None
+    judge_key, judge_key_source = (None, "off")
+    if args.judge:
+        judge_key, judge_key_source = qa_judge.load_api_key(
+            None, args.judge_key_file)
+        if args.judge == "live" and not judge_key:
+            print("--judge live requested but no key resolved "
+                  "(SUBQ_API_KEY / --judge-key-file) -> scripted stub", file=sys.stderr)
     model_cfg = ({"provider": args.provider, "model": args.model, "api_key": args.api_key}
                  if (args.provider or args.model) else None)
 
@@ -1088,7 +1320,7 @@ def main() -> int:
             all_trials.append(trial)
             mark = "ok" if trial["ok"] else f"FAIL ({'; '.join(trial['reasons'][:2])})"
             print(f"  {task.id} {trial['trial']}: {mark}", flush=True)
-        task_results.append({
+        entry = {
             "id": task.id, "lane": lane,
             "status": "pass" if all(t["ok"] for t in trials) else "fail",
             "trials": trials,
@@ -1096,7 +1328,26 @@ def main() -> int:
             "pass_rate": round(sum(1 for t in trials if t["ok"]) / len(trials), 4),
             "difficulty": task.difficulty,
             "origin": task.spec.get("origin", ""),
-        })
+        }
+        entry["logs"] = summarize_logs(trials)
+        entry["schema"] = summarize_schema(trials)
+        if args.judge:
+            # ONE judge call per task, on the LAST trial's evidence (the judge
+            # tier is advisory: it never flips `ok`, per the level-3 design).
+            last = trials[-1] if trials else {}
+            judge_input = last.get("_judge_input") or {}
+            entry["judge"] = qa_judge.judge_task(
+                task, [], judge_input.get("answer", ""),
+                judge_input.get("outcome", ""),
+                judge_input.get("oracle_problems", []),
+                judge_input.get("log_summary"), judge_key,
+                judge_key_source, mode=args.judge, timeout=args.judge_timeout)
+            verdict = entry["judge"].get("verdict")
+            print(f"  {task.id} judge[{entry['judge']['status']}]: {verdict} "
+                  f"({_fmt_probs(entry['judge'].get('probabilities'))})", flush=True)
+        for trial in trials:
+            trial.pop("_judge_input", None)
+        task_results.append(entry)
 
     manifest = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -1115,6 +1366,27 @@ def main() -> int:
         "tasks": task_results,
         "fingerprint": build_fingerprint(all_trials),
     }
+    if args.judge:
+        manifest["judge"] = {
+            "mode": args.judge,
+            "bundle": qa_judge.JUDGE_BUNDLE,
+            "prompt_rev": qa_judge.JUDGE_PROMPT_REV,
+            "key_source": judge_key_source,
+            "key_fingerprint": (hashlib.sha256(judge_key.encode()).hexdigest()[:8]
+                                if judge_key else None),
+            **qa_judge.summarize_judges(task_results),
+        }
+    manifest["log_layer"] = {
+        "enabled": True,
+        "sources": ["session.jsonl", "logs/agent.jsonl", "logs/debug-*.log"],
+        "env": sorted(LOG_ENV),
+        "tasks_with_log_invariants": sum(1 for t in task_results
+                                         if (t.get("logs") or {}).get("available")),
+        "checks_failed": sorted({c for t in task_results
+                                 for c in (t.get("logs") or {}).get("checks_failed", [])}),
+        "checks_skipped": sorted({c for t in task_results
+                                  for c in (t.get("logs") or {}).get("checks_skipped", [])}),
+    }
     manifest_path = out_root / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
 
@@ -1132,8 +1404,13 @@ def main() -> int:
     print(f"manifest: {manifest_path}")
 
     if args.baseline:
+        baseline_doc = json.loads(Path(args.baseline).read_text())
         report = []
         tripped = apply_delta_gate(manifest, Path(args.baseline), report)
+        apply_schema_delta(manifest, baseline_doc, report)
+        if args.judge:
+            apply_judge_delta(manifest, baseline_doc, report)
+            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
         for line in report:
             print(line)
         if tripped:

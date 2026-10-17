@@ -23,4 +23,34 @@ oracle:
   spec: oracle.py
 must_not:
   - transcript_contains: RT003-TAIL-MARKER-39499
+# Level-2 log invariants: the capped embed is one request of ~76k tokens; an
+# uncapped embed (~700k) would show up as a bigger requestBytes/contextEntries
+# and a much longer prompt-built phase. Bounded request count also proves the
+# agent did not re-read the file in a loop.
+logs:
+  max_requests: 3
+  max_consecutive_failed_requests: 0
+  max_consecutive_error_turns: 0
+  max_turn_ms: 60000
+# Level-2 output oracle: the answer must be ONE sentence about the log (the
+# task's own instruction), not an echo of the embedded filler.
+output:
+  - id: one-sentence-answer
+    target: answer
+    min_chars: 10
+    max_chars: 400
+  - id: no-filler-echo
+    target: answer
+    not_contains: line-000001
+  - id: no-truncation-marker-leak
+    target: answer
+    not_contains: RT003-TAIL-MARKER-39499
+judge:
+  question: >-
+    The task asked for a one-sentence summary of a large attached log file.
+    Did the agent produce a short, on-topic summary of the log's content?
+  criteria:
+    achieved: the answer is a short summary that describes what the log contains
+    partial: the answer is related but verbose, evasive, or restates the request instead of summarizing
+    not_achieved: the answer is missing, is an error echo, or dumps file content instead of summarizing
 reference: reference/solution.md

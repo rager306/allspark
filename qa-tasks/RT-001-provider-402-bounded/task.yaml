@@ -34,4 +34,33 @@ must_not:
   - tool: bash
     args_regex: (curl|wget|pip install)
 max_repeat_calls: 0
+# Level-2 log invariants (scripts/qa/qa_logs.py). The task's whole point is a
+# BOUNDED retry ladder for a wallet-drain status: the request-timing log makes
+# the ladder observable per request (the transcript only shows the final
+# assistant row, so a 40-request storm would look like one error).
+logs:
+  max_requests: 6                     # == the mock's request budget below
+  max_consecutive_failed_requests: 3  # a 402 must not be retried as transient
+  max_consecutive_error_turns: 2
+  max_total_request_ms: 60000
+# Level-2 output oracle: the surfaced failure must name the class and the
+# provider's own error type (TS-parity formulation, see
+# crates/pa-ai/src/utils_inner/stream_failure.rs KIND_MESSAGES + qualifiers).
+output:
+  - id: failure-surfaced
+    target: outcome
+    regex: 'Provider requires payment \(insufficient_credit, 402\)'
+    min: 1
+  - id: no-prose-answer
+    target: answer
+    max_chars: 200
+judge:
+  question: >-
+    The task asked for one short sentence answering 2+2. The provider refused
+    with a payment error. Did the agent surface the failure clearly instead of
+    inventing an answer?
+  criteria:
+    achieved: the run reports the provider payment failure as the outcome and does not fabricate an answer
+    partial: an error is reported but its cause or next step is unclear or missing
+    not_achieved: no error is surfaced, or the agent answers the arithmetic question despite the provider failing
 reference: reference/solution.md
