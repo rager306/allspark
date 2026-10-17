@@ -215,7 +215,9 @@ pub struct ExecuteOptions {
     pub on_stream: Option<StreamCallback>,
     /// Receives agent messages the kernel reports after the cell settled.
     pub on_late_sent_agent_message: Option<LateSentAgentMessageCallback>,
-    /// Cap stdout / stderr / result at this many characters. Default 65536.
+    /// Cap stdout / stderr / result and the error payload (`ename`, `evalue`,
+    /// and the traceback's joined length) at this many characters. Default
+    /// 65536.
     pub max_output_chars: Option<usize>,
     /// Synthetic host cell (snapshot/restore/list); excluded from lastCellCode attribution.
     pub internal: bool,

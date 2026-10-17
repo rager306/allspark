@@ -133,6 +133,37 @@ fn truncates_raw_payload() {
     assert!(truncated.ends_with('\u{2026}'));
 }
 
+/// Byte 2000 lands inside multibyte sequences: the walk-back must land the
+/// cut on a char boundary (a raw slice there panics) and keep the longest
+/// boundary-aligned prefix, with the ellipsis appended after it.
+#[test]
+fn truncates_raw_payload_on_multibyte_char_boundaries() {
+    // 2-byte Cyrillic: the cut hits the 1000th "а"; 999 survive whole.
+    let cyrillic = format!("x{}", "а".repeat(1500));
+    assert_eq!(
+        truncate_raw_payload(&cyrillic),
+        format!("x{}\u{2026}", "а".repeat(999))
+    );
+    // 3-byte CJK: 2000 = 666*3 + 2, so the cut slides back two bytes.
+    assert_eq!(
+        truncate_raw_payload(&"日".repeat(1000)),
+        format!("{}\u{2026}", "日".repeat(666))
+    );
+    // 4-byte emoji: the cut hits the 500th crab; 499 survive whole.
+    let emoji = format!("x{}", "🦀".repeat(600));
+    assert_eq!(
+        truncate_raw_payload(&emoji),
+        format!("x{}\u{2026}", "🦀".repeat(499))
+    );
+    // A cut already on a boundary keeps exactly 500 crabs.
+    assert_eq!(
+        truncate_raw_payload(&"🦀".repeat(600)),
+        format!("{}\u{2026}", "🦀".repeat(500))
+    );
+    // Below the byte cap, multibyte text passes through untouched.
+    assert_eq!(truncate_raw_payload("é界🦀"), "é界🦀".to_string());
+}
+
 #[test]
 fn parses_retry_after_headers() {
     let mut headers = std::collections::HashMap::new();
