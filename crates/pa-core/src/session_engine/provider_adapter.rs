@@ -9,6 +9,14 @@ use pa_agent::stream::{LlmContext, ModelStream, StreamFn, StreamRequestOptions};
 use pa_agent::types::{Model as AgentModel, ThinkingLevel};
 use pa_types::ai::Model;
 
+/// The provider-request timeout the adapter applies to every stream
+/// attempt: a peer that accepts the connection but never sends response
+/// headers would otherwise hold the turn open forever (the transport races
+/// the abort signal but, without a timeout, a live turn has no deadline).
+/// Five minutes is far above any healthy time-to-first-byte yet still fails
+/// a genuinely stalled provider.
+pub const PROVIDER_REQUEST_TIMEOUT_MS: u64 = 300_000;
+
 /// Wire-shape conversion at the pa-agent/pa-ai boundary: both sides
 /// serialize to the same camelCase wire shapes.
 pub fn json_round_trip<T, U>(value: &T) -> Option<U>
@@ -177,7 +185,12 @@ pub fn stream_once(
                 merged.map(|headers| headers.into_iter().collect())
             },
             metadata: None,
-            timeout_ms: None,
+            // A stalled peer (connected, no response headers) must fail the
+            // attempt so the retry ladder and failover can act, instead of
+            // hanging the turn forever. The timeout bounds the wait for
+            // response headers only — a long stream body is not cut off —
+            // and pairs with the transport's abort-signal race.
+            timeout_ms: Some(PROVIDER_REQUEST_TIMEOUT_MS),
         },
         reasoning: Some(model_thinking_level(options.reasoning)),
         thinking_budgets: None,
@@ -428,6 +441,54 @@ mod tests {
                 (model.id.clone(), Some(pa_types::ai::ServiceTier::Priority)),
                 (model.id, None),
             ]
+        );
+        registration.unregister();
+    }
+
+    /// The adapter bounds every stream attempt with a finite request
+    /// timeout: a peer that accepts the connection but never answers must
+    /// fail the attempt (so retry/failover can act) instead of hanging the
+    /// turn forever. Without the fix the adapter sent `timeout_ms: None`.
+    #[tokio::test]
+    async fn every_stream_attempt_carries_a_bounded_request_timeout() {
+        let registration =
+            pa_ai::faux::register_faux_provider(pa_ai::faux::RegisterFauxProviderOptions {
+                api: Some("request-timeout-test".to_owned()),
+                ..Default::default()
+            });
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = observed.clone();
+        registration.set_responses(vec![pa_ai::faux::FauxResponseStep::Factory(Arc::new(
+            move |_, options, _, _| {
+                captured
+                    .lock()
+                    .unwrap()
+                    .push(options.and_then(|options| options.timeout_ms));
+                Ok(pa_ai::faux::faux_assistant_text_message(
+                    "ok",
+                    pa_ai::faux::FauxAssistantMessageOptions::default(),
+                ))
+            },
+        ))]);
+        let model = registration.get_model();
+        let target = Arc::new(std::sync::RwLock::new(Some(ProviderTarget {
+            api_key: None,
+            model,
+            service_tier: None,
+            headers: None,
+        })));
+        let stream_fn = switchable_stream_fn(target);
+        let mut stream = stream_fn(
+            AgentModel::unknown(),
+            LlmContext::default(),
+            StreamRequestOptions::default(),
+        )
+        .await
+        .unwrap();
+        stream.result().await.unwrap();
+        assert_eq!(
+            *observed.lock().unwrap(),
+            vec![Some(PROVIDER_REQUEST_TIMEOUT_MS)]
         );
         registration.unregister();
     }

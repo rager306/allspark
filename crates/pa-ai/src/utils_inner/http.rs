@@ -250,18 +250,28 @@ pub async fn send(request: RequestOptions) -> Result<HttpResponse, ProviderError
     }
 
     let send_future = builder.send();
-    let response = match (&signal, request.timeout_ms) {
-        (Some(signal), _) => {
-            tokio::select! {
-                () = signal.cancelled() => return Err(ProviderError::Aborted),
-                result = send_future => result,
+    // Race the abort signal against the in-flight request, then bound the WHOLE wait with the
+    // request timeout (the bedrock h2 transport's `timeout(select_cancel(...))` shape). The
+    // signal and the timeout are independent: a signal-present request must still time out on a
+    // stalled peer instead of waiting forever (the old `(Some(signal), _)` arm discarded
+    // `timeout_ms`, so an aborted-signal request could hang unboundedly).
+    let send_or_abort = async {
+        match &signal {
+            Some(signal) => {
+                tokio::select! {
+                    () = signal.cancelled() => Err(ProviderError::Aborted),
+                    result = send_future => Ok(result),
+                }
             }
+            None => Ok(send_future.await),
         }
-        (None, Some(timeout_ms)) => {
-            match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), send_future)
+    };
+    let response = match request.timeout_ms {
+        Some(timeout_ms) => {
+            match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), send_or_abort)
                 .await
             {
-                Ok(result) => result,
+                Ok(result) => result?,
                 Err(_) => {
                     return Err(ProviderError::Connection(ProviderConnectionError {
                         kind: ConnectionErrorKind::Timeout,
@@ -271,7 +281,7 @@ pub async fn send(request: RequestOptions) -> Result<HttpResponse, ProviderError
                 }
             }
         }
-        (None, None) => send_future.await,
+        None => send_or_abort.await?,
     };
 
     // The TS SDKs surface request-send failures as their fixed connection error texts: the
@@ -408,6 +418,38 @@ mod tests {
             text.push_str(&chunk);
         }
         assert_eq!(text, "hi 你!");
+    }
+
+    /// A request that carries a live abort signal AND a timeout still times out on a stalled
+    /// peer: the signal and the timeout are independent bounds, so a connected-but-silent server
+    /// must surface the timeout instead of hanging the turn forever. Before the fix the
+    /// `(Some(signal), _)` arm discarded `timeout_ms`, so a signal-present request had no
+    /// deadline.
+    #[tokio::test]
+    async fn a_signal_present_request_still_times_out_on_a_stalled_peer() {
+        let server = crate::testing::MockInferenceServer::new();
+        server.queue_hang();
+        let signal = tokio_util::sync::CancellationToken::new();
+        let options = RequestOptions {
+            signal: Some(signal.clone()),
+            timeout_ms: Some(250),
+            ..RequestOptions::new(reqwest::Method::POST, server.completions_url())
+        };
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), send(options))
+            .await
+            .expect("send must settle within the test's own bound, not hang");
+        match result {
+            Err(ProviderError::Connection(error)) => {
+                assert_eq!(error.kind, ConnectionErrorKind::Timeout);
+                assert!(error.cause.contains("250ms timeout"), "{}", error.cause);
+            }
+            Err(other) => panic!("expected a timeout connection error, got {other}"),
+            Ok(_) => panic!("a stalled peer must not yield a response"),
+        }
+        // The request reached the server (the stall is post-connect).
+        assert_eq!(server.request_count(), 1);
+        // The signal was never fired: the timeout, not the abort, settled the wait.
+        assert!(!signal.is_cancelled());
     }
 
     /// A body that ends inside a multi-byte character yields the valid text plus exactly one

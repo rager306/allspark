@@ -79,6 +79,11 @@ enum ScriptedResponse {
         frames: Vec<String>,
         keep: usize,
     },
+    /// A held connection: the request is read and recorded, then the server
+    /// never answers. The client's request timeout / abort race must settle
+    /// the wait (a stalled peer, the shape `send` bounds with
+    /// `timeout_ms`). Dropping the server releases the hold.
+    Hang,
 }
 
 /// A wire-level mock inference server.
@@ -90,6 +95,9 @@ pub struct MockInferenceServer {
     queue: Arc<Mutex<Vec<ScriptedResponse>>>,
     requests: Arc<Mutex<Vec<RecordedRequest>>>,
     shutdown: Arc<AtomicBool>,
+    /// Wakes a held [`ScriptedResponse::Hang`] connection when the server
+    /// shuts down, so dropping the server never blocks on a hang.
+    hang_wake: Arc<(Mutex<()>, std::sync::Condvar)>,
     /// The thread the accept loop runs on; joined on drop.
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -113,9 +121,11 @@ impl MockInferenceServer {
         let queue: Arc<Mutex<Vec<ScriptedResponse>>> = Arc::new(Mutex::new(Vec::new()));
         let requests: Arc<Mutex<Vec<RecordedRequest>>> = Arc::new(Mutex::new(Vec::new()));
         let shutdown = Arc::new(AtomicBool::new(false));
+        let hang_wake = Arc::new((Mutex::new(()), std::sync::Condvar::new()));
         let queue_for_thread = Arc::clone(&queue);
         let requests_for_thread = Arc::clone(&requests);
         let shutdown_for_thread = Arc::clone(&shutdown);
+        let hang_wake_for_thread = Arc::clone(&hang_wake);
         let thread = std::thread::spawn(move || {
             for stream in listener.incoming() {
                 if shutdown_for_thread.load(Ordering::SeqCst) {
@@ -126,7 +136,13 @@ impl MockInferenceServer {
                 let requests = Arc::clone(&requests_for_thread);
                 // One connection = one request (`Connection: close`); handle
                 // inline so responses stay in arrival order.
-                let _ = serve(stream, &queue, &requests);
+                let _ = serve(
+                    stream,
+                    &queue,
+                    &requests,
+                    &shutdown_for_thread,
+                    &hang_wake_for_thread,
+                );
             }
         });
         MockInferenceServer {
@@ -134,6 +150,7 @@ impl MockInferenceServer {
             queue,
             requests,
             shutdown,
+            hang_wake,
             thread: Some(thread),
         }
     }
@@ -224,6 +241,14 @@ impl MockInferenceServer {
         });
     }
 
+    /// Queue a held connection: the request is read and recorded, then the
+    /// server never writes a response (the stalled-peer shape). The client's
+    /// request timeout / abort race settles the wait; dropping the server
+    /// releases the hold.
+    pub fn queue_hang(&self) {
+        self.push(ScriptedResponse::Hang);
+    }
+
     /// The responses still queued.
     ///
     /// # Panics
@@ -271,6 +296,9 @@ impl Drop for MockInferenceServer {
         // Wake the blocking `accept` with a throwaway connection so the loop
         // observes the shutdown flag and exits.
         let _ = TcpStream::connect(("127.0.0.1", self.port));
+        // Release any held `Hang` connection so `serve` returns and the
+        // accept loop can observe the shutdown flag.
+        self.hang_wake.1.notify_all();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -289,6 +317,8 @@ fn serve(
     mut stream: TcpStream,
     queue: &Mutex<Vec<ScriptedResponse>>,
     requests: &Mutex<Vec<RecordedRequest>>,
+    shutdown: &AtomicBool,
+    hang_wake: &(Mutex<()>, std::sync::Condvar),
 ) -> std::io::Result<()> {
     let Some(request) = read_request(&stream)? else {
         return Ok(());
@@ -303,6 +333,10 @@ fn serve(
         }
     };
     match response {
+        Some(ScriptedResponse::Hang) => {
+            hold_until_shutdown(shutdown, hang_wake);
+            Ok(())
+        }
         Some(response) => write_response(&mut stream, response),
         // An unscripted request is a test bug: answer loudly instead of
         // hanging the client.
@@ -315,6 +349,21 @@ fn serve(
                     .to_string(),
             },
         ),
+    }
+}
+
+/// Hold a connection open without answering until the server shuts down:
+/// the stalled-peer shape a request timeout must bound. Re-checks the
+/// shutdown flag so a spurious wake does not return early.
+fn hold_until_shutdown(shutdown: &AtomicBool, hang_wake: &(Mutex<()>, std::sync::Condvar)) {
+    let (lock, condvar) = hang_wake;
+    let mut guard = lock.lock().expect("mock hang lock");
+    while !shutdown.load(Ordering::SeqCst) {
+        let (next, _timeout) = condvar
+            .wait_timeout(guard, std::time::Duration::from_millis(50))
+            .expect("mock hang wait");
+        // `wait_timeout` re-acquires the lock; the loop re-checks the flag.
+        guard = next;
     }
 }
 
@@ -371,6 +420,10 @@ fn read_request(stream: &TcpStream) -> std::io::Result<Option<RecordedRequest>> 
 
 fn write_response(stream: &mut TcpStream, response: ScriptedResponse) -> std::io::Result<()> {
     match response {
+        // `serve` intercepts `Hang` before reaching here (it holds the
+        // connection instead of writing); this arm keeps the match
+        // exhaustive.
+        ScriptedResponse::Hang => Ok(()),
         ScriptedResponse::Body {
             status,
             headers,

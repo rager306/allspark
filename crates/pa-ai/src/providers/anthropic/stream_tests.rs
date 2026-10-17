@@ -3,7 +3,7 @@
 
 use serde_json::{json, Map};
 
-use crate::event_stream::AssistantMessageEventExt;
+use crate::event_stream::{AssistantMessageEvent, AssistantMessageEventExt};
 use crate::providers::anthropic::{stream_anthropic, AnthropicOptions};
 use crate::types::{
     AssistantContent, Context, Model, StopReason, StreamOptions, ThinkingContent, ToolCall,
@@ -279,5 +279,73 @@ async fn wire_caller_content_type_override_wins() {
         wire_header_values(&head, "content-type"),
         vec!["application/vnd.anthropic+json"],
         "the wire head: {head}"
+    );
+}
+
+/// An in-stream `error` SSE frame carrying a credit/balance signal and NO
+/// HTTP status must classify as `payment_required`, not `unknown`: the
+/// shared classifier only maps these through an explicit 402, so without the
+/// payment pin in `anthropic_sse_error` the kind fell through to `Unknown`,
+/// `is_permanent_provider_failure_kind` returned false, and the empty retry
+/// ladder never rerouted the drained wallet. Failover keys on
+/// `payment_required`, so the pin is what lets it act.
+#[tokio::test]
+async fn in_stream_credit_frame_classifies_as_payment_required() {
+    let sse = concat!(
+        "event: error\n",
+        "data: {\"type\":\"error\",\"error\":{\"type\":\"insufficient_credits\",\"message\":\"Your credit balance is too low\"}}\n\n"
+    )
+    .to_string();
+    let (addr, _head_rx) = serve_sse_capturing_head(sse).await;
+    let model: Model = serde_json::from_value(json!({
+        "id": "claude-test", "name": "Claude Test", "api": "anthropic-messages",
+        "provider": "anthropic", "baseUrl": format!("http://{addr}"), "reasoning": false,
+        "input": ["text"],
+        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+        "contextWindow": 128_000, "maxTokens": 8192
+    }))
+    .unwrap();
+    let options = AnthropicOptions::from_base(StreamOptions {
+        api_key: Some("sk-ant-api-test".into()),
+        ..Default::default()
+    });
+    let mut reader = stream_anthropic(
+        &model,
+        &Context {
+            system_prompt: None,
+            messages: vec![],
+            tools: None,
+        },
+        Some(&options),
+    );
+    let mut terminal = None;
+    while let Some(event) = reader.next_event().await {
+        if event.is_terminal() {
+            terminal = Some(event);
+        }
+    }
+    let AssistantMessageEvent::Error { error, .. } = terminal.expect("terminal event") else {
+        panic!("an in-stream error frame must terminate with an error event");
+    };
+    assert_eq!(error.stop_reason, StopReason::Error);
+    let details = error
+        .diagnostics
+        .as_ref()
+        .and_then(|diagnostics| {
+            diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic.type_ == "provider_stream_failure")
+        })
+        .and_then(|diagnostic| diagnostic.details.as_ref())
+        .expect("the failure rides the provider_stream_failure diagnostic");
+    assert_eq!(
+        details.get("kind").and_then(serde_json::Value::as_str),
+        Some("payment_required")
+    );
+    assert_eq!(
+        details
+            .get("providerErrorType")
+            .and_then(serde_json::Value::as_str),
+        Some("insufficient_credits")
     );
 }

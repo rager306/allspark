@@ -69,8 +69,19 @@ fn anthropic_sse_error(data: &str, request_id: Option<&str>) -> StreamFailureErr
             detail = Some(data.to_string());
         }
     }
+    // A credits/balance exhaustion signal with no HTTP status: the shared
+    // classifier only maps these through an explicit 402, so pin the payment
+    // kind here — a drained wallet never refills inside a retry ladder, and
+    // failover keys on `payment_required` (the same rule
+    // `stream_failure_from_error_frame` applies to in-stream frames).
+    let kind = match error_type.as_deref() {
+        Some(kind) if crate::provider_errors::is_payment_signal(kind) => {
+            StreamFailureKind::PaymentRequired
+        }
+        other => classify_stream_failure(other, None),
+    };
     let info = StreamFailureInfo {
-        kind: classify_stream_failure(error_type.as_deref(), None),
+        kind,
         provider_error_type: error_type,
         status: None,
         request_id,
