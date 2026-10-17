@@ -45,6 +45,7 @@ fn park_engine(dir: &std::path::Path) -> AgentSessionEngine {
         telemetry_disabled: None,
         cron_store: Some(cron_store),
         queued_steering_probe: None,
+        admission: crate::agent_engine::provider_admission::AdmissionClient::Disabled,
     })
     .unwrap()
 }

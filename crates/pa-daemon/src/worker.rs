@@ -219,6 +219,26 @@ fn kernel_cron_wiring(
     }
 }
 
+/// The provider-admission plane (ADR `ratelimit-admission`, M1): this
+/// worker's LLM streams and spawn admissions draw a slot from the
+/// SUPERVISOR's one cross-session registry (a per-worker limit would bound
+/// nothing — one daemon hosts one process per session). A worker without a
+/// supervisor socket (a standalone host) admits everything.
+fn admission_client(
+    config: &WorkerConfig,
+) -> crate::agent_engine::provider_admission::AdmissionClient {
+    if config.supervisor_socket_path.as_os_str().is_empty() {
+        crate::agent_engine::provider_admission::AdmissionClient::Disabled
+    } else {
+        crate::agent_engine::provider_admission::AdmissionClient::link(
+            std::sync::Arc::new(crate::supervisor_link::SupervisorLink::new(
+                config.supervisor_socket_path.clone(),
+            )),
+            config.token.clone(),
+        )
+    }
+}
+
 fn supervisor_link_config(config: &WorkerConfig) -> SupervisorLinkConfig {
     SupervisorLinkConfig {
         socket_path: config.supervisor_socket_path.clone(),
@@ -403,6 +423,7 @@ impl Worker {
                         telemetry_disabled: config.telemetry_disabled,
                         cron_store: Some(kernel_cron_wiring(&scheduled)),
                         queued_steering_probe: queued_steering_probe.clone(),
+                        admission: admission_client(&config),
                     }) {
                         Ok(engine) => {
                             let concrete = std::sync::Arc::new(engine);
@@ -433,6 +454,7 @@ impl Worker {
                         telemetry_disabled: config.telemetry_disabled,
                         cron_store: Some(kernel_cron_wiring(&scheduled)),
                         queued_steering_probe: queued_steering_probe.clone(),
+                        admission: admission_client(&config),
                     }) {
                         Ok(engine) => {
                             let concrete = std::sync::Arc::new(engine);

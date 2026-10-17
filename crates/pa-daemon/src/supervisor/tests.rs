@@ -2479,3 +2479,151 @@ proptest! {
         })?;
     }
 }
+
+/// The `provider_admission` wire arm (ADR `ratelimit-admission`, M1+M2):
+/// the supervisor is the ONE registry every worker's streams and spawns
+/// draw from, so a lease minted by one worker's request is settled by
+/// another's and the AIMD limit is shared across sessions.
+#[tokio::test]
+async fn provider_admission_leases_are_shared_across_worker_tokens() {
+    use pa_types::daemon::DaemonCommand;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let agent_dir = dir.path().join("agent");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    let supervisor = Arc::new(
+        Supervisor::new(SupervisorOptions {
+            socket_path: dir.path().join("daemon.sock"),
+            agent_dir: agent_dir.clone(),
+        })
+        .expect("supervisor"),
+    );
+
+    let acquire = |token: &str| DaemonCommand::ProviderAdmission {
+        id: None,
+        worker_token: token.to_string(),
+        action: "acquire_stream".to_string(),
+        provider: Some("zai".to_string()),
+        model: Some("glm-5.3".to_string()),
+        spawn_id: None,
+        lease_id: None,
+        outcome: None,
+        rest: Map::default(),
+    };
+
+    // Two workers, one provider: the first fills the limit's first slot and
+    // the second sees the shared in-flight count, not its own.
+    let first = supervisor
+        .handle_provider_admission("c1", "provider_admission", &acquire("worker-a"))
+        .await;
+    assert!(first.success, "the first lease must admit: {first:?}");
+    let first_lease = first.data.as_ref().unwrap()["leaseId"].as_u64().unwrap();
+    assert_eq!(
+        first.data.as_ref().unwrap()["inFlight"],
+        serde_json::json!(1)
+    );
+
+    let second = supervisor
+        .handle_provider_admission("c2", "provider_admission", &acquire("worker-b"))
+        .await;
+    assert!(second.success);
+    assert_eq!(
+        second.data.as_ref().unwrap()["inFlight"],
+        serde_json::json!(2),
+        "the registry is shared across worker tokens, not per worker"
+    );
+
+    // Settle the first with a 429: the SHARED limit halves for everyone.
+    let settle = DaemonCommand::ProviderAdmission {
+        id: None,
+        worker_token: "worker-a".to_string(),
+        action: "settle_stream".to_string(),
+        provider: None,
+        model: None,
+        spawn_id: None,
+        lease_id: Some(first_lease),
+        outcome: Some("rate_limited".to_string()),
+        rest: Map::default(),
+    };
+    let settled = supervisor
+        .handle_provider_admission("c3", "provider_admission", &settle)
+        .await;
+    assert!(settled.success, "the settle must land: {settled:?}");
+
+    let key = crate::agent_engine::provider_admission::ProviderKey::new("zai", "glm-5.3");
+    let snapshot = supervisor.provider_admission().snapshot(&key);
+    assert_eq!(snapshot.limit, 3, "6 -> 3 after one 429");
+    assert_eq!(snapshot.in_flight, 1, "the settled lease released its slot");
+    assert_eq!(snapshot.consecutive_429, 1);
+
+    // The worker-exit reap releases the second worker's slot: a session
+    // that dies mid-stream never leaks a permit.
+    supervisor.reap_provider_admission("worker-b");
+    assert_eq!(supervisor.provider_admission().snapshot(&key).in_flight, 0);
+}
+
+/// The admission arm authenticates the worker token and refuses an unknown
+/// action; both answer a plain failure the worker reads as fail-open.
+#[tokio::test]
+async fn provider_admission_requires_a_worker_token_and_a_known_action() {
+    use pa_types::daemon::DaemonCommand;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let agent_dir = dir.path().join("agent");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    let supervisor = Arc::new(
+        Supervisor::new(SupervisorOptions {
+            socket_path: dir.path().join("daemon.sock"),
+            agent_dir: agent_dir.clone(),
+        })
+        .expect("supervisor"),
+    );
+
+    let anonymous = DaemonCommand::ProviderAdmission {
+        id: None,
+        worker_token: String::new(),
+        action: "acquire_stream".to_string(),
+        provider: Some("zai".to_string()),
+        model: Some("glm-5.3".to_string()),
+        spawn_id: None,
+        lease_id: None,
+        outcome: None,
+        rest: Map::default(),
+    };
+    let refused = supervisor
+        .handle_provider_admission("c1", "provider_admission", &anonymous)
+        .await;
+    assert!(!refused.success);
+    assert!(
+        refused
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("authentication failed"),
+        "the anonymous ask is refused: {refused:?}"
+    );
+
+    let unknown = DaemonCommand::ProviderAdmission {
+        id: None,
+        worker_token: "worker-a".to_string(),
+        action: "steal_a_slot".to_string(),
+        provider: None,
+        model: None,
+        spawn_id: None,
+        lease_id: None,
+        outcome: None,
+        rest: Map::default(),
+    };
+    let refused = supervisor
+        .handle_provider_admission("c2", "provider_admission", &unknown)
+        .await;
+    assert!(!refused.success);
+    assert!(
+        refused
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("unknown provider admission action"),
+        "the unknown action is refused: {refused:?}"
+    );
+}

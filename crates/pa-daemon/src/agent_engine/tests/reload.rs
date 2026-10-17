@@ -69,6 +69,7 @@ fn credential_backed_engine_with_override(
         telemetry_disabled: Some(true),
         cron_store: None,
         queued_steering_probe: None,
+        admission: crate::agent_engine::provider_admission::AdmissionClient::Disabled,
     })
     .expect("engine")
 }
@@ -88,6 +89,7 @@ fn credential_backed_engine(dir: &std::path::Path) -> AgentSessionEngine {
         telemetry_disabled: Some(true),
         cron_store: None,
         queued_steering_probe: None,
+        admission: crate::agent_engine::provider_admission::AdmissionClient::Disabled,
     })
     .expect("engine")
 }
@@ -504,6 +506,7 @@ fn prime_inference_backed_engine(dir: &std::path::Path) -> AgentSessionEngine {
         telemetry_disabled: Some(true),
         cron_store: None,
         queued_steering_probe: None,
+        admission: crate::agent_engine::provider_admission::AdmissionClient::Disabled,
     })
     .expect("engine")
 }

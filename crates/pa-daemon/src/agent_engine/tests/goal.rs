@@ -45,6 +45,7 @@ fn recovery_rebuild_rehydrates_the_goal_from_the_session_file() {
             telemetry_disabled: None,
             cron_store: None,
             queued_steering_probe: None,
+            admission: crate::agent_engine::provider_admission::AdmissionClient::Disabled,
         })
         .unwrap(),
     );
@@ -172,6 +173,7 @@ fn recovered_engine_compaction_walk_sees_the_durable_history() {
         telemetry_disabled: None,
         cron_store: None,
         queued_steering_probe: None,
+        admission: crate::agent_engine::provider_admission::AdmissionClient::Disabled,
     })
     .unwrap();
     let mut events: Vec<EngineEvent> = Vec::new();
@@ -421,6 +423,7 @@ fn goal_turn_end_mints_the_loop_until_the_goal_completes() {
             telemetry_disabled: None,
             cron_store: None,
             queued_steering_probe: None,
+            admission: crate::agent_engine::provider_admission::AdmissionClient::Disabled,
         })
         .unwrap(),
     );
@@ -669,6 +672,7 @@ fn running_children_owe_the_continuation_and_settle_delivers_it() {
             telemetry_disabled: None,
             cron_store: None,
             queued_steering_probe: None,
+            admission: crate::agent_engine::provider_admission::AdmissionClient::Disabled,
         })
         .unwrap(),
     );
@@ -932,6 +936,7 @@ fn active_goal_aborted_turn_row_broadcasts_and_goal_accounting_skips_it() {
         telemetry_disabled: None,
         cron_store: None,
         queued_steering_probe: None,
+        admission: crate::agent_engine::provider_admission::AdmissionClient::Disabled,
     })
     .unwrap();
     let engine = std::sync::Arc::new(engine);

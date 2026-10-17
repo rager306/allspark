@@ -380,6 +380,11 @@ struct SupervisorChildSessionsInner {
     /// `/context` children immediately, not wait for the next refresh.
     delete_notifier: std::sync::Mutex<Option<DeleteNotifier>>,
     child_update_sink: std::sync::Mutex<Option<ChildUpdateSink>>,
+    /// The provider-admission plane (ADR `ratelimit-admission`, M2): a
+    /// spawn whose resolved `(provider, model)` is at its AIMD limit parks
+    /// in the daemon's FIFO queue here and is dispatched when a slot
+    /// frees. `Disabled` admits every spawn (standalone hosts).
+    admission: std::sync::Mutex<crate::agent_engine::provider_admission::AdmissionClient>,
     /// The parent session's semantic-edge recorder (wired once the session
     /// engine is built; the settle watcher records a returned child's last
     /// committed request into it). `None` until the build or for sessions
@@ -424,6 +429,9 @@ impl SupervisorChildSessions {
                 usage_sink: std::sync::Mutex::new(None),
                 delete_notifier: std::sync::Mutex::new(None),
                 child_update_sink: std::sync::Mutex::new(None),
+                admission: std::sync::Mutex::new(
+                    crate::agent_engine::provider_admission::AdmissionClient::Disabled,
+                ),
                 semantic_edges: std::sync::Mutex::new(None),
             }),
         }
@@ -440,6 +448,18 @@ impl SupervisorChildSessions {
             .delete_notifier
             .lock()
             .expect("delete notifier lock") = Some(notifier);
+    }
+
+    /// Wire the provider-admission plane this registry's spawns queue on.
+    pub fn set_admission_client(
+        &self,
+        admission: crate::agent_engine::provider_admission::AdmissionClient,
+    ) {
+        *self
+            .inner
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = admission;
     }
 
     pub(crate) fn set_child_update_sink(&self, sink: ChildUpdateSink) {

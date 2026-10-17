@@ -97,6 +97,7 @@ fn autonomous_gate_pass_and_failure_drive_the_loop() {
             telemetry_disabled: None,
             cron_store: None,
             queued_steering_probe: None,
+            admission: crate::agent_engine::provider_admission::AdmissionClient::Disabled,
         })
         .unwrap(),
     );
@@ -201,6 +202,7 @@ fn the_turn_loop_is_driven_by_the_driver_trait() {
             telemetry_disabled: None,
             cron_store: None,
             queued_steering_probe: None,
+            admission: crate::agent_engine::provider_admission::AdmissionClient::Disabled,
         })
         .unwrap(),
     );

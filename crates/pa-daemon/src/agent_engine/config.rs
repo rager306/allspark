@@ -39,6 +39,11 @@ pub struct AgentEngineConfig {
     /// the next boundary and the steer delivers next (the follow-up lane
     /// never stops the run).
     pub queued_steering_probe: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
+    /// The provider-admission plane (ADR `ratelimit-admission`, M1+M2):
+    /// the shared cross-session AIMD limit this worker's LLM streams and
+    /// spawn admissions draw a slot from. [`AdmissionClient::Disabled`]
+    /// admits everything (standalone hosts and scripted engines).
+    pub admission: crate::agent_engine::provider_admission::AdmissionClient,
 }
 
 /// Supervisor-link coordinates for a daemon worker.

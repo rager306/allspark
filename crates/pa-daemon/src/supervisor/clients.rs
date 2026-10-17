@@ -711,6 +711,12 @@ impl Supervisor {
                     .await;
                 (vec![response_line(&response)], false)
             }
+            DaemonCommand::ProviderAdmission { .. } => {
+                let response = self
+                    .handle_provider_admission(&command_id, &type_name, command)
+                    .await;
+                (vec![response_line(&response)], false)
+            }
             DaemonCommand::WorkerRosterDelta {
                 worker_token,
                 summary,

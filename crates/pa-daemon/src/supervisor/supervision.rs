@@ -269,6 +269,15 @@ impl Supervisor {
                 resident.note_retired();
                 self.registry.remove(&resident.worker_id).await;
                 self.registry.forget(&resident.worker_id).await;
+                // The give-up releases the dead worker's admission leases
+                // (a worker that died mid-stream must not shrink the pool).
+                let token = resident
+                    .descriptor
+                    .lock()
+                    .await
+                    .authentication_token
+                    .clone();
+                self.reap_provider_admission(&token);
                 // The residency change lands in the scheduled-jobs invalidation (TS
                 // `broadcastHeartbeatsChanged`): the dead worker's durable jobs are passive
                 // from here on, so a snapshot from while it was live must not be served again.

@@ -91,6 +91,37 @@ impl RlmSubagentHost for SupervisorChildSessions {
                     "subagent",
                 )
                 .await?;
+                // The spawn admission (ADR `ratelimit-admission`, M2): a
+                // spawn whose resolved (provider, model) is at its AIMD
+                // limit parks in the daemon's FIFO queue and is dispatched
+                // when a slot frees, after a randomized 0-2s stagger (the
+                // thundering-herd guard). The lease covers this spawn's
+                // CREATE admission only — the child's own LLM streams take
+                // their own slots, so a parent that is streaming never
+                // blocks its child (oh-my-pi #3749's narrow bracket).
+                let spawn_lease = {
+                    let admission = this
+                        .admission
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    let key =
+                        crate::agent_engine::provider_admission::ProviderKey::from_selector(&model);
+                    admission.spawn_gate(&key, &child_id).await
+                };
+                // `_spawn_lease` stays bound through this admission block:
+                // it is released when the child's create settles (the
+                // reservation is the create round trip, never the child's
+                // lifetime).
+                let (_spawn_lease, stagger) = match spawn_lease {
+                    Some((lease, stagger)) => (Some(lease), stagger),
+                    // Fail-open: a degraded admission plane never blocks a
+                    // spawn (the child's own streams still throttle).
+                    None => (None, Duration::ZERO),
+                };
+                if !stagger.is_zero() {
+                    tokio::time::sleep(stagger).await;
+                }
                 assert_thinking_supported(&this.agent_dir, request.thinking.as_deref(), &model)?;
                 let thinking = request.thinking.as_deref().or(identity.thinking.as_deref());
                 let child_dir = this.child_session_dir(&child_id, &identity)?;

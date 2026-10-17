@@ -187,6 +187,28 @@ pub enum DaemonCommand {
         #[serde(flatten)]
         rest: JsonMap,
     },
+    /// Worker -> supervisor provider admission (the daemon's cross-session
+    /// AIMD limit, ADR `ratelimit-admission`): `action` is one of
+    /// `acquire_stream` / `spawn_gate` / `settle_stream` / `release_stream`.
+    /// Authenticated by the worker token; clients never send this.
+    ProviderAdmission {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        worker_token: String,
+        action: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spawn_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lease_id: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outcome: Option<String>,
+        #[serde(flatten)]
+        rest: JsonMap,
+    },
     RosterUnsubscribe {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,

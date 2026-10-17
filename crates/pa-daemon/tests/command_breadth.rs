@@ -505,6 +505,10 @@ const WIRE_FIXTURES: &[(&str, &str)] = &[
         r#"{"type": "worker_roster_delta", "workerToken": "token", "summary": { }}"#,
     ),
     (
+        "provider_admission",
+        r#"{"type": "provider_admission", "workerToken": "token", "action": "acquire_stream", "provider": "zai", "model": "glm-5.3"}"#,
+    ),
+    (
         "get_worker_peer_transport",
         r#"{"type": "get_worker_peer_transport", "workerToken": "token", "targetActiveSessionId": "target"}"#,
     ),
@@ -553,6 +557,7 @@ fn known_command_types_match_the_ts_list() {
                     | "kill_kernel_bash"
                     | "mark_anthropic_warning_shown"
                     | "get_cache_stats"
+                    | "provider_admission"
             ),
             "unexpected non-TS command type: {extra}"
         );

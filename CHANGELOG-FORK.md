@@ -11,6 +11,37 @@ Pre-numbering history: two single-digit tags (fork.1, fork.2, 2026-10-13)
 marked the abandoned in-binary rebrand branch (`feat/allspark-identity`);
 they were local-only artifacts and are superseded by the NNN scheme below.
 
+## fork.004 — provider admission: the cross-session rate-limit plane
+
+- Tag: `allspark-v0.10.0-fork.004` (2026-10-17)
+- Base: `5fd98cfad` (fork.003).
+
+The day fork.003 was cut, nine parallel subagents on one provider exhausted
+its rate limit — three died retrying a ladder that could never succeed and
+three more hung in streams nobody timed out. This release gives the daemon
+the missing shared plane (ADR `adr-ratelimit-admission`, M1+M2):
+
+- **AIMD per (provider, model)** in the supervisor — one registry across
+  all session workers (a per-worker limit bounds nothing). Start 6,
+  floor 1, ceiling from `[agents] maxConcurrentPerProvider`; a successful
+  stream grows the limit back toward the ceiling, a 429 halves it.
+- **Narrow bracket**: a slot is held for one LLM stream's own lifetime
+  (acquire before the provider call, settle on outcome) — never for a
+  worker's lifetime, so a parent streaming never deadlocks its child's
+  spawn (oh-my-pi #3749's lesson, encoded as a test).
+- **Spawn queue**: a spawn whose provider is at its limit parks in the
+  daemon's FIFO and dispatches when a slot frees, behind a randomized
+  0-2s stagger (thundering-herd guard). The admission rides a new
+  token-authenticated worker-to-supervisor wire command; standalone
+  workers admit everything.
+- **Hygiene**: dead holders' leases are reaped; an expired wait budget
+  fails open instead of wedging the queue slot; the settle outcome is
+  classified from the assistant message itself.
+
+Tests: 14 admission units (AIMD halving/growth, FIFO dispatch of nine
+behind six, bracket lifetime, nested-spawn admission, stagger range,
+reaping, fail-open) — all deterministic, no sleeps.
+
 ## fork.003 — hardening wave + jev decision layer
 
 - Tag: `allspark-v0.10.0-fork.003` (2026-10-17)
@@ -69,6 +100,13 @@ test with the fix mutated away.
 - The golden bash corpus pins its git dates to explicit UTC offsets —
   replay hashes no longer depend on the host timezone.
 - Fork release numbering moves to zero-padded `fork.NNN`.
+
+> **Erratum (2026-10-17):** the numbering commit carried three in-progress
+> files of the next release's provider-admission work (an unregistered
+> module source plus settings plumbing) past an overly-broad `git add`.
+> The stray module was outside the crate's module tree, so the compiled
+> `fork.003` artifact is byte-identical to the audited code above; the
+> admission layer itself ships complete in fork.004.
 
 ## fork.002 — engine integrations and providers, live
 

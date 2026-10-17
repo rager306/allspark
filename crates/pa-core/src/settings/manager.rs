@@ -1276,6 +1276,44 @@ mod tests {
         outcome
     }
 
+    /// `[agents] maxConcurrentPerProvider`: unset reads the compiled default
+    /// (the AIMD start), a positive value is the ceiling, and a `0` or a
+    /// wrong-typed value behaves as unset instead of closing the pool.
+    #[test]
+    fn agents_max_concurrent_per_provider_resolves() {
+        let unset = SettingsManager::in_memory(&Settings::default());
+        assert_eq!(
+            unset.get_max_concurrent_per_provider(),
+            DEFAULT_PROVIDER_CONCURRENCY_LIMIT
+        );
+
+        let configured: Settings = serde_json::from_value(
+            serde_json::json!({ "agents": { "maxConcurrentPerProvider": 12 } }),
+        )
+        .unwrap();
+        let configured = SettingsManager::in_memory(&configured);
+        assert_eq!(configured.get_max_concurrent_per_provider(), 12);
+
+        // `0` is not a pool: it reads the default, never a closed gate.
+        let zero: Settings = serde_json::from_value(
+            serde_json::json!({ "agents": { "maxConcurrentPerProvider": 0 } }),
+        )
+        .unwrap();
+        assert_eq!(
+            SettingsManager::in_memory(&zero).get_max_concurrent_per_provider(),
+            DEFAULT_PROVIDER_CONCURRENCY_LIMIT
+        );
+
+        // A wrong-typed value loads as unset (the lenient-load contract).
+        let lenient = crate::settings::load::from_value_lenient(&serde_json::json!({
+            "agents": { "maxConcurrentPerProvider": "lots" }
+        }));
+        assert_eq!(
+            SettingsManager::in_memory(&lenient).get_max_concurrent_per_provider(),
+            DEFAULT_PROVIDER_CONCURRENCY_LIMIT
+        );
+    }
+
     /// The `debugLog` block reads its level/rotation bounds; an invalid level
     /// normalizes to `debug` and unset bounds fall back to the defaults.
     #[test]

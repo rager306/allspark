@@ -9,6 +9,7 @@ mod clients;
 mod launch_budget;
 mod notes;
 mod options;
+mod provider_admission;
 mod root_identity;
 mod routing;
 mod sessions;
@@ -190,6 +191,12 @@ pub struct Supervisor {
     /// Memoized ledger over the default sessions dir (ledgers are per
     /// sessions-dir families; another dir gets a fresh instance).
     rlm_ledger: tokio::sync::Mutex<Option<std::sync::Arc<crate::rlm_ledger::RlmSpawnLedger>>>,
+    /// The cross-session provider admission registry (ADR
+    /// `ratelimit-admission`): ONE per supervisor, shared by every session
+    /// worker's LLM streams and spawn admissions. Built on first use from
+    /// the live `[agents] maxConcurrentPerProvider` setting.
+    pub(crate) provider_admission:
+        std::sync::Mutex<Option<Arc<crate::agent_engine::provider_admission::ProviderAdmission>>>,
     /// The update-prepare transaction: at most one per supervisor;
     /// empty = `Serving`.
     update_prepare: PrepareCoordinator,
@@ -274,6 +281,7 @@ impl Supervisor {
             shutdown_notify: tokio::sync::Notify::new(),
             log,
             rlm_ledger: tokio::sync::Mutex::new(None),
+            provider_admission: std::sync::Mutex::new(None),
             update_prepare: PrepareCoordinator::new(),
             mutation_drain: MutationDrainLatch::new(),
             update_budget: UpdateTimeoutBudget::from_env(),

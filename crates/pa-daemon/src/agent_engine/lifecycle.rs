@@ -51,12 +51,16 @@ impl AgentSessionEngine {
                 config.telemetry_disabled == Some(true),
             ));
         let children = config.supervisor_link.as_ref().map(|link_config| {
-            Arc::new(SupervisorChildSessions::new(
+            let children = Arc::new(SupervisorChildSessions::new(
                 Arc::clone(&link),
                 config.agent_dir.clone(),
                 link_config.active_session_id.clone(),
                 std::sync::Arc::clone(&model_refusal_telemetry),
-            ))
+            ));
+            // The spawn admission queue rides the same cross-session plane
+            // as the streams (ADR `ratelimit-admission`, M2).
+            children.set_admission_client(config.admission.clone());
+            children
         });
         let autonomous_driver = std::sync::RwLock::new(std::sync::Arc::new(
             pa_core::autonomous::ShellAutonomousDriver::new(config.cwd.clone()),
@@ -875,6 +879,33 @@ impl AgentSessionEngine {
         // `set_model` swaps it so the built session follows without a
         // rebuild.
         let stream_fn = switchable_stream_fn(std::sync::Arc::clone(&self.provider_target));
+        // The narrow provider bracket (ADR `ratelimit-admission`, M1): the
+        // admission slot is taken per LLM STREAM and released on its
+        // settle/error/abort/drop — never held for the worker's lifetime
+        // (that deadlocks spawn trees, oh-my-pi #3749). The key resolves
+        // per call from the same slot the inner stream reads, so a
+        // `set_model`/failover swap is charged to the serving provider.
+        let stream_fn = {
+            let key_slot = std::sync::Arc::clone(&self.provider_target);
+            let key_of: crate::agent_engine::provider_admission::KeyResolver =
+                std::sync::Arc::new(move || {
+                    let target = key_slot.read().expect("provider target lock").clone();
+                    target.map_or_else(
+                        || crate::agent_engine::provider_admission::ProviderKey::new("", ""),
+                        |target| {
+                            crate::agent_engine::provider_admission::ProviderKey::new(
+                                target.model.provider,
+                                target.model.id,
+                            )
+                        },
+                    )
+                });
+            crate::agent_engine::provider_admission::admit_stream_fn(
+                stream_fn,
+                key_of,
+                self.config.admission.clone(),
+            )
+        };
         {
             // The build's resolve-and-install serializes with `/reload`'s
             // live-input refresh (the other slot writers' fence): a reload

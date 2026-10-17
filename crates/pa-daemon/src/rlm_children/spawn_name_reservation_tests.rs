@@ -464,3 +464,95 @@ async fn concurrent_parent_renames_keep_the_last_applied_name() {
     let rows = sessions.list_subagents().await.expect("roster");
     assert_eq!(rows[0].session_name, "second");
 }
+
+/// The spawn queue against the real host seam (ADR `ratelimit-admission`,
+/// M2): nine spawns whose resolved provider is at its limit park in the
+/// daemon's FIFO queue — three behind a limit of six — and each freed
+/// spawn slot dispatches exactly one, in arrival order.
+#[tokio::test]
+async fn nine_spawns_behind_the_provider_limit_queue_three_and_dispatch_fifo() {
+    use crate::agent_engine::provider_admission::{
+        AdmissionClient, ProviderAdmission, ScriptedStagger,
+    };
+
+    let (create_seen_tx, mut create_seen_rx) = mpsc::unbounded_channel();
+    let (verdict_tx, verdict_rx) = mpsc::unbounded_channel();
+    let (rename_seen_tx, _rename_seen_rx) = mpsc::unbounded_channel();
+    let sessions =
+        sessions_with_gated_supervisor(create_seen_tx, verdict_rx, rename_seen_tx, None).await;
+    // The shared registry with the incident's limit: six. The stagger is
+    // scripted to zero — the dispatch SPREADING is the unit battery's
+    // assertion; here the queue's ORDER is the subject.
+    let registry = ProviderAdmission::with_stagger(6, ScriptedStagger::new([0]));
+    sessions.set_admission_client(AdmissionClient::local(std::sync::Arc::clone(&registry)));
+    let key = crate::agent_engine::provider_admission::ProviderKey::new("mock", "mock-1");
+
+    // Nine spawns, admitted one at a time so the arrival order is the
+    // index order (the queue's FIFO promise is about ARRIVAL order).
+    let mut spawned = Vec::new();
+    for index in 0..9 {
+        let sessions = sessions.clone();
+        let name = format!("worker-{index}");
+        spawned.push(tokio::spawn(async move {
+            sessions.spawn(spawn_request(&name, "ship the lane")).await
+        }));
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while registry.snapshot(&key).in_flight + registry.snapshot(&key).queued != index + 1 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "spawn {index} never reached the admission plane"
+            );
+            tokio::task::yield_now().await;
+        }
+    }
+    // Six took the pool; three queued.
+    for _ in 0..6 {
+        create_seen_rx
+            .recv()
+            .await
+            .expect("the first six spawns reach the create admission");
+    }
+    assert_eq!(registry.snapshot(&key).in_flight, 6);
+    assert_eq!(registry.snapshot(&key).queued, 3, "three spawns queued");
+    assert!(
+        create_seen_rx.try_recv().is_err(),
+        "no seventh create reaches the supervisor while the pool is exhausted"
+    );
+
+    // Admit three creates: each settle releases its spawn slot, and each
+    // release dispatches exactly ONE queued spawn (whose own create then
+    // reaches the supervisor).
+    for dispatched in 1..=3 {
+        verdict_tx.send(true).expect("admit a parked create");
+        create_seen_rx
+            .recv()
+            .await
+            .expect("a queued spawn dispatches on the freed slot");
+        assert_eq!(
+            registry.snapshot(&key).queued,
+            3 - dispatched,
+            "one queued spawn per released slot"
+        );
+    }
+    // The queue is empty; six creates are still parked. Admit them all.
+    for _ in 0..6 {
+        verdict_tx.send(true).expect("admit the remaining create");
+    }
+
+    let mut names = Vec::new();
+    for handle in spawned {
+        let handle = handle
+            .await
+            .expect("the spawn task must not panic")
+            .expect("every queued spawn admits once its slot frees");
+        names.push(handle.name);
+    }
+    assert_eq!(registry.snapshot(&key).queued, 0);
+    assert_eq!(
+        names,
+        (0..9)
+            .map(|index| format!("worker-{index}"))
+            .collect::<Vec<_>>(),
+        "the dispatch order is the arrival order"
+    );
+}

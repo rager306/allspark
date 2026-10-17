@@ -20,7 +20,8 @@ pub use storage::{
     FileSettingsStorage, InMemorySettingsStorage, SettingsScope, SettingsStorage, CONFIG_DIR_NAME,
 };
 pub use types::{
-    AgentsSettings, AutoRefineSettings, AutonomousSettings, CompactionSettings, GraphSettings, JevCacheSettings,
-    JevEnabledSetting, JevSettings, LspSettings, McpServerConfig, QueueModeSetting, Settings,
-    ThinkingLevelSetting, ToolProfileSettings, TransportSetting, UpdateChannel,
+    AgentsSettings, AutoRefineSettings, AutonomousSettings, CompactionSettings, GraphSettings,
+    JevCacheSettings, JevEnabledSetting, JevSettings, LspSettings, McpServerConfig,
+    QueueModeSetting, Settings, ThinkingLevelSetting, ToolProfileSettings, TransportSetting,
+    UpdateChannel,
 };
