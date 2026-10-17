@@ -7,7 +7,8 @@
 //! intact from main.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::path::Path;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use super::{Future, PathBuf, Pin};
 
@@ -20,6 +21,47 @@ pub(super) struct CliInteractionTelemetry {
     pub(super) cwd: PathBuf,
     pub(super) agent_dir: PathBuf,
     pub(super) counters: Mutex<TuiCounters>,
+    settings: Mutex<CachedSettings>,
+}
+
+/// One settings manager held for the run, re-read (`SettingsManager::reopen`)
+/// only when a settings document's stat stamp changed — the per-interaction
+/// gate re-reads the live `/telemetry` switch without rebuilding (and
+/// re-parsing) the manager on every keystroke.
+struct CachedSettings {
+    manager: pa_core::settings::SettingsManager,
+    stamp: (Option<FileStamp>, Option<FileStamp>),
+    /// How many times the cache reopened the manager (test-only witness).
+    #[cfg(test)]
+    reopens: usize,
+}
+
+/// A settings document's (modified time, length): the same identity the
+/// settings storage's read cache validates against — every writer changes
+/// one, so a match means the cached parse is current.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FileStamp {
+    modified: Option<std::time::SystemTime>,
+    len: u64,
+}
+
+fn file_stamp(path: &Path) -> Option<FileStamp> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some(FileStamp {
+        modified: metadata.modified().ok(),
+        len: metadata.len(),
+    })
+}
+
+/// The global-then-project settings documents' stat stamps.
+fn settings_stamp(cwd: &Path, agent_dir: &Path) -> (Option<FileStamp>, Option<FileStamp>) {
+    (
+        file_stamp(&agent_dir.join("settings.json")),
+        file_stamp(
+            &cwd.join(pa_core::settings::CONFIG_DIR_NAME)
+                .join("settings.json"),
+        ),
+    )
 }
 
 /// The session run's adoption counters (`tui_*_count`, `feature_*_count`,
@@ -32,33 +74,63 @@ pub(super) struct TuiCounters {
 
 impl CliInteractionTelemetry {
     pub(super) fn new(cwd: PathBuf, agent_dir: PathBuf) -> Self {
+        let stamp = settings_stamp(&cwd, &agent_dir);
         Self {
+            settings: Mutex::new(CachedSettings {
+                manager: pa_core::settings::SettingsManager::create(&cwd, &agent_dir),
+                stamp,
+                #[cfg(test)]
+                reopens: 0,
+            }),
             cwd,
             agent_dir,
             counters: Mutex::default(),
         }
     }
 
-    fn settings(&self) -> pa_core::settings::SettingsManager {
-        pa_core::settings::SettingsManager::create(&self.cwd, &self.agent_dir)
+    /// The live settings view, stat-validated: unchanged documents reuse the
+    /// held manager; a changed one reopens it (the `/telemetry` switch stays
+    /// live without a full rebuild per call).
+    fn settings(&self) -> MutexGuard<'_, CachedSettings> {
+        let mut cache = self.settings.lock().unwrap_or_else(PoisonError::into_inner);
+        let stamp = settings_stamp(&self.cwd, &self.agent_dir);
+        if stamp != cache.stamp {
+            cache.manager = cache.manager.reopen();
+            cache.stamp = stamp;
+            #[cfg(test)]
+            {
+                cache.reopens += 1;
+            }
+        }
+        cache
     }
 
     /// A one-shot client, or `None` when telemetry is opted out.
     fn client(&self) -> Option<pa_telemetry::TelemetryClient> {
         let settings = self.settings();
-        if crate::mode::telemetry_disabled(&settings) {
+        if crate::mode::telemetry_disabled(&settings.manager) {
             return None;
         }
         Some(pa_core::session_engine::telemetry::build_client(
-            &settings,
+            &settings.manager,
             &self.agent_dir,
         ))
+    }
+
+    /// How many times the settings cache reopened the manager (test-only
+    /// witness of the stat-validated reuse).
+    #[cfg(test)]
+    fn settings_reopens(&self) -> usize {
+        self.settings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .reopens
     }
 
     /// Count only while telemetry is on, so turning it on later never
     /// sends what happened while it was off.
     fn with(&self, update: impl FnOnce(&mut TuiCounters)) {
-        if crate::mode::telemetry_disabled(&self.settings()) {
+        if crate::mode::telemetry_disabled(&self.settings().manager) {
             return;
         }
         update(
@@ -364,6 +436,52 @@ mod tests {
         telemetry.scroll_used("page", false).await;
         let counters = telemetry.counters.lock().unwrap();
         assert_eq!(counters.counts.get("tui_scroll_count"), Some(&1));
+    }
+
+    /// The settings manager is rebuilt once per settings change, not per call:
+    /// interactions reuse the held manager while the stat stamps stand, and a
+    /// settings write reopens it — the live `/telemetry` switch still applies
+    /// on the very next interaction.
+    #[test]
+    fn settings_manager_reopens_only_when_settings_change() {
+        crate::mode::tests::with_clean_telemetry_env(|| {
+            futures::executor::block_on(count_with_cached_settings());
+        });
+    }
+
+    async fn count_with_cached_settings() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let agent_dir = dir.path().join("agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let telemetry = CliInteractionTelemetry::new(dir.path().to_path_buf(), agent_dir.clone());
+        telemetry.scroll_used("page", false).await;
+        telemetry.hyperlinks_active(true).await;
+        assert_eq!(
+            telemetry.settings_reopens(),
+            0,
+            "unchanged settings documents must reuse the held manager"
+        );
+        {
+            let counters = telemetry.counters.lock().unwrap();
+            assert_eq!(counters.counts.get("tui_scroll_count"), Some(&1));
+        }
+        // A settings write moves the stamps: the next gate reopens and the
+        // turned-off switch stops the counting on that same interaction.
+        pa_core::settings::SettingsManager::create(dir.path(), &agent_dir)
+            .set_telemetry_enabled(false)
+            .unwrap();
+        telemetry.scroll_used("page", false).await;
+        assert_eq!(
+            telemetry.settings_reopens(),
+            1,
+            "a settings write must reopen the manager exactly once"
+        );
+        let counters = telemetry.counters.lock().unwrap();
+        assert_eq!(
+            counters.counts.get("tui_scroll_count"),
+            Some(&1),
+            "the turned-off switch stopped the counting"
+        );
     }
 
     /// The agents view shares one telemetry handle across the sessions it

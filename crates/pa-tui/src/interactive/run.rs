@@ -210,6 +210,12 @@ async fn run_interactive_surface(
         mpsc::unbounded_channel::<crate::session_ui::CommandCatalogUpdate>();
     let (backfill_tx, mut backfill_rx) =
         mpsc::unbounded_channel::<crate::session_ui::TranscriptBackfillNote>();
+    // The spawned post-compaction transcript rebuild (the bounded `get_messages`
+    // re-fetch) and the tray-stats refreshes deliver here; the loop folds them
+    // in off the render path.
+    let (transcript_rebuild_tx, mut transcript_rebuild_rx) =
+        mpsc::unbounded_channel::<crate::session_ui::TranscriptRebuildNote>();
+    let (stats_tx, mut stats_rx) = mpsc::unbounded_channel::<crate::session_ui::StatsNote>();
     // The double-Ctrl+C force-quit guard: the terminal reader observes the pair while this loop is
     // wedged in a daemon request; a std-thread watchdog enforces the exit deadline without the
     // runtime.
@@ -311,6 +317,8 @@ async fn run_interactive_surface(
         let factory_tx = factory_tx.clone();
         let commands_tx = commands_tx.clone();
         let backfill_tx = backfill_tx.clone();
+        let transcript_rebuild_tx = transcript_rebuild_tx.clone();
+        let stats_tx = stats_tx.clone();
         let waits_through_update_restart = route == SessionOpenRoute::AgentsView;
         tokio::spawn(async move {
             crate::update_restart_wait::wait_through_update_restart(
@@ -339,6 +347,8 @@ async fn run_interactive_surface(
                     let factory_tx = factory_tx.clone();
                     let commands_tx = commands_tx.clone();
                     let backfill_tx = backfill_tx.clone();
+                    let transcript_rebuild_tx = transcript_rebuild_tx.clone();
+                    let stats_tx = stats_tx.clone();
                     async move {
                         let (client, events) = match first {
                             Some(first) => first,
@@ -367,6 +377,8 @@ async fn run_interactive_surface(
                                 commands: commands_tx,
                             },
                             backfill_tx,
+                            transcript_rebuild_tx,
+                            stats_tx,
                         )
                         .await?;
                         Ok((events, session))
@@ -831,10 +843,16 @@ async fn run_interactive_surface(
         if !session.dirty {
             session.spawn_pending_backfill();
         }
+        // The enhanced-key capability settles once per run, like the OSC 8 gate below: one
+        // adoption event reports the combination. The trait impl may read settings (or build a
+        // one-shot client) before its counters resolve, so the event is spawned instead of
+        // awaited — the loop must never wait on telemetry.
         if enhanced_keys_pending {
             if let Some((kitty, modify_other_keys)) = crate::enhanced_keys::settle_state() {
-                if let Some(telemetry) = &session.telemetry {
-                    telemetry.enhanced_keys(kitty, modify_other_keys).await;
+                if let Some(telemetry) = session.telemetry.clone() {
+                    tokio::spawn(async move {
+                        telemetry.enhanced_keys(kitty, modify_other_keys).await;
+                    });
                 }
                 enhanced_keys_pending = false;
             }
@@ -1330,15 +1348,16 @@ async fn run_interactive_surface(
                     }
                     // A succeeded compaction rebuilt the durable transcript: replace the view's
                     // chat with it, and refresh the tray usage the same way a settled turn does.
+                    // Both fetches are bounded 10s — spawned, never awaited here, or a slow
+                    // daemon answer starves input and the spinner for up to ~20s; the notes
+                    // deliver through their channels (the transcript-backfill pattern).
                     if session.transcript_stale {
-                        session.rebuild_transcript(&mut view).await;
-                        session.refresh_stats().await;
-                        session.rebuild_tray(&mut view);
+                        session.spawn_transcript_rebuild();
+                        session.spawn_stats_refresh();
                     }
-                    // A settled turn refreshes the tray's context usage.
+                    // A settled turn refreshes the tray's context usage (same spawned fetch).
                     if was_active && !session.turn_active {
-                        session.refresh_stats().await;
-                        session.rebuild_tray(&mut view);
+                        session.spawn_stats_refresh();
                     }
                     // A `session_binding` supersede notice: the session lives under a new active
                     // id, so re-attach to it — the transcript rebuilds from the snapshot (silent,
@@ -1536,6 +1555,16 @@ async fn run_interactive_surface(
             maybe_backfill = backfill_rx.recv() => {
                 if let Some(note) = maybe_backfill {
                     session.apply_transcript_backfill(note, &mut view);
+                }
+            }
+            maybe_rebuild = transcript_rebuild_rx.recv() => {
+                if let Some(note) = maybe_rebuild {
+                    session.apply_transcript_rebuild(note, &mut view);
+                }
+            }
+            maybe_stats = stats_rx.recv() => {
+                if let Some(note) = maybe_stats {
+                    session.apply_stats_note(note, &mut view);
                 }
             }
             maybe_compaction_abort = compaction_abort_rx.recv() => {
@@ -2038,6 +2067,11 @@ async fn run_interactive_surface(
         session.transcript_backfill = None;
         while let Ok(note) = backfill_rx.try_recv() {
             session.apply_transcript_backfill(note, &mut view);
+        }
+        // A rebuild that already arrived applies the same way before the view
+        // goes away (an in-flight fetch is abandoned with its task).
+        while let Ok(note) = transcript_rebuild_rx.try_recv() {
+            session.apply_transcript_rebuild(note, &mut view);
         }
     }
     if renderer.is_terminal() && !handing_off {

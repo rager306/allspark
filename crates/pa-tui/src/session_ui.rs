@@ -149,6 +149,28 @@ pub(crate) struct TranscriptBackfillNote {
     pub entries: std::result::Result<Vec<ChatEntry>, String>,
 }
 
+/// A finished background transcript rebuild (the post-compaction re-fetch): the
+/// epoch stamps the rebuild generation it belongs to, `sequence` the event
+/// watermark the fetch ran under — the apply re-fetches when the view moved
+/// past it instead of clearing newer rows. `entries` is `None` when the fetch
+/// failed (the pushed outcome row stays).
+pub(crate) struct TranscriptRebuildNote {
+    pub epoch: u64,
+    pub sequence: u64,
+    pub incomplete_history: bool,
+    pub entries: Option<Vec<ChatEntry>>,
+}
+
+/// A finished background tray-stats refresh (the settled-turn / post-compaction
+/// `get_session_stats` fetch): the epoch stamps the refresh generation it
+/// belongs to. Only delivered when the fetch succeeded — a failed fetch keeps
+/// the previous usage, exactly like the inline refresh did.
+#[derive(Clone, Copy)]
+pub(crate) struct StatsNote {
+    pub epoch: u64,
+    pub context: Option<crate::chrome::ContextUsage>,
+}
+
 pub(crate) struct SessionUi {
     pub(crate) client: DaemonClient,
     pub(crate) active_session_id: String,
@@ -364,6 +386,14 @@ pub(crate) struct SessionUi {
     pending_backfill: Option<usize>,
     backfill_seam: crate::snapshot::BackfillSeam,
     backfill_notes: mpsc::UnboundedSender<TranscriptBackfillNote>,
+    /// Where the spawned post-compaction transcript rebuild delivers its
+    /// replacement chat (the run loop folds it in off the render path).
+    transcript_rebuild_notes: mpsc::UnboundedSender<TranscriptRebuildNote>,
+    /// Monotonic id of the latest issued tray-stats refresh; a late reply from
+    /// an older refresh never repaints a newer one.
+    stats_epoch: u64,
+    /// Where the spawned tray-stats refreshes deliver the refreshed usage.
+    stats_notes: mpsc::UnboundedSender<StatsNote>,
     /// Adoption telemetry (counted into `tui exit`); `None` drops events.
     pub(crate) telemetry: Option<std::sync::Arc<dyn crate::interactive::InteractionTelemetry>>,
     scroll_adoption_emitted: bool,
