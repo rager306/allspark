@@ -51,7 +51,12 @@ use serde_json::{json, Value};
 
 /// Env keys this box's own worker sets; they must not leak into spawned
 /// daemons. `PI_PACKAGE_DIR` too: a Rust-checkout value kills the TS CLI.
-const SCRUB_ENV: [&str; 10] = [
+/// The ambient path overrides matter as much as the role vars: a session dir
+/// or daemon socket inherited from the enclosing agent session redirects the
+/// sandbox daemon's roster scan and CLI discovery to the live install.
+const SCRUB_ENV: [&str; 12] = [
+    "PRIME_AGENT_SESSION_DIR",
+    "PRIME_AGENT_DAEMON_SOCKET",
     "PRIME_AGENT_INTERNAL_DAEMON_WORKER",
     "PRIME_AGENT_INTERNAL_DAEMON_WORKER_TOKEN",
     "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID",

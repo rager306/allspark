@@ -306,7 +306,11 @@ const CORPUS: &[&[&str]] = &[
 
 fn ts_binary() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("PA_TS_BINARY") {
-        return Some(PathBuf::from(path));
+        // Same skip contract as daemon_commands_e2e: a configured-but-absent
+        // path means "no TS reference in this environment" (skip), not a
+        // binary to exec and fail on with exit 127.
+        let path = PathBuf::from(path);
+        return path.exists().then_some(path);
     }
     let found = Command::new("which")
         .arg("prime-agent")

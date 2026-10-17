@@ -219,7 +219,14 @@ fn daemon_attached_command(
     args: &[&str],
 ) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
+    // The test's HOME pins every derived path; ambient PRIME_AGENT_* overrides
+    // from an enclosing agent session would redirect the daemon's agent dir,
+    // sessions, and socket away from the sandbox home (the descriptor
+    // assertions then read a home that never saw the worker).
     command
+        .env_remove("PRIME_AGENT_CODING_AGENT_DIR")
+        .env_remove("PRIME_AGENT_SESSION_DIR")
+        .env_remove("PRIME_AGENT_DAEMON_SOCKET")
         .args(args)
         .arg("--daemon-socket")
         .arg(socket)

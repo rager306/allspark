@@ -136,6 +136,13 @@ fn make_session_active(socket: &Path, session_path: &Path, cwd: &Path) -> String
 fn run_print(args: &[&str], env: &[(String, String)]) -> (String, String, i32) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
     command.args(args);
+    // An enclosing agent session exports PRIME_AGENT_* path overrides; without
+    // clearing them the CLI persists sessions into the ambient agent dir
+    // instead of this test's sandbox paths.
+    command
+        .env_remove("PRIME_AGENT_CODING_AGENT_DIR")
+        .env_remove("PRIME_AGENT_SESSION_DIR")
+        .env_remove("PRIME_AGENT_DAEMON_SOCKET");
     for (key, value) in env {
         command.env(key, value);
     }
