@@ -11,6 +11,40 @@ Pre-numbering history: two single-digit tags (fork.1, fork.2, 2026-10-13)
 marked the abandoned in-binary rebrand branch (`feat/allspark-identity`);
 they were local-only artifacts and are superseded by the NNN scheme below.
 
+## fork.005 — judge consumers, admission maturity, deviation suite
+
+- Tag: `allspark-v0.10.0-fork.005` (2026-10-17)
+- Base: `d473a9c2a` (fork.004) — five commits.
+
+**The judge layer grows its first consumers and a second backend.** SubQ
+Snap joins the `[jev]` chain as a pure catalog entry (it speaks the System
+One wire byte-for-byte; the live smoke ran green against the real endpoint
+and its 100M free input tokens make it the default test judge). Two
+consumers ship behind their own gates, both default off and advisory-only:
+auto-thinking classifies each turn's difficulty with one question and sets
+the thinking level; graph re-rank filters the top-8 search candidates with
+one judgment, demoting confident non-answers with explicit labels. The
+promotion discipline from the RuFlo lesson is structural (frozen corpora
+with fingerprints, dev/test splits, one test touch, near-tie rejection) —
+scripted-judge runs promote both consumers; flipping the defaults requires
+a live-judge run.
+
+**Provider admission matures (M3-M5).** Retry policy classifies
+rate-limit reasons (EN/RU/CN shapes) with reason-specific waits, honours
+Retry-After as a minimum with a cap, and gets 5-7 attempts on 429 ladders
+instead of the three that killed subagents; quota and spend classes reroute
+immediately. The supervisor registry gains per-provider retry budgets and
+a circuit breaker whose open state fails stream admission fast into
+failover, and a socket-level snapshot exposes limits, streaks, queues and
+breaker state.
+
+**Real-task deviation suite (black-box levels 1+2).** Twelve seed tasks
+from this fork's real failures with state oracles and trace invariants; a
+stdlib runner with per-trial sandboxing, secret canaries, mock providers,
+pass^N grading, behavioral fingerprints and a baseline delta gate. Its
+first catch: the launcher did not pin `PRIME_AGENT_SESSION_DIR` — fixed
+and green two-for-two.
+
 ## fork.004 — provider admission: the cross-session rate-limit plane
 
 - Tag: `allspark-v0.10.0-fork.004` (2026-10-17)
