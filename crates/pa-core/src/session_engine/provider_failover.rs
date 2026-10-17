@@ -13,11 +13,13 @@ use pa_types::ai::Model;
 use super::auto_retry::{run_turn_with_auto_retry, AutoRetryEvent, RetryStartReason};
 use super::provider_park::{is_quota_block_failure, ParkDecisionCallback};
 use super::provider_retry::{
-    has_provider_stream_failure, is_agent_lifecycle_failure, is_context_overflow_failure,
-    is_faux_provider_queue_exhausted, is_permanent_provider_failure_kind,
-    is_unsupported_tool_failure, jittered_delay_ms, provider_retry_delay,
-    provider_stream_failure_kind, provider_stream_failure_retry_after_ms,
-    provider_stream_failure_status, retry_jitter_rand01, ProviderRetryDelay, ProviderRetryPolicy,
+    effective_max_retries, has_provider_stream_failure, is_agent_lifecycle_failure,
+    is_context_overflow_failure, is_faux_provider_queue_exhausted,
+    is_permanent_provider_failure_kind, is_unsupported_tool_failure, jittered_delay_ms,
+    provider_retry_delay, provider_retry_delay_for_reason, provider_stream_failure_kind,
+    provider_stream_failure_retry_after_ms, provider_stream_failure_status,
+    rate_limit_reason_for_message, retry_jitter_rand01, ProviderRetryDelay, ProviderRetryPolicy,
+    RateLimitReason,
 };
 
 /// Per-provider retry budget and backoff schedule (settings
@@ -74,6 +76,28 @@ pub fn failover_retry_delay(
         attempt,
         retry_after_ms,
         &per_provider_policy(failover, server_wait_cap_ms),
+    )
+}
+
+/// [`failover_retry_delay`] under the M3 reason discipline (see
+/// [`provider_retry_delay_for_reason`]): the per-provider chain adopts
+/// the typed-reason Retry-After handling — hint-as-minimum capped at
+/// 60s, class backoffs, account-local settle/reroute.
+#[must_use]
+pub fn failover_retry_delay_for_reason(
+    reason: Option<RateLimitReason>,
+    attempt: u32,
+    retry_after_ms: Option<u64>,
+    failover: &ProviderFailoverPolicy,
+    server_wait_cap_ms: u64,
+    rand01: f64,
+) -> ProviderRetryDelay {
+    provider_retry_delay_for_reason(
+        reason,
+        attempt,
+        retry_after_ms,
+        &per_provider_policy(failover, server_wait_cap_ms),
+        rand01,
     )
 }
 
@@ -170,6 +194,13 @@ where
         let payment_reroute = provider_stream_failure_kind(&message).as_deref()
             == Some("payment_required")
             && candidate_index < candidates.len();
+        // M3 (ADR `ratelimit-admission`): an account-local rate limit
+        // (a spent quota or spend cap) re-routes the same way — the
+        // account cannot serve this provider's traffic until its window
+        // resets, so quick retries on it are dead weight too.
+        let reason = rate_limit_reason_for_message(&message);
+        let account_local_reroute = reason.is_some_and(RateLimitReason::is_account_local)
+            && candidate_index < candidates.len();
         // Permanent and deterministic failures never walk the chain: a
         // rejected request fails the same way on every provider.
         let non_retryable = is_agent_lifecycle_failure(&message)
@@ -223,8 +254,13 @@ where
             return Ok(message);
         }
         // #4713: a payment failure spends the provider's budget at
-        // once — the re-route fires without a single quick wait.
-        let reroute_now = payment_reroute || retries_on_provider > failover.max_retries;
+        // once — the re-route fires without a single quick wait. M3:
+        // an account-local rate limit joins it, and a retryable
+        // rate-limit failure spends its budget at the M3 ceiling
+        // (≥ RATE_LIMIT_MAX_ATTEMPTS), not the policy default.
+        let reroute_now = payment_reroute
+            || account_local_reroute
+            || retries_on_provider > effective_max_retries(failover.max_retries, reason);
         if reroute_now {
             let Some(next) = candidates.get(candidate_index) else {
                 if switched {
@@ -255,18 +291,41 @@ where
             .await?;
             continue;
         }
-        let delay = failover_retry_delay(
+        let delay = failover_retry_delay_for_reason(
+            reason,
             retries_on_provider,
             provider_stream_failure_retry_after_ms(&message),
             failover,
             quick_policy.max_retry_delay_ms,
+            retry_jitter_rand01(),
         );
         let delay_ms = match delay {
             // Jittered (SANCTIONED DIVERGENCE, operator ruling
             // 2026-09-23): the jittered value is both waited and
-            // reported.
+            // reported. The rate-limit classes opt out (their class
+            // backoffs carry the spread; a server hint is a minimum).
             ProviderRetryDelay::Wait { delay_ms } => {
-                jittered_delay_ms(delay_ms, retry_jitter_rand01())
+                if reason.is_some() {
+                    delay_ms
+                } else {
+                    jittered_delay_ms(delay_ms, retry_jitter_rand01())
+                }
+            }
+            // Account-local exhaustion with no candidate left to take
+            // (the reroute above had none): settle like the give-up,
+            // without the park sentence — no reset was reported.
+            ProviderRetryDelay::Settle => {
+                if switched {
+                    let _ = restore().await?;
+                }
+                emit(AutoRetryEvent::End {
+                    success: false,
+                    attempt: total_retries - 1,
+                    final_error: Some(final_error_of(&message)),
+                    restored_model: None,
+                })
+                .await?;
+                return Ok(message);
             }
             ProviderRetryDelay::ExceedsCap { retry_after_ms } => {
                 if switched {
@@ -310,7 +369,7 @@ where
         };
         emit(AutoRetryEvent::Start {
             attempt: retries_on_provider,
-            max_attempts: failover.max_retries,
+            max_attempts: effective_max_retries(failover.max_retries, reason),
             delay_ms,
             error_message: final_error_of(&message),
             reason: RetryStartReason::Quick,
@@ -548,6 +607,9 @@ mod tests {
                 |attempt| match failover_retry_delay(attempt, None, &failover, 60000) {
                     ProviderRetryDelay::Wait { delay_ms } => delay_ms,
                     ProviderRetryDelay::ExceedsCap { .. } => panic!("no cap rejection"),
+                    // A plain failure carries no rate-limit reason, so
+                    // the M3 settle arm never fires on this ladder.
+                    ProviderRetryDelay::Settle => panic!("no account-local settle"),
                 },
             )
             .collect();
@@ -788,6 +850,66 @@ mod tests {
                     restored_model: Some("primary/glm-5.3".to_string()),
                 },
             ]
+        );
+    }
+
+    /// M3 (ADR `ratelimit-admission`): an account-local rate limit (a
+    /// spent quota) re-routes immediately like a payment failure — the
+    /// account cannot serve this provider's traffic until its window
+    /// resets, so quick retries on it are dead weight.
+    #[tokio::test]
+    async fn quota_failure_switches_immediately_and_succeeds() {
+        let candidates = vec![model("backup-a"), model("backup-b")];
+        let script = vec![
+            error_message(
+                Some("rate_limit"),
+                Some(429),
+                "You have hit your usage limit",
+            ),
+            ok_message("recovered on backup"),
+        ];
+        let harness = drive(&fast_failover(), &candidates, script).await;
+        assert_eq!(harness.attempts, 2);
+        assert_eq!(harness.switches, vec!["backup-a/glm-5.3"]);
+        // The re-route is immediate: not one quick wait on the spent
+        // quota (the old ladder burned three of them).
+        assert!(harness.waits.is_empty(), "waits: {:?}", harness.waits);
+        assert_eq!(
+            harness.events.first().expect("start event"),
+            &AutoRetryEvent::Start {
+                attempt: 1,
+                max_attempts: 2,
+                delay_ms: 0,
+                error_message: "You have hit your usage limit".to_string(),
+                reason: RetryStartReason::Backup {
+                    backup_model: "backup-a/glm-5.3".to_string(),
+                },
+            }
+        );
+    }
+
+    /// M3: a spent quota with no candidate left settles at once (the
+    /// Settle arm), without waiting and without the park sentence —
+    /// no reset was reported.
+    #[tokio::test]
+    async fn quota_failure_without_a_candidate_settles_without_waiting() {
+        let script = vec![error_message(
+            Some("rate_limit"),
+            Some(429),
+            "You have hit your usage limit",
+        )];
+        let harness = drive(&fast_failover(), &[], script).await;
+        // Failover disabled/empty candidates: the plain quick loop, and
+        // its account-local settle fires before any wait.
+        assert!(harness.waits.is_empty(), "waits: {:?}", harness.waits);
+        assert_eq!(
+            harness.events.as_slice(),
+            &[AutoRetryEvent::End {
+                success: false,
+                attempt: 0,
+                final_error: Some("You have hit your usage limit".to_string()),
+                restored_model: None,
+            }]
         );
     }
 

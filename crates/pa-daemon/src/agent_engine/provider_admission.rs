@@ -43,6 +43,20 @@
 //! Admission is a throttle, never a gate: an unreachable supervisor, an
 //! expired wait budget, or a malformed answer admits the caller WITHOUT a
 //! lease. A degraded admission plane must never become a hung turn.
+//! The ONE exception is the M4 circuit breaker: a provider whose retry
+//! budget tripped its breaker is REFUSED fail-fast (a stream on it would
+//! just feed the storm), and the caller fails over instead.
+//!
+//! # M3-M5
+//!
+//! The settle signal carries a typed `RateLimitReason` (M3): an
+//! account-local cause (a spent quota or spend cap) drops the AIMD limit
+//! to the floor at once — the account cannot serve ANY concurrency until
+//! its window resets — while a plain 429 halves it. The per-PROVIDER
+//! retry budget (M4, the Google SRE bound) counts rate-limited settles
+//! against a sliding window; past 10% the breaker opens and new acquires
+//! fail fast to failover, lifting through a single half-open probe after
+//! a cooldown. The registry snapshots it all (M5) for the daemon's state.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -51,6 +65,7 @@ use std::time::Duration;
 
 use pa_agent::stream::{LlmContext, ModelStream, StreamFn, StreamRequestOptions};
 use pa_agent::types::{AssistantMessage, Model as AgentModel};
+use pa_core::session_engine::provider_retry::RateLimitReason;
 use tokio::sync::oneshot;
 
 use crate::supervisor_link::SupervisorLink;
@@ -74,6 +89,16 @@ pub const ACQUIRE_BUDGET: Duration = Duration::from_secs(600);
 /// the herd arrives spread instead of synchronized (the ADR's jitter
 /// experiment: 78.3% vs 0% under replay).
 pub const SPAWN_STAGGER_MAX_MS: u64 = 2_000;
+
+/// The per-provider retry budget (M4, the Google SRE bound): rate-limited
+/// settles beyond 10% of the sliding window trip the provider's breaker.
+/// Integer form: `failures * 10 > samples`.
+pub const RETRY_BUDGET_WINDOW: usize = 50;
+pub const RETRY_BUDGET_MIN_SAMPLES: usize = 10;
+
+/// How long an OPEN breaker stays fail-fast before one half-open probe
+/// may try the provider again.
+pub const BREAKER_COOLDOWN_MS: u64 = 30_000;
 
 /// The wire command the admission plane rides (worker -> supervisor).
 pub const ADMISSION_COMMAND: &str = "provider_admission";
@@ -115,8 +140,10 @@ impl ProviderKey {
 pub enum StreamOutcome {
     /// The stream settled without a provider rate limit: +1 slot.
     Settled,
-    /// The provider answered 429: halve the limit.
-    RateLimited,
+    /// The provider rate-limited the request (a 429, a `rate_limit`
+    /// kind, or a billing cap): halve the limit — or drop it to the
+    /// floor when the reason is account-local (M3).
+    RateLimited(RateLimitReason),
 }
 
 impl StreamOutcome {
@@ -125,7 +152,7 @@ impl StreamOutcome {
     pub fn as_wire(self) -> &'static str {
         match self {
             StreamOutcome::Settled => "settled",
-            StreamOutcome::RateLimited => "rate_limited",
+            StreamOutcome::RateLimited(_) => "rate_limited",
         }
     }
 
@@ -133,29 +160,21 @@ impl StreamOutcome {
     pub fn from_wire(value: &str) -> Option<Self> {
         match value {
             "settled" => Some(StreamOutcome::Settled),
-            "rate_limited" => Some(StreamOutcome::RateLimited),
+            "rate_limited" => Some(StreamOutcome::RateLimited(RateLimitReason::RateLimit)),
             _ => None,
         }
     }
 }
 
-/// The AIMD signal one settled assistant message carries: a provider 429 is
-/// the multiplicative-decrease trigger, everything else is a plain settle.
+/// The AIMD signal one settled assistant message carries: a provider
+/// rate limit (the 429 family, a `rate_limit` kind, or a billing cap)
+/// is the decrease trigger with its typed reason (M3), everything else
+/// is a plain settle.
 #[must_use]
 pub fn outcome_for_message(message: &AssistantMessage) -> StreamOutcome {
-    use pa_core::session_engine::provider_retry::{
-        provider_stream_failure_kind, provider_stream_failure_status,
-    };
-    let limited = provider_stream_failure_status(message) == Some(429)
-        || provider_stream_failure_kind(message).as_deref() == Some("rate_limit")
-        || message
-            .error_message
-            .as_deref()
-            .is_some_and(|error| error.contains("429"));
-    if limited {
-        StreamOutcome::RateLimited
-    } else {
-        StreamOutcome::Settled
+    match pa_core::session_engine::provider_retry::rate_limit_reason_for_message(message) {
+        Some(reason) => StreamOutcome::RateLimited(reason),
+        None => StreamOutcome::Settled,
     }
 }
 
@@ -168,6 +187,165 @@ pub struct ProviderSnapshot {
     pub queued: usize,
     pub cap: usize,
     pub consecutive_429: u32,
+    /// The provider's breaker state and retry-budget standing (M4).
+    pub breaker: BreakerSnapshot,
+}
+
+/// The breaker half of one provider's snapshot: the state plus the
+/// retry budget the state was decided on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BreakerSnapshot {
+    pub state: BreakerState,
+    /// Rate-limited settles inside the sliding window.
+    pub budget_failures: usize,
+    /// Settles inside the sliding window.
+    pub budget_samples: usize,
+}
+
+/// The breaker half of a snapshot row: the provider's standing, or the
+/// closed default for a provider the breaker has never seen.
+fn breaker_snapshot(
+    breakers: &HashMap<String, ProviderBreaker>,
+    provider: &str,
+) -> BreakerSnapshot {
+    breakers.get(provider).map_or_else(
+        || BreakerSnapshot {
+            state: BreakerState::Closed,
+            budget_failures: 0,
+            budget_samples: 0,
+        },
+        |breaker| BreakerSnapshot {
+            state: breaker.state,
+            budget_failures: breaker.failures(),
+            budget_samples: breaker.window.len(),
+        },
+    )
+}
+
+/// One per-provider circuit-breaker state (M4): `Closed` is normal
+/// traffic, `Open` fail-fasts new stream acquires until the cooldown
+/// passes, `HalfOpen` holds exactly one probe whose settle decides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BreakerState {
+    Closed,
+    Open,
+    HalfOpen,
+}
+
+impl BreakerState {
+    /// The snapshot wire spelling.
+    #[must_use]
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::Closed => "closed",
+            Self::Open => "open",
+            Self::HalfOpen => "half_open",
+        }
+    }
+}
+
+/// The breaker's verdict for one stream acquire (internal to the gate).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BreakerGate {
+    /// Normal traffic.
+    Pass,
+    /// This acquirer is the single half-open probe.
+    Probe,
+    /// Fail fast: the breaker is open (or one probe is already in flight).
+    Refuse,
+}
+
+/// One per-provider breaker's live state (supervisor-side).
+#[derive(Debug)]
+struct ProviderBreaker {
+    state: BreakerState,
+    /// When the OPEN cooldown started (epoch ms).
+    opened_at_ms: u64,
+    /// The half-open probe's lease, when one is in flight.
+    probe_lease: Option<u64>,
+    /// The sliding window of recent settle samples (`true` = rate-limited).
+    window: VecDeque<bool>,
+}
+
+impl Default for ProviderBreaker {
+    fn default() -> Self {
+        Self {
+            state: BreakerState::Closed,
+            opened_at_ms: 0,
+            probe_lease: None,
+            window: VecDeque::new(),
+        }
+    }
+}
+
+impl ProviderBreaker {
+    fn failures(&self) -> usize {
+        self.window.iter().filter(|limited| **limited).count()
+    }
+
+    /// Whether the retry budget is spent past the SRE bound (10% of the
+    /// window, once enough samples accumulated).
+    fn budget_exceeded(&self) -> bool {
+        self.window.len() >= RETRY_BUDGET_MIN_SAMPLES && self.failures() * 10 > self.window.len()
+    }
+}
+
+/// The breaker cooldown's time source. Injectable so breaker
+/// transitions test without sleeping (the ADR's injectable-time rule).
+pub trait ClockSource: Send + Sync {
+    fn now_ms(&self) -> u64;
+}
+
+/// The production clock: wall-clock epoch milliseconds.
+#[derive(Debug, Default)]
+pub struct SystemClock;
+
+impl ClockSource for SystemClock {
+    fn now_ms(&self) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| {
+                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+            })
+    }
+}
+
+/// A scripted clock (tests): `advance` moves time without sleeping.
+#[derive(Debug)]
+pub struct ScriptedClock {
+    now_ms: AtomicU64,
+}
+
+impl ScriptedClock {
+    #[must_use]
+    pub fn new(start_ms: u64) -> Arc<Self> {
+        Arc::new(Self {
+            now_ms: AtomicU64::new(start_ms),
+        })
+    }
+
+    pub fn advance(&self, by_ms: u64) {
+        self.now_ms.fetch_add(by_ms, Ordering::Relaxed);
+    }
+}
+
+impl ClockSource for ScriptedClock {
+    fn now_ms(&self) -> u64 {
+        self.now_ms.load(Ordering::Relaxed)
+    }
+}
+
+/// The answer to one stream admission ask.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamAdmission {
+    /// A slot was taken; `u64` is the lease id.
+    Admitted(u64),
+    /// The provider's breaker is OPEN (M4): fail fast — do not wait,
+    /// do not proceed unadmitted, fail over instead.
+    Refused,
+    /// Fail-open (no plane, degraded link, or expired wait budget):
+    /// proceed without a lease.
+    Unadmitted,
 }
 
 /// The randomized spawn-dispatch delay source. Injectable so the stagger is
@@ -271,6 +449,9 @@ struct LeaseRecord {
 
 struct RegistryState {
     providers: HashMap<ProviderKey, ProviderState>,
+    /// The per-PROVIDER breakers (M4): keyed by provider alone, so every
+    /// model on one provider shares one retry budget.
+    breakers: HashMap<String, ProviderBreaker>,
     leases: HashMap<u64, LeaseRecord>,
     next_lease: u64,
 }
@@ -288,6 +469,7 @@ pub struct ProviderAdmission {
     start: usize,
     floor: usize,
     stagger: Arc<dyn StaggerSource>,
+    clock: Arc<dyn ClockSource>,
     state: Mutex<RegistryState>,
 }
 
@@ -303,14 +485,27 @@ impl ProviderAdmission {
     /// [`Self::new`] with an injected stagger source (tests).
     #[must_use]
     pub fn with_stagger(cap: usize, stagger: Arc<dyn StaggerSource>) -> Arc<Self> {
+        Self::with_parts(cap, stagger, Arc::new(SystemClock))
+    }
+
+    /// [`Self::new`] with injected stagger and clock sources (tests):
+    /// the scripted clock drives breaker transitions without sleeping.
+    #[must_use]
+    pub fn with_parts(
+        cap: usize,
+        stagger: Arc<dyn StaggerSource>,
+        clock: Arc<dyn ClockSource>,
+    ) -> Arc<Self> {
         let cap = cap.max(FLOOR_LIMIT);
         Arc::new(Self {
             cap,
             start: START_LIMIT.clamp(FLOOR_LIMIT, cap),
             floor: FLOOR_LIMIT.min(cap),
             stagger,
+            clock,
             state: Mutex::new(RegistryState {
                 providers: HashMap::new(),
+                breakers: HashMap::new(),
                 leases: HashMap::new(),
                 next_lease: 1,
             }),
@@ -424,9 +619,11 @@ impl ProviderAdmission {
     }
 
     /// Take a stream slot for `key`, parking in the key's FIFO queue when
-    /// the limit is reached. `None` means the wait budget expired: the
-    /// caller proceeds unadmitted (fail-open).
-    pub async fn acquire_stream(&self, key: &ProviderKey, holder: &str) -> Option<u64> {
+    /// the limit is reached. [`StreamAdmission::Unadmitted`] means the
+    /// wait budget expired: the caller proceeds unadmitted (fail-open);
+    /// [`StreamAdmission::Refused`] means the provider's breaker is
+    /// open: the caller fails over instead.
+    pub async fn acquire_stream(&self, key: &ProviderKey, holder: &str) -> StreamAdmission {
         self.acquire_stream_within(key, holder, ACQUIRE_BUDGET)
             .await
     }
@@ -437,28 +634,102 @@ impl ProviderAdmission {
         key: &ProviderKey,
         holder: &str,
         budget: Duration,
-    ) -> Option<u64> {
-        let pending = {
+    ) -> StreamAdmission {
+        let (pending, is_probe) = {
             let mut state = self.lock();
+            let gate = self.breaker_gate(&mut state, key);
+            if matches!(gate, BreakerGate::Refuse) {
+                return StreamAdmission::Refused;
+            }
+            // This acquirer is the half-open probe when the gate said so:
+            // if it never reaches a lease, the probe must un-wedge (below).
+            let is_probe = matches!(gate, BreakerGate::Probe);
             match self.admit_now(&mut state, key, holder) {
-                Some(lease) => return Some(lease),
-                None => self.enqueue(&mut state, key, holder),
+                Some(lease) => {
+                    if is_probe {
+                        Self::note_probe(&mut state, &key.provider, lease);
+                    }
+                    return StreamAdmission::Admitted(lease);
+                }
+                None => (self.enqueue(&mut state, key, holder), is_probe),
             }
         };
         let (rx, waiter) = pending;
         match tokio::time::timeout(budget, rx).await {
-            Ok(Ok(grant)) => Some(grant.lease),
+            Ok(Ok(grant)) => {
+                if is_probe {
+                    let mut state = self.lock();
+                    Self::note_probe(&mut state, &key.provider, grant.lease);
+                }
+                StreamAdmission::Admitted(grant.lease)
+            }
             // The sender dropped (registry shutdown): fail open.
-            Ok(Err(_)) => None,
+            Ok(Err(_)) => StreamAdmission::Unadmitted,
             Err(_) => {
                 self.abandon(&waiter, key);
+                if is_probe {
+                    self.unwedge_probe(&key.provider);
+                }
                 tracing::info!(
                     provider = %key.provider,
                     model = %key.model,
                     holder,
                     "provider admission: stream wait budget expired, admitting unadmitted"
                 );
-                None
+                StreamAdmission::Unadmitted
+            }
+        }
+    }
+
+    /// The breaker's verdict for one stream acquire. `Probe` arms this
+    /// acquirer as the single half-open probe (the state is already
+    /// `HalfOpen` when it returns). Spawns never gate: a spawn
+    /// reservation is the create round trip, not provider traffic — the
+    /// child's own first stream gates itself.
+    fn breaker_gate(&self, state: &mut RegistryState, key: &ProviderKey) -> BreakerGate {
+        let now = self.clock.now_ms();
+        let breaker = state.breakers.entry(key.provider.clone()).or_default();
+        match breaker.state {
+            BreakerState::Closed => BreakerGate::Pass,
+            BreakerState::Open => {
+                if now.saturating_sub(breaker.opened_at_ms) >= BREAKER_COOLDOWN_MS {
+                    breaker.state = BreakerState::HalfOpen;
+                    tracing::info!(
+                        provider = %key.provider,
+                        "provider admission: breaker half-open, dispatching one probe"
+                    );
+                    BreakerGate::Probe
+                } else {
+                    tracing::debug!(
+                        provider = %key.provider,
+                        model = %key.model,
+                        "provider admission: circuit open, acquire refused"
+                    );
+                    BreakerGate::Refuse
+                }
+            }
+            // A probe is already in flight: everything else fail-fasts.
+            BreakerState::HalfOpen => BreakerGate::Refuse,
+        }
+    }
+
+    /// Bind a minted lease as the provider's half-open probe.
+    fn note_probe(state: &mut RegistryState, provider: &str, lease: u64) {
+        if let Some(breaker) = state.breakers.get_mut(provider) {
+            breaker.probe_lease = Some(lease);
+        }
+    }
+
+    /// A probe that never reached a lease (its wait expired first) goes
+    /// back to OPEN with a fresh cooldown, so the breaker cannot wedge
+    /// in half-open with no probe in flight.
+    fn unwedge_probe(&self, provider: &str) {
+        let now = self.clock.now_ms();
+        let mut state = self.lock();
+        if let Some(breaker) = state.breakers.get_mut(provider) {
+            if breaker.state == BreakerState::HalfOpen && breaker.probe_lease.is_none() {
+                breaker.state = BreakerState::Open;
+                breaker.opened_at_ms = now;
             }
         }
     }
@@ -545,14 +816,23 @@ impl ProviderAdmission {
                         entry.limit += 1;
                     }
                 }
-                StreamOutcome::RateLimited => {
+                StreamOutcome::RateLimited(reason) => {
                     entry.consecutive_429 = entry.consecutive_429.saturating_add(1);
-                    entry.limit = (entry.limit / 2).max(floor);
+                    // M3: an account-local cause (a spent quota or spend
+                    // cap) drops the limit to the floor at once — the
+                    // account cannot serve ANY concurrency until its
+                    // window resets, so only the recovery probe remains.
+                    entry.limit = if reason.is_account_local() {
+                        floor
+                    } else {
+                        (entry.limit / 2).max(floor)
+                    };
                 }
             }
             entry.in_flight = entry.in_flight.saturating_sub(1);
             report = Some((entry.limit, entry.in_flight));
         }
+        self.breaker_settle(&mut state, &record.key.provider, lease, outcome);
         self.dispatch(&mut state, &record.key);
         if let Some((limit, in_flight)) = report {
             tracing::debug!(
@@ -566,6 +846,68 @@ impl ProviderAdmission {
         }
     }
 
+    /// Fold one settle into the provider's retry budget and breaker
+    /// (M4): every settle is a sample, a rate-limited settle is a
+    /// failure. Past 10% of the window the breaker opens; the half-open
+    /// probe's settle is the only verdict that transitions it.
+    fn breaker_settle(
+        &self,
+        state: &mut RegistryState,
+        provider: &str,
+        lease: u64,
+        outcome: StreamOutcome,
+    ) {
+        let now = self.clock.now_ms();
+        let limited = matches!(outcome, StreamOutcome::RateLimited(_));
+        let Some(breaker) = state.breakers.get_mut(provider) else {
+            return;
+        };
+        breaker.window.push_back(limited);
+        while breaker.window.len() > RETRY_BUDGET_WINDOW {
+            breaker.window.pop_front();
+        }
+        let is_probe = breaker.probe_lease == Some(lease);
+        match breaker.state {
+            BreakerState::HalfOpen if is_probe => {
+                breaker.probe_lease = None;
+                if limited {
+                    breaker.state = BreakerState::Open;
+                    breaker.opened_at_ms = now;
+                    tracing::info!(
+                        provider,
+                        failures = breaker.failures(),
+                        samples = breaker.window.len(),
+                        "provider admission: breaker re-opened, the probe was rate-limited"
+                    );
+                } else {
+                    breaker.state = BreakerState::Closed;
+                    // A fresh budget: the storm's evidence must not
+                    // re-trip the breaker on the next sample.
+                    breaker.window.clear();
+                    tracing::info!(
+                        provider,
+                        "provider admission: breaker closed, the probe settled"
+                    );
+                }
+            }
+            BreakerState::Closed => {
+                if breaker.budget_exceeded() {
+                    breaker.state = BreakerState::Open;
+                    breaker.opened_at_ms = now;
+                    tracing::info!(
+                        provider,
+                        failures = breaker.failures(),
+                        samples = breaker.window.len(),
+                        "provider admission: breaker opened, the retry budget is spent"
+                    );
+                }
+            }
+            // Open with in-flight streams settling: their samples land in
+            // the window; only the probe (or the cooldown) lifts the state.
+            BreakerState::Open | BreakerState::HalfOpen => {}
+        }
+    }
+
     /// Give a lease back without an AIMD signal (an aborted turn, a
     /// dispatch that never reached the provider, a dead worker).
     pub fn release(&self, lease: u64) {
@@ -575,6 +917,20 @@ impl ProviderAdmission {
         };
         if let Some(entry) = state.providers.get_mut(&record.key) {
             entry.in_flight = entry.in_flight.saturating_sub(1);
+        }
+        // A dropped probe re-arms the cooldown (M4): the breaker must
+        // never wedge in half-open on a probe that never answered.
+        let now = self.clock.now_ms();
+        if let Some(breaker) = state.breakers.get_mut(&record.key.provider) {
+            if breaker.probe_lease == Some(lease) {
+                breaker.probe_lease = None;
+                breaker.state = BreakerState::Open;
+                breaker.opened_at_ms = now;
+                tracing::info!(
+                    provider = %record.key.provider,
+                    "provider admission: breaker re-opened, the probe dropped without a verdict"
+                );
+            }
         }
         self.dispatch(&mut state, &record.key);
     }
@@ -662,6 +1018,7 @@ impl ProviderAdmission {
     #[must_use]
     pub fn snapshot(&self, key: &ProviderKey) -> ProviderSnapshot {
         let state = self.lock();
+        let breaker = breaker_snapshot(&state.breakers, &key.provider);
         match state.providers.get(key) {
             Some(entry) => ProviderSnapshot {
                 limit: entry.limit,
@@ -669,6 +1026,7 @@ impl ProviderAdmission {
                 queued: entry.waiters.len(),
                 cap: self.cap,
                 consecutive_429: entry.consecutive_429,
+                breaker,
             },
             None => ProviderSnapshot {
                 limit: self.start,
@@ -676,6 +1034,7 @@ impl ProviderAdmission {
                 queued: 0,
                 cap: self.cap,
                 consecutive_429: 0,
+                breaker,
             },
         }
     }
@@ -690,6 +1049,46 @@ impl ProviderAdmission {
             .map(|entry| entry.waiters.len())
             .sum()
     }
+
+    /// Every provider's observability rows (M5): one per `(provider,
+    /// model)` pair the registry has seen, sorted, each carrying its
+    /// provider's breaker standing. The daemon's state snapshot wire.
+    #[must_use]
+    pub fn provider_rows(&self) -> Vec<ProviderRow> {
+        let state = self.lock();
+        let mut rows: Vec<ProviderRow> = state
+            .providers
+            .iter()
+            .map(|(key, entry)| ProviderRow {
+                provider: key.provider.clone(),
+                model: key.model.clone(),
+                limit: entry.limit,
+                in_flight: entry.in_flight,
+                queued: entry.waiters.len(),
+                cap: self.cap,
+                consecutive_429: entry.consecutive_429,
+                breaker: breaker_snapshot(&state.breakers, &key.provider),
+            })
+            .collect();
+        rows.sort_by(|left, right| {
+            (&left.provider, &left.model).cmp(&(&right.provider, &right.model))
+        });
+        rows
+    }
+}
+
+/// One per-`(provider, model)` observability row (the M5 snapshot wire):
+/// the AIMD standing plus the provider's breaker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderRow {
+    pub provider: String,
+    pub model: String,
+    pub limit: usize,
+    pub in_flight: usize,
+    pub queued: usize,
+    pub cap: usize,
+    pub consecutive_429: u32,
+    pub breaker: BreakerSnapshot,
 }
 
 /// How a worker reaches the shared registry.
@@ -737,30 +1136,32 @@ impl AdmissionClient {
         !matches!(self, AdmissionClient::Disabled)
     }
 
-    /// Take one stream slot. `None` = unadmitted (fail-open).
-    pub async fn acquire_stream(&self, key: &ProviderKey) -> Option<StreamLease> {
+    /// Take one stream slot. [`StreamAdmission::Unadmitted`] is fail-open;
+    /// [`StreamAdmission::Refused`] is the open breaker (fail over).
+    pub async fn acquire_stream(&self, key: &ProviderKey) -> StreamAdmission {
         match self {
-            AdmissionClient::Disabled => None,
-            AdmissionClient::Local(registry) => registry
-                .acquire_stream(key, LOCAL_HOLDER)
-                .await
-                .map(|id| StreamLease {
-                    id,
-                    client: self.clone(),
-                }),
+            AdmissionClient::Disabled => StreamAdmission::Unadmitted,
+            AdmissionClient::Local(registry) => registry.acquire_stream(key, LOCAL_HOLDER).await,
             AdmissionClient::Link { link, worker_token } => {
-                let data = self
+                let Some(data) = self
                     .call(
                         link,
                         worker_token,
                         admission_command(worker_token, "acquire_stream", key, None),
                     )
-                    .await?;
-                let id = data.get("leaseId")?.as_u64()?;
-                Some(StreamLease {
-                    id,
-                    client: self.clone(),
-                })
+                    .await
+                else {
+                    return StreamAdmission::Unadmitted;
+                };
+                // The open breaker answers a plain refusal; a missing
+                // answer stays fail-open (a degraded plane never gates).
+                if data.get("refused").and_then(serde_json::Value::as_bool) == Some(true) {
+                    return StreamAdmission::Refused;
+                }
+                let Some(id) = data.get("leaseId").and_then(serde_json::Value::as_u64) else {
+                    return StreamAdmission::Unadmitted;
+                };
+                StreamAdmission::Admitted(id)
             }
         }
     }
@@ -810,7 +1211,8 @@ impl AdmissionClient {
         }
     }
 
-    /// Settle a lease with its AIMD signal.
+    /// Settle a lease with its AIMD signal (the typed reason rides the
+    /// wire when the outcome is rate-limited).
     pub async fn settle(&self, lease: u64, outcome: StreamOutcome) {
         match self {
             AdmissionClient::Disabled => {}
@@ -818,6 +1220,9 @@ impl AdmissionClient {
             AdmissionClient::Link { link, worker_token } => {
                 let mut command = lease_command(worker_token, "settle_stream", lease);
                 command["outcome"] = serde_json::json!(outcome.as_wire());
+                if let StreamOutcome::RateLimited(reason) = outcome {
+                    command["reason"] = serde_json::json!(reason.as_wire());
+                }
                 let _ = self.call(link, worker_token, command).await;
             }
         }
@@ -967,7 +1372,22 @@ pub fn admit_stream_fn(inner: StreamFn, key_of: KeyResolver, client: AdmissionCl
                 // The key resolves at call time, from the same slot the
                 // inner stream reads its target from.
                 let key = key_of();
-                let lease = client.acquire_stream(&key).await;
+                let lease = match client.acquire_stream(&key).await {
+                    StreamAdmission::Admitted(id) => Some(StreamLease {
+                        id,
+                        client: client.clone(),
+                    }),
+                    StreamAdmission::Unadmitted => None,
+                    // The provider's breaker is open (M4): fail fast with
+                    // a rate-limit-shaped refusal the ladder's quota lane
+                    // settles at once, so the failover chain re-routes
+                    // instead of hammering the provider.
+                    StreamAdmission::Refused => {
+                        let (handle, consumer) = pa_agent::stream::event_stream();
+                        handle.end(Some(breaker_refusal_message(&key)));
+                        return Ok(Box::new(consumer) as Box<dyn ModelStream>);
+                    }
+                };
                 let stream = inner(requested, context, options).await?;
                 Ok(Box::new(AdmittedStream {
                     inner: stream,
@@ -977,6 +1397,38 @@ pub fn admit_stream_fn(inner: StreamFn, key_of: KeyResolver, client: AdmissionCl
             })
         },
     )
+}
+
+/// The open breaker's fail-fast message: a rate-limit-shaped refusal
+/// carrying the marker the M3 classifier reads as account-local
+/// rotation (the admission plane's own wording, matched by
+/// [`pa_core::session_engine::provider_retry::classify_rate_limit_reason`]).
+fn breaker_refusal_message(key: &ProviderKey) -> AssistantMessage {
+    AssistantMessage {
+        content: Vec::new(),
+        api: String::new(),
+        provider: key.provider.clone(),
+        model: key.model.clone(),
+        response_model: None,
+        response_id: None,
+        diagnostics: Some(vec![pa_agent::types::AssistantMessageDiagnostic {
+            kind: "provider_stream_failure".to_string(),
+            timestamp: 0,
+            error: None,
+            details: Some(serde_json::json!({
+                "kind": "rate_limit",
+                "status": 429,
+            })),
+        }]),
+        usage: pa_agent::types::Usage::zero(),
+        stop_reason: pa_agent::types::StopReason::Error,
+        stop_reason_raw: None,
+        error_message: Some(format!(
+            "Provider admission circuit open for {} (retry budget exceeded); failing over",
+            key.selector()
+        )),
+        timestamp: 0,
+    }
 }
 
 /// A [`ModelStream`] that owns one admission slot for exactly its own

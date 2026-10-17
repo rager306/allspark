@@ -38,6 +38,11 @@ pub enum ProviderRetryDelay {
     Wait { delay_ms: u64 },
     /// The server-requested wait exceeds the policy cap; give up.
     ExceedsCap { retry_after_ms: u64 },
+    /// The failure is account-local (a spent quota or spend cap): no
+    /// quick retry rides this ladder — settle it now, the failover
+    /// chain re-routes and the quota park seam owns any reported reset
+    /// (that hand-off is the [`ProviderRetryDelay::ExceedsCap`] arm).
+    Settle,
 }
 
 /// Node caps timers at 2^31-1 ms; longer delays overflow setTimeout and fire
@@ -210,6 +215,403 @@ pub fn provider_retry_delay(
     ProviderRetryDelay::Wait { delay_ms }
 }
 
+// ===== M3: typed rate-limit reasons (ADR `ratelimit-admission`) =====
+
+/// The ceiling on honoring a server-requested wait (RFC 9110 §10.2.3):
+/// Retry-After is the MINIMUM wait on a retryable class, never more than
+/// 60s. A long hint waits the cap and retries instead of giving up —
+/// the give-up is what killed subagents in the 429 incident.
+pub const RETRY_AFTER_CAP_MS: u64 = 60_000;
+
+/// A rate-classified server hint at or beyond this bound reads as an
+/// account quota window (oh-my-pi `LONG_RATE_LIMIT_DELAY_MS`): the
+/// park/failover lane, never a 60s-capped retry.
+pub const LONG_RATE_HINT_MS: u64 = 5 * 60_000;
+
+/// The 429 attempt ceiling (the ADR band 5-7): a rate-limited failure
+/// outlives the provider's window on class backoffs, so its ladder gets
+/// six tries instead of the policy default's three.
+pub const RATE_LIMIT_MAX_ATTEMPTS: u32 = 6;
+
+/// The class backoffs (oh-my-pi's ladder, the ADR's table).
+pub const QUOTA_EXHAUSTED_BACKOFF_MS: u64 = 30 * 60_000;
+pub const RATE_LIMIT_BACKOFF_MS: u64 = 30_000;
+pub const CONCURRENT_BACKOFF_MS: u64 = 5_000;
+pub const CAPACITY_BACKOFF_BASE_MS: u64 = 45_000;
+/// The capacity class's spread: 45s ± 15s (thundering-herd guard).
+pub const CAPACITY_BACKOFF_JITTER_MS: u64 = 15_000;
+pub const SERVER_ERROR_BACKOFF_MS: u64 = 20_000;
+
+/// The typed cause of one rate-limited failure (ADR M3): drives the
+/// retry discipline, the admission AIMD signal, and the circuit breaker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RateLimitReason {
+    /// Account-local usage quota is spent; it resets at the provider's
+    /// window. Never quick-retried — failover and the park own it.
+    QuotaExhausted,
+    /// A rolling request-rate cap; retry after the class backoff.
+    RateLimit,
+    /// A cap on concurrent requests; sheds fast (5s class).
+    Concurrent,
+    /// The model or provider is out of capacity (overloaded, 503/529).
+    Capacity,
+    /// A server-side failure inside a rate-limit envelope (20s class).
+    Server,
+    /// A billing ceiling (spend cap, prepaid balance, 402):
+    /// account-local, never retried, no retry-after honored.
+    SpendCap,
+}
+
+impl RateLimitReason {
+    /// The wire spelling (the `provider_admission` settle reason).
+    #[must_use]
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::QuotaExhausted => "quota_exhausted",
+            Self::RateLimit => "rate_limit",
+            Self::Concurrent => "concurrent",
+            Self::Capacity => "capacity",
+            Self::Server => "server",
+            Self::SpendCap => "spend_cap",
+        }
+    }
+
+    #[must_use]
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "quota_exhausted" => Some(Self::QuotaExhausted),
+            "rate_limit" => Some(Self::RateLimit),
+            "concurrent" => Some(Self::Concurrent),
+            "capacity" => Some(Self::Capacity),
+            "server" => Some(Self::Server),
+            "spend_cap" => Some(Self::SpendCap),
+            _ => None,
+        }
+    }
+
+    /// Whether the cause is account-local: the provider cannot serve
+    /// THIS account at any concurrency until its window resets, so the
+    /// failure never quick-retries and the AIMD limit drops to the
+    /// floor at once.
+    #[must_use]
+    pub fn is_account_local(self) -> bool {
+        matches!(self, Self::QuotaExhausted | Self::SpendCap)
+    }
+
+    /// The class backoff. `rand01` is a uniform `[0, 1]` sample (only
+    /// the capacity class spreads: base ± [`CAPACITY_BACKOFF_JITTER_MS`]).
+    #[must_use]
+    pub fn backoff_ms(self, rand01: f64) -> u64 {
+        let rand01 = rand01.clamp(0.0, 1.0);
+        match self {
+            Self::QuotaExhausted => QUOTA_EXHAUSTED_BACKOFF_MS,
+            Self::RateLimit => RATE_LIMIT_BACKOFF_MS,
+            Self::Concurrent => CONCURRENT_BACKOFF_MS,
+            Self::Capacity => {
+                let spread = CAPACITY_BACKOFF_JITTER_MS as f64 * (2.0 * rand01 - 1.0);
+                (CAPACITY_BACKOFF_BASE_MS as f64 + spread).round() as u64
+            }
+            Self::Server => SERVER_ERROR_BACKOFF_MS,
+            // A spend cap has no retry-after discipline to honor: it
+            // never waits, the failover lane takes it at once.
+            Self::SpendCap => 0,
+        }
+    }
+}
+
+/// Whether any occurrence of `first` sits within `span` bytes of one of
+/// `seconds` (the oh-my-pi inter-word patterns, length-based, on
+/// already-lowercased text).
+fn any_phrase_within(lower: &str, first: &str, seconds: &[&str], span: usize) -> bool {
+    let floor = |index: usize| {
+        let mut index = index;
+        while index > 0 && !lower.is_char_boundary(index) {
+            index -= 1;
+        }
+        index
+    };
+    let ceil = |index: usize| {
+        let mut index = index;
+        while index < lower.len() && !lower.is_char_boundary(index) {
+            index += 1;
+        }
+        index
+    };
+    lower.match_indices(first).any(|(start, _)| {
+        let after = start + first.len();
+        let from = floor(start.saturating_sub(span));
+        let to = ceil((after + span).min(lower.len()));
+        lower
+            .get(from..to)
+            .is_some_and(|window| seconds.iter().any(|second| window.contains(second)))
+    })
+}
+
+/// Classify one rate-limited failure's status and text into a
+/// [`RateLimitReason`] (the oh-my-pi ladder over EN/RU/CN wording;
+/// fork-local: pa-ai's `classify_stream_failure` already named the
+/// family, this refines the cause inside it). Priority: the admission
+/// breaker's marker > spend caps > long quota resets > concurrency >
+/// capacity > CN quota (guarded by CN transient caps) > account-scoped
+/// rate limits > rate caps > generic quota > server > status fallback.
+#[must_use]
+pub fn classify_rate_limit_reason(status: Option<u16>, text: &str) -> RateLimitReason {
+    let lower = text.to_lowercase();
+    let has = |phrase: &str| lower.contains(phrase);
+    let has_any = |phrases: &[&str]| phrases.iter().any(|phrase| lower.contains(phrase));
+
+    // The admission breaker's own fail-fast marker: rotate like an
+    // account-local quota (oh-my-pi maps opaque 429s to rotation too).
+    if has("admission circuit open") {
+        return RateLimitReason::QuotaExhausted;
+    }
+    // Billing ceilings never refill inside a ladder; 402 is the
+    // billing status (pa-ai pins its kind to payment_required).
+    if status == Some(402)
+        || has_any(&[
+            "spend limit",
+            "spending limit",
+            "spending-limit",
+            "spend cap",
+            "spending cap",
+            "prepaid balance",
+            "usage_pricing_required",
+            "usage credits are required",
+            "credits_required",
+            "лимит расходов",
+        ])
+    {
+        return RateLimitReason::SpendCap;
+    }
+    // Long-window quota resets (Antigravity's wording): rotate, do not
+    // back off on this credential.
+    if has_any(&["quota will reset", "exhausted your capacity"]) {
+        return RateLimitReason::QuotaExhausted;
+    }
+    // Concurrency caps shed and back off quickly.
+    if any_phrase_within(
+        &lower,
+        "concurrent",
+        &["limit", "quota", "exceed", "reach", "too many"],
+        60,
+    ) || has_any(&["too many concurrent", "too many parallel"])
+        || any_phrase_within(&lower, "одновременн", &["запрос", "превыш", "лимит"], 48)
+        || any_phrase_within(&lower, "параллельн", &["запрос", "превыш", "лимит"], 48)
+    {
+        return RateLimitReason::Concurrent;
+    }
+    // Capacity/overload wording (503/529 land here through the status
+    // fallback below when the text is silent).
+    if has_any(&[
+        "overloaded",
+        "overload",
+        "at capacity",
+        "model capacity",
+        "capacity exhausted",
+        "перегружен",
+        "перегрузка",
+        "нет свободных мощностей",
+    ]) {
+        return RateLimitReason::Capacity;
+    }
+    // CN quota exhaustion (Zhipu/Zhenhru windows) guarded by CN
+    // transient caps: a per-minute or concurrency cap phrased with
+    // 上限 must stay transient, not burn the credential.
+    let cn_quota = has_any(&[
+        "额度已用完",
+        "额度不足",
+        "配额已耗尽",
+        "配额不足",
+        "余额不足",
+    ]) || any_phrase_within(&lower, "使用", &["上限"], 30)
+        || any_phrase_within(&lower, "用量", &["上限"], 30)
+        || any_phrase_within(&lower, "限额", &["重置"], 30);
+    let cn_transient = has_any(&["速率限制", "请求过于频繁", "过于频繁", "稍后重试"])
+        || any_phrase_within(&lower, "速率", &["上限"], 12)
+        || any_phrase_within(&lower, "频率", &["上限"], 12)
+        || any_phrase_within(&lower, "每分钟", &["上限"], 12)
+        || any_phrase_within(&lower, "并发", &["上限"], 12);
+    if cn_quota && !cn_transient {
+        return RateLimitReason::QuotaExhausted;
+    }
+    // Account-scoped caps rotate the credential (an org/workspace rate
+    // limit is quota, not a rolling request cap).
+    if any_phrase_within(
+        &lower,
+        "rate limit",
+        &["account", "organization", "workspace", "team", "overall"],
+        80,
+    ) || any_phrase_within(
+        &lower,
+        "лимит",
+        &["аккаунт", "организац", "рабочего пространства"],
+        80,
+    ) {
+        return RateLimitReason::QuotaExhausted;
+    }
+    // RU exhaustion phrasing ("лимит ... исчерпан"), guarded by RU
+    // transient markers: "достигнут лимит запросов в минуту" is a
+    // rolling cap, not a spent daily quota.
+    let ru_transient = has_any(&[
+        "в минуту",
+        "в секунду",
+        "слишком часто",
+        "слишком много запросов",
+        "частот",
+    ]);
+    if !ru_transient
+        && (any_phrase_within(&lower, "исчерп", &["лимит", "квота", "бюджет"], 48)
+            || any_phrase_within(&lower, "достигнут", &["лимит", "квота"], 48))
+    {
+        return RateLimitReason::QuotaExhausted;
+    }
+    // Rolling rate caps (including TPM/RPM wording that reads quota-ish).
+    if has_any(&[
+        "rate limit",
+        "rate_limit",
+        "rate-limit",
+        "ratelimit",
+        "too many requests",
+        "too frequent",
+        "per minute",
+        "per second",
+        "throttl",
+    ]) || has_any(&[
+        "слишком много запросов",
+        "превышен лимит запросов",
+        "лимит запросов",
+        "превышена частота",
+        "слишком часто",
+        "частоту запросов",
+        "速率限制",
+        "请求频率",
+        "过于频繁",
+        "稍后重试",
+    ]) {
+        return RateLimitReason::RateLimit;
+    }
+    // Generic quota exhaustion.
+    if has_any(&[
+        "quota",
+        "usage limit",
+        "usage_limit",
+        "usage_limit_reached",
+        "run out of credits",
+        "out of credits",
+        "insufficient balance",
+        "insufficient credits",
+        "insufficient_quota",
+        "credits exhausted",
+        "credits depleted",
+        "exceeded your current quota",
+    ]) || has_any(&[
+        "квота",
+        "недостаточно средств",
+        "недостаточно баланса",
+        "недостаточно кредитов",
+    ]) {
+        return RateLimitReason::QuotaExhausted;
+    }
+    if has_any(&[
+        "internal server error",
+        "internal error",
+        "server error",
+        "внутренняя ошибка",
+        "ошибка сервера",
+    ]) {
+        return RateLimitReason::Server;
+    }
+    match status {
+        Some(503 | 529) => RateLimitReason::Capacity,
+        Some(500..=599) => RateLimitReason::Server,
+        // A rate-shaped failure with no finer signal: the conservative
+        // retryable class (the 30s window most providers run).
+        _ => RateLimitReason::RateLimit,
+    }
+}
+
+/// The rate-limit reason one failed message carries, when it is
+/// rate-limit-shaped: a 429/402 status, the `rate_limit` or
+/// `payment_required` classified kinds, or a 429 in the error text.
+/// Every other failure answers `None` (the plain exponential ladder).
+#[must_use]
+pub fn rate_limit_reason_for_message(message: &AssistantMessage) -> Option<RateLimitReason> {
+    let kind = provider_stream_failure_kind(message);
+    if kind.as_deref() == Some("payment_required") {
+        return Some(RateLimitReason::SpendCap);
+    }
+    let status = provider_stream_failure_status(message);
+    let rate_shaped = kind.as_deref() == Some("rate_limit")
+        || matches!(status, Some(429 | 402))
+        || message
+            .error_message
+            .as_deref()
+            .is_some_and(|error| error.contains("429"));
+    if !rate_shaped {
+        return None;
+    }
+    Some(classify_rate_limit_reason(
+        status,
+        message.error_message.as_deref().unwrap_or(""),
+    ))
+}
+
+/// The M3 reason-aware retry delay: Retry-After is the MINIMUM wait,
+/// honored up to [`RETRY_AFTER_CAP_MS`] — a long hint no longer gives
+/// up on a retryable class, it waits the cap and retries. Without a
+/// hint the class backoff replaces the exponential ladder (RATE 30s,
+/// CONCURRENT 5s, CAPACITY 45±15s, SERVER 20s). An account-local cause
+/// (quota/spend cap, or a hint at or beyond [`LONG_RATE_HINT_MS`])
+/// never quick-retries: it settles for the failover chain, keeping the
+/// above-cap `ExceedsCap` hand-off the quota park seam hangs on.
+/// `rand01` is a uniform `[0, 1]` sample for the capacity spread.
+#[must_use]
+pub fn provider_retry_delay_for_reason(
+    reason: Option<RateLimitReason>,
+    attempt: u32,
+    retry_after_ms: Option<u64>,
+    policy: &ProviderRetryPolicy,
+    rand01: f64,
+) -> ProviderRetryDelay {
+    let Some(reason) = reason else {
+        // Outside the rate-limit family the shared ladder stands.
+        return provider_retry_delay(attempt, retry_after_ms, policy);
+    };
+    let escalated = reason == RateLimitReason::RateLimit
+        && retry_after_ms.is_some_and(|hint| hint >= LONG_RATE_HINT_MS);
+    if reason.is_account_local() || escalated {
+        return match retry_after_ms {
+            Some(hint) if policy.max_retry_delay_ms > 0 && hint > policy.max_retry_delay_ms => {
+                ProviderRetryDelay::ExceedsCap {
+                    retry_after_ms: hint,
+                }
+            }
+            _ => ProviderRetryDelay::Settle,
+        };
+    }
+    let delay_ms = match retry_after_ms {
+        Some(hint) => hint.min(RETRY_AFTER_CAP_MS),
+        None => reason.backoff_ms(rand01),
+    };
+    ProviderRetryDelay::Wait {
+        delay_ms: delay_ms.min(MAX_TIMER_DELAY_MS),
+    }
+}
+
+/// The effective attempt ceiling for one failed message (M3): a
+/// retryable rate-limit failure gets at least [`RATE_LIMIT_MAX_ATTEMPTS`]
+/// tries (the ADR band 5-7 — the policy default of three is what killed
+/// subagents inside a provider's 30s window); everything else keeps the
+/// policy ceiling.
+#[must_use]
+pub fn effective_max_retries(policy_max_retries: u32, reason: Option<RateLimitReason>) -> u32 {
+    if reason.is_some_and(|reason| !reason.is_account_local()) {
+        policy_max_retries.max(RATE_LIMIT_MAX_ATTEMPTS)
+    } else {
+        policy_max_retries
+    }
+}
+
 /// One-shot completion with the shared retry policy, for consumers outside the session
 /// auto-retry loop. A message whose stop reason is `error` is classified against the
 /// policy and retried when transient; `wait` returning `false` aborts with `Aborted`.
@@ -243,7 +645,8 @@ where
         if signal.is_some_and(AbortSignal::is_aborted) {
             return Ok(with_stop_reason_aborted(message));
         }
-        if retries_performed >= max_retries
+        let reason = rate_limit_reason_for_message(&message);
+        if retries_performed >= effective_max_retries(max_retries, reason)
             || is_agent_lifecycle_failure(&message)
             || is_faux_provider_queue_exhausted(&message)
             || is_unsupported_tool_failure(&message)
@@ -255,15 +658,26 @@ where
         if is_permanent_provider_failure_kind(kind.as_deref(), retries_performed, status) {
             return Ok(message);
         }
-        let delay = provider_retry_delay(
+        let delay = provider_retry_delay_for_reason(
+            reason,
             retries_performed + 1,
             provider_stream_failure_retry_after_ms(&message),
             policy,
+            retry_jitter_rand01(),
         );
         let ProviderRetryDelay::Wait { delay_ms } = delay else {
+            // ExceedsCap and Settle both settle here: the one-shot
+            // helper has no failover chain or park seam to hand to.
             return Ok(message);
         };
-        let delay_ms = jittered_delay_ms(delay_ms, retry_jitter_rand01());
+        // The rate-limit classes carry their own jitter discipline (the
+        // capacity spread); a server hint is a minimum the generic ±20%
+        // band must not undercut.
+        let delay_ms = if reason.is_some() {
+            delay_ms
+        } else {
+            jittered_delay_ms(delay_ms, retry_jitter_rand01())
+        };
         if !wait(std::time::Duration::from_millis(delay_ms)).await {
             return Ok(with_stop_reason_aborted(message));
         }
@@ -352,6 +766,391 @@ mod tests {
             let sample = retry_jitter_rand01();
             assert!((0.0..=1.0).contains(&sample), "sample {sample}");
         }
+    }
+
+    // ===== M3: typed rate-limit reasons =====
+
+    #[test]
+    fn rate_limit_reasons_classify_from_status_and_text() {
+        use super::RateLimitReason::*;
+        // (status, kind, text, expected) — EN, RU, and CN provider
+        // wording, in the classifier's priority order.
+        let cases: &[(Option<u16>, Option<&str>, &str, RateLimitReason)] = &[
+            // The admission breaker's own fail-fast marker rotates.
+            (
+                Some(429),
+                Some("rate_limit"),
+                "Provider admission circuit open for zai/glm-5.3 (retry budget exceeded)",
+                QuotaExhausted,
+            ),
+            // Spend caps and billing statuses.
+            (
+                Some(429),
+                Some("rate_limit"),
+                "You have exceeded your monthly spending cap",
+                SpendCap,
+            ),
+            (
+                None,
+                Some("rate_limit"),
+                "usage_pricing_required: prepaid balance used up",
+                SpendCap,
+            ),
+            (Some(402), None, "insufficient credits", SpendCap),
+            // Long-window quota resets.
+            (
+                Some(429),
+                Some("rate_limit"),
+                "You have exhausted your capacity on this model. Your quota will reset after 05:00",
+                QuotaExhausted,
+            ),
+            // Concurrency caps.
+            (
+                Some(429),
+                Some("rate_limit"),
+                "API Error: 429 Too many concurrent requests",
+                Concurrent,
+            ),
+            (
+                Some(429),
+                Some("rate_limit"),
+                "Превышено количество одновременных запросов к API",
+                Concurrent,
+            ),
+            // Capacity / overload.
+            (
+                Some(429),
+                Some("rate_limit"),
+                "The model is overloaded, please retry",
+                Capacity,
+            ),
+            (
+                None,
+                Some("rate_limit"),
+                "провайдер перегружен, попробуйте позже",
+                Capacity,
+            ),
+            // CN quota windows, guarded against CN transient caps.
+            (
+                Some(429),
+                Some("rate_limit"),
+                "429 已达到 5 小时的使用上限。您的限额将在 2026-08-06 20:06:00 重置。",
+                QuotaExhausted,
+            ),
+            (
+                Some(429),
+                Some("rate_limit"),
+                "当前已达到 Token Plan 用量上限，请明天再试",
+                QuotaExhausted,
+            ),
+            (
+                None,
+                Some("rate_limit"),
+                "余额不足，请充值后重试",
+                QuotaExhausted,
+            ),
+            // CN transient caps stay retryable.
+            (
+                None,
+                Some("rate_limit"),
+                "请求过于频繁，请稍后重试",
+                RateLimit,
+            ),
+            (
+                None,
+                Some("rate_limit"),
+                "速率达到上限，请稍后再试",
+                RateLimit,
+            ),
+            // Account-scoped caps rotate the credential.
+            (
+                Some(429),
+                Some("rate_limit"),
+                "You have reached your account rate limit",
+                QuotaExhausted,
+            ),
+            (
+                Some(429),
+                Some("rate_limit"),
+                "Превышен лимит запросов для вашего аккаунта",
+                QuotaExhausted,
+            ),
+            // Rolling rate caps.
+            (
+                Some(429),
+                Some("rate_limit"),
+                "Too many requests, slow down",
+                RateLimit,
+            ),
+            (
+                None,
+                Some("rate_limit"),
+                "rate limit exceeded, retry in 30s",
+                RateLimit,
+            ),
+            (
+                Some(429),
+                Some("rate_limit"),
+                "Превышен лимит запросов в минуту",
+                RateLimit,
+            ),
+            // Generic quota exhaustion.
+            (
+                None,
+                Some("rate_limit"),
+                "You have hit your usage limit",
+                QuotaExhausted,
+            ),
+            (
+                None,
+                Some("rate_limit"),
+                "You exceeded your current quota, please check your plan and billing details",
+                QuotaExhausted,
+            ),
+            (
+                None,
+                Some("rate_limit"),
+                "insufficient_quota",
+                QuotaExhausted,
+            ),
+            (
+                None,
+                Some("rate_limit"),
+                "Квота запросов исчерпана",
+                QuotaExhausted,
+            ),
+            (
+                None,
+                Some("rate_limit"),
+                "Лимит запросов исчерпан на сегодня",
+                QuotaExhausted,
+            ),
+            (
+                None,
+                Some("rate_limit"),
+                "недостаточно средств на балансе",
+                QuotaExhausted,
+            ),
+            // Server failures inside a rate envelope.
+            (None, Some("rate_limit"), "internal server error", Server),
+            // Status fallbacks for silent text.
+            (Some(529), Some("rate_limit"), "provider down", Capacity),
+            (Some(503), Some("rate_limit"), "provider down", Capacity),
+            (Some(500), Some("rate_limit"), "provider down", Server),
+            (Some(429), Some("rate_limit"), "", RateLimit),
+            (None, Some("rate_limit"), "provider down", RateLimit),
+        ];
+        for (status, _kind, text, expected) in cases {
+            assert_eq!(
+                classify_rate_limit_reason(*status, text),
+                *expected,
+                "text {text:?} with status {status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn message_reasons_read_kind_status_and_text() {
+        // payment_required is the spend cap, by kind, regardless of text.
+        assert_eq!(
+            rate_limit_reason_for_message(&error_message(
+                Some("payment_required"),
+                Some(402),
+                None
+            )),
+            Some(RateLimitReason::SpendCap)
+        );
+        // A quota-worded rate limit classifies account-local.
+        let quota = AssistantMessage {
+            error_message: Some("You have hit your usage limit".to_string()),
+            ..error_message(Some("rate_limit"), Some(429), None)
+        };
+        assert_eq!(
+            rate_limit_reason_for_message(&quota),
+            Some(RateLimitReason::QuotaExhausted)
+        );
+        // A plain 429 is the retryable class.
+        assert_eq!(
+            rate_limit_reason_for_message(&error_message(Some("rate_limit"), Some(429), None)),
+            Some(RateLimitReason::RateLimit)
+        );
+        // Every other failure is outside the family.
+        assert_eq!(
+            rate_limit_reason_for_message(&error_message(Some("server_error"), Some(500), None)),
+            None
+        );
+        assert_eq!(rate_limit_reason_for_message(&ok_message()), None);
+    }
+
+    #[test]
+    fn reason_wire_spellings_round_trip() {
+        let reasons = [
+            RateLimitReason::QuotaExhausted,
+            RateLimitReason::RateLimit,
+            RateLimitReason::Concurrent,
+            RateLimitReason::Capacity,
+            RateLimitReason::Server,
+            RateLimitReason::SpendCap,
+        ];
+        for reason in reasons {
+            assert_eq!(RateLimitReason::from_wire(reason.as_wire()), Some(reason));
+        }
+        assert_eq!(RateLimitReason::from_wire("nonsense"), None);
+    }
+
+    #[test]
+    fn retry_after_is_the_minimum_wait_capped_at_60s() {
+        let policy = DEFAULT_PROVIDER_RETRY_POLICY;
+        // A small hint is honored exactly (the ADR's "5s, not 30s"): it
+        // replaces both the exponential ladder and the class backoff.
+        assert_eq!(
+            provider_retry_delay_for_reason(
+                Some(RateLimitReason::RateLimit),
+                1,
+                Some(5_000),
+                &policy,
+                0.5,
+            ),
+            ProviderRetryDelay::Wait { delay_ms: 5_000 }
+        );
+        // A hint above the cap waits the cap instead of giving up —
+        // the subagent-death regression's guard.
+        assert_eq!(
+            provider_retry_delay_for_reason(
+                Some(RateLimitReason::RateLimit),
+                1,
+                Some(120_000),
+                &policy,
+                0.5,
+            ),
+            ProviderRetryDelay::Wait { delay_ms: 60_000 }
+        );
+        // Without a hint the class backoff replaces the ladder.
+        assert_eq!(
+            provider_retry_delay_for_reason(
+                Some(RateLimitReason::RateLimit),
+                1,
+                None,
+                &policy,
+                0.5,
+            ),
+            ProviderRetryDelay::Wait { delay_ms: 30_000 }
+        );
+        assert_eq!(
+            provider_retry_delay_for_reason(
+                Some(RateLimitReason::Concurrent),
+                1,
+                None,
+                &policy,
+                0.5,
+            ),
+            ProviderRetryDelay::Wait { delay_ms: 5_000 }
+        );
+        assert_eq!(
+            provider_retry_delay_for_reason(Some(RateLimitReason::Server), 1, None, &policy, 0.5,),
+            ProviderRetryDelay::Wait { delay_ms: 20_000 }
+        );
+        // The capacity class spreads ±15s around 45s.
+        assert_eq!(
+            provider_retry_delay_for_reason(Some(RateLimitReason::Capacity), 1, None, &policy, 0.5,),
+            ProviderRetryDelay::Wait { delay_ms: 45_000 }
+        );
+        assert_eq!(
+            provider_retry_delay_for_reason(Some(RateLimitReason::Capacity), 1, None, &policy, 0.0,),
+            ProviderRetryDelay::Wait { delay_ms: 30_000 }
+        );
+        assert_eq!(
+            provider_retry_delay_for_reason(Some(RateLimitReason::Capacity), 1, None, &policy, 1.0,),
+            ProviderRetryDelay::Wait { delay_ms: 60_000 }
+        );
+        // Outside the family the shared exponential ladder stands.
+        assert_eq!(
+            provider_retry_delay_for_reason(None, 1, None, &policy, 0.5),
+            provider_retry_delay(1, None, &policy)
+        );
+    }
+
+    #[test]
+    fn account_local_reasons_settle_and_long_hints_keep_the_park_hand_off() {
+        let policy = DEFAULT_PROVIDER_RETRY_POLICY;
+        // A spent quota without a reported reset settles at once: no
+        // quick retry, the failover chain owns the re-route.
+        assert_eq!(
+            provider_retry_delay_for_reason(
+                Some(RateLimitReason::QuotaExhausted),
+                1,
+                None,
+                &policy,
+                0.5,
+            ),
+            ProviderRetryDelay::Settle
+        );
+        // A spend cap never honors a retry-after.
+        assert_eq!(
+            provider_retry_delay_for_reason(
+                Some(RateLimitReason::SpendCap),
+                1,
+                Some(10_000),
+                &policy,
+                0.5,
+            ),
+            ProviderRetryDelay::Settle
+        );
+        // A quota reset beyond the cap keeps the ExceedsCap hand-off
+        // the park seam hangs on (do not break the park).
+        assert_eq!(
+            provider_retry_delay_for_reason(
+                Some(RateLimitReason::QuotaExhausted),
+                1,
+                Some(3_600_000),
+                &policy,
+                0.5,
+            ),
+            ProviderRetryDelay::ExceedsCap {
+                retry_after_ms: 3_600_000
+            }
+        );
+        // A RATE hint at or beyond the long-hint bound escalates to the
+        // quota lane (oh-my-pi LONG_RATE_LIMIT_DELAY_MS): park/reroute,
+        // never a 60s-capped retry.
+        assert_eq!(
+            provider_retry_delay_for_reason(
+                Some(RateLimitReason::RateLimit),
+                1,
+                Some(4_363_000),
+                &policy,
+                0.5,
+            ),
+            ProviderRetryDelay::ExceedsCap {
+                retry_after_ms: 4_363_000
+            }
+        );
+        // A non-rate failure keeps the old above-cap give-up.
+        assert_eq!(
+            provider_retry_delay_for_reason(None, 1, Some(4_363_000), &policy, 0.5),
+            ProviderRetryDelay::ExceedsCap {
+                retry_after_ms: 4_363_000
+            }
+        );
+    }
+
+    #[test]
+    fn rate_limited_failures_get_the_m3_attempt_ceiling() {
+        assert_eq!(
+            effective_max_retries(3, Some(RateLimitReason::RateLimit)),
+            RATE_LIMIT_MAX_ATTEMPTS
+        );
+        assert_eq!(
+            effective_max_retries(7, Some(RateLimitReason::Capacity)),
+            7,
+            "a policy already above the band keeps its ceiling"
+        );
+        assert_eq!(
+            effective_max_retries(3, Some(RateLimitReason::QuotaExhausted)),
+            3,
+            "account-local causes settle before the ceiling matters"
+        );
+        assert_eq!(effective_max_retries(3, None), 3);
     }
 
     #[test]

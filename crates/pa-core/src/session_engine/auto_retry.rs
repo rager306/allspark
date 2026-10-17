@@ -10,11 +10,12 @@ use pa_agent::types::{AssistantMessage, StopReason};
 
 use super::provider_park::{is_quota_block_failure, ParkDecisionCallback};
 use super::provider_retry::{
-    has_provider_stream_failure, is_agent_lifecycle_failure, is_context_overflow_failure,
-    is_faux_provider_queue_exhausted, is_permanent_provider_failure_kind,
-    is_unsupported_tool_failure, jittered_delay_ms, provider_retry_delay,
-    provider_stream_failure_kind, provider_stream_failure_retry_after_ms,
-    provider_stream_failure_status, retry_jitter_rand01, ProviderRetryDelay, ProviderRetryPolicy,
+    effective_max_retries, has_provider_stream_failure, is_agent_lifecycle_failure,
+    is_context_overflow_failure, is_faux_provider_queue_exhausted,
+    is_permanent_provider_failure_kind, is_unsupported_tool_failure, jittered_delay_ms,
+    provider_retry_delay_for_reason, provider_stream_failure_kind,
+    provider_stream_failure_retry_after_ms, provider_stream_failure_status,
+    rate_limit_reason_for_message, retry_jitter_rand01, ProviderRetryDelay, ProviderRetryPolicy,
 };
 
 /// Why one `auto_retry_start` fired (the TS wire `reason` field).
@@ -129,21 +130,29 @@ where
             return Ok(message);
         }
         // The attempt counter bumps before deciding, so the exhaustion
-        // check compares past `max_retries`.
+        // check compares past the effective ceiling (M3: a retryable
+        // rate-limit failure gets at least RATE_LIMIT_MAX_ATTEMPTS tries).
         retries_performed += 1;
-        let delay = provider_retry_delay(
+        let reason = rate_limit_reason_for_message(&message);
+        let max_attempts = effective_max_retries(policy.max_retries, reason);
+        let delay = provider_retry_delay_for_reason(
+            reason,
             retries_performed,
             provider_stream_failure_retry_after_ms(&message),
             policy,
+            retry_jitter_rand01(),
         );
         let delay_ms = match delay {
             // Jittered (SANCTIONED DIVERGENCE, operator ruling 2026-09-23):
             // the jittered value is both waited and reported, so the countdown
             // stays honest while retried sessions spread off the ladder ticks.
+            // The rate-limit classes opt out: their class backoffs carry
+            // their own spread, and a server hint is a minimum the ±20%
+            // band must not undercut.
             ProviderRetryDelay::Wait { delay_ms } => {
                 // The server-requested-wait arm runs BEFORE the quick-retry
                 // exhaustion check: a quota-blocked final retry still parks.
-                if retries_performed > policy.max_retries {
+                if retries_performed > max_attempts {
                     emit(AutoRetryEvent::End {
                         success: false,
                         attempt: retries_performed - 1,
@@ -153,7 +162,25 @@ where
                     .await?;
                     return Ok(message);
                 }
-                jittered_delay_ms(delay_ms, retry_jitter_rand01())
+                if reason.is_some() {
+                    delay_ms
+                } else {
+                    jittered_delay_ms(delay_ms, retry_jitter_rand01())
+                }
+            }
+            ProviderRetryDelay::Settle => {
+                // Account-local exhaustion (M3: a spent quota or spend
+                // cap): no quick retry rides this ladder — settle now;
+                // the failover chain re-routes and a reported reset
+                // beyond the cap took the ExceedsCap arm above (park).
+                emit(AutoRetryEvent::End {
+                    success: false,
+                    attempt: retries_performed - 1,
+                    final_error: Some(final_error_of(&message)),
+                    restored_model: None,
+                })
+                .await?;
+                return Ok(message);
             }
             ProviderRetryDelay::ExceedsCap { retry_after_ms } => {
                 // The give-up sentence of this arm is the park's abort
@@ -194,7 +221,7 @@ where
         };
         emit(AutoRetryEvent::Start {
             attempt: retries_performed,
-            max_attempts: policy.max_retries,
+            max_attempts,
             delay_ms,
             error_message: final_error_of(&message),
             reason: RetryStartReason::Quick,

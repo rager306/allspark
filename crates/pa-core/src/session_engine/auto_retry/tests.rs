@@ -723,8 +723,14 @@ async fn aborted_signal_racing_failure_stops_aborted() {
     assert_eq!(message.stop_reason, StopReason::Aborted);
 }
 
+/// M3 (ADR `ratelimit-admission`): a 429 whose server-requested wait
+/// sits above the policy cap no longer ends the loop — Retry-After is
+/// the MINIMUM wait, honored up to the 60s cap, and the ladder runs to
+/// the M3 ceiling (6 retries) instead of the policy's three. This is
+/// the subagent-death regression's guard: the old behavior burned one
+/// attempt and gave up inside the provider's window.
 #[tokio::test]
-async fn server_retry_after_over_cap_ends_the_loop() {
+async fn server_retry_after_over_cap_retries_at_the_m3_ceiling() {
     let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let events = Arc::new(Mutex::new(Vec::new()));
     let events_for_emit = Arc::clone(&events);
@@ -751,22 +757,36 @@ async fn server_retry_after_over_cap_ends_the_loop() {
     )
     .await
     .unwrap();
-    // The cap (50ms) rejects the server's 500ms wait on the first retry
-    // request; the loop stops and reports the refused wait (TS
-    // `exceeds-cap` end event, attempt 0 because no retry finished).
-    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    // One attempt plus six retries: the 429 ceiling replaces the
+    // policy's default three.
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 7);
     assert_eq!(message.stop_reason, StopReason::Error);
+    let events = events.lock().unwrap().clone();
+    assert_eq!(events.len(), 7, "six starts and one end: {events:?}");
+    for (index, event) in events.iter().take(6).enumerate() {
+        let AutoRetryEvent::Start {
+            attempt,
+            max_attempts,
+            delay_ms,
+            ..
+        } = event
+        else {
+            panic!("expected a start event at {index}: {event:?}");
+        };
+        assert_eq!(*attempt, index as u32 + 1);
+        assert_eq!(*max_attempts, 6, "the M3 429 ceiling, not the policy's 3");
+        // The server hint is a minimum honored exactly — the ±20%
+        // generic jitter band never distorts it.
+        assert_eq!(*delay_ms, 500);
+    }
     assert_eq!(
-        events.lock().unwrap().as_slice(),
-        &[AutoRetryEvent::End {
+        events[6],
+        AutoRetryEvent::End {
             success: false,
-            attempt: 0,
-            final_error: Some(
-                "Provider requested a 1s wait before retrying (above retry.provider.maxRetryDelayMs=50ms): provider down"
-                    .to_string(),
-            ),
+            attempt: 6,
+            final_error: Some("provider down".to_string()),
             restored_model: None,
-        }]
+        }
     );
 }
 

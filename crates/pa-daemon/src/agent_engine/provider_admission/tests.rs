@@ -42,6 +42,18 @@ impl StaggerSource for RecordingStagger {
 /// Poll `condition` until it holds, bounded by a deadline. The condition is
 /// an observable admission event (a queue depth, a recorded grant), so this
 /// never depends on how long any work takes.
+/// Assert-and-unwrap one admitted stream lease (the battery's old
+/// `Option::expect` shape, now a three-way answer).
+async fn admitted(registry: &ProviderAdmission, key: &ProviderKey, holder: &str) -> u64 {
+    match registry
+        .acquire_stream_within(key, holder, Duration::from_millis(50))
+        .await
+    {
+        StreamAdmission::Admitted(lease) => lease,
+        other => panic!("expected an admitted lease for {holder}, got {other:?}"),
+    }
+}
+
 async fn until(condition: impl Fn() -> bool, what: &str) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while !condition() {
@@ -139,21 +151,18 @@ async fn aimd_halves_on_429_down_to_the_floor_and_grows_back_to_the_cap() {
 
     // A 429 streak: 6 -> 3 -> 1 (the floor holds).
     for expected in [3, 1, 1] {
-        let lease = registry
-            .acquire_stream_within(&key, "worker-a", Duration::from_millis(50))
-            .await
-            .expect("a slot is free at the start of each settle round");
-        registry.settle(lease, StreamOutcome::RateLimited);
+        let lease = admitted(&registry, &key, "worker-a").await;
+        registry.settle(
+            lease,
+            StreamOutcome::RateLimited(RateLimitReason::RateLimit),
+        );
         assert_eq!(registry.snapshot(&key).limit, expected);
         assert!(registry.snapshot(&key).consecutive_429 > 0);
     }
 
     // A success streak: +1 per settled stream, capped at the settings cap.
     for expected in [2, 3, 4, 5, 6, 6] {
-        let lease = registry
-            .acquire_stream_within(&key, "worker-a", Duration::from_millis(50))
-            .await
-            .expect("the limit always leaves one slot for the recovery probe");
+        let lease = admitted(&registry, &key, "worker-a").await;
         registry.settle(lease, StreamOutcome::Settled);
         assert_eq!(registry.snapshot(&key).limit, expected);
         assert_eq!(registry.snapshot(&key).consecutive_429, 0);
@@ -174,10 +183,7 @@ async fn a_low_settings_cap_clamps_the_aimd_start() {
     let key = key();
     assert_eq!(registry.snapshot(&key).limit, 2);
     for _ in 0..2 {
-        let lease = registry
-            .acquire_stream_within(&key, "worker-a", Duration::from_millis(50))
-            .await
-            .expect("the clamped start admits two streams");
+        let lease = admitted(&registry, &key, "worker-a").await;
         registry.settle(lease, StreamOutcome::Settled);
     }
     assert_eq!(
@@ -198,10 +204,7 @@ async fn a_nested_spawn_is_admitted_by_the_parent_stream_settle_not_its_end() {
     let key = key();
 
     // Generation 1: the parent's turn is streaming, holding the only slot.
-    let parent_stream = registry
-        .acquire_stream_within(&key, "parent", Duration::from_millis(50))
-        .await
-        .expect("the parent's stream takes the only slot");
+    let parent_stream = admitted(&registry, &key, "parent").await;
     assert_eq!(registry.snapshot(&key).in_flight, 1);
 
     // The parent's tool call spawns a child: the spawn queues behind the
@@ -243,10 +246,7 @@ async fn a_nested_spawn_is_admitted_by_the_parent_stream_settle_not_its_end() {
     );
 
     // Generation 2: the child's first turn streams, holding the only slot.
-    let child_stream = registry
-        .acquire_stream_within(&key, "child", Duration::from_millis(50))
-        .await
-        .expect("the child's stream takes the freed slot");
+    let child_stream = admitted(&registry, &key, "child").await;
 
     // The child's tool call spawns a grandchild of the same provider: it
     // queues behind the child's own stream.
@@ -360,21 +360,15 @@ async fn admission_is_keyed_by_provider_and_model() {
     assert_eq!(glm.selector(), "zai/glm-5.3");
     assert_ne!(glm, kimi);
 
-    let glm_lease = registry
-        .acquire_stream_within(&glm, "worker-a", Duration::from_millis(50))
-        .await
-        .expect("glm has its own slot");
+    let glm_lease = admitted(&registry, &glm, "worker-a").await;
     // The other model on the same provider is unaffected.
-    let kimi_lease = registry
-        .acquire_stream_within(&kimi, "worker-b", Duration::from_millis(50))
-        .await
-        .expect("a different model has an independent limit");
+    let kimi_lease = admitted(&registry, &kimi, "worker-b").await;
     // ...while a second stream on glm's saturated key queues.
-    assert!(
+    assert_eq!(
         registry
             .acquire_stream_within(&glm, "worker-c", Duration::from_millis(0))
-            .await
-            .is_none(),
+            .await,
+        StreamAdmission::Unadmitted,
         "the saturated key queues its own traffic"
     );
     registry.release(glm_lease);
@@ -387,21 +381,17 @@ async fn admission_is_keyed_by_provider_and_model() {
 async fn a_dead_holder_has_its_leases_reaped() {
     let registry = ProviderAdmission::new(1);
     let key = key();
-    let _lease = registry
-        .acquire_stream_within(&key, "worker-dead", Duration::from_millis(50))
-        .await
-        .expect("the doomed worker takes the only slot");
+    let _lease = admitted(&registry, &key, "worker-dead").await;
     assert_eq!(registry.snapshot(&key).in_flight, 1);
 
     assert_eq!(registry.release_holder("worker-dead"), 1);
     assert_eq!(registry.snapshot(&key).in_flight, 0);
-    assert!(
+    assert!(matches!(
         registry
             .acquire_stream_within(&key, "worker-alive", Duration::from_millis(50))
-            .await
-            .is_some(),
-        "the reaped slot admits the next worker"
-    );
+            .await,
+        StreamAdmission::Admitted(_)
+    ));
     // A second reap is a no-op.
     assert_eq!(registry.release_holder("worker-dead"), 0);
 }
@@ -412,16 +402,13 @@ async fn a_dead_holder_has_its_leases_reaped() {
 async fn an_expired_wait_budget_fails_open_and_releases_the_queue_slot() {
     let registry = ProviderAdmission::new(1);
     let key = key();
-    let held = registry
-        .acquire_stream_within(&key, "worker-a", Duration::from_millis(50))
-        .await
-        .expect("the first stream takes the only slot");
+    let held = admitted(&registry, &key, "worker-a").await;
 
-    assert!(
+    assert_eq!(
         registry
             .acquire_stream_within(&key, "worker-b", Duration::from_millis(0))
-            .await
-            .is_none(),
+            .await,
+        StreamAdmission::Unadmitted,
         "a saturated key answers the expired budget with fail-open"
     );
     assert_eq!(
@@ -432,10 +419,12 @@ async fn an_expired_wait_budget_fails_open_and_releases_the_queue_slot() {
 
     // The pool still works: the freed slot admits a later stream.
     registry.settle(held, StreamOutcome::Settled);
-    assert!(registry
-        .acquire_stream_within(&key, "worker-c", Duration::from_millis(50))
-        .await
-        .is_some());
+    assert!(matches!(
+        registry
+            .acquire_stream_within(&key, "worker-c", Duration::from_millis(50))
+            .await,
+        StreamAdmission::Admitted(_)
+    ));
 }
 
 /// The AIMD signal a settled assistant message carries: a 429 (by status,
@@ -465,12 +454,20 @@ fn a_message_carries_its_aimd_signal() {
         error: None,
         details: Some(serde_json::json!({ "status": 429, "kind": "rate_limit" })),
     }]);
-    assert_eq!(outcome_for_message(&message), StreamOutcome::RateLimited);
+    assert_eq!(
+        outcome_for_message(&message),
+        StreamOutcome::RateLimited(RateLimitReason::RateLimit)
+    );
 
-    // The text-only shape (no diagnostic) still classifies.
+    // The text-only shape (no diagnostic) still classifies — and M3
+    // types the cause: "too many concurrent requests" is a concurrency
+    // cap, not a rolling rate cap.
     message.diagnostics = None;
     message.error_message = Some("API Error: 429 Too many concurrent requests".to_string());
-    assert_eq!(outcome_for_message(&message), StreamOutcome::RateLimited);
+    assert_eq!(
+        outcome_for_message(&message),
+        StreamOutcome::RateLimited(RateLimitReason::Concurrent)
+    );
 
     // A non-429 failure is a plain settle: the slot returns without
     // touching the limit.
@@ -479,13 +476,32 @@ fn a_message_carries_its_aimd_signal() {
 }
 
 /// The wire spelling of an outcome round-trips (the worker/supervisor
-/// settle contract).
+/// settle contract): the outcome word carries a default reason, and the
+/// typed reason rides its own wire field beside it.
 #[test]
 fn stream_outcomes_round_trip_through_their_wire_spelling() {
-    for outcome in [StreamOutcome::Settled, StreamOutcome::RateLimited] {
-        assert_eq!(StreamOutcome::from_wire(outcome.as_wire()), Some(outcome));
-    }
+    assert_eq!(
+        StreamOutcome::from_wire(StreamOutcome::Settled.as_wire()),
+        Some(StreamOutcome::Settled)
+    );
+    // A bare `rate_limited` outcome word (a legacy settle, a stripped
+    // field) reads as the plain retryable 429; the typed reason refines
+    // it through its own wire spelling.
+    assert_eq!(
+        StreamOutcome::from_wire("rate_limited"),
+        Some(StreamOutcome::RateLimited(RateLimitReason::RateLimit))
+    );
     assert_eq!(StreamOutcome::from_wire("nonsense"), None);
+    for reason in [
+        RateLimitReason::QuotaExhausted,
+        RateLimitReason::RateLimit,
+        RateLimitReason::Concurrent,
+        RateLimitReason::Capacity,
+        RateLimitReason::Server,
+        RateLimitReason::SpendCap,
+    ] {
+        assert_eq!(RateLimitReason::from_wire(reason.as_wire()), Some(reason));
+    }
 }
 
 /// The end-to-end bracket through [`admit_stream_fn`]: a stream holds a
@@ -610,13 +626,412 @@ async fn a_wrapped_stream_holds_its_slot_only_for_its_own_lifetime() {
         .await
         .expect("the limited stream admits");
     let message = stream.result().await.expect("the stream resolves");
-    assert_eq!(outcome_for_message(&message), StreamOutcome::RateLimited);
+    assert_eq!(
+        outcome_for_message(&message),
+        StreamOutcome::RateLimited(RateLimitReason::RateLimit)
+    );
     // The settle rides `result()`; give the async settle its turn.
     until(
         || registry.snapshot(&key).limit == 3,
         "the 429 halves the shared limit",
     )
     .await;
+    assert_eq!(registry.snapshot(&key).in_flight, 0);
+}
+
+// ===== M3/M4/M5 (ADR `ratelimit-admission`, wave 2b) =====
+
+/// M3: the AIMD decrease is reason-aware — an account-local cause (a
+/// spent quota or a spend cap) drops the limit to the floor at once,
+/// a plain 429 only halves it.
+#[tokio::test]
+async fn account_local_reasons_drop_the_limit_to_the_floor_at_once() {
+    let registry = ProviderAdmission::new(6);
+    let key = key();
+
+    // A spent quota: 6 -> 1 (the floor), not 6 -> 3.
+    let lease = admitted(&registry, &key, "worker-a").await;
+    registry.settle(
+        lease,
+        StreamOutcome::RateLimited(RateLimitReason::QuotaExhausted),
+    );
+    assert_eq!(registry.snapshot(&key).limit, 1);
+    assert_eq!(registry.snapshot(&key).consecutive_429, 1);
+
+    // Recovery: settled streams grow it back one slot at a time.
+    let lease = admitted(&registry, &key, "worker-a").await;
+    registry.settle(lease, StreamOutcome::Settled);
+    assert_eq!(registry.snapshot(&key).limit, 2);
+
+    // A spend cap is just as account-local.
+    let lease = admitted(&registry, &key, "worker-b").await;
+    registry.settle(lease, StreamOutcome::RateLimited(RateLimitReason::SpendCap));
+    assert_eq!(registry.snapshot(&key).limit, 1);
+
+    // A plain 429 halves (2 -> 1 here), never further than the floor.
+    let lease = admitted(&registry, &key, "worker-a").await;
+    registry.settle(
+        lease,
+        StreamOutcome::RateLimited(RateLimitReason::RateLimit),
+    );
+    assert_eq!(registry.snapshot(&key).limit, 1);
+}
+
+/// M4: the retry budget — rate-limited settles past 10% of the sliding
+/// window (with enough samples) trip the provider's breaker OPEN, and
+/// new stream acquires fail fast instead of queueing.
+#[tokio::test]
+async fn a_spent_retry_budget_opens_the_breaker_and_refuses_acquires() {
+    let clock = ScriptedClock::new(1_000);
+    let registry = ProviderAdmission::with_parts(
+        6,
+        Arc::new(JitteredStagger::new()),
+        Arc::clone(&clock) as Arc<dyn ClockSource>,
+    );
+    let key = key();
+    assert_eq!(
+        registry.snapshot(&key).breaker.state,
+        BreakerState::Closed,
+        "a fresh provider starts closed"
+    );
+
+    // Ten rate-limited settles: the window fills past the 10% bound on
+    // its minimum sample count and the breaker opens.
+    for _ in 0..RETRY_BUDGET_MIN_SAMPLES {
+        let lease = admitted(&registry, &key, "storm-worker").await;
+        registry.settle(
+            lease,
+            StreamOutcome::RateLimited(RateLimitReason::RateLimit),
+        );
+    }
+    let snapshot = registry.snapshot(&key);
+    assert_eq!(snapshot.breaker.state, BreakerState::Open);
+    assert_eq!(snapshot.breaker.budget_failures, RETRY_BUDGET_MIN_SAMPLES);
+    assert_eq!(snapshot.breaker.budget_samples, RETRY_BUDGET_MIN_SAMPLES);
+
+    // New stream acquires fail fast: no queueing, no fail-open — the
+    // caller must fail over instead.
+    assert_eq!(
+        registry
+            .acquire_stream_within(&key, "worker-next", Duration::from_millis(50))
+            .await,
+        StreamAdmission::Refused
+    );
+
+    // A healthy provider's occasional 429 never trips: under the sample
+    // floor the budget stays unspent.
+    let other = ProviderKey::new("healthy", "m1");
+    for _ in 0..(RETRY_BUDGET_MIN_SAMPLES - 1) {
+        let lease = admitted(&registry, &other, "worker-a").await;
+        registry.settle(
+            lease,
+            StreamOutcome::RateLimited(RateLimitReason::RateLimit),
+        );
+    }
+    assert_eq!(
+        registry.snapshot(&other).breaker.state,
+        BreakerState::Closed,
+        "too few samples to judge the budget"
+    );
+}
+
+/// M4: the OPEN breaker lifts through ONE half-open probe after the
+/// cooldown — the first acquire is the probe, everything else still
+/// fail-fasts, and a settled probe closes the breaker with a fresh
+/// budget.
+#[tokio::test]
+async fn an_open_breaker_half_opens_after_the_cooldown_and_one_probe_closes_it() {
+    let clock = ScriptedClock::new(1_000);
+    let registry = ProviderAdmission::with_parts(
+        6,
+        Arc::new(JitteredStagger::new()),
+        Arc::clone(&clock) as Arc<dyn ClockSource>,
+    );
+    let key = key();
+    for _ in 0..RETRY_BUDGET_MIN_SAMPLES {
+        let lease = admitted(&registry, &key, "storm-worker").await;
+        registry.settle(
+            lease,
+            StreamOutcome::RateLimited(RateLimitReason::RateLimit),
+        );
+    }
+    assert_eq!(registry.snapshot(&key).breaker.state, BreakerState::Open);
+
+    // Inside the cooldown everything fail-fasts.
+    clock.advance(BREAKER_COOLDOWN_MS - 1);
+    assert_eq!(
+        registry
+            .acquire_stream_within(&key, "worker-a", Duration::from_millis(50))
+            .await,
+        StreamAdmission::Refused
+    );
+
+    // Past the cooldown the FIRST acquire is the single probe...
+    clock.advance(1);
+    let probe = match registry
+        .acquire_stream_within(&key, "probe", Duration::from_millis(50))
+        .await
+    {
+        StreamAdmission::Admitted(lease) => lease,
+        other => panic!("the probe must admit, got {other:?}"),
+    };
+    assert_eq!(
+        registry.snapshot(&key).breaker.state,
+        BreakerState::HalfOpen
+    );
+    // ...and everything else still fail-fasts while it is in flight.
+    assert_eq!(
+        registry
+            .acquire_stream_within(&key, "worker-b", Duration::from_millis(50))
+            .await,
+        StreamAdmission::Refused
+    );
+
+    // A settled probe closes the breaker and clears the storm's
+    // evidence: the budget starts fresh.
+    registry.settle(probe, StreamOutcome::Settled);
+    let snapshot = registry.snapshot(&key);
+    assert_eq!(snapshot.breaker.state, BreakerState::Closed);
+    assert_eq!(snapshot.breaker.budget_samples, 0);
+    assert!(
+        matches!(
+            registry
+                .acquire_stream_within(&key, "worker-c", Duration::from_millis(50))
+                .await,
+            StreamAdmission::Admitted(_)
+        ),
+        "a closed breaker admits again"
+    );
+}
+
+/// M4: a rate-limited probe re-opens the breaker with a fresh cooldown,
+/// and a probe that drops without a verdict re-opens it too (the breaker
+/// must never wedge in half-open).
+#[tokio::test]
+async fn a_failed_or_dropped_probe_re_opens_the_breaker() {
+    let clock = ScriptedClock::new(1_000);
+    let registry = ProviderAdmission::with_parts(
+        6,
+        Arc::new(JitteredStagger::new()),
+        Arc::clone(&clock) as Arc<dyn ClockSource>,
+    );
+    let key = key();
+    for _ in 0..RETRY_BUDGET_MIN_SAMPLES {
+        let lease = admitted(&registry, &key, "storm-worker").await;
+        registry.settle(
+            lease,
+            StreamOutcome::RateLimited(RateLimitReason::RateLimit),
+        );
+    }
+
+    // The probe comes back rate-limited: re-open, cooldown restarts.
+    clock.advance(BREAKER_COOLDOWN_MS);
+    let probe = match registry
+        .acquire_stream_within(&key, "probe", Duration::from_millis(50))
+        .await
+    {
+        StreamAdmission::Admitted(lease) => lease,
+        other => panic!("the probe must admit, got {other:?}"),
+    };
+    registry.settle(
+        probe,
+        StreamOutcome::RateLimited(RateLimitReason::RateLimit),
+    );
+    assert_eq!(registry.snapshot(&key).breaker.state, BreakerState::Open);
+    clock.advance(BREAKER_COOLDOWN_MS - 1);
+    assert_eq!(
+        registry
+            .acquire_stream_within(&key, "worker-a", Duration::from_millis(50))
+            .await,
+        StreamAdmission::Refused,
+        "the re-opened breaker keeps its full cooldown"
+    );
+
+    // The next probe is dropped (an aborted turn releases its lease):
+    // the breaker re-opens instead of wedging in half-open.
+    clock.advance(1);
+    let probe = match registry
+        .acquire_stream_within(&key, "probe", Duration::from_millis(50))
+        .await
+    {
+        StreamAdmission::Admitted(lease) => lease,
+        other => panic!("the probe must admit, got {other:?}"),
+    };
+    registry.release(probe);
+    assert_eq!(registry.snapshot(&key).breaker.state, BreakerState::Open);
+}
+
+/// M4: the breaker gates provider TRAFFIC, not spawn reservations — a
+/// queued spawn still admits while the breaker is open (the child's own
+/// first stream fail-fasts to failover).
+#[tokio::test]
+async fn an_open_breaker_does_not_gate_spawn_admissions() {
+    let clock = ScriptedClock::new(1_000);
+    let registry = ProviderAdmission::with_parts(
+        6,
+        Arc::new(JitteredStagger::new()),
+        Arc::clone(&clock) as Arc<dyn ClockSource>,
+    );
+    let key = key();
+    for _ in 0..RETRY_BUDGET_MIN_SAMPLES {
+        let lease = admitted(&registry, &key, "storm-worker").await;
+        registry.settle(
+            lease,
+            StreamOutcome::RateLimited(RateLimitReason::RateLimit),
+        );
+    }
+    assert_eq!(
+        registry
+            .acquire_stream_within(&key, "worker-a", Duration::from_millis(0))
+            .await,
+        StreamAdmission::Refused
+    );
+    assert!(
+        registry
+            .spawn_gate_within(&key, "spawn-1", Duration::from_millis(50))
+            .await
+            .is_some(),
+        "a spawn reservation is the create round trip, not provider traffic"
+    );
+}
+
+/// M5: every observability field is present in the per-provider rows —
+/// the daemon state snapshot's compact section.
+#[tokio::test]
+async fn provider_rows_carry_every_observability_field() {
+    let registry = ProviderAdmission::new(6);
+    let glm = ProviderKey::new("zai", "glm-5.3");
+    let kimi = ProviderKey::new("zai", "kimi-k2");
+    let kimi_lease = admitted(&registry, &kimi, "worker-b").await;
+    registry.release(kimi_lease);
+    let lease = admitted(&registry, &glm, "worker-a").await;
+    registry.settle(
+        lease,
+        StreamOutcome::RateLimited(RateLimitReason::RateLimit),
+    );
+
+    let rows = registry.provider_rows();
+    assert_eq!(
+        rows.iter()
+            .map(|row| (row.provider.as_str(), row.model.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("zai", "glm-5.3"), ("zai", "kimi-k2")],
+        "rows are sorted per (provider, model)"
+    );
+    let glm_row = &rows[0];
+    assert_eq!(glm_row.limit, 3);
+    assert_eq!(glm_row.in_flight, 0);
+    assert_eq!(glm_row.cap, 6);
+    assert_eq!(glm_row.consecutive_429, 1);
+    assert_eq!(glm_row.queued, 0);
+    assert_eq!(glm_row.breaker.state, BreakerState::Closed);
+    assert_eq!(glm_row.breaker.budget_failures, 1);
+    assert_eq!(glm_row.breaker.budget_samples, 1);
+    // The breaker is per PROVIDER: both models on zai share one standing.
+    assert_eq!(rows[1].breaker, glm_row.breaker);
+}
+
+/// The open breaker's fail-fast stream: `admit_stream_fn` answers a
+/// refusal with a rate-limit-shaped failure carrying the circuit-open
+/// marker the M3 classifier reads as account-local rotation — so the
+/// retry ladder settles it and the failover chain re-routes instead of
+/// hammering the provider.
+#[tokio::test]
+async fn a_refused_acquire_fails_fast_as_a_rate_limit_for_failover() {
+    use pa_agent::stream::StreamRequestOptions;
+    use pa_agent::types::Model as AgentModel;
+
+    let registry = ProviderAdmission::new(6);
+    let key = key();
+    // Trip the breaker.
+    for _ in 0..RETRY_BUDGET_MIN_SAMPLES {
+        let lease = admitted(&registry, &key, "storm-worker").await;
+        registry.settle(
+            lease,
+            StreamOutcome::RateLimited(RateLimitReason::RateLimit),
+        );
+    }
+
+    // The refusal message itself classifies as account-local rotation.
+    assert_eq!(
+        outcome_for_message(&breaker_refusal_message(&key)),
+        StreamOutcome::RateLimited(RateLimitReason::QuotaExhausted)
+    );
+
+    // The wrapped stream answers the refusal without calling the inner
+    // stream: no provider traffic, one classified failure to fail over.
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let inner: StreamFn = {
+        let calls = Arc::clone(&calls);
+        Arc::new(
+            move |_model: AgentModel, _context: LlmContext, _options: StreamRequestOptions| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async move {
+                    let (_handle, consumer) = pa_agent::stream::event_stream();
+                    Ok(Box::new(consumer) as Box<dyn ModelStream>)
+                })
+            },
+        )
+    };
+    let key_of: KeyResolver = {
+        let key = key.clone();
+        Arc::new(move || key.clone())
+    };
+    let stream_fn = admit_stream_fn(inner, key_of, AdmissionClient::local(Arc::clone(&registry)));
+    let model = AgentModel {
+        id: "glm-5.3".to_string(),
+        name: "glm".to_string(),
+        api: "openai".to_string(),
+        provider: "zai".to_string(),
+        base_url: String::new(),
+        reasoning: false,
+        cost: pa_agent::types::UsageCost::default(),
+        context_window: 0,
+        max_tokens: 0,
+        max_tokens_explicit: false,
+    };
+    let mut stream = stream_fn(
+        model,
+        LlmContext {
+            system_prompt: None,
+            messages: Vec::new(),
+            tools: Vec::new(),
+        },
+        StreamRequestOptions {
+            temperature: None,
+            max_tokens: None,
+            reasoning: pa_agent::types::ThinkingLevel::Off,
+            session_id: None,
+            service_tier: None,
+            api_key: None,
+            signal: pa_agent::abort::AbortSignal::never(),
+            on_payload: None,
+            on_response: None,
+            headers: None,
+        },
+    )
+    .await
+    .expect("the refused acquire answers a stream");
+    let message = stream.result().await.expect("the refusal resolves");
+    assert_eq!(message.stop_reason, pa_agent::types::StopReason::Error);
+    assert!(
+        message
+            .error_message
+            .as_deref()
+            .is_some_and(|error| error.contains("circuit open")),
+        "message: {:?}",
+        message.error_message
+    );
+    assert_eq!(
+        outcome_for_message(&message),
+        StreamOutcome::RateLimited(RateLimitReason::QuotaExhausted)
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the inner stream never ran: no provider traffic while open"
+    );
+    // No lease was taken for the refusal: the pool is untouched.
     assert_eq!(registry.snapshot(&key).in_flight, 0);
 }
 
@@ -627,9 +1042,14 @@ async fn a_disabled_client_admits_without_a_plane() {
     let client = AdmissionClient::Disabled;
     assert!(!client.is_enabled());
     let key = key();
-    assert!(client.acquire_stream(&key).await.is_none());
+    assert_eq!(
+        client.acquire_stream(&key).await,
+        StreamAdmission::Unadmitted
+    );
     assert!(client.spawn_gate(&key, "spawn").await.is_none());
     // The calls are no-ops, never panics.
-    client.settle(1, StreamOutcome::RateLimited).await;
+    client
+        .settle(1, StreamOutcome::RateLimited(RateLimitReason::RateLimit))
+        .await;
     client.release(1).await;
 }
