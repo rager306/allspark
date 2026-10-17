@@ -109,6 +109,7 @@ impl Supervisor {
             telemetry_disabled,
             runtime_metadata,
             env,
+            launch_env,
             ..
         } = create
         else {
@@ -124,6 +125,13 @@ impl Supervisor {
         let client_env = env
             .as_ref()
             .map(crate::herdr::filter_client_env)
+            .filter(|env| !env.is_empty());
+        // The client's launch env (TS `launchEnv`) re-filtered on receipt
+        // (the socket peer is untrusted). In-memory only; the lifetime is
+        // documented on the `ResidentWorker::launch_env` field.
+        let client_launch_env = launch_env
+            .clone()
+            .map(pa_types::daemon::launch_env::collect_launch_env)
             .filter(|env| !env.is_empty());
         // The shutdown gate: a create dispatched while the supervisor is
         // stopping must never launch a worker the stop pass would miss (a
@@ -340,6 +348,8 @@ impl Supervisor {
         };
         let descriptor_path = self.descriptor_dir.join(format!("{worker_id}.json"));
         let resident = ResidentWorker::new(worker_id.clone(), descriptor, descriptor_path.clone());
+        // TS stores `worker.launchEnv` before the spawn.
+        resident.set_launch_env(client_launch_env);
         // Register the resident before spawning: the worker's boot self-registration must
         // find its identity in the registry (registration races the create replay).
         self.registry.insert(Arc::clone(&resident)).await;
@@ -461,6 +471,11 @@ impl Supervisor {
         {
             let mut descriptor = resident.descriptor.lock().await;
             descriptor.lifecycle = DaemonWorkerLifecycle::Ready;
+            // TS clears `launchEnv` at ready; an owned worker keeps it
+            // for its recovery relaunch until ownership clears.
+            if descriptor.owner_client_id.is_none() {
+                resident.clear_launch_env();
+            }
             descriptor.root_session_id = create_summary
                 .get("sessionId")
                 .and_then(Value::as_str)
@@ -899,6 +914,27 @@ pub(super) fn recovery_journal_owner_is_gone(
         },
         None => false,
     }
+}
+
+/// Whether a worker process is provably gone (the journal-owner rule: dead, or its pid now
+/// belongs to another process). Pid 0 records no identity and is never proof.
+pub(super) async fn worker_process_gone(pid: u64, start_id: Option<String>) -> bool {
+    let Ok(pid) = u32::try_from(pid) else {
+        return false;
+    };
+    if pid == 0 {
+        return false;
+    }
+    // On macOS the start-id probe shells out to `ps`: keep it off the executor.
+    tokio::task::spawn_blocking(move || {
+        recovery_journal_owner_is_gone(
+            crate::lease::is_process_alive(pid).ok(),
+            start_id.as_deref(),
+            crate::lease::get_process_start_id(pid).as_deref(),
+        )
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// Probe a worker socket until it accepts connections or the connect budget runs out; the

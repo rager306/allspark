@@ -1840,24 +1840,18 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "pa-agent"
-version = "0.10.0"
+version = "0.10.1-beta.35"
 dependencies = [
  "anyhow",
- "futures",
- "rcgen",
- "reqwest",
- "rustls",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror 2.0.20",
  "tokio",
- "tokio-rustls",
 ]
 
 [[package]]
 name = "pa-ai"
-version = "0.10.0"
+version = "0.10.1-beta.35"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1892,7 +1886,7 @@ dependencies = [
 
 [[package]]
 name = "pa-ast"
-version = "0.10.0"
+version = "0.10.1-beta.35"
 dependencies = [
  "anyhow",
  "ast-grep-core",
@@ -1927,7 +1921,7 @@ dependencies = [
 
 [[package]]
 name = "pa-cli"
-version = "0.10.0"
+version = "0.10.1-beta.35"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1957,7 +1951,7 @@ dependencies = [
 
 [[package]]
 name = "pa-core"
-version = "0.10.0"
+version = "0.10.1-beta.35"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2002,7 +1996,7 @@ dependencies = [
 
 [[package]]
 name = "pa-daemon"
-version = "0.10.0"
+version = "0.10.1-beta.35"
 dependencies = [
  "anyhow",
  "filetime",
@@ -2031,11 +2025,11 @@ dependencies = [
 
 [[package]]
 name = "pa-diff"
-version = "0.10.0"
+version = "0.10.1-beta.35"
 
 [[package]]
 name = "pa-edit"
-version = "0.10.0"
+version = "0.10.1-beta.35"
 dependencies = [
  "async-trait",
  "globset",
@@ -2056,7 +2050,7 @@ dependencies = [
 
 [[package]]
 name = "pa-graph"
-version = "0.10.0"
+version = "0.10.1-beta.35"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2078,7 +2072,7 @@ dependencies = [
 
 [[package]]
 name = "pa-jev"
-version = "0.10.0"
+version = "0.10.1-beta.35"
 dependencies = [
  "futures",
  "reqwest",
@@ -2090,7 +2084,7 @@ dependencies = [
 
 [[package]]
 name = "pa-lsp"
-version = "0.10.0"
+version = "0.10.1-beta.35"
 dependencies = [
  "anyhow",
  "async-lsp",
@@ -2115,7 +2109,7 @@ dependencies = [
 
 [[package]]
 name = "pa-mem"
-version = "0.10.0"
+version = "0.10.1-beta.35"
 dependencies = [
  "crc32fast",
  "lz4_flex",
@@ -2126,7 +2120,7 @@ dependencies = [
 
 [[package]]
 name = "pa-models"
-version = "0.10.0"
+version = "0.10.1-beta.35"
 dependencies = [
  "hex",
  "hmac",
@@ -2145,8 +2139,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "pa-perf"
+version = "0.10.1-beta.35"
+dependencies = [
+ "anyhow",
+ "clap",
+ "nix",
+ "pa-core",
+ "pa-daemon",
+ "pa-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "vt100",
+]
+
+[[package]]
 name = "pa-telemetry"
-version = "0.10.0"
+version = "0.10.1-beta.35"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -2161,7 +2171,7 @@ dependencies = [
 
 [[package]]
 name = "pa-tui"
-version = "0.10.0"
+version = "0.10.1-beta.35"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2188,7 +2198,7 @@ dependencies = [
 
 [[package]]
 name = "pa-types"
-version = "0.10.0"
+version = "0.10.1-beta.35"
 dependencies = [
  "anyhow",
  "libc",
@@ -4041,6 +4051,39 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vt100"
+version = "0.15.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84cd863bf0db7e392ba3bd04994be3473491b31e66340672af5d11943c6274de"
+dependencies = [
+ "itoa",
+ "log",
+ "unicode-width 0.1.14",
+ "vte",
+]
+
+[[package]]
+name = "vte"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5022b5fbf9407086c180e9557be968742d839e68346af7792b8592489732197"
+dependencies = [
+ "arrayvec",
+ "utf8parse",
+ "vte_generate_state_changes",
+]
+
+[[package]]
+name = "vte_generate_state_changes"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e369bee1b05d510a7b4ed645f5faa90619e05437111783ea5848f28d97d3c2e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+]
 
 [[package]]
 name = "walkdir"
