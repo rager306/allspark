@@ -149,6 +149,11 @@ fn prime_agent(args: &[&str], sandbox: &Sandbox) -> Command {
         .env("HOME", sandbox.root.join("home"))
         .env_remove(ENV_INSTALLER_URL)
         .env(ENV_PREFIX, &sandbox.prefix)
+        // The mock installer is served over plain loopback HTTP: the funnel's
+        // https rule (mirrored from install-rust.sh/install.ps1) refuses a
+        // non-https source unless the explicitly-named hatch is open, which is
+        // exactly the local-channel/e2e path these tests exercise.
+        .env("PRIME_AGENT_ALLOW_HTTP", "1")
         .env(
             "PRIME_AGENT_CODING_AGENT_DIR",
             sandbox.root.join("home/.prime/agent"),

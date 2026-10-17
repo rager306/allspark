@@ -115,8 +115,16 @@ pub(crate) fn current_state_root() -> DaemonStateRoot {
 
 /// A socket belongs to the root when it is the default path, sits in the socket
 /// dir, or anywhere inside the agent dir (TS ownership registry not ported).
+/// The upstream TypeScript product's daemon socket (`<tmpdir>/prime-agent-<uid>`,
+/// a co-installed product's namespace) is NEVER this root's, whatever the root
+/// says: probing or stopping it from a fork is exactly the cross-product kill
+/// known bug #22 names, and both payloads are named `prime-agent` so argv can
+/// never separate them — only the path can.
 fn state_root_matches(root: &DaemonStateRoot, socket_path: &Path) -> bool {
     if is_never_touch(socket_path) {
+        return false;
+    }
+    if pa_daemon::paths::is_upstream_ts_daemon_socket(socket_path) {
         return false;
     }
     #[cfg(windows)]
@@ -557,6 +565,52 @@ mod tests {
         assert!(!state_root_matches(
             &root,
             Path::new("/tmp/other-root/daemon.sock")
+        ));
+    }
+
+    /// THE CROSS-PRODUCT GUARD (known bug #22): a discovery rooted at the
+    /// fork's own socket dir must NEVER surface the co-installed upstream
+    /// TypeScript daemon (`<tmpdir>/prime-agent-<uid>`) as a stop candidate —
+    /// even when the root's socket dir and the upstream dir share a tmpdir.
+    /// This is the fix for the fork installer/stop-probe killing an upstream
+    /// user's daemon; the two payloads are both named `prime-agent`, so only
+    /// the socket PATH can separate them.
+    #[cfg(unix)]
+    #[test]
+    fn the_upstream_ts_daemon_is_never_a_stop_candidate_for_a_fork_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let upstream_dir = tmp.path().join("prime-agent-501");
+        std::fs::create_dir_all(&upstream_dir).expect("upstream dir");
+        let upstream_socket = upstream_dir.join("daemon.sock");
+        // The fork's own root: a DIFFERENT socket dir beside the upstream one.
+        let root = DaemonStateRoot {
+            agent_dir: tmp.path().join("agent"),
+            socket_dir: tmp.path().join("allspark-501"),
+            default_socket_path: tmp.path().join("allspark-501").join("daemon.sock"),
+        };
+        assert!(
+            !state_root_matches(&root, &upstream_socket),
+            "the upstream TS socket is never this root's"
+        );
+        // Even a root whose own socket dir IS the upstream dir must refuse it:
+        // this binary's own daemon never lives under `prime-agent-<uid>` (its
+        // default is `allspark-<uid>`, the launcher pins `allspark-daemon.sock`,
+        // and the pre-takeover dir is `prime-agent-rust-<uid>`), so the
+        // upstream dir is ALWAYS a foreign product's daemon — the path guard
+        // beats root matching, like never-touch.
+        let upstream_root = DaemonStateRoot {
+            agent_dir: tmp.path().join("agent"),
+            socket_dir: upstream_dir,
+            default_socket_path: upstream_socket.clone(),
+        };
+        assert!(
+            !state_root_matches(&upstream_root, &upstream_socket),
+            "the upstream TS socket is refused whatever the root says"
+        );
+        // The fork's OWN socket in its own dir still matches.
+        assert!(state_root_matches(
+            &root,
+            &root.socket_dir.join("daemon.sock")
         ));
     }
 

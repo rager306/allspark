@@ -158,6 +158,48 @@ impl RotatingLog {
 
 use std::io::Write as _;
 
+/// The upstream TypeScript product's per-user daemon socket dir name
+/// (`prime-agent-<uid>`), beside this product's own (`allspark-<uid>`).
+#[cfg(unix)]
+const UPSTREAM_TS_SOCKET_DIR_PREFIX: &str = "prime-agent";
+
+/// Whether `socket_path` names the UPSTREAM TypeScript product's daemon —
+/// under `<tmpdir>/prime-agent-<uid>/`. Discriminated by PATH, never by argv
+/// (both products' payloads are named `prime-agent`, so argv cannot tell them
+/// apart; known bug #22). This binary's own daemon never lives there: its
+/// default dir is `allspark-<uid>` ([`socket_dir`]), the launcher pins
+/// `allspark-daemon.sock`, and the pre-takeover Rust dir is
+/// `prime-agent-rust-<uid>` (which this predicate does NOT match). So the
+/// upstream TS dir is ALWAYS a foreign product's daemon — probing or stopping
+/// it is exactly the cross-product kill the finding names.
+///
+/// Pure over the path, so the rule is unit-testable without touching the
+/// ambient environment.
+#[cfg(unix)]
+#[must_use]
+pub fn is_upstream_ts_daemon_socket(socket_path: &Path) -> bool {
+    let Some(parent) = socket_path.parent() else {
+        return false;
+    };
+    let Some(name) = parent.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    // `prime-agent-<digits>` exactly: the `-rust-<uid>` and bare forms never
+    // match (a `-` must follow the prefix, then only digits).
+    name.strip_prefix(UPSTREAM_TS_SOCKET_DIR_PREFIX)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .is_some_and(|uid| !uid.is_empty() && uid.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+/// Windows daemons share one named-pipe namespace (the known, undecided
+/// Windows model): there is no upstream TS dir to separate, so nothing is
+/// refused by path here.
+#[cfg(not(unix))]
+#[must_use]
+pub fn is_upstream_ts_daemon_socket(_socket_path: &Path) -> bool {
+    false
+}
+
 /// Age of a file's mtime, for stale-lease detection.
 #[must_use]
 pub fn mtime_age(path: &Path) -> Option<Duration> {
@@ -186,5 +228,50 @@ mod tests {
             Path::new("/ad"),
         );
         assert_ne!(path, other);
+    }
+
+    /// The cross-product guard (known bug #22): the upstream TypeScript
+    /// product's daemon socket is recognized by PATH — under
+    /// `<tmpdir>/prime-agent-<uid>` — never by argv. This binary's own daemon
+    /// never lives there (its default dir is `allspark-<uid>`, the launcher
+    /// pins `allspark-daemon.sock`, and the pre-takeover dir is
+    /// `prime-agent-rust-<uid>`), so the upstream dir is always a foreign
+    /// product's daemon and the guard always fires. This is the rule that keeps
+    /// a fork discovery/shutdown from ever probing the co-installed upstream
+    /// daemon.
+    #[cfg(unix)]
+    #[test]
+    fn the_upstream_ts_daemon_socket_is_recognized_by_path_only() {
+        let tmp = Path::new("/tmp");
+        assert!(is_upstream_ts_daemon_socket(
+            &tmp.join("prime-agent-501/daemon.sock")
+        ));
+        // A worker socket in the upstream dir is the upstream daemon's too.
+        assert!(is_upstream_ts_daemon_socket(
+            &tmp.join("prime-agent-501/worker-abc-0123456789ab.sock")
+        ));
+        // The fork's own socket, the pre-takeover rust socket, and an
+        // unrelated path are NOT the upstream product's.
+        assert!(!is_upstream_ts_daemon_socket(
+            &tmp.join("allspark-501/daemon.sock")
+        ));
+        assert!(!is_upstream_ts_daemon_socket(
+            &tmp.join("prime-agent-rust-501/daemon.sock")
+        ));
+        assert!(!is_upstream_ts_daemon_socket(
+            &tmp.join("other/daemon.sock")
+        ));
+        // A near-miss name (a non-numeric suffix, or no separator) never reads
+        // as the upstream dir.
+        assert!(!is_upstream_ts_daemon_socket(
+            &tmp.join("prime-agent-socket/daemon.sock")
+        ));
+        assert!(!is_upstream_ts_daemon_socket(
+            &tmp.join("prime-agent/daemon.sock")
+        ));
+        // A file directly under the dir (no parent) and a bare filename are
+        // not the upstream dir either.
+        assert!(!is_upstream_ts_daemon_socket(Path::new("/tmp")));
+        assert!(!is_upstream_ts_daemon_socket(Path::new("daemon.sock")));
     }
 }

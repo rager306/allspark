@@ -26,13 +26,21 @@
 #      signal one that will not stop), but only AFTER the new payload and
 #      launcher are published — the retirement steps (daemon stops, npm
 #      uninstall) never leave the machine without a
-#      working prime-agent if the install aborts mid-way. The probed
-#      candidates: the TS daemon's default socket
+#      working prime-agent if the install aborts mid-way. THE FORK GATE:
+#      the fork and the upstream TypeScript product are separated by SOCKET
+#      PATH (both payloads are named `prime-agent`, so argv cannot tell them
+#      apart): a fork run (PRIME_AGENT_FORK_BUILD set, or an allspark socket
+#      in play) probes only the fork/rust sockets and leaves the upstream TS
+#      default socket alone; an upstream run probes the TS default, the
+#      profile-exported PRIME_AGENT_DAEMON_SOCKET, and the pinned rust socket.
+#      The upstream candidates: the TS daemon's default socket
 #      (${TMPDIR:-/tmp}/prime-agent-$(id -u)/daemon.sock),
 #      PRIME_AGENT_DAEMON_SOCKET when a profile exported it (the
 #      non-default socket the first field install had), and this
-#      product's own pinned rust socket. The daemon that answers a
-#      candidate is classified by IDENTITY first — a hello whose
+#      product's own pinned rust socket; the fork run's: the pinned rust
+#      socket and the fork socket
+#      (${TMPDIR:-/tmp}/allspark-$(id -u)/daemon.sock). The daemon that
+#      answers a candidate is classified by IDENTITY first — a hello whose
 #      runtime build id is this product's ("pa-daemon-rs-<version>",
 #      carried since the port) is OUR daemon of any build (the update
 #      flow: the running daemon holds the old binary and venv state, the
@@ -1606,6 +1614,16 @@ ts_stop_rust_stopped=""
 windows_stop_summary=""
 ts_socket="${TMPDIR:-/tmp}/prime-agent-$(id -u)/daemon.sock"
 rust_socket="${TMPDIR:-/tmp}/prime-agent-rust-$(id -u)/daemon.sock"
+# THE FORK SOCKET (known bug #22): the allspark fork's own default daemon
+# socket directory is `allspark-<uid>` (crates/pa-daemon/src/platform/paths.rs
+# `socket_dir`), distinct from the upstream TS default (`prime-agent-<uid>`)
+# and the pre-takeover Rust default (`prime-agent-rust-<uid>`). A fork update
+# must stop the FORK daemon — which holds the old payload and venv state — so
+# the fork socket is a stop candidate of its own, and the upstream TS socket
+# is NOT: probing the upstream default here is exactly how a fork installer
+# killed a co-installed upstream user's daemon (the finding's field shape).
+# The candidate is OUR daemon by construction, like the pinned rust socket.
+fork_socket="${TMPDIR:-/tmp}/allspark-$(id -u)/daemon.sock"
 env_socket="${PRIME_AGENT_DAEMON_SOCKET:-}"
 # THE TILDE EXPANSION (the CLI's own spelling: the products' clients
 # expand a leading ~/ in PRIME_AGENT_DAEMON_SOCKET before connecting, so
@@ -1637,23 +1655,70 @@ esac
 # THE CANDIDATES ride named variables, never a space-joined list (the
 # bots' finding): a socket path containing whitespace would word-split
 # into phantom candidates (and an unquoted iteration would glob too), so
-# the probe list is the three named paths probed in order — the TS
-# default socket, a profile-exported env socket, this product's pinned
-# rust socket — deduped by string equality, each probed exactly once.
-# ts_candidate_report names every candidate for the no-silent-skips
-# ruling (a report string may carry the spaces; the probes do not).
-ts_candidate_report="$ts_socket"
-env_socket_probe="no"
-if [ -n "$env_socket" ] && [ "$env_socket" != "$ts_socket" ] && [ "$env_socket" != "$rust_socket" ]; then
-  env_socket_probe="yes"
-  ts_candidate_report="$ts_candidate_report, $env_socket"
+# each named path is probed QUOTED, exactly once, deduped by string
+# equality. ts_candidate_report names the candidates actually probed for
+# the no-silent-skips ruling (a report string may carry the spaces; the
+# probes do not).
+# THE FORK GATE (known bug #22): the fork and the upstream TypeScript product
+# are separated by SOCKET PATH, never by argv — both payloads are named
+# `prime-agent`, so argv cannot tell them apart (the finding's point). A run is
+# a FORK run when either (a) the fork build marker is set (the fork's Rust
+# update funnel exports PRIME_AGENT_FORK_BUILD), or (b) a candidate socket is
+# already in the fork's own namespace — the launcher pins
+# PRIME_AGENT_DAEMON_SOCKET to .../allspark-daemon.sock, and the fork's Rust
+# default dir is allspark-<uid>. The fork run probes the fork/rust sockets and
+# leaves the upstream TS default (`prime-agent-<uid>`) alone; the upstream run
+# (neither signal) keeps the TS takeover and leaves the fork socket alone.
+# Probing across the boundary is exactly how a fork installer killed a
+# co-installed upstream user's daemon (and the reverse).
+fork_run="no"
+if [ -n "${PRIME_AGENT_FORK_BUILD:-}" ]; then
+  fork_run="yes"
 fi
-# The pin is probed as OURS whenever it is not the TS default; an env
-# export pointing AT the pin is the same socket (one probe, as ours).
+case "$env_socket" in
+  *allspark*) fork_run="yes" ;;
+esac
+# The upstream TS default socket: probed for an upstream run, skipped for a
+# fork run (a different product's daemon).
+ts_socket_probe="no"
+if [ "$fork_run" != "yes" ]; then
+  ts_socket_probe="yes"
+fi
+# A profile-exported PRIME_AGENT_DAEMON_SOCKET, deduped against the other
+# named candidates; classified like the TS default (identity first).
+env_socket_probe="no"
+if [ -n "$env_socket" ] && [ "$env_socket" != "$ts_socket" ] && [ "$env_socket" != "$rust_socket" ] && [ "$env_socket" != "$fork_socket" ]; then
+  env_socket_probe="yes"
+fi
+# The pinned rust socket: OURS whenever it is not the TS default (an env
+# export pointing AT the pin is the same socket — the env candidate is
+# deduped against the pin above, so the pin is the one probed, as ours).
 rust_socket_probe="no"
 if [ "$rust_socket" != "$ts_socket" ]; then
   rust_socket_probe="yes"
-  ts_candidate_report="$ts_candidate_report, $rust_socket"
+fi
+# The fork socket: OURS, for a fork run only, deduped against the others.
+fork_socket_probe="no"
+if [ "$fork_run" = "yes" ] && [ "$fork_socket" != "$ts_socket" ] && [ "$fork_socket" != "$rust_socket" ] && [ "$fork_socket" != "$env_socket" ]; then
+  fork_socket_probe="yes"
+fi
+# ts_candidate_report: the candidates actually probed, in probe order, for the
+# no-silent-skips report line.
+ts_candidate_report=""
+if [ "$ts_socket_probe" = "yes" ]; then
+  ts_candidate_report="$ts_socket"
+fi
+if [ "$env_socket_probe" = "yes" ]; then
+  ts_candidate_report="${ts_candidate_report:+$ts_candidate_report, }$env_socket"
+fi
+if [ "$rust_socket_probe" = "yes" ]; then
+  ts_candidate_report="${ts_candidate_report:+$ts_candidate_report, }$rust_socket"
+fi
+if [ "$fork_socket_probe" = "yes" ]; then
+  ts_candidate_report="${ts_candidate_report:+$ts_candidate_report, }$fork_socket"
+fi
+if [ "$fork_run" = "yes" ]; then
+  ts_candidate_report="${ts_candidate_report} (fork run: the upstream TS socket ${ts_socket} is left alone)"
 fi
 # The daemon probe rides a FILE, not a heredoc inside a command
 # substitution: macOS ships bash 3.2 as /bin/sh, and its POSIX-mode parser
@@ -2166,7 +2231,7 @@ stop_daemon_candidate() {
       note "  identified there); nothing was stopped and the newcomer was never"
       note "  commanded. Stop it with:"
       todo "allspark shutdown --force"
-      ts_stop_summary="${ts_stop_summary}daemon: WARNING replaced on ${socket_path} (the classified ${daemon_name} was swapped mid-stop; the replacement was never commanded; stop it by hand: prime-agent shutdown --force)
+      ts_stop_summary="${ts_stop_summary}daemon: WARNING replaced on ${socket_path} (the classified ${daemon_name} was swapped mid-stop; the replacement was never commanded; stop it by hand: allspark shutdown --force)
 "
       ;;
     ts:stop-failed:*|rust:stop-failed:*|ts:kill-*:*|rust:kill-*:*)
@@ -2186,11 +2251,11 @@ stop_daemon_candidate() {
       case "$verdict" in
         *:kill-*)
           note "  Stop it with this, or kill the process on ${socket_path}:"
-          manual_stop="stop it by hand: prime-agent shutdown --force, or kill the process listening on ${socket_path}"
+          manual_stop="stop it by hand: allspark shutdown --force, or kill the process listening on ${socket_path}"
           ;;
         *)
           note "  Re-run the installer with --force to kill it, or stop it with:"
-          manual_stop="re-run the installer with --force to kill it, or stop it by hand: prime-agent shutdown --force"
+          manual_stop="re-run the installer with --force to kill it, or stop it by hand: allspark shutdown --force"
           ;;
       esac
       todo "allspark shutdown --force"
@@ -2203,7 +2268,7 @@ stop_daemon_candidate() {
       note "! An unknown daemon is listening on ${socket_path} (schema ${schema_id});"
       note "  nothing was stopped. Stop it with:"
       todo "allspark shutdown --force"
-      ts_stop_summary="${ts_stop_summary}daemon: WARNING unrecognized on ${socket_path} (schema ${schema_id}; left running; stop it by hand: prime-agent shutdown --force)
+      ts_stop_summary="${ts_stop_summary}daemon: WARNING unrecognized on ${socket_path} (schema ${schema_id}; left running; stop it by hand: allspark shutdown --force)
 "
       ;;
     no-hello|no-schema)
@@ -2211,7 +2276,7 @@ stop_daemon_candidate() {
       note "! Something is listening on ${socket_path} but did not greet as a"
       note "  daemon; nothing was stopped. Stop it with:"
       todo "allspark shutdown --force"
-      ts_stop_summary="${ts_stop_summary}daemon: WARNING unidentified on ${socket_path} (no daemon hello; left running; stop it by hand: prime-agent shutdown --force)
+      ts_stop_summary="${ts_stop_summary}daemon: WARNING unidentified on ${socket_path} (no daemon hello; left running; stop it by hand: allspark shutdown --force)
 "
       ;;
     stale)
@@ -2222,7 +2287,7 @@ stop_daemon_candidate() {
       note "! Could not check ${socket_path} for a running daemon; nothing was"
       note "  stopped. If one is running there, stop it with:"
       todo "allspark shutdown --force"
-      ts_stop_summary="${ts_stop_summary}daemon: WARNING unprobed on ${socket_path} (nothing was stopped; stop it by hand: prime-agent shutdown --force)
+      ts_stop_summary="${ts_stop_summary}daemon: WARNING unprobed on ${socket_path} (nothing was stopped; stop it by hand: allspark shutdown --force)
 "
       ;;
     absent)
@@ -2525,7 +2590,7 @@ if [ "$WINDOWS" = "yes" ] \
     windows_stop_summary="daemon: stopped cleanly for this update (the forced shutdown request, the scripted non-interactive form)"
     say "the running daemon was shut down (the next invocation boots the new one)"
   else
-    windows_stop_summary="daemon: WARNING no shutdown answer (if a daemon is running, stop it by hand: prime-agent shutdown --force)"
+    windows_stop_summary="daemon: WARNING no shutdown answer (if a daemon is running, stop it by hand: allspark shutdown --force)"
     note "! No daemon answered the shutdown request. If one is running, stop it and re-run:"
     todo "allspark shutdown --force"
   fi
@@ -2924,16 +2989,17 @@ fi
 # The TS native tree's move to the legacy name cannot be deferred (it
 # occupies this installer's publish path); it runs inside the lock with its
 # own restore-on-failure and printed rollback instead.
-# Every candidate is probed by its named variable (the default TS
-# socket, the profile-exported PRIME_AGENT_DAEMON_SOCKET, this product's
-# pinned rust socket) — no silent skips, except the one the self-socket
-# refusal protects, and no word-split iteration: each named path is
-# passed QUOTED, exactly once, so a socket path containing whitespace
-# stays one candidate (the bots' finding). The TS candidates classify by
-# identity first, then the schema family; the pinned rust socket is OUR
-# daemon by construction (the update flow: a running rust daemon holds
-# the old binary and venv state, the update needs it down, the next
-# invocation boots the new daemon).
+# Every candidate is probed by its named variable (the fork gate decides
+# which: the upstream TS default socket and the profile-exported
+# PRIME_AGENT_DAEMON_SOCKET for an upstream run, this product's pinned rust
+# socket and the fork socket for a fork run) — no silent skips, except the
+# one the self-socket refusal protects, and no word-split iteration: each
+# named path is passed QUOTED, exactly once, so a socket path containing
+# whitespace stays one candidate (the bots' finding). The TS candidates
+# classify by identity first, then the schema family; the pinned rust and
+# fork sockets are OUR daemon by construction (the update flow: a running
+# rust daemon holds the old binary and venv state, the update needs it down,
+# the next invocation boots the new daemon).
 last_stop_recorded=""
 last_stop_was_rust=""
 # WINDOWS: no TS daemon can exist (the TS product never shipped a Windows
@@ -2944,9 +3010,15 @@ last_stop_was_rust=""
 # migration bridge. That coordinator must capture the TS restart manifest
 # before stopping the old daemon; the bridge explicitly transfers that duty.
 if [ "$WINDOWS" != "yes" ] && [ "${PRIME_AGENT_DEFER_DAEMON_STOP:-0}" != 1 ]; then
-  stop_daemon_candidate "$ts_socket" ts
-  ts_stop_stopped_ts="$last_stop_recorded"
-  ts_stop_was_rust_ts="$last_stop_was_rust"
+  # The upstream TS socket is probed only for an upstream install; a fork
+  # build (PRIME_AGENT_FORK_BUILD set) skips it — its own daemons live on
+  # the rust/fork sockets, and the upstream default belongs to a different
+  # product's daemon (the fork gate above).
+  if [ "$ts_socket_probe" = "yes" ]; then
+    stop_daemon_candidate "$ts_socket" ts
+    ts_stop_stopped_ts="$last_stop_recorded"
+    ts_stop_was_rust_ts="$last_stop_was_rust"
+  fi
   if [ "$env_socket_probe" = "yes" ]; then
     stop_daemon_candidate "$env_socket" ts
     ts_stop_stopped_env="$last_stop_recorded"
@@ -2956,6 +3028,11 @@ if [ "$WINDOWS" != "yes" ] && [ "${PRIME_AGENT_DEFER_DAEMON_STOP:-0}" != 1 ]; th
     stop_daemon_candidate "$rust_socket" ours
     ts_stop_stopped_rust="$last_stop_recorded"
     ts_stop_was_rust_rust="$last_stop_was_rust"
+  fi
+  if [ "$fork_socket_probe" = "yes" ]; then
+    stop_daemon_candidate "$fork_socket" ours
+    ts_stop_stopped_fork="$last_stop_recorded"
+    ts_stop_was_rust_fork="$last_stop_was_rust"
   fi
 fi
 
@@ -2976,7 +3053,7 @@ verify_stopped_socket() {
     fi
     note "! The daemon on $1 came back after it was stopped. Stop it with:"
     todo "allspark shutdown --force"
-    ts_stop_summary="${ts_stop_summary}daemon: WARNING still running on $1 (it answered the post-stop verification — the earlier stop line for this socket is superseded; stop it by hand: prime-agent shutdown --force)
+    ts_stop_summary="${ts_stop_summary}daemon: WARNING still running on $1 (it answered the post-stop verification — the earlier stop line for this socket is superseded; stop it by hand: allspark shutdown --force)
 "
   fi
 }
@@ -2989,6 +3066,9 @@ if [ "$WINDOWS" != "yes" ]; then
   fi
   if [ "${ts_stop_stopped_rust:-}" = "yes" ]; then
     verify_stopped_socket "$rust_socket" "$ts_stop_was_rust_rust"
+  fi
+  if [ "${ts_stop_stopped_fork:-}" = "yes" ]; then
+    verify_stopped_socket "$fork_socket" "$ts_stop_was_rust_fork"
   fi
 fi
 

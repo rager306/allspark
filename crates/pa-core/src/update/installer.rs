@@ -31,6 +31,19 @@ pub const ENV_RELEASE_CHANNEL: &str = "PRIME_AGENT_RELEASE_CHANNEL";
 /// The installer's download-base knob (the bucket holding the channel
 /// manifests and release archives).
 pub const ENV_DOWNLOAD_BASE_URL: &str = "PRIME_AGENT_DOWNLOAD_BASE_URL";
+/// `PRIME_AGENT_FORK_BUILD`: the fork build id the funnel exports to the
+/// installer script so its daemon stop-probe can tell a fork run from an
+/// upstream one (both payloads are named `prime-agent`, so argv cannot; the
+/// script keys off this marker and the fork's own socket path — known bug
+/// #22). Baked from the compile-time `ALLSPARK_FORK_BUILD`; unset upstream.
+pub const ENV_FORK_BUILD: &str = "PRIME_AGENT_FORK_BUILD";
+/// `PRIME_AGENT_ALLOW_HTTP`: the explicitly-named escape hatch `install-rust.sh`
+/// and `install.ps1` already honor — a plaintext (non-`https`) installer URL or
+/// download base is refused unless this is set to `1`, for a local channel/e2e
+/// run the operator controls. The Rust funnel mirrors the scripts' own rule so
+/// the surface that fetches and execs the script cannot be more permissive
+/// than the script itself.
+pub const ENV_ALLOW_HTTP: &str = "PRIME_AGENT_ALLOW_HTTP";
 /// `install-rust.sh`'s `DOWNLOAD_BASE_URL_DEFAULT`: where the channel
 /// manifests (`latest.json`, `beta.json`) are published.
 pub const DEFAULT_DOWNLOAD_BASE_URL: &str = "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev";
@@ -92,6 +105,44 @@ pub fn download_base_url() -> String {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_DOWNLOAD_BASE_URL.to_string())
+}
+
+/// Whether a URL is `https://` (the installer scripts' own `https://*` case).
+#[must_use]
+fn is_https_url(url: &str) -> bool {
+    url.trim_start().starts_with("https://")
+}
+
+/// The refusal for a non-`https` installer URL or download base, unless the
+/// explicitly-named escape hatch ([`ENV_ALLOW_HTTP`]`=1`) is active — the exact
+/// rule and knob `install-rust.sh` and `install.ps1` carry for the download
+/// base. `None` when the URL is acceptable (or the hatch is open). Pure, so the
+/// rule is unit-testable without the process-global environment.
+#[must_use]
+pub fn installer_url_refusal(url: &str, allow_http: bool) -> Option<String> {
+    if is_https_url(url) || allow_http {
+        return None;
+    }
+    Some(format!(
+        "the installer URL must be an https URL: {url} \
+         (set {ENV_ALLOW_HTTP}=1 only for a local channel you control)"
+    ))
+}
+
+/// Whether the [`ENV_ALLOW_HTTP`] escape hatch is active (`=1`).
+#[must_use]
+fn allow_http() -> bool {
+    std::env::var(ENV_ALLOW_HTTP).is_ok_and(|value| value == "1")
+}
+
+/// Refuse a non-`https` URL and log the refusal: the Rust funnel must be no
+/// more permissive than the script it fetches and execs.
+fn ensure_https_url(url: &str) -> Result<(), UpdateFailure> {
+    if let Some(message) = installer_url_refusal(url, allow_http()) {
+        tracing::warn!(url, "refusing a non-https installer source: {message}");
+        return Err(UpdateFailure { message });
+    }
+    Ok(())
 }
 
 /// The install prefix the launcher probe reads (`PRIME_AGENT_RUST_PREFIX`,
@@ -220,6 +271,12 @@ pub async fn run_installer_from(
     channel: Option<&'static str>,
     output: InstallerOutput,
 ) -> std::result::Result<Installed, UpdateFailure> {
+    // THE HTTPS RULE (mirrored from install-rust.sh / install.ps1): the funnel
+    // fetches this URL and pipes the bytes to `/bin/sh -s --`, so a plaintext
+    // source would let a network attacker swap the script the funnel then runs
+    // with the user's credentials. A non-https URL is refused up front — before
+    // any request — unless the explicitly-named escape hatch is set.
+    ensure_https_url(url)?;
     current_target().map_err(|error| UpdateFailure {
         message: format!("{error:#}"),
     })?;
@@ -625,6 +682,15 @@ fn installer_child(
 ) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(shell);
     command.env(ENV_PREFIX, prefix);
+    // FORK-ONLY: tell the installer script this run belongs to the fork, so
+    // its daemon stop-probe skips the upstream TypeScript socket (known bug
+    // #22: both payloads are named `prime-agent`, so only a marker/socket path
+    // separates them). The fork build id is baked at compile time
+    // (`ALLSPARK_FORK_BUILD=fork.N`, the same knob the version splash reads);
+    // an upstream build carries none and the script keeps its TS takeover.
+    if let Some(fork_build) = option_env!("ALLSPARK_FORK_BUILD") {
+        command.env(ENV_FORK_BUILD, fork_build);
+    }
     // The check knobs are the PRE-FLIGHT's alone: a user shell carrying
     // either would make the real run validate and exit without
     // publishing, so the shared builder strips both (the pre-flight sets
@@ -1022,6 +1088,59 @@ mod tests {
         format!("http://{address}/install.sh")
     }
 
+    /// The process-global env lock for the installer tests: the funnel's
+    /// https rule reads `PRIME_AGENT_ALLOW_HTTP` (process-global, like the
+    /// other knobs), so the tests that open or clear it serialize here and a
+    /// parallel run cannot flip the hatch under another test.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Hold the env lock with `PRIME_AGENT_ALLOW_HTTP` set to `value` (`None`
+    /// clears it), restoring the prior value on drop. The hatch is exactly the
+    /// knob the shipped scripts honor, so opening it here exercises the
+    /// documented local-channel path rather than weakening the rule; clearing
+    /// it exercises the refusal. The guard rides a struct (not a bare
+    /// `MutexGuard`) so the std lock is never held as a local across the
+    /// tests' awaits.
+    struct AllowHttpGuard {
+        // Held for the whole guard scope: the lock is released only after the
+        // prior value is restored on drop.
+        _lock: std::sync::MutexGuard<'static, ()>,
+        prior: Option<std::ffi::OsString>,
+    }
+
+    impl AllowHttpGuard {
+        fn open() -> Self {
+            Self::set(Some("1"))
+        }
+
+        fn closed() -> Self {
+            Self::set(None)
+        }
+
+        fn set(value: Option<&str>) -> Self {
+            let lock = env_lock();
+            let prior = std::env::var_os(ENV_ALLOW_HTTP);
+            match value {
+                Some(value) => std::env::set_var(ENV_ALLOW_HTTP, value),
+                None => std::env::remove_var(ENV_ALLOW_HTTP),
+            }
+            Self { _lock: lock, prior }
+        }
+    }
+
+    impl Drop for AllowHttpGuard {
+        fn drop(&mut self) {
+            match self.prior.take() {
+                Some(value) => std::env::set_var(ENV_ALLOW_HTTP, value),
+                None => std::env::remove_var(ENV_ALLOW_HTTP),
+            }
+        }
+    }
+
     /// The sandboxed preserve fixture: a session file under a home the installer
     /// world shares, with its exact bytes snapshotted for the byte-identity assert.
     struct Preserve {
@@ -1197,6 +1316,7 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
     #[tokio::test]
     #[cfg(unix)]
     async fn the_requested_channel_wins_over_the_install_marker() {
+        let _http = AllowHttpGuard::open();
         let (root, _preserve, prefix) = sandbox();
         let share = prefix.join("share/prime-agent");
         std::fs::create_dir_all(&share).unwrap();
@@ -1227,6 +1347,7 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
     #[tokio::test]
     #[cfg(unix)]
     async fn the_funnel_runs_the_downloaded_installer_and_preserves_the_session_store() {
+        let _http = AllowHttpGuard::open();
         let (root, preserve, prefix) = sandbox();
         let installed = run_installer_from(
             &serve(MOCK_INSTALLER),
@@ -1252,6 +1373,7 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
     #[tokio::test]
     #[cfg(unix)]
     async fn the_probe_still_reads_a_pre_takeover_launchers_version() {
+        let _http = AllowHttpGuard::open();
         let (root, _preserve, prefix) = sandbox();
         let installed = run_installer_from(
             &serve(LEGACY_INSTALLER),
@@ -1272,6 +1394,7 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
     #[tokio::test]
     #[cfg(unix)]
     async fn a_failed_installer_keeps_the_previous_install_and_reports_the_error() {
+        let _http = AllowHttpGuard::open();
         let (root, preserve, prefix) = sandbox();
         std::fs::create_dir_all(prefix.join("bin")).expect("bin dir");
         let previous = prefix.join("bin/prime-agent");
@@ -1301,6 +1424,9 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
 
     #[tokio::test]
     async fn an_unfetchable_script_fails_without_installing() {
+        // The hatch is open: this test pins the FETCH failure, not the https
+        // rule (which its plain-HTTP URL would otherwise trip first).
+        let _http = AllowHttpGuard::open();
         let (_root, _preserve, prefix) = sandbox();
         let failure = run_installer_from(
             "http://127.0.0.1:9/install-rust.sh",
@@ -1318,6 +1444,82 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
         assert!(
             !prefix.join("bin").exists(),
             "nothing landed from a failed fetch"
+        );
+    }
+
+    /// THE HTTPS RULE (mirrored from `install-rust.sh`/`install.ps1`): a
+    /// plaintext installer URL is refused up front, with a message naming the
+    /// escape hatch, and NO request is attempted; an `https://` URL passes the
+    /// same check. This is the regression for the env-URL gap (#19): without
+    /// the rule, a non-https `PRIME_AGENT_RUST_INSTALLER_URL` (or a beta
+    /// download base) was fetched and executed with no scheme check.
+    #[test]
+    fn a_non_https_installer_url_is_refused_unless_the_hatch_is_open() {
+        // The pure rule: https passes, http is refused, the hatch lifts it.
+        assert_eq!(
+            installer_url_refusal(
+                "https://app.primeintellect.ai/prime-agent/install.sh",
+                /*allow_http*/ false
+            ),
+            None
+        );
+        let refusal =
+            installer_url_refusal("http://127.0.0.1:9/pinned.sh", /*allow_http*/ false)
+                .expect("a plaintext URL is refused");
+        assert!(
+            refusal.contains("must be an https URL") && refusal.contains(ENV_ALLOW_HTTP),
+            "the refusal names the rule and the hatch: {refusal}"
+        );
+        assert_eq!(
+            installer_url_refusal("http://127.0.0.1:9/pinned.sh", /*allow_http*/ true),
+            None,
+            "the explicitly-named hatch admits a plaintext URL"
+        );
+    }
+
+    /// The funnel itself refuses a non-https env URL BEFORE any fetch: the
+    /// error names the rule, and nothing lands. The same URL installs once the
+    /// hatch is open — proving the refusal was the scheme, not the URL.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn the_funnel_refuses_a_non_https_url_before_fetching() {
+        // The hatch is closed (the default): the http mock server's URL must be
+        // refused by the scheme rule, never reached.
+        {
+            let _closed = AllowHttpGuard::closed();
+            let (_root, _preserve, prefix) = sandbox();
+            let failure = run_installer_from(
+                &serve(MOCK_INSTALLER),
+                &prefix,
+                None,
+                InstallerOutput::Capture,
+            )
+            .await
+            .expect_err("a plaintext installer URL is refused");
+            assert!(
+                failure.message.contains("must be an https URL"),
+                "the refusal names the https rule: {}",
+                failure.message
+            );
+            assert!(
+                !prefix.join("bin").exists(),
+                "a refused URL installs nothing"
+            );
+        }
+        // The same URL installs through the hatch (the local-channel path).
+        let _http = AllowHttpGuard::open();
+        let (_root, _preserve, prefix) = sandbox();
+        run_installer_from(
+            &serve(MOCK_INSTALLER),
+            &prefix,
+            None,
+            InstallerOutput::Capture,
+        )
+        .await
+        .expect("the hatch admits the local plain-HTTP installer");
+        assert!(
+            prefix.join("bin/prime-agent").is_file(),
+            "the hatched install landed"
         );
     }
 

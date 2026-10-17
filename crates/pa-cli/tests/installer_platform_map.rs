@@ -1180,3 +1180,111 @@ fn windows_e2e_harnesses_keep_the_kernel_prewarm_writes_in_scratch() {
         );
     }
 }
+
+/// THE STOP-CANDIDATE BLOCK, verbatim: from the socket assignments through the
+/// `ts_candidate_report` assembly, so the pin holds the shipped text.
+fn stop_candidate_block(script: &str) -> String {
+    let text =
+        std::fs::read_to_string(repo_root().join(script)).expect("read the installer script");
+    let start = text
+        .find("ts_socket=\"${TMPDIR")
+        .expect("the ts_socket assignment");
+    let end = start
+        + text[start..]
+            .find("# The daemon probe rides a FILE")
+            .expect("the end of the candidate block");
+    text[start..end].to_string()
+}
+
+/// Drive the extracted candidate block under `sh` and print the resolved
+/// probe flags + report; the harness pins TMPDIR/HOME so the resolved paths
+/// are fixture paths, and sets/clears the two knobs the gate reads
+/// (`PRIME_AGENT_FORK_BUILD`, `PRIME_AGENT_DAEMON_SOCKET`).
+fn candidate_flags(fork_build: Option<&str>, env_socket: Option<&str>) -> String {
+    let block = stop_candidate_block("install-rust.sh");
+    let harness = format!(
+        "#!/bin/sh\n\
+         {block}\n\
+         printf '%s|%s|%s|%s|%s|%s\\n' \"$ts_socket_probe\" \"$env_socket_probe\" \"$rust_socket_probe\" \"$fork_socket_probe\" \"$fork_run\" \"$ts_candidate_report\"\n"
+    );
+    let dir = tempfile::tempdir().expect("scratch dir");
+    let path = dir.path().join("candidates.sh");
+    std::fs::write(&path, harness).expect("write the harness");
+    let mut command = Command::new("sh");
+    command
+        .arg(&path)
+        .env("TMPDIR", dir.path())
+        .env("HOME", dir.path())
+        .env("PATH", "/usr/bin:/bin")
+        .env_remove("PRIME_AGENT_FORK_BUILD")
+        .env_remove("PRIME_AGENT_DAEMON_SOCKET");
+    if let Some(value) = fork_build {
+        command.env("PRIME_AGENT_FORK_BUILD", value);
+    }
+    if let Some(value) = env_socket {
+        command.env("PRIME_AGENT_DAEMON_SOCKET", value);
+    }
+    let output = command.output().expect("run the candidate harness");
+    assert!(
+        output.status.success(),
+        "the candidate block runs: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// THE FORK STOP GATE (known bug #22): the fork and the upstream TypeScript
+/// product are separated by SOCKET PATH, never by argv (both payloads are named
+/// `prime-agent`). A FORK run (the fork build marker, or an allspark socket in
+/// play) must probe the fork socket and MUST NOT probe the upstream TS default
+/// — probing it is how a fork installer killed a co-installed upstream user's
+/// daemon. An upstream run keeps the TS takeover and never probes the fork
+/// socket. Without the fix the fork socket is absent from every probe set and
+/// the TS default is always probed — exactly the reported bug.
+#[test]
+fn the_fork_run_skips_the_upstream_ts_socket_and_probes_the_fork_socket() {
+    // An UPSTREAM run (no fork marker, no allspark env socket): the TS default
+    // is probed, the fork socket is NOT.
+    let upstream = candidate_flags(None, None);
+    let fields: Vec<&str> = upstream.split('|').collect();
+    assert_eq!(fields[0], "yes", "the upstream run probes the TS default");
+    assert_eq!(
+        fields[3], "no",
+        "the upstream run must NOT probe the fork socket: {upstream}"
+    );
+    assert!(
+        fields[5].contains("prime-agent-"),
+        "the upstream report names the TS default: {upstream}"
+    );
+
+    // A FORK run told apart by the build marker: the fork socket is probed, the
+    // upstream TS default is NOT.
+    let fork = candidate_flags(Some("fork.7"), None);
+    let fields: Vec<&str> = fork.split('|').collect();
+    assert_eq!(
+        fields[0], "no",
+        "the fork run must NOT probe the upstream TS default: {fork}"
+    );
+    assert_eq!(
+        fields[3], "yes",
+        "the fork run probes the fork socket: {fork}"
+    );
+    assert_eq!(fields[4], "yes", "the fork run is recognized: {fork}");
+    assert!(
+        fields[5].contains("allspark-") && fields[5].contains("left alone"),
+        "the fork report names the fork socket and the skipped upstream one: {fork}"
+    );
+
+    // A FORK run told apart by the allspark socket in play (the launcher pin):
+    // same verdict even with no build marker.
+    let fork_env = candidate_flags(None, Some("/fixture/allspark-daemon.sock"));
+    let fields: Vec<&str> = fork_env.split('|').collect();
+    assert_eq!(
+        fields[0], "no",
+        "the launcher's allspark socket marks a fork run: {fork_env}"
+    );
+    assert_eq!(
+        fields[3], "yes",
+        "the allspark env socket still probes the fork default: {fork_env}"
+    );
+}
