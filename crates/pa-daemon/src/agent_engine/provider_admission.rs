@@ -636,6 +636,13 @@ impl ProviderAdmission {
         budget: Duration,
     ) -> StreamAdmission {
         let (pending, is_probe) = {
+            // The instrumented form wraps the whole locked decision (wait
+            // for the registry lock plus the admit/queue verdict) under one
+            // per-(provider, model) label; the plain form is byte-identical
+            // to the pre-profiling code.
+            #[cfg(feature = "profiling")]
+            let mut state = hotpath::measure_block!({ "admission:acquire" }, self.lock());
+            #[cfg(not(feature = "profiling"))]
             let mut state = self.lock();
             let gate = self.breaker_gate(&mut state, key);
             if matches!(gate, BreakerGate::Refuse) {
@@ -801,6 +808,12 @@ impl ProviderAdmission {
 
     /// Settle a lease with its AIMD signal and free the slot.
     pub fn settle(&self, lease: u64, outcome: StreamOutcome) {
+        // The instrumented form measures the whole settle span (lock wait +
+        // AIMD update + queue dispatch decision) under one label; the plain
+        // form is the pre-profiling code.
+        #[cfg(feature = "profiling")]
+        let mut state = hotpath::measure_block!({ "admission:settle" }, self.lock());
+        #[cfg(not(feature = "profiling"))]
         let mut state = self.lock();
         let Some(record) = state.leases.remove(&lease) else {
             return;

@@ -544,6 +544,18 @@ pub(crate) enum Outbound {
 ///
 /// Returns an error when the supervisor cannot start or its serve loop fails.
 pub async fn run_supervisor(options: SupervisorOptions) -> Result<()> {
+    // Diagnostic builds only (`--features profiling`): the instrumenting
+    // profiler's report lands next to the debug logs instead of stdout
+    // (stdout carries wire JSON on this path). The guard drops at
+    // supervisor exit and writes the report file.
+    #[cfg(feature = "profiling")]
+    let _hotpath = {
+        let dir = options.agent_dir.join("logs");
+        let _ = std::fs::create_dir_all(&dir);
+        hotpath::HotpathGuardBuilder::new("pa-daemon")
+            .output_path(dir.join("hotpath-report.txt"))
+            .build()
+    };
     let supervisor = Arc::new(Supervisor::new(options)?);
     supervisor.run().await
 }

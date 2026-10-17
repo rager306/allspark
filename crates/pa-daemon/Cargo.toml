@@ -22,6 +22,12 @@ tokio = { workspace = true }
 tokio-util = "0.7"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4", "v7"] }
+# Opt-in instrumenting profiler (feature `profiling`): an optional dep, so
+# default builds pull nothing. Only the runtime-label macro forms
+# (`measure_block!`, `mutex!`) are used — the attribute forms with literal
+# labels generate `unsafe(export_name)` statics, which this crate's
+# forbid(unsafe_code) rejects.
+hotpath = { version = "0.28.6", optional = true }
 
 [dev-dependencies]
 # FORK-ONLY: the wire-level mock inference server (`pa_ai::testing`) the
@@ -51,6 +57,12 @@ url = "2"
 # `test-util` (tokio time pause) is test-only: the mutation-drain latch test
 # drives real timeouts through the paused clock.
 tokio = { workspace = true, features = ["test-util"] }
+
+[features]
+# Diagnostic instrumentation (`--features profiling`): turns on hotpath's
+# runtime for the supervisor's admission plane. Not for production builds:
+# the report writes a file and the instrumentation costs ~200ns per call.
+profiling = ["dep:hotpath", "hotpath/hotpath"]
 
 [[bin]]
 name = "pa-daemon"

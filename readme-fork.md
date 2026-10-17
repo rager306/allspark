@@ -204,6 +204,25 @@ the session's own cost breakdown (no external pricing data needed).
 - See `docs/fork-identity.md` for the isolation model contract and the
   known deviations (Unix runtime dir, shared Windows pipe).
 
+## 7c. Diagnostic profiling (`--features profiling`, fork)
+
+The supervisor's admission plane carries opt-in hotpath instrumentation:
+
+```bash
+ALLSPARK_FORK_BUILD=dev cargo build -p pa-daemon --features profiling
+# report lands in <agent-dir>/logs/hotpath-report.txt at supervisor exit
+```
+
+Default builds pull zero new packages (the dep is optional); the feature
+costs ~200ns per instrumented call, so it never rides release profiles.
+The instrumentation uses only the runtime-label macro arm — hotpath's
+literal-label forms generate `unsafe(export_name)` statics that this
+crate's `forbid(unsafe_code)` rejects (labels are block-wrapped to force
+the expression arm). The `hotpath_init`/`hotpath_init_ci` agent skills
+are installed for instrumentation sweeps, and hotpath's own MCP server
+(hotpath's `hotpath-mcp` feature, run as a separate tool) can join the
+fork's MCP config for agent-driven report queries.
+
 ## 8. Conventions
 
 - every fork crate/file carries a `FORK-ONLY` marker; new fork work goes into
