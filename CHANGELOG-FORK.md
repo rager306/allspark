@@ -11,6 +11,42 @@ Pre-numbering history: two single-digit tags (fork.1, fork.2, 2026-10-13)
 marked the abandoned in-binary rebrand branch (`feat/allspark-identity`);
 they were local-only artifacts and are superseded by the NNN scheme below.
 
+## fork.006 — upstream v0.10.1-beta.35 merged
+
+- Tag: `allspark-v0.10.0-fork.006` (2026-10-18)
+- Base: `e4bc92bc8` — the beta.35 merge join plus the deviation suite's
+  log/output expansion.
+
+**Upstream v0.10.1-beta.35 in full** (36 commits): the perf wave (ledger
+replay cache, session sidecars at worker exit, once-per-process trust
+store, TUI subagent dock driven from events), shutdown scoped to the
+owning daemon tree, markdown TS v0.9.8 rendering parity, factory worker
+lifecycle (respawn-once, dead-child reaping), kernel model facts rebound
+on daemon switches, @-token completions, MCP clientId/callbackPort, the
+slack connector, and the perf CI corpus.
+
+**Conflict resolutions kept both semantics**: the installer gains
+upstream's sun_path byte-limit fallback alongside the fork socket (the
+same rule applied to both), worker launch routes on upstream's strict
+subcommand check while keeping the fork's early detection for the
+debug-log seam, daemon discovery keeps the cross-product guard inside
+upstream's Option socket-dir model (both suites' tests green), compaction
+keeps the geometry-aware image tokens under upstream's retention-floored
+threshold. Upstream's new agent-engine tests learn the fork's admission
+field, and its default-rooted shutdown test runs under the fork's
+default socket-dir name — the one real collision (the test parked a
+daemon on the upstream product-default path, which the fork's
+cross-product guard refuses by design) resolved in the test, not by
+weakening the guard.
+
+**The deviation suite reads logs and output now**: a per-trial log layer
+(session transcript timeline, request-timing stream, the rotating debug
+log) with log invariants, an output oracle over the agent's answer, and
+a live judge tier — SubQ Snap grades each task against its rubric and
+manifests carry verdicts with probabilities, rubric hashes and judge
+bundle identity. First runs caught an inverted regex-bounds default;
+three tasks validated end to end.
+
 ## fork.005 — judge consumers, admission maturity, deviation suite
 
 - Tag: `allspark-v0.10.0-fork.005` (2026-10-17)

@@ -1,4 +1,4 @@
-//! Live smoke against SubQ Snap (`https://api.subq.ai/v1/systemone`), the
+//! Live smoke against `SubQ` Snap (`https://api.subq.ai/v1/systemone`), the
 //! System One-compatible decision model. Never runs in CI: the test is
 //! `#[ignore]`d and double-gated on `SUBQ_LIVE=1` plus a `SUBQ_API_KEY`:
 //!
