@@ -255,9 +255,13 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
         return Err("@file arguments are not supported in RPC, daemon, or ACP mode".to_string());
     }
 
-    // Daemon worker processes route straight into the worker runtime (the
-    // role/args pair detected above, before the debug-log install).
-    if is_worker_launch {
+    // Daemon worker processes start with the worker role env var set: route
+    // straight into the worker runtime. The binary entry keeps the worker
+    // handshake env only for the supervisor-spawned `worker` subcommand (it
+    // strips an inherited one from every other invocation), so the routing
+    // reads that subcommand alone (the fork's earlier is_worker_process
+    // binding, detected before the debug-log install).
+    if is_worker_process && args.first().map(String::as_str) == Some("worker") {
         return run_worker_mode();
     }
 
