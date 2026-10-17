@@ -14,7 +14,7 @@ they were local-only artifacts and are superseded by the NNN scheme below.
 ## fork.005 — judge consumers, admission maturity, deviation suite
 
 - Tag: `allspark-v0.10.0-fork.005` (2026-10-17)
-- Base: `d473a9c2a` (fork.004) — five commits.
+- Base: `d473a9c2a` (fork.004) — seven commits.
 
 **The judge layer grows its first consumers and a second backend.** SubQ
 Snap joins the `[jev]` chain as a pure catalog entry (it speaks the System
@@ -36,7 +36,11 @@ instead of the three that killed subagents; quota and spend classes reroute
 immediately. The supervisor registry gains per-provider retry budgets and
 a circuit breaker whose open state fails stream admission fast into
 failover, and a socket-level snapshot exposes limits, streaks, queues and
-breaker state.
+breaker state. The release gate caught the M3 delay silently overrunning
+`retry.provider.maxRetryDelayMs` on long hints: the budget contract now
+wins (a hint above the policy cap settles into the failover seam), hints
+inside an admitting budget keep their minimum semantics to the 60s
+ceiling.
 
 **Real-task deviation suite (black-box levels 1+2).** Twelve seed tasks
 from this fork's real failures with state oracles and trace invariants; a
