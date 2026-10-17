@@ -1,86 +1,108 @@
 <!-- FORK-ONLY: upstream merge must not overwrite this file -->
-# Allspark fork: isolated-by-default coexistence with prime-agent
+# Allspark fork identity: launcher isolation, upstream payload names
 
-The fork and upstream `prime-agent` run in the same environment. Isolation is
-achieved by **defaults, not renames**: the fork never reads the upstream
-`PRIME_AGENT_*` environment variables, and every default path is its own.
+The fork and upstream `prime-agent` coexist in one environment. This document
+describes the isolation model **as implemented** — the contract the code and
+the launcher actually honor. The earlier "defaults-not-renames" plan
+(`~/.allspark` defaults, `ALLSPARK_*` env, legacy migration) was superseded;
+none of it is in the code. Where this file and `AGENTS.md` (root) disagree,
+`AGENTS.md` wins.
 
-## Why the earlier full-rename was reverted
+## The model in one line
 
-A wholesale rename (~870 sites, 71 env names) collided with upstream on every
-merge forever, and broke error reporting (bug reports against `allspark` logs
-are not reproducible on upstream code). The defaults-only approach keeps the
-fork's diff minimal so upstream merges apply cleanly.
+**The payload keeps upstream names; isolation is one knob: `HOME`.**
 
-## Isolation model
+The user-facing entry is the `allspark` launcher
+(`scripts/allspark-launcher.sh`, deployed as `bin/allspark` with the payload
+at `libexec/prime-agent`). The launcher points `HOME` at an isolated home and
+pins the daemon socket; every product path (sessions, auth, settings, logs,
+kernel venv, skills) derives from `$HOME`, so a co-installed upstream shares
+nothing with the fork.
 
-| Resource | Upstream (`prime-agent`) | Fork (`allspark`) |
+## Why payload names stay upstream (by design)
+
+- **Upstream merges**: the tree keeps upstream names (`prime-agent` bin,
+  `pa-*` crates, `PRIME_AGENT_*` env), so `git merge upstream/main` applies
+  cleanly. The abandoned in-binary rebrand (`feat/allspawn-identity`,
+  re-land attempt `feat/allspark-identity-reland`) dragged ~700 rename sites
+  into every future merge and broke the launcher's socket pin — keep it
+  unmerged.
+- **TS parity**: wire-internal identifiers must stay byte-compatible with
+  the TypeScript product (`PRIME_AGENT_*`/`PI_*` env, settings keys, provider
+  ids, `_meta` namespaces, lockfile names). Parity beats branding on the wire.
+- **Error reporting**: bug reports and parity diffs reference upstream names.
+
+## What the launcher pins
+
+| Knob | Value | Effect |
 |---|---|---|
-| Config/data dir | `~/.prime/agent` | `~/.allspark` |
-| Binary | `~/.local/bin/prime-agent` | `~/.local/bin/allspark` |
-| Runtime sockets | `/tmp/prime-agent-<uid>/` | `/tmp/allspark-<uid>/` |
-| Supervisor registry | `~/.prime/supervisor-owners` | `~/.allspark/supervisor-owners` |
-| Kernel venv | `~/.prime/agent/kernel-venv` | `~/.allspark/kernel-venv` |
-| Env overrides | `PRIME_AGENT_*` | `ALLSPARK_*` |
+| `HOME` | `$ALLSPARK_HOME` (default `~/.allspark-home`) | all `$HOME`-derived state moves under the isolated home |
+| `PRIME_AGENT_CODING_AGENT_DIR` | `$ALLSPARK_HOME/.prime/agent` | an inherited upstream override cannot point the fork at upstream state |
+| `PRIME_AGENT_DAEMON_SOCKET` | `${TMPDIR:-/tmp}/allspark-daemon.sock` (respects a pre-set value) | the fork daemon never fights the upstream daemon on the product-default socket |
 
-## The env contract (the one rule)
+**No seeding**: nothing under `~/.prime` is ever read or copied. The fork
+starts standalone — own providers catalog, settings, auth (`allspark login`).
+`auth.json` is upstream-only in particular: rotating refresh tokens shared by
+two products invalidate each other.
 
-The fork reads ONLY `ALLSPARK_*` variables:
+## Isolation table (actual)
 
-- `ALLSPARK_CODING_AGENT_DIR` - override the agent state dir
-- `ALLSPARK_SESSION_DIR` - override the sessions dir
-- `ALLSPARK_DAEMON_SOCKET` - override the daemon socket
-- `ALLSPARK_PACKAGE_DIR` - override the packaged-assets dir
-- `ALLSPARK_KERNEL_VENV` - override the kernel venv
+| Resource | Upstream | Fork (via launcher) |
+|---|---|---|
+| Config/data dir | `~/.prime/agent` | `$ALLSPARK_HOME/.prime/agent` |
+| Sessions/logs/venv | under `~/.prime/agent` | under `$ALLSPARK_HOME/.prime/agent` |
+| Daemon socket | `$TMPDIR/prime-agent-<uid>/daemon.sock` | `$TMPDIR/allspark-daemon.sock` |
+| Binary | `~/.local/bin/prime-agent` | `bin/allspark` (launcher) + `libexec/prime-agent` (payload) |
+| Version string | `prime-agent <v>` | `allspark <v> (fork build <id>; upstream prime-agent <v>)` |
 
-Inherited `PRIME_AGENT_*` variables from an upstream session are ignored:
-the fork treats them as foreign, so launching `allspark` inside a
-`prime-agent` session cannot leak into the upstream's daemon or data.
+Env names are **shared** (`PRIME_AGENT_*`): the collision is avoided by the
+isolated `HOME`, not by renaming. Renaming buys nothing and breaks the
+launcher's pins plus parity diffs.
 
-`PRIME_API_KEY` is deliberately still honored: it is the credential for the
-Prime Inference provider (an external service), not product plumbing.
-`DO_NOT_TRACK` is the cross-tool telemetry opt-out standard.
+## Known deviations and open edges
 
-## Upstream references kept on purpose
+- **Unix runtime dir is fork-named**: worker sockets live under
+  `/tmp/allspark-<uid>/` (`pa-daemon/src/platform/paths.rs`), while the
+  supervisor socket comes from the launcher pin. Consequence (known bug #22):
+  the installer/update stop-probe list must include the fork socket so a fork
+  update never kills the upstream daemon (and vice versa).
+- **Windows named pipes keep upstream names** (TS-parity, pinned by
+  `windows_endpoints_are_the_ts_pipe_names`): fork and upstream share the
+  pipe namespace on Windows. Open question — decide the Windows model before
+  shipping a Windows fork build (issue #2 in the CE review).
+- **`migrate_from_legacy_once` is dead code** (`pa-cli/src/lib.rs`, reachable
+  only from its test): it implements the superseded `~/.allspark` migration.
+  Either delete it or wire it behind an explicit flag; as shipped it is
+  misleading.
+- **`legacy_admission`** reads the upstream `~/.prime/supervisor-owners`
+  registry to *detect* a running upstream install (refusal UX only) —
+  read-only, by design.
 
-- `crates/pa-cli/src/update_flow/legacy_admission.rs` reads the legacy
-  `~/.prime/supervisor-owners` registry to detect a running upstream install.
-- `crates/pa-cli/src/lib.rs::migrate_from_legacy_once` imports
-  settings/models from `~/.prime/agent` on first run (never auth.json: a
-  rotating refresh token shared by two products invalidates the other's copy).
-- `crates/pa-core/src/auth/prime_inference.rs` reads the upstream Prime CLI
-  config `~/.prime/config.json` for Prime Inference credentials.
-- `install-rust.sh`/`install.ps1` remain the upstream installers; the fork is
-  installed from its release archive (or `cp target/dist/allspark
-  ~/.local/bin/`) and does not take over the upstream install tree.
-- `crates/pa-daemon/src/hold_refusal.rs` recognizes a running upstream
-  `prime-agent` holder to produce an actionable "TypeScript product holds
-  this session" refusal.
+## Identity guard (contract, not yet implemented)
+
+`scripts/check-fork-identity.sh` does not exist yet. When added, it must
+assert, from a populated upstream `~/.prime`:
+
+1. `bin/allspark` run via the launcher writes nothing under the real
+   `~/.prime` and contacts no upstream socket;
+2. the payload run **without** the launcher warns (or refuses on
+   state-writing commands) that it will use upstream defaults;
+3. `allspark --version` carries the fork build id matching the release tag
+   `allspark-v<version>-fork.N`.
+
+## Verifying isolation after changes
+
+Re-run the recipe above against a populated upstream `~/.prime` (create one
+with the upstream binary, then run the fork launcher) and confirm: no new
+entries under `~/.prime`, no connection to `$TMPDIR/prime-agent-<uid>/`.
+Any change to the launcher, payload name, or isolation variables must state
+so in its PR and re-verify this property.
 
 ## Updating from upstream
 
-1. `git fetch upstream && git merge upstream/main` - the fork's identity diff
-   is small: `docs/fork-identity.md` (this file), the identity constants in
-   `pa-cli/src/config.rs` + `pa-daemon/src/paths.rs` (paths and env names),
-   and the migration helper.
-2. `./scripts/check-fork-identity.sh` - fails on any upstream name that
-   collides with the fork's own (env prefix, config dir, runtime dir).
-3. `cargo test -p pa-types -p pa-cli -p pa-core --lib`.
-
-## The guard
-
-`scripts/check-fork-identity.sh` fails on:
-- `PRIME_AGENT_` / `PI_[A-Z]` env names read by the fork
-- `.prime/agent` paths outside the deliberate upstream references
-- `/tmp/prime-agent-` runtime paths, `share/prime-agent`,
-  `.prime-agent-install`, `ai.primeintellect.prime-agent`,
-  `prime-agent-traces`, `prime-agent.daemon`,
-  `CARGO_BIN_EXE_prime-agent`, `name = "prime-agent"` in Cargo.toml
-
-## History
-
-The first attempt (commits `6f679f8c8`, `45d864beb`, `52597957a` on
-`feat/allspark-identity`) renamed every namespace outright and was reverted:
-~870 conflict points made every upstream merge painful, and error reports
-against renamed logs were not reproducible upstream. The defaults approach
-keeps the same isolation with a fraction of the diff.
+1. `git fetch upstream && git merge upstream/main` — the identity model above
+   exists to keep this clean;
+2. resolve conflicts keeping this file and `AGENTS.md` (fork sections) intact;
+3. rebuild with `ALLSPARK_FORK_BUILD=fork.N cargo build --profile dist -p pa-cli`
+   and tag `allspark-v<version>-fork.N`;
+4. re-verify isolation (previous section).
