@@ -14,6 +14,21 @@ fn resolve_provider(api: &str) -> Result<Arc<dyn crate::registry::Provider>, Pro
         .ok_or_else(|| ProviderError::Message(format!("No API provider registered for api: {api}")))
 }
 
+/// The flat per-image token figure used when an image's geometry is unknown:
+/// the session engine's compaction policy (`pa-core` cannot be a dependency
+/// here, so the value is restated). Providers downscale oversized images, so
+/// [`image_tokens_for_dimensions`] refines it when the pixel size is known.
+pub const DEFAULT_IMAGE_TOKENS: u64 = 1_200;
+
+/// The tokens a known-geometry image claims: `ceil(width * height / 750)` —
+/// the common vision-token rule of thumb of roughly one token per 750 pixels.
+/// Callers without geometry use [`DEFAULT_IMAGE_TOKENS`]. A provider may still
+/// downscale the image, so this is an upper bound.
+#[must_use]
+pub fn image_tokens_for_dimensions(width_px: u32, height_px: u32) -> u64 {
+    (u64::from(width_px) * u64::from(height_px)).div_ceil(750)
+}
+
 /// Estimate a request's input tokens before it is sent: chars/4 over the text the provider will
 /// serialize, images at 1,200 tokens each (the session engine's compaction policy, restated:
 /// `pa-core` cannot be a dependency here).
@@ -61,15 +76,16 @@ fn estimated_input_tokens(context: &Context) -> u64 {
     chars.div_ceil(4)
 }
 
-/// Text chars plus 4,800 per image (1,200 tokens) — the session engine's
-/// per-image estimate; raw blocks count their serialized JSON (`user_block_payload`
-/// passes un-modeled blocks through as text, so their bytes reach the prompt).
+/// Text chars plus `DEFAULT_IMAGE_TOKENS` per image (1,200 tokens) — the
+/// session engine's per-image estimate; raw blocks count their serialized JSON
+/// (`user_block_payload` passes un-modeled blocks through as text, so their
+/// bytes reach the prompt).
 fn user_content_block_chars(blocks: &[crate::types::UserOrToolContent]) -> u64 {
     blocks
         .iter()
         .map(|block| match block {
             crate::types::UserOrToolContent::Text(text) => text.text.chars().count() as u64,
-            crate::types::UserOrToolContent::Image(_) => 4_800,
+            crate::types::UserOrToolContent::Image(_) => DEFAULT_IMAGE_TOKENS * 4,
             crate::types::UserOrToolContent::Raw(value) => {
                 serde_json::to_string(value).map_or(0, |json| json.chars().count() as u64)
             }
@@ -349,6 +365,17 @@ mod tests {
         let mut options = StreamOptions::default();
         clamp_output_budget(&model, &text_context(4_200), Some(&mut options));
         assert_eq!(options.max_tokens, None);
+    }
+
+    #[test]
+    fn image_tokens_follow_geometry_then_fall_back_to_the_flat_default() {
+        // 100x50 px = 5_000 px -> ceil(5_000 / 750) = 7 tokens.
+        assert_eq!(image_tokens_for_dimensions(100, 50), 7);
+        // A 1920x1080 screenshot: ceil(2_073_600 / 750) = 2_765 tokens.
+        assert_eq!(image_tokens_for_dimensions(1920, 1080), 2_765);
+        // Zero-area geometry claims nothing.
+        assert_eq!(image_tokens_for_dimensions(0, 0), 0);
+        assert_eq!(DEFAULT_IMAGE_TOKENS, 1_200);
     }
 
     #[test]

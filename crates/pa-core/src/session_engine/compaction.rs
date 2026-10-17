@@ -2,6 +2,7 @@
 //! points, summarization prompts. The LLM summarizer call and file-op
 //! details land with the provider integration slice.
 
+use crate::tools::render_utils::{get_image_dimensions_prefix, IMAGE_DIMENSIONS_PREFIX_BYTES};
 use pa_types::session::{AgentMessage, FileEntry};
 use std::fmt::Write as _;
 
@@ -77,15 +78,21 @@ pub fn estimate_tokens(message: &AgentMessage) -> u64 {
     match message {
         AgentMessage::User(user) => match &user.content {
             pa_types::ai::UserContent::Text(text) => div4(chars(text)),
-            pa_types::ai::UserContent::Blocks(blocks) => div4(
-                blocks
+            pa_types::ai::UserContent::Blocks(blocks) => {
+                // Text stays chars/4; images add their own token count (see
+                // [`user_image_tokens`]). TS counted user images as zero —
+                // deliberate parity-divergence: an image-heavy turn used to
+                // under-count and mis-time compaction.
+                let text_chars: u64 = blocks
                     .iter()
                     .filter_map(|block| match block {
                         pa_types::ai::UserContentBlock::Text(text) => Some(chars(&text.text)),
                         _ => None,
                     })
-                    .sum(),
-            ),
+                    .sum();
+                let image_tokens: u64 = blocks.iter().map(user_image_tokens).sum();
+                div4(text_chars) + image_tokens
+            }
         },
         AgentMessage::Assistant(assistant) => {
             let mut total = 0u64;
@@ -111,7 +118,9 @@ pub fn estimate_tokens(message: &AgentMessage) -> u64 {
                     .iter()
                     .map(|block| match block {
                         pa_types::ai::UserContentBlock::Text(text) => chars(&text.text),
-                        pa_types::ai::UserContentBlock::Image(_) => 4_800, // ~1200 tokens
+                        // TS parity: custom images stay a flat 4_800 chars
+                        // (1_200 tokens) — not geometry-aware like the user path.
+                        pa_types::ai::UserContentBlock::Image(_) => 4_800,
                         // Un-modeled blocks have no modeled size; TS sizes
                         // only typed blocks, so estimate zero.
                         pa_types::ai::UserContentBlock::Raw(_) => 0,
@@ -125,6 +134,8 @@ pub fn estimate_tokens(message: &AgentMessage) -> u64 {
                 .iter()
                 .map(|block| match block {
                     pa_types::ai::UserContentBlock::Text(text) => chars(&text.text),
+                    // TS parity: tool-result images stay a flat 4_800 chars
+                    // (1_200 tokens) — not geometry-aware like the user path.
                     pa_types::ai::UserContentBlock::Image(_) => 4_800,
                     pa_types::ai::UserContentBlock::Raw(_) => 0,
                 })
@@ -139,6 +150,40 @@ pub fn estimate_tokens(message: &AgentMessage) -> u64 {
 
 fn div4(chars: u64) -> u64 {
     chars.div_ceil(4)
+}
+
+/// The token cost of one user-attached image block: `pa-ai`'s known-geometry
+/// rule (`ceil(w * h / 750)`) when the payload's pixel dimensions can be read
+/// from a bounded prefix, else the flat default. The daemon's snapshot elision
+/// leaves `widthPx`/`heightPx` on elided blocks; a tool-result or raw block
+/// without a readable image payload falls back to the flat figure.
+fn user_image_tokens(block: &pa_types::ai::UserContentBlock) -> u64 {
+    let pa_types::ai::UserContentBlock::Image(image) = block else {
+        return 0;
+    };
+    let dimensions = image
+        .rest
+        .get("widthPx")
+        .and_then(serde_json::Value::as_u64)
+        .zip(
+            image
+                .rest
+                .get("heightPx")
+                .and_then(serde_json::Value::as_u64),
+        )
+        .map(|(width, height)| (width as u32, height as u32))
+        .or_else(|| {
+            get_image_dimensions_prefix(
+                &image.data,
+                &image.mime_type,
+                IMAGE_DIMENSIONS_PREFIX_BYTES,
+            )
+            .map(|dims| (dims.width_px, dims.height_px))
+        });
+    match dimensions {
+        Some((width, height)) => pa_ai::image_tokens_for_dimensions(width, height),
+        None => pa_ai::DEFAULT_IMAGE_TOKENS,
+    }
 }
 
 /// The effective compaction threshold: the earlier of two ceilings.
@@ -739,6 +784,119 @@ mod tests {
             cost: pa_types::ai::UsageCost::default(),
         };
         assert_eq!(calculate_context_tokens(&usage), 100);
+    }
+
+    /// A minimal valid PNG header (24 bytes) whose IHDR declares `width`x`height`;
+    /// the bounded-prefix decoder reads the geometry without a full image.
+    fn png_base64(width: u32, height: u32) -> String {
+        use base64::Engine as _;
+        let mut bytes = vec![137, 80, 78, 71, 13, 10, 26, 10];
+        bytes.extend_from_slice(&13u32.to_be_bytes());
+        bytes.extend_from_slice(b"IHDR");
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.extend_from_slice(&height.to_be_bytes());
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    fn user_image_message(
+        text: Option<&str>,
+        images: &[(u32, u32)],
+        timestamp: u64,
+    ) -> AgentMessage {
+        let mut blocks = Vec::new();
+        if let Some(text) = text {
+            blocks.push(pa_types::ai::UserContentBlock::Text(
+                pa_types::ai::TextContent {
+                    text: text.to_string(),
+                    text_signature: None,
+                    rest: serde_json::Map::default(),
+                },
+            ));
+        }
+        for &(width, height) in images {
+            blocks.push(pa_types::ai::UserContentBlock::Image(
+                pa_types::ai::ImageContent {
+                    data: png_base64(width, height),
+                    mime_type: "image/png".to_string(),
+                    rest: serde_json::Map::default(),
+                },
+            ));
+        }
+        AgentMessage::User(pa_types::ai::UserMessage {
+            content: pa_types::ai::UserContent::Blocks(blocks),
+            timestamp,
+            rest: serde_json::Map::default(),
+        })
+    }
+
+    #[test]
+    fn user_images_estimate_by_geometry_not_zero() {
+        // TS counted user images as 0; the honest estimate adds ceil(w*h/750).
+        let single = user_image_message(None, &[(100, 50)], 1);
+        assert_eq!(estimate_tokens(&single), 7);
+
+        // Three images: 7 + ceil(1_000*1_000/750)=1_334 + ceil(1920*1080/750)=2_765.
+        let several = user_image_message(None, &[(100, 50), (1_000, 1_000), (1920, 1080)], 1);
+        assert_eq!(estimate_tokens(&several), 7 + 1_334 + 2_765);
+
+        // Text still counts chars/4 on top of the image tokens.
+        let with_text = user_image_message(Some("12345678"), &[(100, 50)], 1);
+        assert_eq!(estimate_tokens(&with_text), 2 + 7);
+    }
+
+    #[test]
+    fn user_image_without_geometry_falls_back_to_the_flat_default() {
+        // A non-image payload (undecodable prefix) keeps the flat 1_200-token
+        // default, matching the tool/custom path.
+        let message = AgentMessage::User(pa_types::ai::UserMessage {
+            content: pa_types::ai::UserContent::Blocks(vec![
+                pa_types::ai::UserContentBlock::Image(pa_types::ai::ImageContent {
+                    data: "not-an-image".to_string(),
+                    mime_type: "image/png".to_string(),
+                    rest: serde_json::Map::default(),
+                }),
+            ]),
+            timestamp: 1,
+            rest: serde_json::Map::default(),
+        });
+        assert_eq!(estimate_tokens(&message), pa_ai::DEFAULT_IMAGE_TOKENS);
+    }
+
+    #[test]
+    fn user_image_geometry_reads_the_elision_marker() {
+        // The daemon's snapshot elision leaves widthPx/heightPx with the payload
+        // stripped; the estimate still reads the geometry.
+        let mut rest = serde_json::Map::default();
+        rest.insert("widthPx".to_string(), serde_json::json!(640));
+        rest.insert("heightPx".to_string(), serde_json::json!(480));
+        let message = AgentMessage::User(pa_types::ai::UserMessage {
+            content: pa_types::ai::UserContent::Blocks(vec![
+                pa_types::ai::UserContentBlock::Image(pa_types::ai::ImageContent {
+                    data: String::new(),
+                    mime_type: "image/png".to_string(),
+                    rest,
+                }),
+            ]),
+            timestamp: 1,
+            rest: serde_json::Map::default(),
+        });
+        // ceil(640 * 480 / 750) = 410.
+        assert_eq!(estimate_tokens(&message), 410);
+    }
+
+    #[test]
+    fn user_images_shift_the_context_estimate_before_any_usage() {
+        // No assistant usage yet (the trailing-window / pre-first-assistant
+        // case): an image turn must not read as zero.
+        let messages = vec![user_image_message(
+            Some("describe this"),
+            &[(1_000, 1_000)],
+            1,
+        )];
+        let estimate = estimate_context_tokens(&messages);
+        assert_eq!(estimate.last_usage_index, None);
+        // "describe this" = 13 chars -> ceil(13/4) = 4; the 1_000x1_000 image adds 1_334.
+        assert_eq!(estimate.tokens, 4 + 1_334);
     }
 
     #[test]
