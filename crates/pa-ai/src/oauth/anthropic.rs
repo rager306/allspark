@@ -672,6 +672,34 @@ mod tests {
         assert_eq!(json["state"], state.as_str());
     }
 
+    /// The production entry (`login_anthropic`) mints its own state: the
+    /// authorize URL's `state` must differ from the `code_verifier` the
+    /// exchange sends. Reverting the mint to the TS shape (state = verifier)
+    /// fails here even though the wire-level test above keeps passing with
+    /// a caller-supplied state.
+    #[tokio::test]
+    async fn login_anthropic_mints_an_independent_state() {
+        let http = token_http();
+        let ui = ScriptedUi::new(Some(ScriptedAnswer::value("the-code")), None);
+        login_anthropic(&http, &ui).await.unwrap();
+        let url = ui.captured_url().await;
+        let parsed = url::Url::parse(&url).unwrap();
+        let state = parsed
+            .query_pairs()
+            .find(|(key, _)| key == "state")
+            .map(|(_, value)| value.to_string())
+            .expect("the authorize URL carries a state");
+        let json: serde_json::Value = serde_json::from_str(&http.first_body(TOKEN_URL)).unwrap();
+        let verifier = json["code_verifier"]
+            .as_str()
+            .expect("the exchange carries the verifier")
+            .to_string();
+        assert_ne!(
+            state, verifier,
+            "login_anthropic minted the CSRF state as the PKCE verifier"
+        );
+    }
+
     #[tokio::test]
     async fn a_failed_exchange_surfaces_the_ts_message() {
         let http = ScriptedHttp::new(vec![(TOKEN_URL, 400, "no grant")]);
