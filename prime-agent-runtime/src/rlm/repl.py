@@ -1067,27 +1067,110 @@ def _revive_with_live_globals(
     return rebound
 
 
+# Reopening with any of these mode flags would modify the file: 'w'/'x'
+# create-or-truncate, 'a' re-arms an append cursor, '+' upgrades a read handle
+# to read-write.
+_WRITE_MODE_FLAGS = frozenset("wax+")
+# dill's virtual file names resolve inside _create_filehandle to live std
+# streams or throwaway temp files, never to a path on the user's disk.
+_VIRTUAL_FILE_NAMES = frozenset({"<stdin>", "<stdout>", "<stderr>", "<tmpfile>", "<fdopen>"})
+
+_CLOSED_FILE_MESSAGE = "I/O operation on closed file."
+
+
+class _NeutralizedFileHandle:
+    """Inert stand-in for a write-mode file handle restore refused to reopen.
+
+    dill revives a named handle by reopening it with open(name, mode); for a
+    write mode the reopen itself is the damage ('w' truncates the file just by
+    opening it). Restore binds this object instead: the variable survives with
+    its original name/mode, and every later I/O attempt fails exactly like a
+    closed file instead of silently touching the user's file.
+    """
+
+    closed = True
+
+    def __init__(self, name: str, mode: str) -> None:
+        self.name = name
+        self.mode = mode
+
+    def __reduce__(self) -> tuple[Any, tuple[str, str]]:
+        # A revived namespace gets snapshotted again (the stdin-EOF flush does
+        # exactly that), so the stand-in must pickle as itself and keep the
+        # neutralization sticky across further snapshot/restore cycles.
+        return (_NeutralizedFileHandle, (self.name, self.mode))
+
+    def __repr__(self) -> str:
+        return f"<_NeutralizedFileHandle name={self.name!r} mode={self.mode!r}>"
+
+    def close(self) -> None:
+        pass
+
+    def readable(self) -> bool:
+        return False
+
+    def __enter__(self) -> Any:
+        raise ValueError(_CLOSED_FILE_MESSAGE)
+
+    def __exit__(self, *exc_info: object) -> bool:
+        return False
+
+    def __iter__(self) -> Any:
+        raise ValueError(_CLOSED_FILE_MESSAGE)
+
+    __next__ = __iter__
+
+    def _closed_io(self, *args: Any, **kwargs: Any) -> Any:
+        raise ValueError(_CLOSED_FILE_MESSAGE)
+
+    # Closed-file semantics for the whole I/O surface: touching the stand-in
+    # raises instead of writing anywhere, exactly like a real closed handle.
+    read = readline = readlines = readinto = readall = peek = _closed_io
+    write = writelines = flush = truncate = _closed_io
+    seek = tell = fileno = isatty = writable = seekable = _closed_io
+
+
 def _snapshot_unpickler(dill: Any) -> type:
-    """Unpickler that refuses to reopen a pickled raw fd number in this kernel.
+    """Unpickler that refuses unsafe reopens of pickled file handles.
 
     dill serializes a pipe/socket-backed file as its fd NUMBER; restoring a
     saved closed one reopens that number here and closes it again, killing
     whatever owns the fd now (e.g. the event loop's self-pipe). The refusal
     fails just that record; every other name still restores.
+
+    A NAMED write-mode handle is quieter but worse: dill revives it with
+    open(name, mode), so a saved 'w' handle truncates the user's file on disk
+    while the restore reports success. Those records still restore, but the
+    handle revives as _NeutralizedFileHandle and each substitution is appended
+    to the constructing unpickler's `neutralized` sink (wired in
+    _restore_state). Read-only handles reopen live: a plain 'r' reopen has no
+    side effects and keeps resumed sessions reading where they left off.
     """
     create_filehandle = dill._dill._create_filehandle
 
-    def refuse_raw_fd(name: Any, *args: Any) -> Any:
-        if isinstance(name, int):
-            raise pickle.UnpicklingError(
-                f"refusing to reopen raw file descriptor {name} from a snapshot"
-            )
-        return create_filehandle(name, *args)
-
     class GuardedUnpickler(dill.Unpickler):
+        def __init__(self, file: Any, neutralized: list[dict[str, str]] | None = None) -> None:
+            super().__init__(file)
+            self.neutralized: list[dict[str, str]] = [] if neutralized is None else neutralized
+
         def find_class(self, module: str, name: str) -> Any:
             target = super().find_class(module, name)
-            return refuse_raw_fd if target is create_filehandle else target
+            if target is not create_filehandle:
+                return target
+
+            def guarded_reopen(file_name: Any, *args: Any) -> Any:
+                if isinstance(file_name, int):
+                    raise pickle.UnpicklingError(
+                        f"refusing to reopen raw file descriptor {file_name} from a snapshot"
+                    )
+                mode = args[0] if args else ""
+                writes = isinstance(mode, str) and bool(_WRITE_MODE_FLAGS.intersection(mode))
+                if writes and file_name not in _VIRTUAL_FILE_NAMES:
+                    self.neutralized.append({"file": str(file_name)[:200], "mode": mode})
+                    return _NeutralizedFileHandle(file_name, mode)
+                return create_filehandle(file_name, *args)
+
+            return guarded_reopen
 
     return GuardedUnpickler
 
@@ -1129,13 +1212,19 @@ def _restore_state(
 
     staged: dict[str, Any] = {}
     failed: list[dict[str, str]] = []
+    neutralized: list[dict[str, str]] = []
     for name, blob in payload.items():
         if name in _RESTORE_SKIP:
             continue
+        # Per-record sink: the guarded unpickler reports every write-mode file
+        # handle it refused to reopen, so the entry carries the variable's name.
+        record_neutralized: list[dict[str, str]] = []
         try:
-            staged[name] = unpickler(io.BytesIO(blob)).load()
+            staged[name] = unpickler(io.BytesIO(blob), record_neutralized).load()
         except Exception as err:  # noqa: BLE001 - revive every other name regardless
             failed.append({"name": name, "reason": f"{type(err).__name__}: {_safe_str(err)[:200]}"})
+            continue
+        neutralized.extend({"name": name, **entry} for entry in record_neutralized)
     # Revive every staged name before parking: a failure must never abort the
     # apply halfway and leave the namespace half old, half new.
     prepared: dict[str, Any] = {}
@@ -1152,7 +1241,11 @@ def _restore_state(
             revive_failed.append({"name": name, "reason": f"{type(err).__name__}: {_safe_str(err)[:200]}"})
             continue
         backfill.extend(name_backfill)
-    result = {"restored": sorted(prepared), "failed": failed + revive_failed}
+    result = {
+        "restored": sorted(prepared),
+        "failed": failed + revive_failed,
+        "neutralized": neutralized,
+    }
     # Park SIGINT across the whole apply so it is all-or-nothing; the parked interrupt is consumed by the commit (as in snapshot).
     previous = signal.signal(signal.SIGINT, lambda signum, frame: None)
     try:
