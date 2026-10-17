@@ -1,0 +1,116 @@
+<!-- FORK-ONLY: upstream merge must not overwrite this file -->
+# Fork changelog (allspark)
+
+One entry per fork release, newest first. The fork counter is zero-padded
+three digits (`fork.NNN`); the tag is `allspark-v<version>-fork.NNN` and the
+binary's `--version` carries the same id via `ALLSPARK_FORK_BUILD` at build
+time. Update this file in the same change that cuts a release; the GitHub
+release notes for a version are generated from its entry here.
+
+Pre-numbering history: two single-digit tags (fork.1, fork.2, 2026-10-13)
+marked the abandoned in-binary rebrand branch (`feat/allspark-identity`);
+they were local-only artifacts and are superseded by the NNN scheme below.
+
+## fork.003 — hardening wave + jev decision layer
+
+- Tag: `allspark-v0.10.0-fork.003` (2026-10-17)
+- Base: `375ad95cf` (fork.002) — 17 commits, full gate green
+  (fmt + clippy workspace, 6908 tests, release build).
+
+A compound-engineering review of the whole tree (52 findings) was verified
+finding-by-finding against the code; every confirmed issue below shipped with
+a red-first regression test, and an independent re-verify pass re-ran each
+test with the fix mutated away.
+
+**Correctness and reliability**
+- A crashed session worker no longer resurrects a consumed prompt as a clean
+  draft: the worker-socket-closed refusal is classified as an ambiguous
+  outcome, so a restart can't silently duplicate a partially-executed turn.
+- In-stream credit-exhaustion frames (gateways fronting Anthropic) classify
+  as `payment_required` — the failover chain reroutes instead of burning a
+  retry ladder that can never succeed.
+- Every provider request carries a bounded timeout even when a cancel signal
+  is attached (the old send path discarded `timeout_ms` under a signal, and
+  session turns passed none at all — hung streams waited forever).
+- Compaction transcript rebuilds and stats refreshes moved off the UI run
+  loop into spawned epoch-guarded tasks; telemetry callsites no longer await
+  on the paint path, and the counters stop rebuilding the settings manager
+  per call.
+
+**Safety**
+- Installer and download URLs from the environment are https-only (the same
+  `PRIME_AGENT_ALLOW_HTTP` hatch the shell installers have), checked before
+  any fetch. The installer stop ladder knows the fork socket and a fork run
+  never probes or stops the upstream TS daemon (and vice versa).
+- The Anthropic OAuth login mints an independent `state`; the PKCE verifier
+  never rides the authorize URL (verified against the real client's
+  behaviour before fixing).
+- Snapshot restore neutralizes write-mode file handles instead of
+  re-opening them with `O_TRUNC` — restoring a session no longer empties
+  user files (the upstream #3447 class; patch prepared for upstream).
+- `@file` text ingestion caps at 256 KiB with an explicit truncation marker;
+  compaction's token estimate counts image geometry instead of zero for
+  user images.
+
+**New: the jev decision layer (phase 1, default off)**
+- `crates/pa-jev`: System One wire types (choice/score/noul) with tolerant
+  decode, chunked questions (<=4 in flight, first failure aborts siblings),
+  retries with retry-after, bounded timeout.
+- `pa-core::jev`: the `Judge` chain — native-only after the first native
+  candidate (a prompted model never impersonates a calibrated judge), a
+  5-minute cooldown on account rejections, an in-memory answer cache — plus
+  the `jev` tool (`ask`/`classify`/`route`/`check`) wired behind
+  `jev.enabled` (default off).
+
+**Tests and infrastructure**
+- e2e harnesses isolate ambient `PRIME_AGENT_*` overrides (running the suite
+  from inside a live agent session no longer redirects sandbox daemons to
+  the real install); the TS-differential lanes share one skip contract.
+- The golden bash corpus pins its git dates to explicit UTC offsets —
+  replay hashes no longer depend on the host timezone.
+- Fork release numbering moves to zero-padded `fork.NNN`.
+
+## fork.002 — engine integrations and providers, live
+
+- Tag: `allspark-v0.10.0-fork.002` (2026-10-16)
+- Base: `51873e826` (fork.001) — 16 commits.
+
+- The Muse OAuth chain fixed end-to-end against the official client's
+  behaviour (canonical device-flow identity, redirect-following, transport
+  errors surfaced): all three fork providers (CodeBuddy, Genspark, Muse)
+  log in and serve.
+- Native-tools visibility: the roster lists `lsp`/`graph`/`edit`, and
+  `/cache` reports per-model cache-hit statistics.
+- `debugLog` setting: rotating debug logs for the fork's components.
+- MCP conformance and PTY multi-client exactly-once behaviour; MCP server
+  names flow from settings into the worker session.
+- `readme-fork.md` becomes the fork's documentation anchor (crate markers,
+  component attribution, settings reference), and the fork-tools e2e drives
+  the real binary through a real tool call.
+
+## fork.001 — fork foundations: crates, identity, isolation
+
+- Tag: `allspark-v0.10.0-fork.001` (2026-10-15)
+- Base: upstream `main` merge `1d334719b`.
+
+**Six new crates** (all `#![forbid(unsafe_code)]`):
+- `pa-lsp` — async LSP client, 57-server table, symbol layer, writethrough,
+  diagnostics split, Unix-socket mux.
+- `pa-graph` — on-disk SQLite code graph with FTS5/BM25/RRF/MMR search,
+  delta machinery, MinHash+LSH similarity, memory primitives, scoped
+  context shards, read-only Cypher subset.
+- `pa-edit` — the edit engine: replace/patch/apply_patch/hashline/sloppy
+  modes with snapshot-tag, seen-lines and no-op guards.
+- `pa-mem` — pogocache RAM-layout primitives (sharded map, Robin Hood,
+  block-LZ4 snapshots; int8/RaBitQ/multi-bit/matryoshka quantization).
+- `pa-ast` — tree-sitter + ast-grep parsing layer.
+- `pa-diff` — jsdiff-compatible Myers diff, zero dependencies.
+
+**Identity and isolation** (the model AGENTS.md pins):
+- The `allspark` launcher: `HOME` pin plus agent-dir and daemon-socket
+  overrides — a co-installed upstream shares nothing with the fork.
+- No seeding from the upstream install (providers, settings, auth); the
+  state dir is pinned against ambient upstream overrides.
+- `--version` carries the fork build id (`allspark <v> (fork build <id>;
+  upstream prime-agent <v>)`), the splash shows it, and launcher e2e tests
+  drive the real binary.

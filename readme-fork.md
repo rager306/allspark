@@ -28,7 +28,7 @@ the upstream name **prime-agent**. See the "Fork identity and isolation
 ## 2. Fork versioning
 
 Stamp every release build with the fork build id matching the release tag
-`allspark-v<version>-fork.NNN` (zero-padded three-digit fork counter: `fork.001`, `fork.002`, `fork.003`, ...):
+`allspark-v<version>-fork.NNN` (zero-padded three-digit fork counter: `fork.001`, `fork.002`, `fork.003`, ...): every release documents itself in [`CHANGELOG-FORK.md`](CHANGELOG-FORK.md), which is also the source for the GitHub release notes.
 
 ```sh
 ALLSPARK_FORK_BUILD=fork.NNN cargo build --profile dist --bin prime-agent --locked
