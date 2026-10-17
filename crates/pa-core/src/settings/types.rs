@@ -298,6 +298,11 @@ pub struct JevSettings {
     /// Per-attempt timeout in milliseconds (default 10000).
     pub timeout_ms: Option<u64>,
     pub cache: Option<JevCacheSettings>,
+    /// FORK-ONLY Phase 2: the auto-thinking difficulty classifier
+    /// (`off` when unset - advisory, and only ever `auto`).
+    pub auto_thinking: Option<String>,
+    /// FORK-ONLY Phase 2: the graph search re-rank (`off` when unset).
+    pub graph_rerank: Option<String>,
 }
 
 /// `[agents]`: the subagent admission surface. `maxConcurrentPerProvider`
@@ -339,6 +344,51 @@ impl JevEnabledSetting {
             "auto" => Some(JevEnabledSetting::Auto),
             "on" => Some(JevEnabledSetting::On),
             _ => None,
+        }
+    }
+}
+
+/// The resolved `jev.autoThinking` gate. Both spellings that mean "not off"
+/// are the same behaviour (`auto`): a consumer is never forced on by a
+/// settings typo, and `on` reads as `auto` so no value can bypass the
+/// native-judge requirement.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum JevAutoThinkingSetting {
+    /// The consumer never runs (the default: advisory surface, off).
+    #[default]
+    Off,
+    /// Run only behind a native (calibrated) judge.
+    Auto,
+}
+
+impl JevAutoThinkingSetting {
+    /// Parse the settings string; unrecognized spellings read as `off`
+    /// (fail-closed on a typo, never fail-open).
+    #[must_use]
+    pub fn parse(value: &str) -> JevAutoThinkingSetting {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" | "on" => JevAutoThinkingSetting::Auto,
+            _ => JevAutoThinkingSetting::Off,
+        }
+    }
+}
+
+/// The resolved `jev.graphRerank` gate (same shape as
+/// [`JevAutoThinkingSetting`]: `auto` or off).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum JevGraphRerankSetting {
+    #[default]
+    Off,
+    Auto,
+}
+
+impl JevGraphRerankSetting {
+    /// Parse the settings string; unrecognized spellings read as `off`.
+    #[must_use]
+    pub fn parse(value: &str) -> JevGraphRerankSetting {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" | "on" => JevGraphRerankSetting::Auto,
+            _ => JevGraphRerankSetting::Off,
         }
     }
 }

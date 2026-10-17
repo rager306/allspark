@@ -604,6 +604,39 @@ fn jev_settings_parse_every_gate_and_default_the_rest() {
     );
 }
 
+/// Phase 2: the consumer gates default OFF and only `auto` turns them on.
+#[test]
+fn the_phase_two_consumer_gates_default_off() {
+    use crate::settings::{JevAutoThinkingSetting, JevGraphRerankSetting};
+    let unset: Settings = serde_json::from_value(serde_json::json!({"jev": {}})).unwrap();
+    let manager = manager_with(&unset);
+    assert_eq!(manager.get_jev_auto_thinking(), JevAutoThinkingSetting::Off);
+    assert_eq!(manager.get_jev_graph_rerank(), JevGraphRerankSetting::Off);
+
+    let on: Settings = serde_json::from_value(serde_json::json!({
+        "jev": {"enabled": "auto", "autoThinking": "auto", "graphRerank": "auto"}
+    }))
+    .unwrap();
+    let manager = manager_with(&on);
+    assert_eq!(
+        manager.get_jev_auto_thinking(),
+        JevAutoThinkingSetting::Auto
+    );
+    assert_eq!(manager.get_jev_graph_rerank(), JevGraphRerankSetting::Auto);
+
+    let typo: Settings = serde_json::from_value(serde_json::json!({
+        "jev": {"autoThinking": "yes", "graphRerank": "true"}
+    }))
+    .unwrap();
+    let manager = manager_with(&typo);
+    assert_eq!(
+        manager.get_jev_auto_thinking(),
+        JevAutoThinkingSetting::Off,
+        "a typo never enables a consumer"
+    );
+    assert_eq!(manager.get_jev_graph_rerank(), JevGraphRerankSetting::Off);
+}
+
 #[test]
 fn a_wrong_typed_jev_block_loads_as_unset() {
     let settings = from_value_lenient(&serde_json::json!({"jev": "yes"}));
@@ -974,6 +1007,83 @@ async fn session_tool_names(agent_dir: &std::path::Path) -> (Vec<String>, Vec<St
         .map(|tool| tool.name().to_string())
         .collect();
     (names, engine.native_tool_names().to_vec())
+}
+
+/// Build a session over `agent_dir` and return it (the consumer wiring
+/// tests read the installed seams).
+async fn session_engine_over(
+    agent_dir: &std::path::Path,
+) -> crate::session_engine::engine::SessionEngine {
+    let cwd = agent_dir.join("project");
+    std::fs::create_dir_all(&cwd).expect("project dir");
+    let model = chat_model();
+    let provider = Arc::new(pa_agent::scripted::ScriptedProvider::new(model.clone()));
+    crate::session_engine::engine::create_session(
+        crate::session_engine::engine::SessionEngineConfig {
+            cwd,
+            agent_dir: agent_dir.to_path_buf(),
+            model: Some(model),
+            stream_fn: Some(provider.stream_fn()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("session builds")
+}
+
+/// The Phase-2 auto-thinking wiring follows the `[jev]` gates: absent by
+/// default, present only with `enabled` + `autoThinking = auto` + a native
+/// candidate.
+#[tokio::test]
+async fn create_session_installs_auto_thinking_only_behind_a_native_judge() {
+    let default_dir = tempfile::tempdir().expect("tempdir");
+    let engine = session_engine_over(default_dir.path()).await;
+    assert!(
+        engine.session.auto_thinking_wiring().is_none(),
+        "the default session classifies nothing"
+    );
+
+    // `autoThinking = auto` alone is not enough: the layer is still off.
+    let layer_off = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        layer_off.path().join("settings.json"),
+        serde_json::json!({ "jev": { "autoThinking": "auto" } }).to_string(),
+    )
+    .expect("settings.json");
+    let engine = session_engine_over(layer_off.path()).await;
+    assert!(
+        engine.session.auto_thinking_wiring().is_none(),
+        "[jev] enabled stays off"
+    );
+
+    // Both gates on plus a native candidate: the wiring is installed.
+    let wired = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        wired.path().join("settings.json"),
+        serde_json::json!({
+            "jev": { "enabled": "on", "autoThinking": "auto", "graphRerank": "auto" }
+        })
+        .to_string(),
+    )
+    .expect("settings.json");
+    std::fs::write(
+        wired.path().join("models.json"),
+        r#"{ "providers": { "typesafe": {
+            "baseUrl": "http://127.0.0.1:9", "apiKey": "test-key", "api": "typesafe",
+            "models": [ { "id": "jev-1.13.0" } ]
+        } } }"#,
+    )
+    .expect("models.json");
+    let engine = session_engine_over(wired.path()).await;
+    let wiring = engine
+        .session
+        .auto_thinking_wiring()
+        .expect("the classifier is wired behind a native judge");
+    assert_eq!(
+        wiring.fallback(),
+        pa_agent::types::ThinkingLevel::Off,
+        "the fallback is the session's configured level"
+    );
 }
 
 /// The `[jev] enabled` gate drives the tool roster: default OFF installs

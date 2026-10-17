@@ -3,8 +3,10 @@
 //! persistence); the Agent owns the loop, this layer decides admission.
 
 pub mod agent_messaging;
+// FORK-ONLY (jev Phase 2): the auto-thinking consumer's admission seam.
 pub mod auto_refine_trigger;
 pub mod auto_retry;
+pub mod auto_thinking;
 pub mod auxiliary_model;
 pub mod branch_summarization;
 pub mod compact_session;
@@ -175,6 +177,11 @@ pub struct AgentSession {
     /// a side question on an unwired session fails with the model-selection
     /// error (no fallback to the agent's id-carrying fn).
     side_question_stream_fn: std::sync::Mutex<Option<pa_agent::stream::StreamFn>>,
+    /// FORK-ONLY (jev Phase 2): the auto-thinking classifier the admission
+    /// path consults before a turn streams. `None` (the default) keeps the
+    /// session's thinking level exactly as configured - the pre-jev
+    /// behaviour, byte for byte.
+    auto_thinking: std::sync::Mutex<Option<auto_thinking::AutoThinkingWiring>>,
     /// The session's agent dir (the settings root): the refine flow
     /// resolves the `factory.enabled` opt-in from its settings.json on
     /// every run, immediately before the plan applies, mirroring the
@@ -249,11 +256,32 @@ impl AgentSession {
             compaction_summary_sink: std::sync::Mutex::new(None),
             semantic_edges: std::sync::Mutex::new(None),
             side_question_stream_fn: std::sync::Mutex::new(None),
+            auto_thinking: std::sync::Mutex::new(None),
             agent_dir: None,
             compaction_flight: tokio::sync::Mutex::new(()),
         };
         this.ensure_harness_digest_context().await?;
         Ok(this)
+    }
+
+    /// Install the FORK-ONLY auto-thinking wiring (the engine resolves the
+    /// `[jev]` gates and the judge chain at session creation). `None` leaves
+    /// the session on its configured thinking level.
+    pub fn set_auto_thinking_wiring(&mut self, wiring: Option<auto_thinking::AutoThinkingWiring>) {
+        *self
+            .auto_thinking
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = wiring;
+    }
+
+    /// The installed auto-thinking wiring, if any (tests read the
+    /// classification the admission path produced).
+    #[must_use]
+    pub fn auto_thinking_wiring(&self) -> Option<auto_thinking::AutoThinkingWiring> {
+        self.auto_thinking
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// The session's agent dir (the settings root), when the engine wired

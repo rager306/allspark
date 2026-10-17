@@ -21,7 +21,7 @@ pub use storage::{
 };
 pub use types::{
     AgentsSettings, AutoRefineSettings, AutonomousSettings, CompactionSettings, GraphSettings,
-    JevCacheSettings, JevEnabledSetting, JevSettings, LspSettings, McpServerConfig,
-    QueueModeSetting, Settings, ThinkingLevelSetting, ToolProfileSettings, TransportSetting,
-    UpdateChannel,
+    JevAutoThinkingSetting, JevCacheSettings, JevEnabledSetting, JevGraphRerankSetting,
+    JevSettings, LspSettings, McpServerConfig, QueueModeSetting, Settings, ThinkingLevelSetting,
+    ToolProfileSettings, TransportSetting, UpdateChannel,
 };

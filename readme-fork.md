@@ -63,6 +63,19 @@ Extras:
 
 - `lsp.servers`, `lsp.idleTimeoutMs`, `graph.dbPath`, `editHybrid.defaultMode`,
   `editHybrid.allowModes` refine the surfaces;
+- `jev.autoThinking = "auto"` (**default off**) lets the judge classify each turn's
+  difficulty (`trivial|moderate|hard`) and set the thinking level (`low|medium|high`);
+  advisory only — a missing judge, an error or an `unsure` answer leaves the configured
+  level alone, and two consecutive failures suspend the consumer for the session;
+- `jev.graphRerank = "auto"` (**default off**) re-ranks `graph` `search` results with one
+  judgment over the top-8 candidates: hits the judge is confident do not answer the query
+  are moved below the survivors, labelled `demoted-by-jev (p=…)`, and the rest are marked
+  `verified-by-jev` (`details.verified_jev`). A judge failure returns the store's own
+  order untouched;
+- both consumers ride the same native-only gate as the tool (`[jev] enabled` must admit
+  the layer and the chain must start native) and must pass the offline corpus gate in
+  `crates/pa-core/src/jev/eval/` before a default flip: frozen corpus, dev/test split,
+  one test touch, accuracy-delta + p95-latency thresholds;
 - when any fork tool is in the roster, a dynamic **native-tools** prompt
   section documents it **and prefers these tools over `python_repl` for
   their domains** (lsp = navigation, edit = edits, graph = structure);
@@ -127,6 +140,12 @@ input / cached (hit%) / write / total tokens per provider+model, the current
 model marked, and a **Saved: $X.XX** estimate — cached tokens priced at the
 full uncached input rate minus the actual cache-priced spend, computed from
 the session's own cost breakdown (no external pricing data needed).
+
+## 6b. Judge-chain providers (fork overlay)
+
+| Provider | Model | What it is |
+|---|---|---|
+| `subquadratic` | `subq-snap-preview` | SubQ Snap — a decision model speaking the TypeSafe System One wire byte-for-byte (`POST /v1/systemone`, verified live). Joins the `[jev]` chain through the existing `typesafe` dialect with zero Rust of its own; judgments only (never a session model). $0.05/1M input, output free, caps 16 questions per request. Key: `SUBQ_API_KEY`. Live smoke: `SUBQ_LIVE=1 SUBQ_API_KEY=... cargo test -p pa-jev --test live_subq -- --ignored`. |
 
 ## 7. Providers (fork overlay)
 

@@ -1083,3 +1083,266 @@ async fn run_boundaries_record_git_state() {
         ]
     );
 }
+
+// ─────────── FORK-ONLY (jev Phase 2): the auto-thinking admission hook ───────────
+
+/// A judge answering the difficulty question with one fixed pick.
+struct FixedDifficultyJudge {
+    pick: &'static str,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl FixedDifficultyJudge {
+    fn new(pick: &'static str) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(FixedDifficultyJudge {
+            pick,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::jev::Judge for FixedDifficultyJudge {
+    fn label(&self) -> &'static str {
+        "scripted/fixed-difficulty"
+    }
+
+    async fn judge(
+        &self,
+        request: &pa_jev::JudgmentRequest,
+    ) -> Result<pa_jev::JudgmentResult, crate::jev::JudgeError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let id = crate::jev::auto_thinking::QUESTION_ID.to_string();
+        let mut answers = std::collections::BTreeMap::new();
+        answers.insert(
+            id,
+            pa_jev::Answer::Choice {
+                choice: self.pick.to_string(),
+                probabilities: std::collections::BTreeMap::from([(self.pick.to_string(), 0.9)]),
+                confidence: 0.9,
+            },
+        );
+        assert!(
+            !request.questions.is_empty(),
+            "the request carries a question"
+        );
+        Ok(pa_jev::JudgmentResult {
+            api: "scripted".to_string(),
+            provider: "scripted".to_string(),
+            model: "scripted/fixed-difficulty".to_string(),
+            answers,
+            usage: pa_jev::Usage::default(),
+        })
+    }
+}
+
+/// A session whose model exposes a reasoning surface (the classifier's
+/// precondition) plus the wiring under test.
+async fn reasoning_session(
+    wiring: Option<super::auto_thinking::AutoThinkingWiring>,
+) -> AgentSession {
+    let mut model = test_model();
+    model.reasoning = true;
+    let provider = Arc::new(ScriptedProvider::new(model.clone()));
+    provider.push_text_turn("ok");
+    let agent = Agent::new(AgentOptions {
+        initial_state: AgentInitialState {
+            model: Some(model),
+            thinking_level: Some(ThinkingLevel::Medium),
+            ..Default::default()
+        },
+        stream_fn: Some(provider.stream_fn()),
+        ..Default::default()
+    });
+    let tmp = tempfile::tempdir().unwrap();
+    let session = SessionManager::in_memory(tmp.path());
+    let mut session = AgentSession::new(Arc::new(agent), session, vec![])
+        .await
+        .unwrap();
+    session.set_auto_thinking_wiring(wiring);
+    session
+}
+
+fn wiring_over(judge: Arc<dyn crate::jev::Judge>) -> super::auto_thinking::AutoThinkingWiring {
+    super::auto_thinking::AutoThinkingWiring::new(
+        Arc::new(crate::jev::DifficultyClassifier::new(judge)),
+        ThinkingLevel::Medium,
+    )
+}
+
+#[tokio::test]
+async fn without_wiring_the_thinking_level_is_untouched() {
+    let session = reasoning_session(None).await;
+    assert_eq!(
+        session.apply_auto_thinking("do the thing").await,
+        super::auto_thinking::AutoThinkingOutcome::NotConfigured
+    );
+    assert_eq!(
+        session.agent().state().await.thinking_level,
+        ThinkingLevel::Medium
+    );
+}
+
+#[tokio::test]
+async fn an_admitted_turn_sets_the_level_the_judge_picked() {
+    let judge = FixedDifficultyJudge::new("hard");
+    let session = reasoning_session(Some(wiring_over(judge.clone()))).await;
+    session
+        .prompt(
+            "design a cross-session admission limit",
+            PromptOptions::default(),
+        )
+        .await
+        .unwrap();
+    session.agent().wait_for_idle().await;
+    assert_eq!(judge.calls(), 1, "one classification per admitted turn");
+    assert_eq!(
+        session.agent().state().await.thinking_level,
+        ThinkingLevel::High,
+        "hard -> high"
+    );
+    // The change is recorded like any other thinking-level change.
+    let entries = session.entries().await;
+    assert!(
+        entries
+            .iter()
+            .any(|entry| matches!(entry, FileEntry::ThinkingLevelChange { .. })),
+        "the transcript records the level the turn ran with"
+    );
+}
+
+#[tokio::test]
+async fn a_failing_judge_never_blocks_the_turn() {
+    struct FailingJudge;
+    #[async_trait::async_trait]
+    impl crate::jev::Judge for FailingJudge {
+        fn label(&self) -> &'static str {
+            "failing"
+        }
+        async fn judge(
+            &self,
+            _request: &pa_jev::JudgmentRequest,
+        ) -> Result<pa_jev::JudgmentResult, crate::jev::JudgeError> {
+            Err(crate::jev::JudgeError::Candidate {
+                identity: "failing".to_string(),
+                message: "scripted failure".to_string(),
+                status: None,
+            })
+        }
+    }
+    let session = reasoning_session(Some(wiring_over(Arc::new(FailingJudge)))).await;
+    session
+        .prompt("anything", PromptOptions::default())
+        .await
+        .expect("fail-open: the turn is admitted anyway");
+    session.agent().wait_for_idle().await;
+    // The fallback level (the session's own) stands, and the turn ran.
+    assert_eq!(
+        session.agent().state().await.thinking_level,
+        ThinkingLevel::Medium
+    );
+    assert!(session.agent().state().await.messages.len() >= 2);
+}
+
+#[tokio::test]
+async fn an_unsure_judge_does_not_count_as_a_failure() {
+    let judge = FixedDifficultyJudge::new("unsure");
+    let session = reasoning_session(Some(wiring_over(judge.clone()))).await;
+    for _ in 0..=super::auto_thinking::MAX_CONSECUTIVE_FAILURES {
+        assert_eq!(
+            session.apply_auto_thinking("ambiguous").await,
+            super::auto_thinking::AutoThinkingOutcome::Declined
+        );
+    }
+    assert_eq!(
+        judge.calls(),
+        (super::auto_thinking::MAX_CONSECUTIVE_FAILURES + 1) as usize,
+        "a working judge keeps being asked"
+    );
+    // The deterministic level stands throughout.
+    assert_eq!(
+        session.agent().state().await.thinking_level,
+        ThinkingLevel::Medium
+    );
+}
+
+#[tokio::test]
+async fn repeated_judge_failures_suspend_the_consumer() {
+    struct FailingJudge {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl crate::jev::Judge for FailingJudge {
+        fn label(&self) -> &'static str {
+            "failing"
+        }
+        async fn judge(
+            &self,
+            _request: &pa_jev::JudgmentRequest,
+        ) -> Result<pa_jev::JudgmentResult, crate::jev::JudgeError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(crate::jev::JudgeError::Candidate {
+                identity: "failing".to_string(),
+                message: "scripted failure".to_string(),
+                status: None,
+            })
+        }
+    }
+    let judge = Arc::new(FailingJudge {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let session = reasoning_session(Some(wiring_over(judge.clone()))).await;
+    for expected in 1..=super::auto_thinking::MAX_CONSECUTIVE_FAILURES {
+        let outcome = session.apply_auto_thinking("anything").await;
+        assert_eq!(outcome, super::auto_thinking::AutoThinkingOutcome::Failed);
+        assert_eq!(
+            judge.calls.load(std::sync::atomic::Ordering::SeqCst),
+            expected as usize
+        );
+    }
+    // The next turn does not pay for another judgment.
+    assert_eq!(
+        session.apply_auto_thinking("anything").await,
+        super::auto_thinking::AutoThinkingOutcome::Suspended
+    );
+    assert_eq!(
+        judge.calls.load(std::sync::atomic::Ordering::SeqCst),
+        super::auto_thinking::MAX_CONSECUTIVE_FAILURES as usize,
+        "a suspended consumer stops asking"
+    );
+}
+
+#[tokio::test]
+async fn a_model_without_reasoning_skips_the_classification() {
+    let judge = FixedDifficultyJudge::new("hard");
+    let provider = Arc::new(ScriptedProvider::new(test_model()));
+    provider.push_text_turn("ok");
+    let agent = Agent::new(AgentOptions {
+        initial_state: AgentInitialState {
+            model: Some(test_model()),
+            ..Default::default()
+        },
+        stream_fn: Some(provider.stream_fn()),
+        ..Default::default()
+    });
+    let tmp = tempfile::tempdir().unwrap();
+    let session = SessionManager::in_memory(tmp.path());
+    let mut session = AgentSession::new(Arc::new(agent), session, vec![])
+        .await
+        .unwrap();
+    session.set_auto_thinking_wiring(Some(wiring_over(judge.clone())));
+    let outcome = session.apply_auto_thinking("hard task").await;
+    assert_eq!(
+        outcome,
+        super::auto_thinking::AutoThinkingOutcome::ModelWithoutReasoning
+    );
+    assert_eq!(
+        judge.calls(),
+        0,
+        "no judgment is spent on a model without effort"
+    );
+}

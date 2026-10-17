@@ -10,6 +10,9 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+// FORK-ONLY (jev Phase 2): the optional judge re-rank of `search` results.
+use crate::jev::graph_rerank::{GraphReranker, RerankCandidate, VERIFIED_MARKER};
+
 use pa_agent::abort::AbortSignal;
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
 use pa_graph::{
@@ -57,6 +60,10 @@ pub struct GraphTool {
     cwd: PathBuf,
     store: Mutex<Option<GraphStore>>,
     schema: serde_json::Value,
+    /// FORK-ONLY (jev Phase 2): when set, `search` results are re-ranked by
+    /// the judge (`[jev] graphRerank = auto` behind a native judge). `None`
+    /// (the default) returns the store's own order, untouched.
+    reranker: Option<Arc<GraphReranker>>,
 }
 
 impl GraphTool {
@@ -68,7 +75,16 @@ impl GraphTool {
             cwd,
             store: Mutex::new(None),
             schema: params_schema(),
+            reranker: None,
         }
+    }
+
+    /// FORK-ONLY (jev Phase 2): attach the judge re-rank of `search`
+    /// results.
+    #[must_use]
+    pub fn with_reranker(mut self, reranker: Option<Arc<GraphReranker>>) -> Self {
+        self.reranker = reranker;
+        self
     }
 
     /// The project root an action resolves against: the `path`/`root`
@@ -252,6 +268,103 @@ impl GraphTool {
             terminate: None,
             is_error: false,
         })
+    }
+
+    /// FORK-ONLY (jev Phase 2): re-rank a `search` result with the judge.
+    ///
+    /// Fail-open by construction: without a re-ranker, with no judge answer,
+    /// or with a result this code cannot read, the store's own order and
+    /// rendering pass through untouched. A demoted candidate is KEPT in the
+    /// list, moved below the survivors and labelled with the probability that
+    /// demoted it - the model sees the judge's opinion, not a silent
+    /// deletion. A candidate beyond the judged top-K keeps its place and is
+    /// marked unjudged, never "verified".
+    async fn rerank_search(
+        &self,
+        query: &str,
+        mut result: AgentToolResult,
+        signal: &AbortSignal,
+    ) -> AgentToolResult {
+        let Some(reranker) = self.reranker.as_ref() else {
+            return result;
+        };
+        let Some(rows) = result
+            .details
+            .get("results")
+            .and_then(|value| value.as_array())
+        else {
+            return result;
+        };
+        let candidates: Vec<RerankCandidate> = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| RerankCandidate {
+                index,
+                qualified_name: string_field(row, "qualified_name"),
+                file_path: string_field(row, "file_path"),
+                label: string_field(row, "label"),
+            })
+            .collect();
+        // A cancelled call must not wait for the judgment: the abort wins
+        // and the store's own result returns (fail-open, like any failure).
+        let judged = tokio::select! {
+            biased;
+            () = signal.aborted() => None,
+            outcome = reranker.rerank(query, &candidates) => outcome,
+        };
+        let Some(outcome) = judged else {
+            return result;
+        };
+        // Rebuild the rendering in the re-ranked order: survivors first (in
+        // their original relative order), then the demoted ones.
+        let demoted: std::collections::BTreeMap<usize, f64> =
+            outcome.demoted.iter().copied().collect();
+        let mut order: Vec<usize> = outcome.kept.clone();
+        order.extend(outcome.demoted.iter().map(|(index, _probability)| *index));
+        let mut lines = vec![format!(
+            "{} hit(s) for {query:?} (re-ranked by jev: {} of {} judged, {} demoted):",
+            rows.len(),
+            outcome.probabilities.len(),
+            rows.len(),
+            outcome.demoted.len()
+        )];
+        let mut reordered = Vec::with_capacity(rows.len());
+        for index in order {
+            let Some(row) = rows.get(index) else {
+                continue;
+            };
+            let mut row = row.clone();
+            let probability = outcome.probabilities.get(&index).copied();
+            let demoted_at = demoted.get(&index).copied();
+            if let Some(object) = row.as_object_mut() {
+                object.insert(
+                    "verified".to_string(),
+                    serde_json::Value::Bool(probability.is_some() && demoted_at.is_none()),
+                );
+                object.insert(
+                    "judged".to_string(),
+                    serde_json::Value::Bool(probability.is_some()),
+                );
+                if let Some(probability) = probability {
+                    object.insert("relevance".to_string(), serde_json::json!(probability));
+                }
+            }
+            lines.push(render_hit_line(&row, demoted_at));
+            reordered.push(row);
+        }
+        if let Some(details) = result.details.as_object_mut() {
+            details.insert(
+                VERIFIED_MARKER.to_string(),
+                serde_json::json!({
+                    "judged": outcome.probabilities.len(),
+                    "demoted": outcome.demoted.len(),
+                    "threshold": crate::jev::graph_rerank::DEMOTE_BELOW,
+                }),
+            );
+            details.insert("results".to_string(), serde_json::Value::Array(reordered));
+        }
+        result.content = vec![pa_agent::types::ToolResultContent::text(lines.join("\n"))];
+        result
     }
 
     fn action_trace(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
@@ -479,17 +592,77 @@ impl AgentTool for GraphTool {
         self: Arc<Self>,
         _tool_call_id: String,
         params: serde_json::Value,
-        _signal: AbortSignal,
+        signal: AbortSignal,
         _on_update: AgentToolUpdateCallback,
     ) -> pa_agent::BoxFut<'static, anyhow::Result<AgentToolResult>> {
         Box::pin(async move {
             let tool = Arc::clone(&self);
+            // The re-rank's query is read before the store work (the params
+            // move into the blocking task).
+            let rerank_query = (self.reranker.is_some()
+                && params
+                    .get("action")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|action| action.trim().eq_ignore_ascii_case("search")))
+            .then(|| {
+                params
+                    .get("query")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|query| !query.is_empty())
+                    .map(str::to_string)
+            })
+            .flatten();
+            let store_params = params.clone();
             // SQLite, the directory walk, and the git subprocess are all
             // blocking; keep them off the async executor.
-            tokio::task::spawn_blocking(move || tool.dispatch(&params))
+            let result = tokio::task::spawn_blocking(move || tool.dispatch(&store_params))
                 .await
-                .map_err(|join| anyhow::anyhow!("graph task join failed: {join}"))?
+                .map_err(|join| anyhow::anyhow!("graph task join failed: {join}"))??;
+            // FORK-ONLY (jev Phase 2): the judge re-rank runs on the async
+            // path (it awaits the judgment); a failure inside it is
+            // fail-open and returns the store's own result.
+            let Some(query) = rerank_query else {
+                return Ok(result);
+            };
+            Ok(self.rerank_search(&query, result, &signal).await)
         })
+    }
+}
+
+/// One string field of a result row (`""` when absent or not a string).
+fn string_field(row: &serde_json::Value, key: &str) -> String {
+    row.get(key)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Render one re-ranked hit line: a demoted candidate carries the
+/// probability that demoted it, a judged survivor is marked verified, and a
+/// candidate the judge never looked at renders exactly like the store's own
+/// line.
+fn render_hit_line(row: &serde_json::Value, demoted_at: Option<f64>) -> String {
+    let name = string_field(row, "qualified_name");
+    let file = string_field(row, "file_path");
+    let line = row
+        .get("start_line")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_default();
+    let label = string_field(row, "label");
+    let score = row
+        .get("score")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or_default();
+    let judged = row
+        .get("judged")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let base = format!("- {name} ({file}:{line}) [{label}] score={score:.3}");
+    match (demoted_at, judged) {
+        (Some(probability), _) => format!("{base} demoted-by-jev (p={probability:.2})"),
+        (None, true) => format!("{base} verified-by-jev"),
+        (None, false) => base,
     }
 }
 
@@ -640,6 +813,216 @@ mod tests {
             error.to_string().contains("unknown graph action"),
             "{error}"
         );
+    }
+
+    /// A judge that answers the re-rank's `noul` questions from a table,
+    /// keyed by the symbol it sees in the question text.
+    struct SymbolJudge {
+        relevant: Vec<&'static str>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::jev::Judge for SymbolJudge {
+        fn label(&self) -> &'static str {
+            "scripted/symbols"
+        }
+
+        async fn judge(
+            &self,
+            request: &pa_jev::JudgmentRequest,
+        ) -> Result<pa_jev::JudgmentResult, crate::jev::JudgeError> {
+            let mut answers = std::collections::BTreeMap::new();
+            for (id, question) in &request.questions {
+                let pa_jev::Question::Noul { instructions, .. } = question else {
+                    panic!("the re-rank asks noul questions");
+                };
+                // The question renders the symbol in quotes, so an exact
+                // symbol match cannot hit `lib::load_balancer`.
+                let relevant = self
+                    .relevant
+                    .iter()
+                    .any(|symbol| instructions.contains(&format!("{symbol:?}")));
+                answers.insert(
+                    id.clone(),
+                    pa_jev::Answer::Noul {
+                        noul: if relevant { 0.95 } else { 0.02 },
+                    },
+                );
+            }
+            Ok(pa_jev::JudgmentResult {
+                api: "scripted".to_string(),
+                provider: "scripted".to_string(),
+                model: "scripted/symbols".to_string(),
+                answers,
+                usage: pa_jev::Usage::default(),
+            })
+        }
+    }
+
+    /// A store with two symbols whose names both match `load`.
+    fn indexed_store(dir: &std::path::Path) -> GraphTool {
+        std::fs::write(
+            dir.join("lib.rs"),
+            "pub fn load_balancer(path: &str) -> u32 { 0 }\n\
+             pub fn load(path: &str) -> u32 { path.len() as u32 }\n",
+        )
+        .unwrap();
+        let tool = tool(dir);
+        tool.dispatch(&serde_json::json!({ "action": "index" }))
+            .unwrap();
+        tool
+    }
+
+    #[tokio::test]
+    async fn without_a_reranker_the_search_result_is_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = indexed_store(dir.path());
+        let result = tool
+            .dispatch(&serde_json::json!({ "action": "search", "query": "load" }))
+            .unwrap();
+        assert!(
+            result
+                .details
+                .get(crate::jev::graph_rerank::VERIFIED_MARKER)
+                .is_none(),
+            "an unconfigured tool carries no marker"
+        );
+        assert!(!text_of(&result).contains("verified-by-jev"));
+    }
+
+    #[tokio::test]
+    async fn the_reranker_marks_survivors_and_demotes_confident_misses() {
+        let dir = tempfile::tempdir().unwrap();
+        let judge: std::sync::Arc<dyn crate::jev::Judge> = std::sync::Arc::new(SymbolJudge {
+            relevant: vec!["lib::load"],
+        });
+        let tool = indexed_store(dir.path()).with_reranker(Some(std::sync::Arc::new(
+            crate::jev::GraphReranker::new(judge),
+        )));
+        let query = serde_json::json!({ "action": "search", "query": "load" });
+        // The re-rank runs on the async execute path (it awaits the judge).
+        let result = pa_agent::types::AgentTool::execute(
+            std::sync::Arc::new(tool),
+            "call".to_string(),
+            query,
+            pa_agent::abort::AbortController::new().signal(),
+            std::sync::Arc::new(|_| {}),
+        )
+        .await
+        .expect("the tool answers");
+        let marker = result
+            .details
+            .get(crate::jev::graph_rerank::VERIFIED_MARKER)
+            .expect("a re-ranked result is marked");
+        assert_eq!(marker["judged"].as_u64(), Some(2), "{marker}");
+        let text = text_of(&result);
+        assert!(text.contains("re-ranked by jev"), "{text}");
+        assert!(text.contains("verified-by-jev"), "{text}");
+        assert!(text.contains("demoted-by-jev"), "{text}");
+        // A demoted candidate is kept and flagged, never silently deleted.
+        let rows = result.details["results"].as_array().expect("rows");
+        assert_eq!(rows.len(), 2);
+        let verified: Vec<bool> = rows
+            .iter()
+            .map(|row| row["verified"].as_bool().unwrap_or_default())
+            .collect();
+        assert_eq!(verified, vec![true, false], "the survivor comes first");
+        // The demoted row keeps its probability as evidence.
+        assert!(
+            rows[1]["relevance"].as_f64().is_some_and(|p| p < 0.1),
+            "{:?}",
+            rows[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_aborted_search_never_waits_for_the_judgment() {
+        struct HangingJudge;
+        #[async_trait::async_trait]
+        impl crate::jev::Judge for HangingJudge {
+            fn label(&self) -> &'static str {
+                "hanging"
+            }
+            async fn judge(
+                &self,
+                _request: &pa_jev::JudgmentRequest,
+            ) -> Result<pa_jev::JudgmentResult, crate::jev::JudgeError> {
+                std::future::pending().await
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let judge: std::sync::Arc<dyn crate::jev::Judge> = std::sync::Arc::new(HangingJudge);
+        let tool = indexed_store(dir.path()).with_reranker(Some(std::sync::Arc::new(
+            crate::jev::GraphReranker::new(judge),
+        )));
+        let controller = pa_agent::abort::AbortController::new();
+        controller.abort();
+        // The aborted signal short-circuits the judgment: the store's result
+        // returns instead of waiting on the pending judge.
+        let result = pa_agent::types::AgentTool::execute(
+            std::sync::Arc::new(tool),
+            "call".to_string(),
+            serde_json::json!({ "action": "search", "query": "load" }),
+            controller.signal(),
+            std::sync::Arc::new(|_| {}),
+        )
+        .await
+        .expect("the search still answers");
+        assert!(
+            result
+                .details
+                .get(crate::jev::graph_rerank::VERIFIED_MARKER)
+                .is_none(),
+            "an aborted re-rank leaves no marker"
+        );
+        assert!(
+            text_of(&result).contains("hit(s) for"),
+            "{}",
+            text_of(&result)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failing_rerank_judge_leaves_the_search_result_untouched() {
+        struct FailingJudge;
+        #[async_trait::async_trait]
+        impl crate::jev::Judge for FailingJudge {
+            fn label(&self) -> &'static str {
+                "failing"
+            }
+            async fn judge(
+                &self,
+                _request: &pa_jev::JudgmentRequest,
+            ) -> Result<pa_jev::JudgmentResult, crate::jev::JudgeError> {
+                Err(crate::jev::JudgeError::Candidate {
+                    identity: "failing".to_string(),
+                    message: "scripted failure".to_string(),
+                    status: None,
+                })
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let judge: std::sync::Arc<dyn crate::jev::Judge> = std::sync::Arc::new(FailingJudge);
+        let tool = indexed_store(dir.path()).with_reranker(Some(std::sync::Arc::new(
+            crate::jev::GraphReranker::new(judge),
+        )));
+        let result = pa_agent::types::AgentTool::execute(
+            std::sync::Arc::new(tool),
+            "call".to_string(),
+            serde_json::json!({ "action": "search", "query": "load" }),
+            pa_agent::abort::AbortController::new().signal(),
+            std::sync::Arc::new(|_| {}),
+        )
+        .await
+        .expect("fail-open: the store's own result still answers");
+        assert!(
+            result
+                .details
+                .get(crate::jev::graph_rerank::VERIFIED_MARKER)
+                .is_none(),
+            "a failed re-rank leaves no marker"
+        );
+        assert!(!text_of(&result).contains("verified-by-jev"));
     }
 
     #[test]

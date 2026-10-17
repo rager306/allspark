@@ -17,16 +17,23 @@
 //! - [`resolve_judge`] + [`should_install_jev_tool`]: settings- and
 //!   registry-driven construction, default OFF.
 
+pub mod auto_thinking;
 pub mod cache;
 pub mod chain;
+// FORK-ONLY (Phase 2): the offline corpus gate every consumer must pass
+// before it may be enabled by default.
+pub mod eval;
+pub mod graph_rerank;
 pub mod native;
 pub mod tool;
 
 #[cfg(test)]
 mod tests;
 
+pub use auto_thinking::{Difficulty, DifficultyClassifier};
 pub use cache::{AnswerCache, CachedAnswers};
 pub use chain::{ChainJudge, JudgeCandidate, JudgeKind, CANDIDATE_REJECTION_COOLDOWN};
+pub use graph_rerank::{GraphReranker, RerankCandidate, RerankOutcome};
 pub use native::NativeJudge;
 pub use tool::{params_schema as jev_tool_params_schema, JevTool};
 

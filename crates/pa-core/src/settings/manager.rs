@@ -992,6 +992,31 @@ impl SettingsManager {
             .unwrap_or(pa_jev::DEFAULT_TIMEOUT_MS)
     }
 
+    /// FORK-ONLY: the auto-thinking consumer's gate (`jev.autoThinking`).
+    /// Unset and unrecognized spellings read as OFF - the classifier is
+    /// advisory and never on by default.
+    #[must_use]
+    pub fn get_jev_auto_thinking(&self) -> super::types::JevAutoThinkingSetting {
+        self.merged
+            .jev
+            .as_ref()
+            .and_then(|jev| jev.auto_thinking.as_deref())
+            .map(super::types::JevAutoThinkingSetting::parse)
+            .unwrap_or_default()
+    }
+
+    /// FORK-ONLY: the graph re-rank consumer's gate (`jev.graphRerank`),
+    /// OFF when unset.
+    #[must_use]
+    pub fn get_jev_graph_rerank(&self) -> super::types::JevGraphRerankSetting {
+        self.merged
+            .jev
+            .as_ref()
+            .and_then(|jev| jev.graph_rerank.as_deref())
+            .map(super::types::JevGraphRerankSetting::parse)
+            .unwrap_or_default()
+    }
+
     /// The judgment answer cache gate (`jev.cache.enabled`, default on).
     #[must_use]
     pub fn get_jev_cache_enabled(&self) -> bool {

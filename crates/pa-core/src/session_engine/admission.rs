@@ -134,6 +134,11 @@ impl AgentSession {
             // downgrading the images to placeholders.
             self.apply_image_model_routing(&images, &options.batch)
                 .await?;
+            // FORK-ONLY (jev Phase 2): the advisory difficulty classification
+            // runs once per admitted turn, before the prompt reaches the loop.
+            // It never fails the turn (fail-open) and never runs without the
+            // engine-installed wiring (the default).
+            self.apply_auto_thinking(&normalized).await;
             // The turn's prompt messages: the deferred first-turn harness
             // digest rides first when one is due, streamed ahead of the user
             // prompt and carried on `agent_end`.

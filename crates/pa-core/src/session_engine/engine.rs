@@ -297,6 +297,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let jev_fallback_chain = settings.get_jev_fallback_chain();
     let jev_timeout = std::time::Duration::from_millis(settings.get_jev_timeout_ms());
     let jev_cache_enabled = settings.get_jev_cache_enabled();
+    // FORK-ONLY (jev Phase 2): the consumer gates, captured before `settings`
+    // moves into the resource loader (both default OFF).
+    let jev_auto_thinking = settings.get_jev_auto_thinking();
+    let jev_graph_rerank = settings.get_jev_graph_rerank();
     // Phase-7 tool-surface profile, captured before `settings` moves into the
     // resource loader (the profile selects a context and modes).
     let resolved_profile =
@@ -509,6 +513,26 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let mut lsp_manager = None;
     // FORK-ONLY: collect the fork tool names actually pushed, in push order.
     let mut native_tool_names: Vec<String> = Vec::new();
+    // FORK-ONLY (fork: jev): the judge chain, resolved once when the layer is
+    // not OFF (the registry build never runs by default). Phase-2 consumers
+    // (auto-thinking, the graph re-rank) read the SAME chain, so one
+    // resolution serves the tool, both consumers, and the cooldown ledger.
+    let jev_judge: Option<Arc<crate::jev::ChainJudge>> =
+        if jev_enabled == crate::settings::JevEnabledSetting::Off {
+            None
+        } else {
+            let auth = crate::auth::AuthStorage::create(&config.agent_dir);
+            let mut registry =
+                crate::models::ModelRegistry::create(auth, config.agent_dir.join("models.json"));
+            let jev_settings = crate::jev::JevResolvedSettings {
+                enabled: jev_enabled,
+                model: jev_model,
+                fallback_chain: jev_fallback_chain,
+                timeout: jev_timeout,
+                cache_enabled: jev_cache_enabled,
+            };
+            crate::jev::resolve_judge(&jev_settings, &mut registry)
+        };
     if lsp_enabled {
         let manager = Arc::new(pa_lsp::LspManager::new());
         tools.push(Arc::new(pa_lsp::LspTool::new(
@@ -520,10 +544,24 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     }
     if graph_enabled {
         let db_path = graph_db_path.unwrap_or_else(|| config.agent_dir.join("graph.db"));
-        tools.push(Arc::new(crate::tools::graph::GraphTool::new(
-            db_path,
-            cwd.clone(),
-        )));
+        // FORK-ONLY (jev Phase 2): the `search` re-rank, installed only when
+        // `[jev] graphRerank = auto` resolves behind a native judge.
+        let reranker = crate::jev::graph_rerank::should_run_graph_rerank(
+            jev_enabled,
+            jev_graph_rerank,
+            jev_judge.as_deref(),
+        )
+        .then(|| {
+            jev_judge.as_ref().map(|chain| {
+                Arc::new(crate::jev::GraphReranker::new(
+                    Arc::clone(chain) as Arc<dyn crate::jev::Judge>
+                ))
+            })
+        })
+        .flatten();
+        tools.push(Arc::new(
+            crate::tools::graph::GraphTool::new(db_path, cwd.clone()).with_reranker(reranker),
+        ));
         native_tool_names.push("graph".to_string());
     }
     if edit_hybrid_enabled {
@@ -567,27 +605,15 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         )));
         native_tool_names.push("edit".to_string());
     }
-    // FORK-ONLY (fork: jev): the typed-decision tool, resolved only when
-    // the layer is not OFF (the registry build below never runs by
-    // default). `on` installs whenever a chain resolves; `auto` only when
-    // the chain starts native - no prompted stand-in, ever.
-    if jev_enabled != crate::settings::JevEnabledSetting::Off {
-        let auth = crate::auth::AuthStorage::create(&config.agent_dir);
-        let mut registry =
-            crate::models::ModelRegistry::create(auth, config.agent_dir.join("models.json"));
-        let jev_settings = crate::jev::JevResolvedSettings {
-            enabled: jev_enabled,
-            model: jev_model,
-            fallback_chain: jev_fallback_chain,
-            timeout: jev_timeout,
-            cache_enabled: jev_cache_enabled,
-        };
-        let jev_judge = crate::jev::resolve_judge(&jev_settings, &mut registry);
-        if crate::jev::should_install_jev_tool(jev_enabled, jev_judge.as_deref()) {
-            if let Some(chain) = jev_judge {
-                tools.push(Arc::new(crate::jev::JevTool::new(chain)));
-                native_tool_names.push("jev".to_string());
-            }
+    // FORK-ONLY (fork: jev): the typed-decision tool. `on` installs whenever
+    // a chain resolved; `auto` only when the chain starts native - no
+    // prompted stand-in, ever.
+    if crate::jev::should_install_jev_tool(jev_enabled, jev_judge.as_deref()) {
+        if let Some(chain) = jev_judge.as_ref() {
+            tools.push(Arc::new(crate::jev::JevTool::new(
+                Arc::clone(chain) as Arc<dyn crate::jev::Judge>
+            )));
+            native_tool_names.push("jev".to_string());
         }
     }
     // Phase-7 tool-surface profile: the resolved pipeline filters the roster
@@ -838,6 +864,26 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     )
     .await?;
     session.set_auto_refine(auto_refine_allowed, auto_refine_gates);
+    // FORK-ONLY (jev Phase 2): the advisory auto-thinking wiring, installed
+    // only when `[jev] autoThinking = auto` resolves behind a native judge
+    // (default OFF). The fallback level is the session's configured one, so a
+    // declined or failed classification lands exactly where the session would
+    // have been without the layer.
+    if crate::jev::auto_thinking::should_run_auto_thinking(
+        jev_enabled,
+        jev_auto_thinking,
+        jev_judge.as_deref(),
+    ) {
+        if let Some(chain) = jev_judge.as_ref() {
+            let classifier = crate::jev::DifficultyClassifier::new(
+                Arc::clone(chain) as Arc<dyn crate::jev::Judge>
+            );
+            session.set_auto_thinking_wiring(Some(super::auto_thinking::AutoThinkingWiring::new(
+                Arc::new(classifier),
+                thinking_level,
+            )));
+        }
+    }
     session.set_agent_dir(config.agent_dir.clone());
     // Every compaction path reads the session's resolved compaction
     // settings (TS `getCompactionSettings`): `/compact` matches the
