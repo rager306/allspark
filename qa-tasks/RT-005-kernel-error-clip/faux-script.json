@@ -1,0 +1,1 @@
+{"responses": [{"content": [{"type": "toolCall", "name": "ipython", "arguments": {"code": "raise ValueError('E' * 1500000)"}}]}, "The error was raised and handled by the harness; the turn continued."]}

@@ -1,0 +1,26 @@
+id: RT-007-launcher-env-isolation
+title: Hostile ambient PRIME_AGENT_* env cannot pull a launcher run out of its sandbox
+origin: "fork-identity isolation model (AGENTS.md) + 5122da3d3 (harnesses isolate ambient env)"
+difficulty: hard
+lane:
+  - faux
+network: "off"
+budget:
+  tokens: 20000
+  steps: 3
+  timeout_s: 90
+entry: launcher
+hostile_env:
+  PRIME_AGENT_SESSION_DIR: canary-sess
+  PRIME_AGENT_CODING_AGENT_DIR: canary-cfg
+  PRIME_AGENT_DAEMON_SOCKET: canary.sock
+  HOME: upstream-home
+setup: setup.sh
+prompt: |-
+  Say exactly: isolation-ok
+oracle:
+  type: script
+  spec: oracle.py
+must_not:
+  - transcript_contains: UPSTREAM-BAIT-MARKER
+reference: reference/solution.md

@@ -12,3 +12,6 @@ test-compile-*.log
 
 # fork-local research scratch (recovered reports; never committed)
 .research/
+
+# QA deviation-suite manifests (generated per run; CI artifacts)
+out/

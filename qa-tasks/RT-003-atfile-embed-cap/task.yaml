@@ -1,0 +1,26 @@
+id: RT-003-atfile-embed-cap
+title: A 2.7MB @file embeds a 256KiB prefix plus a truncation marker, never the whole file
+origin: "verify-unbounded #4 (@file unbounded embed); fix 5461ba80a (cap 256KiB + marker)"
+difficulty: easy
+lane:
+  - faux
+network: "off"
+budget:
+  # the capped embed is ~65k tokens (256KiB) + system prompt; the uncapped
+  # bug this task guards would be ~700k tokens
+  tokens: 120000
+  steps: 3
+  timeout_s: 90
+bin_args:
+  - --offline
+files:
+  - big.log
+setup: setup.sh
+prompt: |-
+  Summarize the attached log file in one sentence.
+oracle:
+  type: script
+  spec: oracle.py
+must_not:
+  - transcript_contains: RT003-TAIL-MARKER-39499
+reference: reference/solution.md

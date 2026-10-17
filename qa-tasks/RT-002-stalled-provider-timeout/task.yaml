@@ -1,0 +1,34 @@
+id: RT-002-stalled-provider-timeout
+title: A provider that accepts and never answers settles via the request timeout
+origin: "verify-reliability #8 (no timeout with cancel signal present); fix 2e79330c3"
+difficulty: medium
+lane:
+  - mock-provider
+network: "loopback"
+budget:
+  tokens: 20000
+  steps: 4
+  # the daemonless request bound is the hardcoded 300s PROVIDER_REQUEST_TIMEOUT_MS
+  timeout_s: 330
+bin_args:
+  - --provider
+  - qa-hang
+  - --model
+  - mock-1
+  - --api-key
+  - qa-test-key
+setup: setup.sh
+prompt: |-
+  Answer with one short sentence: what is 2+2?
+mock_providers:
+  - name: hang
+    behavior: openai-hang
+oracle:
+  type: state
+  spec:
+    - duration_le: 320
+    - mock_requests_ge:
+        name: hang
+        count: 1
+
+reference: reference/solution.md

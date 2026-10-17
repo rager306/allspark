@@ -1,0 +1,37 @@
+id: RT-001-provider-402-bounded
+title: 402 insufficient_credits is surfaced once, retried a bounded number of times, never loops
+origin: "verify-reliability #7 (wallet drain retried as transient); fix 2e79330c3"
+difficulty: medium
+lane:
+  - mock-provider
+network: "loopback"
+budget:
+  tokens: 20000
+  steps: 4
+  timeout_s: 90
+bin_args:
+  - --provider
+  - qa-402
+  - --model
+  - mock-1
+  - --api-key
+  - qa-test-key
+setup: setup.sh
+prompt: |-
+  Answer with one short sentence: what is 2+2?
+mock_providers:
+  - name: fail402
+    behavior: anthropic-402
+oracle:
+  type: state
+  spec:
+    - duration_le: 80
+    - mock_requests_le:
+        name: fail402
+        count: 6
+    - transcript_contains: insufficient
+must_not:
+  - tool: bash
+    args_regex: (curl|wget|pip install)
+max_repeat_calls: 0
+reference: reference/solution.md

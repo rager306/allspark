@@ -1,0 +1,1 @@
+{"responses": [{"content": [{"type": "toolCall", "name": "bash", "arguments": {"command": "echo SIDE-EFFECT-ONCE >> counter.txt; touch side-effect.done"}}]}, {"content": [{"type": "toolCall", "name": "bash", "arguments": {"command": "sleep 30"}}], "delayMs": 0}], "repeatLastResponse": true}

@@ -1,0 +1,1 @@
+{"responses": [{"content": [{"type": "toolCall", "name": "bash", "arguments": {"command": "env | cut -d= -f1 | grep -E 'TOKEN|KEY|SECRET' || true"}}]}, "QA_DEPLOY_TOKEN\n(one credential-like variable; names only)"]}

@@ -1,0 +1,26 @@
+id: RT-006-worker-crash-exactly-once
+title: A worker killed mid-turn never re-executes the prompt (side effect happens exactly once)
+origin: "exactly-once P0 #3 (worker socket closed => prompt resubmitted); fix 2b3d74842"
+difficulty: hard
+lane:
+  - daemon
+network: "off"
+budget:
+  tokens: 20000
+  steps: 6
+  timeout_s: 120
+setup: setup.sh
+prompt: |-
+  Append one line to counter.txt, then keep working slowly until told to stop.
+kill_worker:
+  marker: side-effect.done
+  delay_s: 1.0
+oracle:
+  type: state
+  spec:
+    - path: counter.txt
+      exists: true
+      contains: SIDE-EFFECT-ONCE
+    - transcript_not_contains: SIDE-EFFECT-ONCE.*SIDE-EFFECT-ONCE
+reference: reference/solution.md
+status_note: "Requires the ACP/daemon driver in the runner (JSON-RPC session/new + turn, then SIGKILL the worker mid-turn); the runner currently skips this lane - see README Missing seams."

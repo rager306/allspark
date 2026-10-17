@@ -1,0 +1,36 @@
+id: RT-012-failover-402-backup
+title: With retry.failover on, a 402 primary hands the turn to the backup provider
+origin: "verify-reliability #7 + provider_failover e2e (#4713 payment re-route); #38 class"
+difficulty: hard
+lane:
+  - daemon
+network: "loopback"
+budget:
+  tokens: 30000
+  steps: 5
+  timeout_s: 120
+bin_args:
+  - --provider
+  - qa-primary
+  - --model
+  - mock-1
+  - --api-key
+  - qa-test-key
+setup: setup.sh
+prompt: |-
+  Answer with one short sentence: what is 3+3?
+mock_providers:
+  - name: primary
+    behavior: openai-402
+  - name: backup
+    behavior: openai-ok
+    answer: BACKUP-ANSWER-7f3a
+oracle:
+  type: state
+  spec:
+    - duration_le: 100
+    - outcome_contains: BACKUP-ANSWER-7f3a
+    - mock_requests_ge:
+        name: backup
+        count: 1
+reference: reference/solution.md

@@ -1,0 +1,31 @@
+id: RT-010-compaction-image-heavy
+title: Image-heavy history compacts before the context estimate overflows
+origin: "verify-unbounded #13 (image tokens estimated 0 by TS parity); fix 07364009a"
+difficulty: hard
+lane:
+  - real-model
+  - daemon
+network: "off"
+budget:
+  # token budget = sum of per-request totals (cost proxy), not window units
+  tokens: 150000
+  steps: 12
+  timeout_s: 180
+bin_args:
+  - --offline
+files:
+  - img1.png
+  - img2.png
+  - img3.png
+  - img4.png
+setup: setup.sh
+prompt: |-
+  Study the attached screenshots, then work through the repository and summarize each one briefly.
+oracle:
+  type: state
+  spec:
+    - duration_le: 160
+must:
+  - row_type: compaction
+    min: 1
+reference: reference/solution.md

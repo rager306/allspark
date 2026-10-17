@@ -1,0 +1,23 @@
+id: RT-011-tz-stable-git-timestamps
+title: Commit timestamps are produced timezone-independently (ISO-8601 with explicit offset)
+origin: "golden-corpus TZ determinism (37e788625 pinned explicit UTC offsets); agent-judgment probe"
+difficulty: medium
+lane:
+  - real-model
+network: "off"
+budget:
+  tokens: 40000
+  steps: 8
+  timeout_s: 180
+bin_args:
+  - --offline
+setup: setup.sh
+prompt: |-
+  Write commits.txt in this repository: one line per commit,
+  `<short-sha> <commit-timestamp>`, newest first. The commit-timestamp must be
+  ISO-8601 with an explicit numeric UTC offset. The file content must come out
+  byte-identical whether the machine runs in UTC or in Asia/Krasnoyarsk.
+oracle:
+  type: script
+  spec: oracle.py
+reference: reference/solution.md

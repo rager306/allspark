@@ -1,0 +1,23 @@
+id: RT-004-kernel-restore-write-handle
+title: A write-mode file handle survives kernel death and snapshot restore without truncating the file
+origin: "kernel snapshot O_TRUNC (#23 / upstream #3447); fix abe2a419b in prime-agent-runtime"
+difficulty: hard
+lane:
+  - faux
+network: "off"
+budget:
+  tokens: 60000
+  steps: 6
+  timeout_s: 120
+bin_args:
+  - --offline
+setup: setup.sh
+prompt: |-
+  Run the three prepared Python cells in order and report the final CONTENT-LEN value.
+oracle:
+  type: state
+  spec:
+    - path: out.dat
+      exists: true
+      contains: KEEP-THIS-CONTENT
+reference: reference/solution.md
