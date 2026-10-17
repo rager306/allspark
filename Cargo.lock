@@ -1975,6 +1975,7 @@ dependencies = [
  "pa-ai",
  "pa-edit",
  "pa-graph",
+ "pa-jev",
  "pa-lsp",
  "pa-models",
  "pa-telemetry",
@@ -2073,6 +2074,18 @@ dependencies = [
  "thiserror 2.0.20",
  "tree-sitter",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "pa-jev"
+version = "0.10.0"
+dependencies = [
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]

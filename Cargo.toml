@@ -8,6 +8,7 @@ members = [
     "crates/pa-agent",
     "crates/pa-lsp",
     "crates/pa-diff",
+    "crates/pa-jev",
     "crates/pa-ast",
     "crates/pa-edit",
     "crates/pa-graph",
@@ -76,6 +77,9 @@ pa-mem = { path = "crates/pa-mem" }
 # pa-lsp: native Rust language-server tool (stdio LSP clients + tree-sitter
 # symbol layer); leaf crate over pa-agent/pa-ast/async-lsp.
 pa-lsp = { path = "crates/pa-lsp" }
+# pa-jev: the typed-judgment (System One) wire layer + client (fork-only
+# leaf crate; the chain, cache, and tool live in pa-core::jev).
+pa-jev = { path = "crates/pa-jev" }
 # AST & tree-sitter: `ast-grep-core` without its default grammar features —
 # pa-ast links the grammars itself and loads the rest as wasm.
 ast-grep-core = { version = "0.39", default-features = false, features = [

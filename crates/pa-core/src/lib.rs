@@ -61,6 +61,9 @@ pub mod autonomous;
 pub mod cron;
 pub mod export_html;
 pub mod goals;
+// FORK-ONLY: the typed-decision (judgment) layer over `pa-jev` (judge
+// chain, answer cache, native backend, `jev` tool).
+pub mod jev;
 pub mod kernel;
 pub mod mcp;
 pub mod models;
@@ -74,9 +77,9 @@ pub mod session_engine;
 pub mod settings;
 // Serena-pattern tool-surface profiles (Phase 7: contexts/modes/markers/
 // layering/registry/disclosure; fork-only).
-pub mod tool_profile;
 pub mod skills;
 pub mod slash_command_args;
+pub mod tool_profile;
 pub mod update;
 pub mod workspace_snapshot;
 pub use kernel::ReplKernelManager;

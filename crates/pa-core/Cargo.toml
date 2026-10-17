@@ -23,6 +23,9 @@ pa-agent.workspace = true
 # settings (default on).
 pa-lsp.workspace = true
 pa-graph.workspace = true
+# pa-jev: the typed-judgment wire layer + client (fork-only); the judge
+# chain, answer cache, and `jev` tool live in `pa-core::jev`.
+pa-jev.workspace = true
 # pa-edit: the native `edit` tool's engine (fork port of oh-my-pi's pi-edit).
 pa-edit.workspace = true
 # async-trait: the host `EditWriter` impl for the native edit tool.

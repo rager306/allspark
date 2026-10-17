@@ -278,6 +278,61 @@ pub struct FactorySettings {
     pub enabled: Option<bool>,
 }
 
+/// FORK-ONLY: the typed-decision (judgment) layer's gate and tuning
+/// (`[jev]`). Unlike `lsp`/`graph`/`edit` (default on), `enabled` defaults
+/// OFF - the layer bills a paid third-party endpoint. `auto` keeps
+/// judge-heavy surfaces off until a native (calibrated) judge resolves.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JevSettings {
+    /// `"off" | "auto" | "on"`; unset or unrecognized reads as `off`.
+    pub enabled: Option<String>,
+    /// The pinned judge model (`provider/model-id`); the official SDK's
+    /// `TYPESAFE_DEFAULT_MODEL` env applies when unset.
+    pub model: Option<String>,
+    /// Fallback candidates in attempt order.
+    pub fallback_chain: Option<Vec<String>>,
+    /// `"off" | "llm"`: prompted fallback. Phase 1 always treats it as
+    /// `off` (better a disabled feature than uncalibrated thresholds).
+    pub fallback: Option<String>,
+    /// Per-attempt timeout in milliseconds (default 10000).
+    pub timeout_ms: Option<u64>,
+    pub cache: Option<JevCacheSettings>,
+}
+
+/// `[jev.cache]`: the judgment answer cache.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JevCacheSettings {
+    /// Unset reads as `true` (repeated questions cost nothing).
+    pub enabled: Option<bool>,
+}
+
+/// The resolved `jev.enabled` gate.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum JevEnabledSetting {
+    /// The layer is off: no tool, no consumers, no spend (the default).
+    #[default]
+    Off,
+    /// Judge-heavy surfaces run only while a native judge resolves.
+    Auto,
+    /// The layer runs whenever a judge chain resolves.
+    On,
+}
+
+impl JevEnabledSetting {
+    /// Parse the settings string; `None` for unrecognized spellings.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<JevEnabledSetting> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "off" => Some(JevEnabledSetting::Off),
+            "auto" => Some(JevEnabledSetting::Auto),
+            "on" => Some(JevEnabledSetting::On),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TelemetrySettings {
@@ -394,6 +449,9 @@ pub struct Settings {
     pub edit_hybrid: Option<EditHybridSettings>,
     /// Tool-surface profile (fork-only; Phase 7 config isolation).
     pub tool_profile: Option<ToolProfileSettings>,
+    /// Typed-decision (judgment) layer settings (fork-only; `enabled`
+    /// defaults off - see [`JevSettings`]).
+    pub jev: Option<JevSettings>,
     pub factory: Option<FactorySettings>,
     pub telemetry: Option<TelemetrySettings>,
     pub branch_summary: Option<BranchSummarySettings>,

@@ -914,6 +914,76 @@ impl SettingsManager {
             .unwrap_or(true)
     }
 
+    /// FORK-ONLY: the typed-decision (judgment) layer's gate. Unset and
+    /// unrecognized spellings read as OFF (a paid third-party endpoint;
+    /// unlike `lsp`/`graph`, nothing wires by default).
+    #[must_use]
+    pub fn get_jev_enabled(&self) -> super::types::JevEnabledSetting {
+        self.merged
+            .jev
+            .as_ref()
+            .and_then(|jev| jev.enabled.as_deref())
+            .and_then(super::types::JevEnabledSetting::parse)
+            .unwrap_or_default()
+    }
+
+    /// The pinned judge model (`jev.model`); unset reads the official
+    /// SDK's `TYPESAFE_DEFAULT_MODEL` env, else the ADR's pinned default.
+    #[must_use]
+    pub fn get_jev_model(&self) -> String {
+        if let Some(model) = self
+            .merged
+            .jev
+            .as_ref()
+            .and_then(|jev| jev.model.as_deref())
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        {
+            return model.to_string();
+        }
+        std::env::var("TYPESAFE_DEFAULT_MODEL")
+            .ok()
+            .map(|model| model.trim().to_string())
+            .filter(|model| !model.is_empty())
+            .unwrap_or_else(|| crate::jev::DEFAULT_JEV_MODEL.to_string())
+    }
+
+    /// The judge fallback chain (`jev.fallbackChain`), trimmed and emptied
+    /// of blanks.
+    #[must_use]
+    pub fn get_jev_fallback_chain(&self) -> Vec<String> {
+        self.merged
+            .jev
+            .as_ref()
+            .and_then(|jev| jev.fallback_chain.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect()
+    }
+
+    /// The judgment per-attempt timeout (`jev.timeoutMs`, default 10s).
+    #[must_use]
+    pub fn get_jev_timeout_ms(&self) -> u64 {
+        self.merged
+            .jev
+            .as_ref()
+            .and_then(|jev| jev.timeout_ms)
+            .unwrap_or(pa_jev::DEFAULT_TIMEOUT_MS)
+    }
+
+    /// The judgment answer cache gate (`jev.cache.enabled`, default on).
+    #[must_use]
+    pub fn get_jev_cache_enabled(&self) -> bool {
+        self.merged
+            .jev
+            .as_ref()
+            .and_then(|jev| jev.cache.as_ref())
+            .and_then(|cache| cache.enabled)
+            .unwrap_or(true)
+    }
+
     /// FORK-ONLY: the resolved rotating debug-log configuration. `enabled`
     /// is the `debugLog.enabled` setting or the `ALLSPARK_DEBUG=1` env; an
     /// unknown `level` reads as `debug`.

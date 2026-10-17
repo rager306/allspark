@@ -289,6 +289,14 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let edit_hybrid_enabled = settings.get_edit_hybrid_enabled();
     let edit_hybrid_default_mode = settings.get_edit_hybrid_default_mode();
     let edit_hybrid_allow_modes = settings.get_edit_hybrid_allow_modes();
+    // FORK-ONLY (fork: jev): the typed-decision layer's gates, captured
+    // before `settings` moves into the resource loader (`[jev]` defaults
+    // OFF; nothing below runs in the default path).
+    let jev_enabled = settings.get_jev_enabled();
+    let jev_model = settings.get_jev_model();
+    let jev_fallback_chain = settings.get_jev_fallback_chain();
+    let jev_timeout = std::time::Duration::from_millis(settings.get_jev_timeout_ms());
+    let jev_cache_enabled = settings.get_jev_cache_enabled();
     // Phase-7 tool-surface profile, captured before `settings` moves into the
     // resource loader (the profile selects a context and modes).
     let resolved_profile =
@@ -558,6 +566,29 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             allow_modes,
         )));
         native_tool_names.push("edit".to_string());
+    }
+    // FORK-ONLY (fork: jev): the typed-decision tool, resolved only when
+    // the layer is not OFF (the registry build below never runs by
+    // default). `on` installs whenever a chain resolves; `auto` only when
+    // the chain starts native - no prompted stand-in, ever.
+    if jev_enabled != crate::settings::JevEnabledSetting::Off {
+        let auth = crate::auth::AuthStorage::create(&config.agent_dir);
+        let mut registry =
+            crate::models::ModelRegistry::create(auth, config.agent_dir.join("models.json"));
+        let jev_settings = crate::jev::JevResolvedSettings {
+            enabled: jev_enabled,
+            model: jev_model,
+            fallback_chain: jev_fallback_chain,
+            timeout: jev_timeout,
+            cache_enabled: jev_cache_enabled,
+        };
+        let jev_judge = crate::jev::resolve_judge(&jev_settings, &mut registry);
+        if crate::jev::should_install_jev_tool(jev_enabled, jev_judge.as_deref()) {
+            if let Some(chain) = jev_judge {
+                tools.push(Arc::new(crate::jev::JevTool::new(chain)));
+                native_tool_names.push("jev".to_string());
+            }
+        }
     }
     // Phase-7 tool-surface profile: the resolved pipeline filters the roster
     // before the prompt is built (so `active_tool_names` matches the effective

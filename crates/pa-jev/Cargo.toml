@@ -1,0 +1,27 @@
+[package]
+name = "pa-jev"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Typed-judgment (System One) wire types and client: three question primitives, judgment wire dialects, chunking, retry."
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+futures.workspace = true
+
+# The judgment client's own transport. reqwest is already a workspace
+# dependency (pa-ai, pa-core); pa-jev carries its own minimal client so it
+# stays a leaf crate below the session engine, exactly like the ADR's
+# layering (pa-jev -> pa-core::jev -> session engine). No new external
+# crates enter the workspace with this edge.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls-native-roots",
+    "rustls-tls-webpki-roots",
+] }
+
+[lints]
+workspace = true

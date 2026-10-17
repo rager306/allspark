@@ -61,6 +61,8 @@ const KNOWN_FIELDS: &[&str] = &[
     "sessionDir",
     "requestTiming",
     "debugLog",
+    // FORK-ONLY: the typed-decision (judgment) layer's gate (default off).
+    "jev",
 ];
 
 /// Extract each known field independently; ignore fields whose JSON type does not match the Rust
