@@ -3,14 +3,25 @@
 //! magic-byte sniff, never the extension, plus the same 4.5MB inline limit).
 //! No resize engine: an oversized image under auto-resize falls back to the
 //! converter-unavailable text (`[Image omitted: ...]`) TS emits.
+//! Text files over `MAX_TEXT_EMBED_BYTES` embed only their first cap bytes
+//! plus an explicit truncation marker (a deliberate divergence from the TS
+//! binary, which embeds whole files unbounded).
 
 use std::fmt::Write as _;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use pa_agent::types::ImageContent;
 
 /// 4.5MB of base64 payload, headroom below the provider's 5MB limit.
 const DEFAULT_MAX_BYTES: usize = 4_500_000;
+
+/// Cap on the text bytes one @file argument may embed into the initial
+/// prompt; files above it embed a prefix plus a truncation marker. 256KiB is
+/// ~5x the 50KiB tool-output byte cap (`pa-core` truncate.rs) and a small
+/// fraction of the 4.5MB image inline limit, so source files and logs of
+/// interest pass whole while a stray huge file cannot dominate the prompt.
+const MAX_TEXT_EMBED_BYTES: u64 = 256 * 1024;
 
 /// The expanded first prompt: @file text blocks joined into one string,
 /// plus the image attachments.
@@ -64,11 +75,41 @@ pub fn process_file_arguments(
             }
             // Not an image: embed the content in a file block (Node's utf-8 read decodes
             // invalid sequences lossily, so binary non-image files embed instead of failing).
+            // Files over the cap embed only their first MAX_TEXT_EMBED_BYTES bytes plus a
+            // truncation marker, and the read itself stops at the cap, so one @file
+            // argument cannot pull an unbounded payload into the initial prompt.
             Ok(None) => {
-                let bytes = std::fs::read(&absolute_path).map_err(|error| FileProcessingError {
-                    message: format!("Error: Could not read file {resolved}: {error}"),
-                })?;
-                let content = String::from_utf8_lossy(&bytes);
+                let total_bytes = metadata.len();
+                let mut file =
+                    std::fs::File::open(&absolute_path).map_err(|error| FileProcessingError {
+                        message: format!("Error: Could not read file {resolved}: {error}"),
+                    })?;
+                let mut bytes = Vec::new();
+                (&mut file)
+                    .take(total_bytes.min(MAX_TEXT_EMBED_BYTES))
+                    .read_to_end(&mut bytes)
+                    .map_err(|error| FileProcessingError {
+                        message: format!("Error: Could not read file {resolved}: {error}"),
+                    })?;
+                let mut embedded_bytes = bytes.len();
+                if total_bytes > MAX_TEXT_EMBED_BYTES {
+                    // The byte cap may land inside a UTF-8 character: cut back to the last
+                    // complete one so the marker never follows a split character. Genuinely
+                    // invalid bytes stay and decode lossily like the untruncated path.
+                    if let Err(error) = std::str::from_utf8(&bytes) {
+                        if error.error_len().is_none() {
+                            embedded_bytes = error.valid_up_to();
+                        }
+                    }
+                }
+                bytes.truncate(embedded_bytes);
+                let mut content = String::from_utf8_lossy(&bytes).into_owned();
+                if total_bytes > MAX_TEXT_EMBED_BYTES {
+                    let _ = write!(
+                        content,
+                        "\n[file truncated at {embedded_bytes} of {total_bytes} bytes]"
+                    );
+                }
                 let _ = writeln!(
                     processed.text,
                     "<file name=\"{resolved}\">\n{content}\n</file>"
@@ -187,6 +228,89 @@ mod tests {
         assert!(processed.text.contains('x'));
         assert!(processed.text.contains('\u{fffd}'));
         assert_eq!(processed.images, Vec::new());
+    }
+
+    #[test]
+    fn oversized_text_files_embed_the_prefix_and_a_truncation_marker() {
+        let (_guard, dir) = temp_dir();
+        let file = dir.join("huge.log");
+        let total = MAX_TEXT_EMBED_BYTES as usize + 1_000;
+        let digits: Vec<u8> = (0..total).map(|i| b'0' + (i % 10) as u8).collect();
+        std::fs::write(&file, &digits).expect("write fixture");
+        let processed = process_file_arguments(&[file.to_string_lossy().to_string()], &dir, true)
+            .expect("process");
+        let prefix: String = (0..MAX_TEXT_EMBED_BYTES as usize)
+            .map(|i| char::from(b'0' + (i % 10) as u8))
+            .collect();
+        assert_eq!(
+            processed.text,
+            format!(
+                "<file name=\"{}\">\n{prefix}\n[file truncated at {} of {total} bytes]\n</file>\n",
+                file.to_string_lossy(),
+                MAX_TEXT_EMBED_BYTES
+            )
+        );
+    }
+
+    #[test]
+    fn a_file_exactly_at_the_cap_embeds_in_full() {
+        let (_guard, dir) = temp_dir();
+        let file = dir.join("edge.log");
+        let content = "x".repeat(MAX_TEXT_EMBED_BYTES as usize);
+        std::fs::write(&file, &content).expect("write fixture");
+        let processed = process_file_arguments(&[file.to_string_lossy().to_string()], &dir, true)
+            .expect("process");
+        assert_eq!(
+            processed.text,
+            format!(
+                "<file name=\"{}\">\n{content}\n</file>\n",
+                file.to_string_lossy()
+            )
+        );
+    }
+
+    #[test]
+    fn a_single_giant_line_is_truncated_like_any_other_file() {
+        let (_guard, dir) = temp_dir();
+        let file = dir.join("one-line.log");
+        let total = MAX_TEXT_EMBED_BYTES as usize + 5_000;
+        std::fs::write(&file, "a".repeat(total)).expect("write fixture");
+        let processed = process_file_arguments(&[file.to_string_lossy().to_string()], &dir, true)
+            .expect("process");
+        let prefix = "a".repeat(MAX_TEXT_EMBED_BYTES as usize);
+        assert_eq!(
+            processed.text,
+            format!(
+                "<file name=\"{}\">\n{prefix}\n[file truncated at {} of {total} bytes]\n</file>\n",
+                file.to_string_lossy(),
+                MAX_TEXT_EMBED_BYTES
+            )
+        );
+    }
+
+    #[test]
+    fn the_cap_never_splits_a_multibyte_character() {
+        let (_guard, dir) = temp_dir();
+        let file = dir.join("accent.log");
+        // The two-byte 'é' straddles the cap boundary: its first byte is the last
+        // byte under the cap.
+        let mut bytes = "a".repeat(MAX_TEXT_EMBED_BYTES as usize - 1).into_bytes();
+        let total = bytes.len() + "é".len() + b"tail".len();
+        bytes.extend("é".as_bytes());
+        bytes.extend(b"tail");
+        std::fs::write(&file, &bytes).expect("write fixture");
+        let processed = process_file_arguments(&[file.to_string_lossy().to_string()], &dir, true)
+            .expect("process");
+        let prefix = "a".repeat(MAX_TEXT_EMBED_BYTES as usize - 1);
+        assert!(!processed.text.contains('\u{fffd}'));
+        assert_eq!(
+            processed.text,
+            format!(
+                "<file name=\"{}\">\n{prefix}\n[file truncated at {} of {total} bytes]\n</file>\n",
+                file.to_string_lossy(),
+                MAX_TEXT_EMBED_BYTES - 1
+            )
+        );
     }
 
     #[test]
