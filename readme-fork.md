@@ -46,6 +46,7 @@ Unstamped builds report `dev`. Two binaries are told apart by this id.
 | `crates/pa-mem` | 126 | pogocache RAM-layout primitives: sharded map, Robin Hood, 48-bit ptr buckets, entry arena, spinlock, refcount snapshots, block-LZ4 snapshots, build SHA cache; quantization: int8, RaBitQ 1-bit, multi-bit, block-4-bit, matryoshka prefixes, MaxSim |
 | `crates/pa-ast` | 97 | tree-sitter + ast-grep parsing layer (vendored `tree-sitter-go` for Go 1.26 `new(expr)`) |
 | `crates/pa-diff` | 8 | jsdiff-compatible Myers diff, zero dependencies |
+| `crates/pa-jev` | 22 | Jev (TypeSafe System One) decision layer: wire types for the `choice`/`score`/`noul` primitives with tolerant decode, a client with question chunking (<=4 in flight, first-failing chunk aborts siblings), retries and a 10s timeout; the `pa-core::jev` Judge/ChainJudge adds the native-only chain rule, a 5-minute cooldown on account rejections and an in-memory answer cache |
 
 ## 4. Engine integrations (fork tools in every session)
 
@@ -56,6 +57,7 @@ Registered in `create_session`, gated by settings (all default **on**):
 | `lsp` | `lsp.enabled` | symbols, find_symbol, references, definitions, hover, diagnostics, rename, code_actions, replace/insert symbol body, safe_delete, workspace diagnostics (`file:"*"`) |
 | `graph` | `graph.enabled` | index / reindex / search / trace / architecture / coverage / changes over the code graph (`graph.db` next to the agent dir) |
 | `edit` | `editHybrid.enabled` | the pa-edit engine: exact replace by default, hashline/patch/apply_patch/sloppy modes, snapshot-tag + seen-lines + no-op guards, LSP writethrough on save |
+| `jev` | `jev.enabled` (**default off**) | typed decisions: `ask`/`classify`/`route`/`check` actions over the calibrated decision API — `choice` (pick + probabilities), `score` (2-10 scale), `noul` (calibrated yes/no). Routes through the `[jev]` model chain; a prompted model never stands in for a failed native judge |
 
 Extras:
 
@@ -158,6 +160,30 @@ the session's own cost breakdown (no external pricing data needed).
   launcher script) — without it Meta serves an HTML interstitial instead
   of the JSON API; all three muse requests follow redirects (the edge
   intermittently 302s them).
+
+## 7b. Hardening shipped 2026-10-16 (review wave)
+
+- **Provider safety**: in-stream credit-exhaustion frames classify as
+  `payment_required` (the failover reroute fires instead of a retry ladder);
+  every provider request carries a bounded timeout even when a cancel signal
+  is attached.
+- **Installer/update**: env-controlled installer and download URLs are
+  https-only (`PRIME_AGENT_ALLOW_HTTP` opts out, mirroring the shell
+  installers); the installer stop ladder knows the fork socket and never
+  probes or stops the upstream TS daemon from a fork run (and vice versa).
+- **Kernel**: error payloads (`ename`/`evalue`/`traceback`) clip at the
+  settle cap like result text; snapshot restore neutralizes write-mode file
+  handles instead of truncating user files on revive (upstream #3447 class).
+- **UI critical path**: compaction transcript rebuilds and stats refreshes
+  run as spawned epoch-guarded tasks; telemetry callsites never await on the
+  run loop.
+- **Input caps**: `@file` text ingestion caps at 256 KiB with an explicit
+  truncation marker; compaction's token estimate counts image geometry
+  (`ceil(w*h/750)` via `pa-ai`) instead of zero for user images.
+- **OAuth**: the Anthropic login mints an independent OAuth `state` (the
+  PKCE verifier never rides the authorize URL).
+- See `docs/fork-identity.md` for the isolation model contract and the
+  known deviations (Unix runtime dir, shared Windows pipe).
 
 ## 8. Conventions
 
