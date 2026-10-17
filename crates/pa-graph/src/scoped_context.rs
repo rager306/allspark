@@ -254,9 +254,7 @@ impl Shard {
         if terms.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, text FROM context_entries")?;
+        let mut stmt = self.conn.prepare("SELECT id, text FROM context_entries")?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         let mut hits = Vec::new();
         for row in rows {
@@ -376,7 +374,13 @@ impl ScopedContextIndex {
     /// # Errors
     /// Propagates I/O failures moving files or clearing marks.
     pub fn recover(&self) -> ContextIndexResult<RecoveryReport> {
-        let scopes: Vec<String> = self.marks.read().map_err(lock_poisoned)?.keys().cloned().collect();
+        let scopes: Vec<String> = self
+            .marks
+            .read()
+            .map_err(lock_poisoned)?
+            .keys()
+            .cloned()
+            .collect();
         let mut report = RecoveryReport::default();
         for scope in scopes {
             let held = self.quarantine_dir.join(shard_filename(&scope));
@@ -436,12 +440,7 @@ impl ScopedContextIndex {
         Ok(marks.get(scope).cloned())
     }
 
-    fn set_aside(
-        &self,
-        scope: &str,
-        source: &Path,
-        reason: &str,
-    ) -> ContextIndexResult<()> {
+    fn set_aside(&self, scope: &str, source: &Path, reason: &str) -> ContextIndexResult<()> {
         let target = self.quarantine_dir.join(shard_filename(scope));
         if target.exists() {
             let _ = std::fs::remove_file(&target);
@@ -586,8 +585,14 @@ mod tests {
 
         // Same id, different scope: no collision, because the shards are files.
         assert_ne!(a.path(), b.path());
-        assert_eq!(a.get("n1").expect("get a").as_deref(), Some("parser rejects tabs"));
-        assert_eq!(b.get("n1").expect("get b").as_deref(), Some("totally different text"));
+        assert_eq!(
+            a.get("n1").expect("get a").as_deref(),
+            Some("parser rejects tabs")
+        );
+        assert_eq!(
+            b.get("n1").expect("get b").as_deref(),
+            Some("totally different text")
+        );
 
         // A search in one scope never sees the other's rows (no post-filter).
         let hits_a = a.search("parser tabs", 10).expect("search a");
@@ -633,7 +638,10 @@ mod tests {
         let marks = index.quarantined().expect("marks");
         assert_eq!(marks.len(), 1);
         assert_eq!(marks[0].scope, "corrupt");
-        assert!(index.quarantine_dir().join(shard_filename("corrupt")).exists());
+        assert!(index
+            .quarantine_dir()
+            .join(shard_filename("corrupt"))
+            .exists());
         // And the scope fails closed rather than pretending it is empty.
         assert!(matches!(
             index.scope("corrupt"),
@@ -647,7 +655,11 @@ mod tests {
         let root = dir.path().join("root");
         {
             let index = ScopedContextIndex::open(&root).expect("open");
-            index.scope("s1").expect("scope").insert("k", "v").expect("insert");
+            index
+                .scope("s1")
+                .expect("scope")
+                .insert("k", "v")
+                .expect("insert");
         }
         let index = ScopedContextIndex::open(&root).expect("reopen");
         assert_eq!(index.scope_names().expect("names"), vec!["s1".to_string()]);
@@ -671,7 +683,9 @@ mod tests {
         let (_dir, index) = index();
         let shard = index.scope("s").expect("scope");
         shard.insert("weak", "only parser here").expect("insert");
-        shard.insert("strong", "parser and tabs together").expect("insert");
+        shard
+            .insert("strong", "parser and tabs together")
+            .expect("insert");
         let hits = shard.search("parser tabs", 10).expect("search");
         assert_eq!(hits[0].id, "strong");
         assert_eq!(hits[0].score, 2);

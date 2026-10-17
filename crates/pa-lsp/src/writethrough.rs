@@ -195,7 +195,11 @@ pub async fn write_through(
     path: &Path,
     options: &WriteThroughOptions,
 ) -> anyhow::Result<WriteThroughReport> {
-    let steps = plan(options, client.supports_formatting(), client.is_typescript());
+    let steps = plan(
+        options,
+        client.supports_formatting(),
+        client.is_typescript(),
+    );
     let mut report = WriteThroughReport {
         steps: steps.clone(),
         ..WriteThroughReport::default()
@@ -314,10 +318,7 @@ mod tests {
     fn apply_text_edits_rewrites_from_the_end() {
         let text = "let x=1;\nlet y=2;\n";
         // Two edits on different lines; applied end-first so offsets hold.
-        let edits = vec![
-            edit((1, 4), (1, 5), "bar"),
-            edit((0, 4), (0, 5), "foo"),
-        ];
+        let edits = vec![edit((1, 4), (1, 5), "bar"), edit((0, 4), (0, 5), "foo")];
         let out = apply_text_edits(text, &edits).unwrap();
         assert_eq!(out, "let foo=1;\nlet bar=2;\n");
     }

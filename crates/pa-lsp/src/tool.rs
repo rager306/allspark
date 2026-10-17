@@ -83,20 +83,30 @@ impl LspTool {
                 self.goto(params, timeout, Goto::Implementation).await
             }
             Action::References => {
-                self.references(params, timeout, params.include_declaration(), false).await
+                self.references(params, timeout, params.include_declaration(), false)
+                    .await
             }
             Action::FindReferencingSymbols => {
                 // Serena's `find_referencing_symbols` excludes the declaration
                 // itself and import statements by default.
                 let include_declaration = params.include_declaration.unwrap_or(false);
-                self.references(params, timeout, include_declaration, !params.include_imports())
-                    .await
+                self.references(
+                    params,
+                    timeout,
+                    include_declaration,
+                    !params.include_imports(),
+                )
+                .await
             }
             Action::Hover => self.hover(params, timeout).await,
             Action::Rename => self.rename(params, timeout).await,
             Action::ReplaceSymbolBody => self.symbol_edit(params, SymbolEditKind::Replace).await,
-            Action::InsertBeforeSymbol => self.symbol_edit(params, SymbolEditKind::InsertBefore).await,
-            Action::InsertAfterSymbol => self.symbol_edit(params, SymbolEditKind::InsertAfter).await,
+            Action::InsertBeforeSymbol => {
+                self.symbol_edit(params, SymbolEditKind::InsertBefore).await
+            }
+            Action::InsertAfterSymbol => {
+                self.symbol_edit(params, SymbolEditKind::InsertAfter).await
+            }
             Action::SafeDeleteSymbol => self.safe_delete(params, timeout).await,
             Action::CodeActions => self.code_actions(params, timeout).await,
         }
@@ -268,8 +278,10 @@ impl LspTool {
         };
         let flat = client.flat_symbols(&path).await.unwrap_or_default();
         let grouped = ledger::group_by_severity_and_symbol(&diagnostics, |diag| {
-            symbol_containing(&flat, diag.range.start)
-                .map_or_else(|| ledger::FILE_LEVEL_BUCKET.to_string(), FlatSymbol::name_path)
+            symbol_containing(&flat, diag.range.start).map_or_else(
+                || ledger::FILE_LEVEL_BUCKET.to_string(),
+                FlatSymbol::name_path,
+            )
         });
         let mut text = format!("{} diagnostics for {}\n", diagnostics.len(), path.display());
         for (severity, name_path, diag) in &grouped {
@@ -365,7 +377,8 @@ impl LspTool {
             );
         }
         let budget = params.max_matches.unwrap_or(200);
-        let rendered = render::render_overview(&tree.roots, params.depth.unwrap_or(u32::MAX), budget);
+        let rendered =
+            render::render_overview(&tree.roots, params.depth.unwrap_or(u32::MAX), budget);
         let details = serde_json::json!({
             "language": tree.language,
             "stage": rendered.label,
@@ -397,11 +410,18 @@ impl LspTool {
     ) -> anyhow::Result<AgentToolResult> {
         let (path, text) = self.read_file(params).await?;
         let tree = symbol_layer::symbol_tree(&text, Some(&path));
-        anyhow::ensure!(tree.parsed, "could not parse {} into a symbol tree", path.display());
+        anyhow::ensure!(
+            tree.parsed,
+            "could not parse {} into a symbol tree",
+            path.display()
+        );
 
         let pattern = params.symbol.as_deref().unwrap_or("");
         let substring = params.substring.unwrap_or(false);
-        let kinds = params.kinds.as_deref().map_or_else(Vec::new, symbol_layer::parse_kinds);
+        let kinds = params
+            .kinds
+            .as_deref()
+            .map_or_else(Vec::new, symbol_layer::parse_kinds);
         let mut matches = symbol_layer::find(&tree, pattern, substring);
         matches = symbol_layer::filter_kinds(&matches, &kinds);
         let total = matches.len();
@@ -469,7 +489,12 @@ impl LspTool {
                 let client = Arc::clone(&client);
                 let path = target.file.clone();
                 let position = target.position;
-                async move { client.hover(&path, position).await.map(|h| h.map(|h| hover_text(&h))) }
+                async move {
+                    client
+                        .hover(&path, position)
+                        .await
+                        .map(|h| h.map(|h| hover_text(&h)))
+                }
             },
         )
         .await;
@@ -528,7 +553,10 @@ impl LspTool {
             |s| s.name_path(),
         );
 
-        let kinds = params.kinds.as_deref().map_or_else(Vec::new, symbol_layer::parse_kinds);
+        let kinds = params
+            .kinds
+            .as_deref()
+            .map_or_else(Vec::new, symbol_layer::parse_kinds);
         let mut import_cache: std::collections::HashMap<PathBuf, Vec<(u32, u32)>> =
             std::collections::HashMap::new();
         let refs: Vec<ReferenceLine> = locations
@@ -613,15 +641,23 @@ impl LspTool {
             .symbol
             .as_deref()
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("`symbol` is required for action `{}`", params.action))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("`symbol` is required for action `{}`", params.action)
+            })?;
         let body = params
             .body
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("`body` is required for action `{}`", params.action))?;
         let edit = match kind {
-            SymbolEditKind::Replace => symbol_layer::replace_body_edit(&text, Some(&path), symbol, body)?,
-            SymbolEditKind::InsertBefore => symbol_layer::insert_before_edit(&text, Some(&path), symbol, body)?,
-            SymbolEditKind::InsertAfter => symbol_layer::insert_after_edit(&text, Some(&path), symbol, body)?,
+            SymbolEditKind::Replace => {
+                symbol_layer::replace_body_edit(&text, Some(&path), symbol, body)?
+            }
+            SymbolEditKind::InsertBefore => {
+                symbol_layer::insert_before_edit(&text, Some(&path), symbol, body)?
+            }
+            SymbolEditKind::InsertAfter => {
+                symbol_layer::insert_after_edit(&text, Some(&path), symbol, body)?
+            }
         };
         self.apply_symbol_edit(params, &path, &text, &edit).await
     }
@@ -637,7 +673,9 @@ impl LspTool {
             .symbol
             .as_deref()
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("`symbol` is required for action `safe_delete_symbol`"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("`symbol` is required for action `safe_delete_symbol`")
+            })?;
 
         // Resolve the symbol to its *name* position so the server answers
         // references for the identifier (not the `func`/`fn` keyword).
@@ -881,7 +919,9 @@ pub fn select_code_action(
                 [] => ActionSelection::None,
                 [one] => ActionSelection::Selected(*one),
                 many => ActionSelection::Ambiguous(
-                    many.iter().map(|i| action_title(&actions[*i]).to_string()).collect(),
+                    many.iter()
+                        .map(|i| action_title(&actions[*i]).to_string())
+                        .collect(),
                 ),
             }
         }

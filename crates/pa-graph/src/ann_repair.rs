@@ -117,7 +117,10 @@ mod tests {
         let mut graph = chain(4);
         graph.remove(2);
         let (repaired, stats) = repair_ann(&graph, 0);
-        assert!(stats.dead_links_removed >= 1, "link 1->2 pointed at a dead node");
+        assert!(
+            stats.dead_links_removed >= 1,
+            "link 1->2 pointed at a dead node"
+        );
         assert!(!repaired.neighbors(1).contains(&2));
         let (live_links, total) = repaired.link_health();
         assert_eq!(live_links, total, "no dead links remain");

@@ -251,9 +251,7 @@ impl LspManager {
     pub async fn restart(&self, path: &Path) -> anyhow::Result<Arc<LspClient>> {
         if let Some(server) = server_for_path(path) {
             if let Ok(root) = canonical_root(path, server) {
-                self.backoff
-                    .clear(&(server.name.to_string(), root))
-                    .await;
+                self.backoff.clear(&(server.name.to_string(), root)).await;
             }
         }
         self.shutdown_for(path).await;

@@ -83,7 +83,11 @@ fn e6_snapshot_generation_gate_rejects_stale() {
     let snap = DiagnosticsSnapshot::capture(&[diag("a", 1)], 5);
     let after = vec![diag("a", 1), diag("b", 2)];
     assert_eq!(snap.diff(&after, 5).len(), 1);
-    assert_eq!(snap.diff(&after, 4).len(), 0, "an older generation is stale");
+    assert_eq!(
+        snap.diff(&after, 4).len(),
+        0,
+        "an older generation is stale"
+    );
 }
 
 // ─────────────────────────────── L13 ──────────────────────────────
@@ -109,12 +113,8 @@ fn l13_orphan_project_diagnostics_are_filtered_for_stray_files() {
         code: Some(NumberOrString::Number(2307)),
         ..diag("Cannot find module 'x'", 1)
     };
-    let kept = filter_orphan_project_diagnostics(
-        &[orphan],
-        &stray_file,
-        root.path(),
-        TS_ROOT_MARKERS,
-    );
+    let kept =
+        filter_orphan_project_diagnostics(&[orphan], &stray_file, root.path(), TS_ROOT_MARKERS);
     assert_eq!(kept.len(), 0, "the orphan is dropped");
 }
 
@@ -263,20 +263,33 @@ fn rename_file_requires_a_destination() {
 fn l19_selector_by_index() {
     let actions = vec![
         code_action("Fix it", Some(CodeActionKind::QUICKFIX), true, false),
-        code_action("Organize imports", Some(CodeActionKind::SOURCE), true, false),
+        code_action(
+            "Organize imports",
+            Some(CodeActionKind::SOURCE),
+            true,
+            false,
+        ),
     ];
     assert_eq!(
         select_code_action(&actions, Some("2")),
         ActionSelection::Selected(1)
     );
-    assert_eq!(select_code_action(&actions, Some("9")), ActionSelection::None);
+    assert_eq!(
+        select_code_action(&actions, Some("9")),
+        ActionSelection::None
+    );
 }
 
 #[test]
 fn l19_selector_by_substring_is_case_insensitive() {
     let actions = vec![
         code_action("Fix it", Some(CodeActionKind::QUICKFIX), true, false),
-        code_action("Organize imports", Some(CodeActionKind::SOURCE), true, false),
+        code_action(
+            "Organize imports",
+            Some(CodeActionKind::SOURCE),
+            true,
+            false,
+        ),
     ];
     assert_eq!(
         select_code_action(&actions, Some("organize")),

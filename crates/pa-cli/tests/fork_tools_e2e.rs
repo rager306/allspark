@@ -2,11 +2,11 @@
 //! executes the fork's native tools (lsp) against a real file. Deterministic
 //! (the model is the scripted faux provider; the tool execution is real).
 //!
-//! This is the chain that matters: create_session registers the tool, the
+//! This is the chain that matters: `create_session` registers the tool, the
 //! scripted turn invokes it, the tool parses a real file, and the result
 //! reaches the transcript.
 //!
-//! Run: cargo test -p pa-cli --test fork_tools_e2e
+//! Run: cargo test -p pa-cli --test `fork_tools_e2e`
 
 #![cfg(unix)]
 
@@ -36,7 +36,8 @@ fn run_text_mode(home: &Path, cwd: &Path, script: &str, prompt: &str) -> (i32, S
     let script_path = home.join("faux-script.json");
     fs::write(&script_path, script).expect("write faux script");
     let output = Command::new(payload_binary())
-        .arg("--mode").arg("text")
+        .arg("--mode")
+        .arg("text")
         .arg("--no-session")
         .arg(prompt)
         .env("HOME", home)

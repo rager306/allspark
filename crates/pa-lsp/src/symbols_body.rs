@@ -182,7 +182,10 @@ pub fn split_lines(text: &str) -> Vec<String> {
 
 /// The character range `[start, end)` of `line`.
 fn char_slice(line: &str, start: usize, end: usize) -> String {
-    line.chars().skip(start).take(end.saturating_sub(start)).collect()
+    line.chars()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect()
 }
 
 /// Hands out [`SymbolBody`]s that all share one file's line buffer, so a file's
@@ -259,7 +262,10 @@ mod tests {
         let body = SymbolBody::from_text("a\nb\n", range(0, 0, 5, 0));
         assert!(!body.is_eof_terminated());
         let err = body.get_text().unwrap_err();
-        assert!(matches!(err, BodyError::InvalidTextLocation { line: 5, .. }));
+        assert!(matches!(
+            err,
+            BodyError::InvalidTextLocation { line: 5, .. }
+        ));
     }
 
     #[test]
@@ -267,7 +273,11 @@ mod tests {
         let body = SymbolBody::from_text("ab\ncd\n", range(0, 0, 0, 9));
         assert!(matches!(
             body.get_text().unwrap_err(),
-            BodyError::InvalidTextLocation { line: 0, column: 9, .. }
+            BodyError::InvalidTextLocation {
+                line: 0,
+                column: 9,
+                ..
+            }
         ));
     }
 

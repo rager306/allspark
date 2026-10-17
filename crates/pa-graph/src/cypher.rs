@@ -173,6 +173,7 @@ enum Tok {
     Ge,
 }
 
+#[allow(clippy::too_many_lines)] // one cohesive tokenizer loop; reflowed past the limit by rustfmt only
 fn lex(input: &str) -> CypherResult<Vec<Tok>> {
     let bytes = input.as_bytes();
     let mut i = 0usize;
@@ -184,16 +185,46 @@ fn lex(input: &str) -> CypherResult<Vec<Tok>> {
             continue;
         }
         match c {
-            b'(' => { out.push(Tok::LParen); i += 1; }
-            b')' => { out.push(Tok::RParen); i += 1; }
-            b'[' => { out.push(Tok::LBracket); i += 1; }
-            b']' => { out.push(Tok::RBracket); i += 1; }
-            b'{' => { out.push(Tok::LBrace); i += 1; }
-            b'}' => { out.push(Tok::RBrace); i += 1; }
-            b':' => { out.push(Tok::Colon); i += 1; }
-            b',' => { out.push(Tok::Comma); i += 1; }
-            b'.' => { out.push(Tok::Dot); i += 1; }
-            b'*' => { out.push(Tok::Star); i += 1; }
+            b'(' => {
+                out.push(Tok::LParen);
+                i += 1;
+            }
+            b')' => {
+                out.push(Tok::RParen);
+                i += 1;
+            }
+            b'[' => {
+                out.push(Tok::LBracket);
+                i += 1;
+            }
+            b']' => {
+                out.push(Tok::RBracket);
+                i += 1;
+            }
+            b'{' => {
+                out.push(Tok::LBrace);
+                i += 1;
+            }
+            b'}' => {
+                out.push(Tok::RBrace);
+                i += 1;
+            }
+            b':' => {
+                out.push(Tok::Colon);
+                i += 1;
+            }
+            b',' => {
+                out.push(Tok::Comma);
+                i += 1;
+            }
+            b'.' => {
+                out.push(Tok::Dot);
+                i += 1;
+            }
+            b'*' => {
+                out.push(Tok::Star);
+                i += 1;
+            }
             b'-' => {
                 if bytes.get(i + 1) == Some(&b'>') {
                     out.push(Tok::ArrowRight);
@@ -227,7 +258,10 @@ fn lex(input: &str) -> CypherResult<Vec<Tok>> {
                     i += 1;
                 }
             }
-            b'=' => { out.push(Tok::Eq); i += 1; }
+            b'=' => {
+                out.push(Tok::Eq);
+                i += 1;
+            }
             b'!' => {
                 if bytes.get(i + 1) == Some(&b'=') {
                     out.push(Tok::Neq);
@@ -252,9 +286,7 @@ fn lex(input: &str) -> CypherResult<Vec<Tok>> {
             }
             _ if c.is_ascii_alphabetic() || c == b'_' => {
                 let start = i;
-                while i < bytes.len()
-                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
-                {
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
                     i += 1;
                 }
                 out.push(Tok::Ident(input[start..i].to_string()));
@@ -657,15 +689,21 @@ impl Parser {
             Some(Tok::Dash) => match self.next() {
                 Some(Tok::Int(n)) => Ok(CypherValue::Int(-n)),
                 Some(Tok::Float(f)) => Ok(CypherValue::Float(-f)),
-                other => Err(CypherError::Parse(format!("bad negative literal {other:?}"))),
+                other => Err(CypherError::Parse(format!(
+                    "bad negative literal {other:?}"
+                ))),
             },
             Some(Tok::Ident(word)) => match word.to_ascii_uppercase().as_str() {
                 "TRUE" => Ok(CypherValue::Bool(true)),
                 "FALSE" => Ok(CypherValue::Bool(false)),
                 "NULL" => Ok(CypherValue::Null),
-                _ => Err(CypherError::Parse(format!("unexpected identifier {word:?}"))),
+                _ => Err(CypherError::Parse(format!(
+                    "unexpected identifier {word:?}"
+                ))),
             },
-            other => Err(CypherError::Parse(format!("expected literal, found {other:?}"))),
+            other => Err(CypherError::Parse(format!(
+                "expected literal, found {other:?}"
+            ))),
         }
     }
 
@@ -885,18 +923,9 @@ struct Planned {
 }
 
 enum OutCol {
-    Scalar {
-        name: String,
-        sql: String,
-    },
-    Node {
-        name: String,
-        alias: String,
-    },
-    Edge {
-        name: String,
-        alias: String,
-    },
+    Scalar { name: String, sql: String },
+    Node { name: String, alias: String },
+    Edge { name: String, alias: String },
 }
 
 /// Build the SQL plan for `query`.
@@ -1311,11 +1340,7 @@ fn expr_to_sql(
             params.push(value_to_sql(value));
             Ok(format!("{col} {} ?", op.sql()))
         }
-        Expr::IsNull {
-            var,
-            prop,
-            negated,
-        } => {
+        Expr::IsNull { var, prop, negated } => {
             let col = prop_expr(&binding_for(bindings, var)?.alias, true, prop);
             Ok(if *negated {
                 format!("{col} IS NOT NULL")
@@ -1406,9 +1431,9 @@ fn execute(store: &GraphStore, planned: &Planned) -> CypherResult<Rows> {
         .columns
         .iter()
         .map(|c| match c {
-            OutCol::Scalar { name, .. }
-            | OutCol::Node { name, .. }
-            | OutCol::Edge { name, .. } => name.clone(),
+            OutCol::Scalar { name, .. } | OutCol::Node { name, .. } | OutCol::Edge { name, .. } => {
+                name.clone()
+            }
         })
         .collect();
 
@@ -1460,12 +1485,22 @@ mod tests {
 
     fn seeded_store() -> GraphStore {
         let store = GraphStore::open_in_memory().expect("open");
-        store.register_project("demo", "/tmp/demo").expect("project");
+        store
+            .register_project("demo", "/tmp/demo")
+            .expect("project");
         let mut nodes = Vec::new();
         for (label, name, props) in [
             (Label::Function, "main", serde_json::json!({"doc": "entry"})),
-            (Label::Function, "parse_config", serde_json::json!({"doc": "parse"})),
-            (Label::Function, "read_file", serde_json::json!({"doc": "read"})),
+            (
+                Label::Function,
+                "parse_config",
+                serde_json::json!({"doc": "parse"}),
+            ),
+            (
+                Label::Function,
+                "read_file",
+                serde_json::json!({"doc": "read"}),
+            ),
             (Label::Struct, "Config", serde_json::json!({})),
         ] {
             let node = Node {
@@ -1568,11 +1603,8 @@ mod tests {
     #[test]
     fn incoming_direction_is_supported() {
         let store = seeded_store();
-        let rows = CypherEngine::query(
-            &store,
-            "MATCH (a)<-[r:CALLS]-(b) RETURN a.name, b.name",
-        )
-        .expect("query");
+        let rows = CypherEngine::query(&store, "MATCH (a)<-[r:CALLS]-(b) RETURN a.name, b.name")
+            .expect("query");
         assert_eq!(rows.len(), 2, "incoming CALLS is the reverse of outgoing");
     }
 
@@ -1616,15 +1648,14 @@ mod tests {
     #[test]
     fn whole_node_return_is_an_object() {
         let store = seeded_store();
-        let rows = CypherEngine::query(
-            &store,
-            "MATCH (n:Struct) RETURN n",
-        )
-        .expect("query");
+        let rows = CypherEngine::query(&store, "MATCH (n:Struct) RETURN n").expect("query");
         assert_eq!(rows.len(), 1);
         match rows.rows[0].get("n") {
             Some(CypherValue::Object(obj)) => {
-                assert_eq!(obj.get("name"), Some(&CypherValue::Str("Config".to_string())));
+                assert_eq!(
+                    obj.get("name"),
+                    Some(&CypherValue::Str("Config".to_string()))
+                );
             }
             other => panic!("expected a node object, got {other:?}"),
         }
@@ -1633,11 +1664,9 @@ mod tests {
     #[test]
     fn star_returns_every_bound_variable() {
         let store = seeded_store();
-        let rows = CypherEngine::query(
-            &store,
-            "MATCH (a:Function)-[r:CALLS]->(b) RETURN * LIMIT 1",
-        )
-        .expect("query");
+        let rows =
+            CypherEngine::query(&store, "MATCH (a:Function)-[r:CALLS]->(b) RETURN * LIMIT 1")
+                .expect("query");
         assert_eq!(rows.len(), 1);
         assert!(rows.rows[0].contains_key("a"));
         assert!(rows.rows[0].contains_key("b"));
@@ -1651,7 +1680,10 @@ mod tests {
             "MATCH (n) DELETE n RETURN n",
             "MATCH (n) SET n.name = 'x' RETURN n",
         ] {
-            assert!(matches!(CypherEngine::plan(q), Err(CypherError::ReadOnly(_))), "{q}");
+            assert!(
+                matches!(CypherEngine::plan(q), Err(CypherError::ReadOnly(_))),
+                "{q}"
+            );
         }
     }
 
@@ -1662,7 +1694,8 @@ mod tests {
         )
         .expect("plan");
         assert!(
-            plan.optimizations.contains(&Optimization::PredicatePushdown),
+            plan.optimizations
+                .contains(&Optimization::PredicatePushdown),
             "pushdown must be reported: {:?}",
             plan.optimizations
         );

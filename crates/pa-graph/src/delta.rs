@@ -1,4 +1,3 @@
-
 //! R8 — delta core: event-sourced change records with sparse/RLE/hybrid
 //! encoding.
 //!
@@ -418,7 +417,10 @@ mod tests {
 
     #[test]
     fn rle_and_sparse_and_hybrid_round_trip() {
-        let keys: Vec<String> = ["a", "b", "c", "d", "e"].iter().map(|s| (*s).to_string()).collect();
+        let keys: Vec<String> = ["a", "b", "c", "d", "e"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
         let delta = sample();
         for enc in [Encoding::Sparse, Encoding::Rle, Encoding::Hybrid] {
             let payload = delta.encode(enc);
@@ -435,8 +437,16 @@ mod tests {
             Payload::Hybrid(items) => {
                 // Two sets (run of 2 < 3) become literals; three removes (run
                 // of 3) become one run.
-                assert!(items.iter().any(|i| matches!(i, HybridItem::Run(Op::Remove, 3))));
-                assert_eq!(items.iter().filter(|i| matches!(i, HybridItem::Lit(_))).count(), 2);
+                assert!(items
+                    .iter()
+                    .any(|i| matches!(i, HybridItem::Run(Op::Remove, 3))));
+                assert_eq!(
+                    items
+                        .iter()
+                        .filter(|i| matches!(i, HybridItem::Lit(_)))
+                        .count(),
+                    2
+                );
             }
             _ => panic!("expected hybrid payload"),
         }
@@ -514,7 +524,14 @@ mod tests {
     fn stream_round_trip_uses_key_space() {
         let mut stream = DeltaStream::new();
         stream.set_keys(vec!["a".into(), "b".into(), "c".into()]);
-        stream.push(1, vec![Change::remove("a"), Change::remove("b"), Change::remove("c")]);
+        stream.push(
+            1,
+            vec![
+                Change::remove("a"),
+                Change::remove("b"),
+                Change::remove("c"),
+            ],
+        );
         let decoded = stream.round_trip(0, Encoding::Rle).expect("round trip");
         assert_eq!(decoded.len(), 3);
         assert_eq!(decoded[0], Change::remove("a"));

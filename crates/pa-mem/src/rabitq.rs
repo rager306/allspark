@@ -54,7 +54,11 @@ impl RabitqVector {
             l1 += x.abs();
         }
         let norm = sq.sqrt();
-        let scale = if dim > 0 { norm / (dim as f32).sqrt() } else { 0.0 };
+        let scale = if dim > 0 {
+            norm / (dim as f32).sqrt()
+        } else {
+            0.0
+        };
         Self {
             words: bits,
             scale,

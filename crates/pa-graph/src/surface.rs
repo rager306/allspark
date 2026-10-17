@@ -1,4 +1,3 @@
-
 //! Per-file *surface* and *body* hashing (G7 closure-repair, L11 surface cache).
 //!
 //! The surface of a file is everything another file may consume from it: the

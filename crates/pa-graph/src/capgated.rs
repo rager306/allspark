@@ -138,10 +138,7 @@ impl CapGatedIndex {
     /// The mask stored for `node`, if present.
     #[must_use]
     pub fn caps_of(&self, node: NodeId) -> Option<CapMask> {
-        self.nodes
-            .iter()
-            .find(|n| n.id == node)
-            .map(|n| n.caps)
+        self.nodes.iter().find(|n| n.id == node).map(|n| n.caps)
     }
 
     /// Search the index: return the ids for which `query` holds *and* whose

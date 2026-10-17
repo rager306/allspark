@@ -290,9 +290,7 @@ pub fn diagnostics_to_symbol(
 /// Roll a set of owned diagnostics up to `severity -> name_path -> count`,
 /// which is the progressive-shortening view (L17) of the full list.
 #[must_use]
-pub fn count_by_severity_and_symbol(
-    owned: &[OwnedDiagnostic],
-) -> Vec<(String, String, usize)> {
+pub fn count_by_severity_and_symbol(owned: &[OwnedDiagnostic]) -> Vec<(String, String, usize)> {
     let mut order: Vec<(String, String)> = Vec::new();
     let mut counts: HashMap<(String, String), usize> = HashMap::new();
     for diagnostic in owned {

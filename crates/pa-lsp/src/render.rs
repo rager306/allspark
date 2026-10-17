@@ -167,7 +167,11 @@ pub fn render_reference_counts(references: &[ReferenceLine]) -> String {
     for reference in references {
         *counts.entry(reference.file.as_str()).or_insert(0) += 1;
     }
-    let mut out = format!("{} reference(s) across {} file(s):\n", references.len(), counts.len());
+    let mut out = format!(
+        "{} reference(s) across {} file(s):\n",
+        references.len(),
+        counts.len()
+    );
     for (file, count) in counts {
         let _ = writeln!(out, "  - {file}: {count}");
     }
@@ -239,8 +243,16 @@ mod tests {
     #[test]
     fn references_keep_locations_when_they_fit() {
         let refs = vec![
-            ReferenceLine { file: "a.rs".into(), line: 1, column: 1 },
-            ReferenceLine { file: "b.rs".into(), line: 2, column: 2 },
+            ReferenceLine {
+                file: "a.rs".into(),
+                line: 1,
+                column: 1,
+            },
+            ReferenceLine {
+                file: "b.rs".into(),
+                line: 2,
+                column: 2,
+            },
         ];
         let rendered = render_references(&refs, 100);
         assert_eq!(rendered.stage, 0);
@@ -250,9 +262,21 @@ mod tests {
     #[test]
     fn references_fall_back_to_per_file_counts() {
         let refs = vec![
-            ReferenceLine { file: "a.rs".into(), line: 1, column: 1 },
-            ReferenceLine { file: "a.rs".into(), line: 2, column: 2 },
-            ReferenceLine { file: "b.rs".into(), line: 3, column: 3 },
+            ReferenceLine {
+                file: "a.rs".into(),
+                line: 1,
+                column: 1,
+            },
+            ReferenceLine {
+                file: "a.rs".into(),
+                line: 2,
+                column: 2,
+            },
+            ReferenceLine {
+                file: "b.rs".into(),
+                line: 3,
+                column: 3,
+            },
         ];
         let rendered = render_references(&refs, 3);
         assert_eq!(rendered.stage, 1);
@@ -263,8 +287,16 @@ mod tests {
     #[test]
     fn references_fall_back_to_a_total() {
         let refs = vec![
-            ReferenceLine { file: "a.rs".into(), line: 1, column: 1 },
-            ReferenceLine { file: "b.rs".into(), line: 2, column: 2 },
+            ReferenceLine {
+                file: "a.rs".into(),
+                line: 1,
+                column: 1,
+            },
+            ReferenceLine {
+                file: "b.rs".into(),
+                line: 2,
+                column: 2,
+            },
         ];
         let rendered = render_references(&refs, 1);
         assert_eq!(rendered.stage, 2);

@@ -257,12 +257,7 @@ mod tests {
         assert_eq!(outcome.final_stage, Stage::Verifier);
         assert_eq!(
             outcome.executed,
-            vec![
-                Stage::Stream,
-                Stage::Detector,
-                Stage::Risk,
-                Stage::Verifier
-            ]
+            vec![Stage::Stream, Stage::Detector, Stage::Risk, Stage::Verifier]
         );
         assert!(!outcome.escalated_past_floor);
         assert!(!outcome.ran(Stage::Investigator));
@@ -281,7 +276,10 @@ mod tests {
         assert!(outcome.escalated_past_floor);
 
         // loss = 1000: exceeds every rung → halt.
-        let extreme = Ladder::run(Incident::new(1.0, 1000.0), Policy::with_floor(Stage::Stream));
+        let extreme = Ladder::run(
+            Incident::new(1.0, 1000.0),
+            Policy::with_floor(Stage::Stream),
+        );
         assert_eq!(extreme.final_stage, Stage::Halt);
         assert_eq!(extreme.executed.len(), Stage::ALL.len());
         assert_eq!(extreme.executed.last(), Some(&Stage::Halt));

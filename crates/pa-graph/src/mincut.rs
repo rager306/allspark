@@ -101,11 +101,7 @@ pub fn stoer_wagner(nodes: &[i64], edges: &[WeightedEdge]) -> (f64, Vec<i64>, Ve
         return (0.0, node_list, Vec::new());
     }
 
-    let index: BTreeMap<i64, usize> = node_list
-        .iter()
-        .enumerate()
-        .map(|(i, &v)| (v, i))
-        .collect();
+    let index: BTreeMap<i64, usize> = node_list.iter().enumerate().map(|(i, &v)| (v, i)).collect();
     let mut w = vec![vec![0.0_f64; n]; n];
     for e in edges {
         let i = index.get(&e.a).copied().unwrap_or(0);
@@ -200,11 +196,7 @@ pub fn label_propagation(edges: &[WeightedEdge], rounds: usize) -> Vec<Community
 pub fn community_map(edges: &[WeightedEdge], rounds: usize) -> BTreeMap<i64, CommunityId> {
     let node_list = nodes_of(edges);
     let n = node_list.len();
-    let index: BTreeMap<i64, usize> = node_list
-        .iter()
-        .enumerate()
-        .map(|(i, &v)| (v, i))
-        .collect();
+    let index: BTreeMap<i64, usize> = node_list.iter().enumerate().map(|(i, &v)| (v, i)).collect();
 
     let mut adj: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
     for e in edges {
@@ -279,11 +271,7 @@ fn is_connected(nodes: &BTreeSet<i64>, edges: &[WeightedEdge]) -> bool {
     if list.len() <= 1 {
         return true;
     }
-    let index: BTreeMap<i64, usize> = list
-        .iter()
-        .enumerate()
-        .map(|(i, &v)| (v, i))
-        .collect();
+    let index: BTreeMap<i64, usize> = list.iter().enumerate().map(|(i, &v)| (v, i)).collect();
     let mut parent: Vec<usize> = (0..list.len()).collect();
 
     for e in edges {
@@ -403,7 +391,10 @@ mod tests {
         assert_eq!(comms[&1], comms[&2]);
         assert_eq!(comms[&3], comms[&4]);
         assert_eq!(comms[&4], comms[&5]);
-        assert_ne!(comms[&2], comms[&3], "the bridge must not merge the clusters");
+        assert_ne!(
+            comms[&2], comms[&3],
+            "the bridge must not merge the clusters"
+        );
         // Two communities, canonically numbered 0 and 1.
         let ids: BTreeSet<usize> = comms.values().copied().collect();
         assert_eq!(ids, BTreeSet::from([0, 1]));
@@ -445,10 +436,7 @@ mod tests {
     fn certify_rejects_a_split_side() {
         // Side a = {0, 2} touches node 1 only through edges, so it is not
         // internally connected even though the crossing weight is stated.
-        let edges = vec![
-            WeightedEdge::new(0, 1, 1.0),
-            WeightedEdge::new(1, 2, 1.0),
-        ];
+        let edges = vec![WeightedEdge::new(0, 1, 1.0), WeightedEdge::new(1, 2, 1.0)];
         let cut = Cut::new(2.0, vec![0, 2], vec![1]);
         assert!(certify_cut(&cut, &edges).is_err());
     }

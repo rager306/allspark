@@ -527,7 +527,6 @@ fn architecture_entry_points_and_file_tree_on_real_index() {
     assert!(src.symbol_count >= 2, "{src:?}");
 }
 
-
 // ── Phase 3: incremental reindexing, deltas, signals, watcher ───────────
 
 #[test]
@@ -581,8 +580,8 @@ fn closure_repair_body_vs_surface_on_a_real_tree() {
 
 #[test]
 fn surface_and_body_hashes_diverge_correctly() {
-    use pa_graph::{body_hash, surface_hash};
     use pa_ast::SupportLang;
+    use pa_graph::{body_hash, surface_hash};
 
     let original = "pub fn f(x: u32) -> u32 { x + 1 }\n";
     let body_edit = "pub fn f(x: u32) -> u32 { x + 2 }\n";
@@ -647,7 +646,10 @@ fn minhash_lsh_finds_near_duplicate_functions() {
     assert_eq!(dups.len(), 1, "{dups:?}");
     // Unrelated code is not.
     let none = find_near_duplicates(&items, 0.999);
-    assert!(none.iter().all(|d| d.a == 1 && d.b == 2 || d.b == 1), "{none:?}");
+    assert!(
+        none.iter().all(|d| d.a == 1 && d.b == 2 || d.b == 1),
+        "{none:?}"
+    );
 }
 
 #[test]
@@ -703,7 +705,11 @@ fn delta_stream_and_graph_delta_affected_nodes() {
     stream.set_keys(vec!["a".into(), "b".into(), "c".into()]);
     stream.push(
         1,
-        vec![Change::remove("a"), Change::remove("b"), Change::remove("c")],
+        vec![
+            Change::remove("a"),
+            Change::remove("b"),
+            Change::remove("c"),
+        ],
     );
     let decoded = stream.round_trip(0, Encoding::Rle).expect("round trip");
     assert_eq!(decoded.len(), 3);
@@ -759,8 +765,6 @@ fn streaming_condenser_and_tri_modal_and_watcher() {
     assert_eq!(events[0].kind, pa_graph::FileEventKind::Created);
 }
 
-
-
 // ── Phase 6-A: memory & optimization techniques ─────────────────────────
 
 #[test]
@@ -773,7 +777,8 @@ fn phase6a_compaction_decay_and_ledgers() {
     // M1 coherence compaction merges duplicates and keeps provenance.
     let entries = vec![
         Entry::new("a", "parse config", vec![1.0, 0.0]).with_provenance(vec!["idx".into()]),
-        Entry::new("b", "parse config file", vec![0.999, 0.001]).with_provenance(vec!["git".into()]),
+        Entry::new("b", "parse config file", vec![0.999, 0.001])
+            .with_provenance(vec!["git".into()]),
         Entry::new("c", "render widget", vec![0.0, 1.0]),
     ];
     let compacted = CoherenceCompactor::compact(&entries, &CoherencePolicy::new());
@@ -783,8 +788,10 @@ fn phase6a_compaction_decay_and_ledgers() {
 
     // M2 temporal decay halves the weight after one half-life.
     assert!((decay(1.0, 10.0, 10.0) - 0.5).abs() < 1e-12);
-    let ranked = TemporalDecay::new(10.0)
-        .rank(&[Weighted::new("old", 4.0, 30.0), Weighted::new("new", 1.0, 0.0)]);
+    let ranked = TemporalDecay::new(10.0).rank(&[
+        Weighted::new("old", 4.0, 30.0),
+        Weighted::new("new", 1.0, 0.0),
+    ]);
     assert_eq!(ranked[0].0, "new");
 
     // M4 TARL ledger aggregates and tracks outcomes.
@@ -826,7 +833,10 @@ fn phase6a_caches_witness_and_gates() {
 
     // M8 bounded RAG picks the best fragments within a token budget.
     let picked = bounded_select(
-        &[Candidate::new("big", 0.9, 100), Candidate::new("small", 0.8, 5)],
+        &[
+            Candidate::new("big", 0.9, 100),
+            Candidate::new("small", 0.8, 5),
+        ],
         RagBudget::tokens(10),
     );
     assert_eq!(picked.len(), 1);
@@ -895,19 +905,20 @@ fn phase6a_graph_repair_and_snapshots() {
     assert!(sparse.edge_count() >= 2, "backbone spans all nodes");
 
     // R18 conformal interval covers calibration points at the target rate.
-    let pairs: Vec<(f64, f64)> = (0..20).map(|i| (f64::from(i), f64::from(i) + 1.0)).collect();
+    let pairs: Vec<(f64, f64)> = (0..20)
+        .map(|i| (f64::from(i), f64::from(i) + 1.0))
+        .collect();
     let predictor = ConformalPredictor::calibrate(&pairs, 0.1);
-    let covered = pairs.iter().filter(|(p, a)| predictor.covers(*p, *a)).count();
+    let covered = pairs
+        .iter()
+        .filter(|(p, a)| predictor.covers(*p, *a))
+        .count();
     assert!(covered * 10 >= pairs.len() * 9, "coverage below the target");
 
     // R21 self-reconstructing index detects and repairs corruption.
     let mut index = SelfReconstructingIndex::new(pa_graph::ChecksumKind::Blake3);
     index.insert("part", b"hello".to_vec());
-    index
-        .parts_mut()
-        .get_mut("part")
-        .expect("part")
-        .bytes = b"jello".to_vec();
+    index.parts_mut().get_mut("part").expect("part").bytes = b"jello".to_vec();
     assert_eq!(index.verify(), vec!["part".to_string()]);
     let mut source = std::collections::BTreeMap::new();
     source.insert("part".to_string(), b"hello".to_vec());

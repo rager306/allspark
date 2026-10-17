@@ -523,9 +523,7 @@ impl ToolMarker {
             ToolMarker::SymbolicEdit => "ToolMarkerSymbolicEdit",
             ToolMarker::Optional => "ToolMarkerOptional",
             ToolMarker::Beta => "ToolMarkerBeta",
-            ToolMarker::DoesNotRequireActiveProject => {
-                "ToolMarkerDoesNotRequireActiveProject"
-            }
+            ToolMarker::DoesNotRequireActiveProject => "ToolMarkerDoesNotRequireActiveProject",
         }
     }
 }

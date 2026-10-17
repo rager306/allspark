@@ -1,4 +1,3 @@
-
 //! S16 — filesystem change notifier feeding LSP `didChangeWatchedFiles`.
 //!
 //! Language servers keep their own view of a workspace; when a file changes

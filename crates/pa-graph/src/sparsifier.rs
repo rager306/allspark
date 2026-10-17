@@ -112,13 +112,11 @@ pub fn sparsify(graph: &Graph, keep_ratio: f64) -> Graph {
         }
     }
     out.edges.sort_by(|a, b| {
-        a.a.cmp(&b.a)
-            .then_with(|| a.b.cmp(&b.b))
-            .then_with(|| {
-                a.weight
-                    .partial_cmp(&b.weight)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+        a.a.cmp(&b.a).then_with(|| a.b.cmp(&b.b)).then_with(|| {
+            a.weight
+                .partial_cmp(&b.weight)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     });
     out
 }

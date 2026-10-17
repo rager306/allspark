@@ -17,14 +17,13 @@ use async_lsp::{LanguageClient, LanguageServer, ResponseError, ServerSocket};
 use lsp_types::{
     ClientCapabilities, CodeActionOrCommand, CodeActionParams, DidOpenTextDocumentParams,
     DidSaveTextDocumentParams, DocumentDiagnosticParams, DocumentDiagnosticReport,
-    DocumentDiagnosticReportResult, DocumentFormattingParams, DocumentSymbol,
-    DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandParams, FileRename,
-    FormattingOptions, GotoDefinitionParams, GotoDefinitionResponse, HoverParams,
-    InitializeParams, InitializedParams, OneOf, Position, PublishDiagnosticsParams,
-    ReferenceContext, ReferenceParams, RenameFilesParams, RenameParams, ServerCapabilities,
-    TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams, TextEdit, Url,
-    WorkDoneProgressParams, WorkspaceEdit, WorkspaceFolder, WorkspaceSymbolParams,
-    WorkspaceSymbolResponse,
+    DocumentDiagnosticReportResult, DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams,
+    DocumentSymbolResponse, ExecuteCommandParams, FileRename, FormattingOptions,
+    GotoDefinitionParams, GotoDefinitionResponse, HoverParams, InitializeParams, InitializedParams,
+    OneOf, Position, PublishDiagnosticsParams, ReferenceContext, ReferenceParams,
+    RenameFilesParams, RenameParams, ServerCapabilities, TextDocumentIdentifier, TextDocumentItem,
+    TextDocumentPositionParams, TextEdit, Url, WorkDoneProgressParams, WorkspaceEdit,
+    WorkspaceFolder, WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 use tokio::sync::Mutex;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -633,9 +632,7 @@ impl LspClient {
             .await;
         match response {
             Ok(DocumentDiagnosticReportResult::Report(report)) => Ok(Some(match report {
-                DocumentDiagnosticReport::Full(full) => {
-                    full.full_document_diagnostic_report.items
-                }
+                DocumentDiagnosticReport::Full(full) => full.full_document_diagnostic_report.items,
                 DocumentDiagnosticReport::Unchanged(_) => Vec::new(),
             })),
             Ok(DocumentDiagnosticReportResult::Partial(_)) => Ok(Some(Vec::new())),
@@ -883,7 +880,8 @@ impl LspClient {
     /// still polling for the full [`DEFERRED_DIAGNOSTICS_WAIT`] window so the
     /// caller (an edit) is never blocked on a cold type-checker.
     pub async fn wait_for_diagnostics_split(&self, path: &Path) -> DiagnosticsOutcome {
-        self.wait_for_diagnostics_split_with(path, InlineWait::Inline).await
+        self.wait_for_diagnostics_split_with(path, InlineWait::Inline)
+            .await
     }
 
     /// [`wait_for_diagnostics_split`](Self::wait_for_diagnostics_split) with an
@@ -897,11 +895,10 @@ impl LspClient {
         path: &Path,
         mode: InlineWait,
     ) -> DiagnosticsOutcome {
-        let inline_result =
-            await_diagnostics(DiagnosticsWaiter::new(mode.budget()), || {
-                self.published_diagnostics(path)
-            })
-            .await;
+        let inline_result = await_diagnostics(DiagnosticsWaiter::new(mode.budget()), || {
+            self.published_diagnostics(path)
+        })
+        .await;
         if let Some(result) = inline_result {
             return DiagnosticsOutcome::Inline(Some(result));
         }
@@ -912,9 +909,10 @@ impl LspClient {
             // notification state instead of `self`.
             let notifications = Arc::clone(&self.notifications);
             tokio::spawn(async move {
-                await_diagnostics(DiagnosticsWaiter::new(InlineWait::Deferred.budget()), || {
-                    published_from(&notifications, &path)
-                })
+                await_diagnostics(
+                    DiagnosticsWaiter::new(InlineWait::Deferred.budget()),
+                    || published_from(&notifications, &path),
+                )
                 .await
             })
         };
@@ -1329,7 +1327,8 @@ mod tests {
     #[test]
     fn waiter_returns_a_non_empty_publish_immediately() {
         let now = tokio::time::Instant::now();
-        let mut waiter = DiagnosticsWaiter::with_settle(Duration::from_secs(5), Duration::from_millis(500));
+        let mut waiter =
+            DiagnosticsWaiter::with_settle(Duration::from_secs(5), Duration::from_millis(500));
         let published = Some((vec![diag("boom")], 1));
         match waiter.observe(now, published) {
             WaitStep::Done(Some((diagnostics, generation))) => {
@@ -1371,7 +1370,8 @@ mod tests {
     #[test]
     fn waiter_ignores_a_stale_generation() {
         let now = tokio::time::Instant::now();
-        let mut waiter = DiagnosticsWaiter::with_settle(Duration::from_secs(5), Duration::from_millis(500));
+        let mut waiter =
+            DiagnosticsWaiter::with_settle(Duration::from_secs(5), Duration::from_millis(500));
         // A non-empty publish at generation 1 answers.
         assert!(matches!(
             waiter.observe(now, Some((vec![diag("x")], 1))),
@@ -1410,10 +1410,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn await_diagnostics_times_out_with_none() {
         let result = await_diagnostics(
-            DiagnosticsWaiter::with_settle(
-                INLINE_DIAGNOSTICS_WAIT,
-                Duration::from_millis(100),
-            ),
+            DiagnosticsWaiter::with_settle(INLINE_DIAGNOSTICS_WAIT, Duration::from_millis(100)),
             || async { None },
         )
         .await;
@@ -1445,7 +1442,10 @@ mod tests {
     async fn abandoned_deferred_fetch_is_cancelled() {
         let handle = tokio::spawn(async {
             await_diagnostics(
-                DiagnosticsWaiter::with_settle(DEFERRED_DIAGNOSTICS_WAIT, Duration::from_millis(50)),
+                DiagnosticsWaiter::with_settle(
+                    DEFERRED_DIAGNOSTICS_WAIT,
+                    Duration::from_millis(50),
+                ),
                 || async { None },
             )
             .await

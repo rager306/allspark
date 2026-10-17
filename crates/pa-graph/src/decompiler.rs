@@ -179,7 +179,10 @@ pub fn decompile(symbols: &[(NodeId, String)], call_edges: &[WeightedEdge]) -> D
                 Role::Internal
             };
             kind_assignments.insert(n, role);
-            leaves.push(WitnessNode::build(format!("node {n}:{}", role.as_str()), Vec::new()));
+            leaves.push(WitnessNode::build(
+                format!("node {n}:{}", role.as_str()),
+                Vec::new(),
+            ));
         }
 
         let witness = WitnessNode::build(format!("community {id}"), leaves);
@@ -224,7 +227,11 @@ mod tests {
         assert_eq!(d.communities.len(), 1, "the whole module is one community");
         let c = &d.communities[0];
         assert_eq!(c.kind_assignments[&1], Role::Facade, "1 has two callers");
-        assert_eq!(c.kind_assignments[&0], Role::Internal, "0 has one caller (3)");
+        assert_eq!(
+            c.kind_assignments[&0],
+            Role::Internal,
+            "0 has one caller (3)"
+        );
         assert_eq!(c.kind_assignments[&2], Role::Internal);
         assert_eq!(c.kind_assignments[&3], Role::Entry, "3 only calls out");
     }
@@ -249,7 +256,10 @@ mod tests {
         leaves[0] = WitnessNode::build("node 0:facade".to_string(), Vec::new());
         let tampered = WitnessNode::build("community 0".to_string(), leaves);
         assert_ne!(tampered.hash, root.hash);
-        assert!(tampered.verify(), "the tampered tree is still self-consistent");
+        assert!(
+            tampered.verify(),
+            "the tampered tree is still self-consistent"
+        );
     }
 
     #[test]

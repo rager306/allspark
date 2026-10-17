@@ -220,7 +220,7 @@ mod tests {
         r.co_access("a", "b", 2.0);
         r.co_access("b", "a", 7.0);
         r.co_access("a", "b", 1.0); // weaker, ignored
-        // From either side the edge is 7.
+                                    // From either side the edge is 7.
         assert_eq!(r.route("a", 10), vec![0, 1]);
         assert_eq!(r.route("b", 10), vec![1, 0]);
         // Self-edges and non-positive weights are ignored.

@@ -92,9 +92,7 @@ mod tests {
     /// decreases with the node id, so the exact top-k is `0, 1, .., k-1`.
     fn corpus(n: i64) -> (Vec<f32>, Vec<Vec<f32>>) {
         let query = vec![1.0_f32, 0.0, 0.0];
-        let vectors = (0..n)
-            .map(|i| vec![100.0 - i as f32, 0.0, 0.0])
-            .collect();
+        let vectors = (0..n).map(|i| vec![100.0 - i as f32, 0.0, 0.0]).collect();
         (query, vectors)
     }
 
@@ -121,8 +119,7 @@ mod tests {
 
         for k in [1usize, 3, 5, 10] {
             let got = speculative_search(&query, &candidates, exact_for(&vectors), k);
-            let mut brute: Vec<(i64, f32)> =
-                (0..40).map(|i| (i, exact(i, &query))).collect();
+            let mut brute: Vec<(i64, f32)> = (0..40).map(|i| (i, exact(i, &query))).collect();
             brute.sort_by(|a, b| {
                 b.1.partial_cmp(&a.1)
                     .unwrap_or(std::cmp::Ordering::Equal)
@@ -147,8 +144,14 @@ mod tests {
     fn zero_k_and_empty_pool_are_empty() {
         let query = vec![1.0_f32];
         let exact = |_: i64, _: &[f32]| 0.0_f32;
-        assert_eq!(speculative_search(&query, &[(1, 1.0)], exact, 0), Vec::<(i64, f32)>::new());
-        assert_eq!(speculative_search(&query, &[], exact, 3), Vec::<(i64, f32)>::new());
+        assert_eq!(
+            speculative_search(&query, &[(1, 1.0)], exact, 0),
+            Vec::<(i64, f32)>::new()
+        );
+        assert_eq!(
+            speculative_search(&query, &[], exact, 3),
+            Vec::<(i64, f32)>::new()
+        );
     }
 
     #[test]

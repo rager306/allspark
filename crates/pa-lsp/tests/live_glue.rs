@@ -87,14 +87,20 @@ async fn l10_manager_write_through_returns_none_for_unknown_extension() {
     }
     let dir = tempfile::tempdir().unwrap();
     let readme = dir.path().join("notes.md");
-    std::fs::write(&readme, "# hi
-").unwrap();
+    std::fs::write(
+        &readme, "# hi
+",
+    )
+    .unwrap();
     let manager = LspManager::new();
     let report = manager
         .write_through(&readme, &WriteThroughOptions::default())
         .await
         .expect("no server for .md is not an error");
-    assert!(report.is_none(), "an unknown extension has no write-through");
+    assert!(
+        report.is_none(),
+        "an unknown extension has no write-through"
+    );
 }
 
 /// E6: snapshot before an edit, then diff after — only the introduced
@@ -158,10 +164,7 @@ async fn l18_rename_file_broadcasts_to_live_servers() {
     let manager = LspManager::new();
     // Warm a client so the manager has a live server to broadcast to.
     let _ = manager.ensure_client(&from).await.expect("spawn gopls");
-    let touched = manager
-        .rename_file(&from, &to)
-        .await
-        .expect("rename file");
+    let touched = manager.rename_file(&from, &to).await.expect("rename file");
     assert!(to.exists(), "the file moved on disk");
     assert!(!from.exists(), "the old path is gone");
     eprintln!("live L18 touched {} file(s)", touched.len());
@@ -216,9 +219,12 @@ async fn l20_workspace_checker_runs_go_build() {
     let report = run_checkers(dir.path(), &specs, CHECKER_TIMEOUT).await;
     eprintln!("live L20 report: {report:?}");
     assert!(
-        report.diagnostics.iter().any(|d| d.message.contains("cannot use")
-            || d.message.contains("string")
-            || d.message.contains("mismatched")),
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("cannot use")
+                || d.message.contains("string")
+                || d.message.contains("mismatched")),
         "the type error must surface: {report:?}"
     );
 }

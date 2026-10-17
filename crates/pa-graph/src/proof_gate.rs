@@ -81,7 +81,9 @@ impl ProofGate {
     /// A gate that checks only receipts.
     #[must_use]
     pub fn receipts_only() -> Self {
-        Self { require_envelope: false }
+        Self {
+            require_envelope: false,
+        }
     }
 
     /// Check `receipts` (already-recorded hashes) and `envelope`.
@@ -191,7 +193,10 @@ mod tests {
         let policy = QualityPolicy::new().with_min_acceptable(0.99);
         let degraded = QualityEnvelope::from_samples(&[0.1, 0.2], &policy);
         let decision = ProofGate::new().check_chain(&chain, Some(&degraded));
-        assert_eq!(decision, GateDecision::Reject(RejectReason::DegradedQuality));
+        assert_eq!(
+            decision,
+            GateDecision::Reject(RejectReason::DegradedQuality)
+        );
     }
 
     #[test]

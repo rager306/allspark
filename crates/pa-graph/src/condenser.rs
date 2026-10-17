@@ -1,4 +1,3 @@
-
 //! R12 — streaming condenser: lazy re-condensation behind a dirty flag.
 //!
 //! "Condensation" is any expensive summary derived from a stream of items
@@ -191,16 +190,15 @@ impl KeyedCondenser {
 
     /// Push a value under `key`.
     pub fn push(&mut self, key: impl Into<String>, value: f64) {
-        self.streams
-            .entry(key.into())
-            .or_default()
-            .push(value);
+        self.streams.entry(key.into()).or_default().push(value);
     }
 
     /// Whether `key`'s stream is dirty.
     #[must_use]
     pub fn is_dirty(&self, key: &str) -> bool {
-        self.streams.get(key).is_some_and(StreamingCondenser::is_dirty)
+        self.streams
+            .get(key)
+            .is_some_and(StreamingCondenser::is_dirty)
     }
 
     /// Condense one key's stream.
@@ -236,7 +234,10 @@ mod tests {
         c.push(2.0);
         let first = c.condense().clone();
         assert_eq!(first.count, 2);
-        assert_eq!(first.delta_count, 2, "both items are new to the first summary");
+        assert_eq!(
+            first.delta_count, 2,
+            "both items are new to the first summary"
+        );
         // A second condense with no push returns the same summary (no rebuild).
         let second = c.condense().clone();
         assert_eq!(first, second, "clean condense is cached verbatim");

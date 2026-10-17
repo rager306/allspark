@@ -129,11 +129,15 @@ struct BrainState {
 }
 
 fn read(state: &RwLock<BrainState>) -> RwLockReadGuard<'_, BrainState> {
-    state.read().unwrap_or_else(std::sync::PoisonError::into_inner)
+    state
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn write(state: &RwLock<BrainState>) -> RwLockWriteGuard<'_, BrainState> {
-    state.write().unwrap_or_else(std::sync::PoisonError::into_inner)
+    state
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl Default for SharedBrain {
@@ -302,11 +306,7 @@ impl SharedBrain {
         for (scope, qualities) in by_scope {
             let n = qualities.len();
             let mean = qualities.iter().sum::<f64>() / n as f64;
-            let variance = qualities
-                .iter()
-                .map(|q| (q - mean).powi(2))
-                .sum::<f64>()
-                / n as f64;
+            let variance = qualities.iter().map(|q| (q - mean).powi(2)).sum::<f64>() / n as f64;
             let std_dev = variance.sqrt();
             let cv = if mean > 0.0 { std_dev / mean } else { 0.0 };
             findings.push(DriftFinding {
@@ -340,11 +340,8 @@ impl SharedBrain {
             entries.sort_by_key(|e| e.seq);
             let qualities: Vec<f64> = entries.iter().map(BrainEntry::quality).collect();
             let mean = qualities.iter().sum::<f64>() / qualities.len() as f64;
-            let variance = qualities
-                .iter()
-                .map(|q| (q - mean).powi(2))
-                .sum::<f64>()
-                / qualities.len() as f64;
+            let variance =
+                qualities.iter().map(|q| (q - mean).powi(2)).sum::<f64>() / qualities.len() as f64;
             let coherence = 1.0 - (variance / 0.25).min(1.0);
             partitions.push(BrainPartition {
                 scope,
@@ -396,7 +393,10 @@ mod tests {
         let id = brain.share("team", "x");
         let _ = brain.vote(&id, true);
         let q1 = brain.get(&id).expect("entry").quality();
-        assert!(q1 > 0.5 && q1 < 1.0, "one up vote lifts but does not saturate");
+        assert!(
+            q1 > 0.5 && q1 < 1.0,
+            "one up vote lifts but does not saturate"
+        );
         let _ = brain.vote(&id, false);
         let _ = brain.vote(&id, false);
         let q2 = brain.get(&id).expect("entry").quality();
@@ -443,7 +443,10 @@ mod tests {
         assert_eq!(parts.len(), 2);
         let team_a = parts.iter().find(|p| p.scope == "team-a").expect("a");
         assert_eq!(team_a.size, 2);
-        assert!((team_a.coherence - 1.0).abs() < 1e-9, "identical qualities are coherent");
+        assert!(
+            (team_a.coherence - 1.0).abs() < 1e-9,
+            "identical qualities are coherent"
+        );
         assert_eq!(team_a.ids, vec![a1, a2]);
         let team_b = parts.iter().find(|p| p.scope == "team-b").expect("b");
         assert_eq!(team_b.size, 1);
@@ -466,9 +469,18 @@ mod tests {
         let _ = brain.vote(&d2, false);
 
         let findings = brain.drift();
-        let stable = findings.iter().find(|f| f.scope == "stable").expect("stable");
-        assert!(!stable.drifting, "uniform quality does not drift: {stable:?}");
-        let drifty = findings.iter().find(|f| f.scope == "drifty").expect("drifty");
+        let stable = findings
+            .iter()
+            .find(|f| f.scope == "stable")
+            .expect("stable");
+        assert!(
+            !stable.drifting,
+            "uniform quality does not drift: {stable:?}"
+        );
+        let drifty = findings
+            .iter()
+            .find(|f| f.scope == "drifty")
+            .expect("drifty");
         assert!(drifty.drifting, "varied quality drifts: {drifty:?}");
         assert!(drifty.coefficient_of_variation > 0.3);
     }

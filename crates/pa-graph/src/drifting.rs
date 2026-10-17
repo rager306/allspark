@@ -281,10 +281,17 @@ mod tests {
         assert_eq!(monitor.queue_len(), 1);
         let before = monitor.version(7);
         monitor.repair(7);
-        assert_eq!(monitor.repair_queue(), Vec::<i64>::new(), "queue drained after repair");
+        assert_eq!(
+            monitor.repair_queue(),
+            Vec::<i64>::new(),
+            "queue drained after repair"
+        );
         assert_eq!(monitor.version(7), before + 1, "repair bumps the version");
         // After repair the refreshed snapshot matches, so a recheck is clean.
-        assert!(!monitor.check(7, &changed), "repaired node no longer drifts");
+        assert!(
+            !monitor.check(7, &changed),
+            "repaired node no longer drifts"
+        );
     }
 
     #[test]
@@ -312,24 +319,37 @@ mod tests {
         // Three nodes drift; the batch fills on the third.
         assert!(!monitor.check(0, &[20, 21, 22]));
         assert!(!monitor.check(1, &[20, 21, 22]));
-        assert!(monitor.check(2, &[20, 21, 22]), "third drift fills the batch");
+        assert!(
+            monitor.check(2, &[20, 21, 22]),
+            "third drift fills the batch"
+        );
         assert_eq!(monitor.repair_queue(), vec![0, 1, 2]);
     }
 
     #[test]
     fn lazy_policy_needs_broad_drift() {
-        let mut monitor = DriftMonitor::new().with_policy(RepairPolicy::Lazy).with_threshold(0.3);
+        let mut monitor = DriftMonitor::new()
+            .with_policy(RepairPolicy::Lazy)
+            .with_threshold(0.3);
         for node in 0..10 {
             monitor.snapshot(node, &[10, 11, 12, 13]);
         }
         // One node drifts out of ten → 10% < 30% threshold → deferred.
         assert!(!monitor.check(0, &[20, 21, 22, 23]));
-        assert_eq!(monitor.repair_queue(), Vec::<i64>::new(), "broad drift not reached yet");
+        assert_eq!(
+            monitor.repair_queue(),
+            Vec::<i64>::new(),
+            "broad drift not reached yet"
+        );
         // Drive the majority over the line.
         for node in 1..6 {
             monitor.check(node, &[20, 21, 22, 23]);
         }
-        assert_ne!(monitor.repair_queue(), Vec::<i64>::new(), "majority drift triggers");
+        assert_ne!(
+            monitor.repair_queue(),
+            Vec::<i64>::new(),
+            "majority drift triggers"
+        );
     }
 
     #[test]

@@ -448,10 +448,8 @@ impl GraphStore {
         }
         drop(stmt);
         for id in &stale {
-            self.conn.execute(
-                "DELETE FROM symbols_fts WHERE rowid = ?1",
-                params![id],
-            )?;
+            self.conn
+                .execute("DELETE FROM symbols_fts WHERE rowid = ?1", params![id])?;
             self.conn
                 .execute("DELETE FROM nodes WHERE id = ?1", params![id])?;
         }
@@ -633,11 +631,7 @@ impl GraphStore {
     ///
     /// # Errors
     /// Propagates SQLite errors.
-    pub fn file_surface(
-        &self,
-        project: &str,
-        rel_path: &str,
-    ) -> Result<Option<(String, String)>> {
+    pub fn file_surface(&self, project: &str, rel_path: &str) -> Result<Option<(String, String)>> {
         let row = self
             .conn
             .query_row(
@@ -655,9 +649,9 @@ impl GraphStore {
     /// # Errors
     /// Propagates SQLite errors.
     pub fn all_file_surfaces(&self, project: &str) -> Result<HashMap<String, (String, String)>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT rel_path, surface_sha, body_sha FROM file_surfaces WHERE project = ?1")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT rel_path, surface_sha, body_sha FROM file_surfaces WHERE project = ?1",
+        )?;
         let rows = stmt.query_map(params![project], |r| {
             Ok((
                 r.get::<_, String>(0)?,

@@ -202,16 +202,16 @@ pub use hybrid::{cosine, mmr_rerank, rrf_fuse, rrf_fuse_weighted, MmrCandidate, 
 pub use incremental::{IncrementalReport, ReindexReason};
 pub use indexer::IndexOptions;
 pub use lsp_surface::{cache_lsp_surface, CachedSurface, LspSurfaceRow, RefBloom, SurfaceDef};
-pub use surface::{body_hash, surface_hash, surface_hash_file, FileSurface, SurfaceSymbol};
 pub use minhash::{
     ast_leaf_tokens, find_near_duplicates, jaccard_estimate, jaccard_exact, lsh_bands, minhash,
     minhash_source, trigrams, LshIndex, MinHashSig, NearDuplicate, CLONE_JACCARD, MINHASH_K,
 };
 pub use repair::{auto_repair, BrokenHunk, Fixed, NoopRepairModel, RepairModel, RepairRequest};
-pub use signals::{symbol_signals, SignalVector, SymbolGraph};
 pub use search::{ChannelRanks, Embedder, NoopEmbedder, SearchHit, SearchOptions};
+pub use signals::{symbol_signals, SignalVector, SymbolGraph};
 pub use store::GraphStore;
 pub use strictness::AstMatchStrictness;
+pub use surface::{body_hash, surface_hash, surface_hash_file, FileSurface, SurfaceSymbol};
 pub use tokenize::{fts_match_expr, split_for_fts, split_ident, tokenize};
 pub use trace::{CrossServiceEdge, Direction, TraceOptions, TraceResult, TraceStep};
 pub use tri_modal::{tri_modal, tri_modal_search, TriModalHit, TriModalOptions};
@@ -240,22 +240,20 @@ pub use witness::{ReceiptChain, WitnessReceipt};
 pub use witness_cache::WitnessKeyedCache;
 
 // ── Phase 8 re-exports ──────────────────────────────────────────────────
-pub use observation_masking::{
-    truncate_result, Content, MaskedMessages, Message, ObservationMasker, Role,
-};
-pub use scoped_context::{
-    ContextHit, ContextIndexError, ContextIndexResult, QuarantineMark, RecoveryReport,
-    ScopedContextIndex, Shard,
-};
 pub use cypher::{
     CypherEngine, CypherError, CypherResult, CypherValue, Optimization, QueryPlan, Row, Rows,
+};
+pub use mcp_brain::{BrainEntry, BrainHit, BrainPartition, DriftFinding, SharedBrain};
+pub use observation_masking::{
+    truncate_result, Content, MaskedMessages, Message, ObservationMasker, Role,
 };
 pub use prometheus_metrics::{
     Counter, CounterHandle, Gauge, GaugeHandle, Health, HealthStatus, Histogram, HistogramHandle,
     MetricKind, MetricsRegistry, Readiness, DEFAULT_BUCKETS,
 };
-pub use mcp_brain::{
-    BrainEntry, BrainHit, BrainPartition, DriftFinding, SharedBrain,
+pub use scoped_context::{
+    ContextHit, ContextIndexError, ContextIndexResult, QuarantineMark, RecoveryReport,
+    ScopedContextIndex, Shard,
 };
 
 // ── Phase 6-D re-exports ────────────────────────────────────────────────
@@ -264,7 +262,9 @@ pub use cognitive_container::{CognitiveContainer, Witness};
 pub use collections::{CollectionStats, Collections, CollectionsError};
 pub use homology::{betti0_curve, bottleneck, h0_persistence};
 pub use ns_routing::{NsRouter, ShardId};
-pub use schema_cache::{canonicalize, default_compiler, resource_id, Compiled, ResourceId, SchemaCache};
+pub use schema_cache::{
+    canonicalize, default_compiler, resource_id, Compiled, ResourceId, SchemaCache,
+};
 pub use voi::{Costs, Incident, Ladder, Outcome as VoiOutcome, Policy, Stage};
 
 // ── Phase 6-C re-exports (ANN algorithms) ───────────────────────────────

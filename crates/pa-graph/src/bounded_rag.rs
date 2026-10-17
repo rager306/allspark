@@ -132,8 +132,14 @@ mod tests {
 
     #[test]
     fn empty_and_zero_budget_are_safe() {
-        assert!(bounded_select(&[], RagBudget::tokens(10)).is_empty(), "empty input");
+        assert!(
+            bounded_select(&[], RagBudget::tokens(10)).is_empty(),
+            "empty input"
+        );
         let candidates = vec![Candidate::new("a", 1.0, 5)];
-        assert!(bounded_select(&candidates, RagBudget::tokens(0)).is_empty(), "zero budget");
+        assert!(
+            bounded_select(&candidates, RagBudget::tokens(0)).is_empty(),
+            "zero budget"
+        );
     }
 }

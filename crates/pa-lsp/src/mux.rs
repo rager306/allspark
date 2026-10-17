@@ -344,10 +344,7 @@ impl LspMux {
     pub async fn acquire(&self, identity: &MuxIdentity) -> MuxResult<Connection> {
         let socket = self.socket_path(identity);
         match UnixStream::connect(&socket).await {
-            Ok(stream) => Ok(Connection {
-                stream,
-                next_id: 0,
-            }),
+            Ok(stream) => Ok(Connection { stream, next_id: 0 }),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(MuxError::NotRunning),
             Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
                 Err(MuxError::NotRunning)
@@ -500,7 +497,10 @@ mod tests {
         let id = MuxIdentity::from_strs("cmd", &[], "/w", &env(&[]));
         let path = mux.socket_path(&id);
         assert!(path.starts_with("/tmp/mux-base"));
-        assert_eq!(path.file_name().unwrap().to_str().unwrap(), id.socket_name());
+        assert_eq!(
+            path.file_name().unwrap().to_str().unwrap(),
+            id.socket_name()
+        );
     }
 
     #[tokio::test]
@@ -525,7 +525,10 @@ mod tests {
             .await
             .expect("call");
         assert!(response.is_ok());
-        assert_eq!(response.result, Some(serde_json::json!({"method": "textDocument/hover"})));
+        assert_eq!(
+            response.result,
+            Some(serde_json::json!({"method": "textDocument/hover"}))
+        );
     }
 
     #[tokio::test]
@@ -547,7 +550,11 @@ mod tests {
         let ra = a.call("m", serde_json::Value::Null).await.expect("a");
         let rb = b.call("m", serde_json::Value::Null).await.expect("b");
         assert_eq!(ra.result, Some(serde_json::json!(1)));
-        assert_eq!(rb.result, Some(serde_json::json!(1)), "each connection numbers from 1");
+        assert_eq!(
+            rb.result,
+            Some(serde_json::json!(1)),
+            "each connection numbers from 1"
+        );
     }
 
     #[tokio::test]
@@ -556,11 +563,17 @@ mod tests {
         let mux = LspMux::new(dir.path());
         let id = MuxIdentity::from_strs("cmd", &[], "/w", &env(&[]));
         let _first = mux
-            .daemon(&id, Arc::new(|req: &MuxRequest| MuxResponse::ok(req.id, serde_json::Value::Null)))
+            .daemon(
+                &id,
+                Arc::new(|req: &MuxRequest| MuxResponse::ok(req.id, serde_json::Value::Null)),
+            )
             .await
             .expect("first");
         let second = mux
-            .daemon(&id, Arc::new(|req: &MuxRequest| MuxResponse::ok(req.id, serde_json::Value::Null)))
+            .daemon(
+                &id,
+                Arc::new(|req: &MuxRequest| MuxResponse::ok(req.id, serde_json::Value::Null)),
+            )
             .await;
         assert!(matches!(second, Err(MuxError::AlreadyRunning)));
     }
@@ -592,7 +605,10 @@ mod tests {
             .await
             .expect("daemon");
         let mut conn = mux.acquire(&id).await.expect("acquire");
-        let response = conn.call("boom", serde_json::Value::Null).await.expect("call");
+        let response = conn
+            .call("boom", serde_json::Value::Null)
+            .await
+            .expect("call");
         assert!(!response.is_ok());
         assert_eq!(response.error.as_deref(), Some("boom"));
     }
@@ -604,7 +620,10 @@ mod tests {
         let id = MuxIdentity::from_strs("cmd", &[], "/w", &env(&[]));
         let socket = mux.socket_path(&id);
         let daemon = mux
-            .daemon(&id, Arc::new(|req: &MuxRequest| MuxResponse::ok(req.id, serde_json::Value::Null)))
+            .daemon(
+                &id,
+                Arc::new(|req: &MuxRequest| MuxResponse::ok(req.id, serde_json::Value::Null)),
+            )
             .await
             .expect("daemon");
         assert!(socket.exists());

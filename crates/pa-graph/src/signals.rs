@@ -1,4 +1,3 @@
-
 //! V3 — eleven native similarity signals (no external embeddings).
 //!
 //! Each symbol is mapped to a fixed-dimension vector per signal; the signals
@@ -297,7 +296,13 @@ fn minhash_vector(tokens: &[String]) -> Vec<f32> {
     let sig = crate::minhash::minhash(&grams);
     // Normalize each word to [0, 1] so cosine sees a bounded vector.
     sig.iter()
-        .map(|&w| if w == u64::MAX { 0.0 } else { (w >> 11) as f32 / (1u64 << 53) as f32 })
+        .map(|&w| {
+            if w == u64::MAX {
+                0.0
+            } else {
+                (w >> 11) as f32 / (1u64 << 53) as f32
+            }
+        })
         .collect()
 }
 
@@ -499,7 +504,11 @@ fn halstead_vector(tokens: &[String]) -> Vec<f32> {
     let vocab = n1 + n2;
     let length = big_n1 + big_n2;
     let volume = length * (vocab.max(1.0)).log2();
-    let difficulty = if n2 == 0.0 { 0.0 } else { (n1 / 2.0) * (big_n2 / n2) };
+    let difficulty = if n2 == 0.0 {
+        0.0
+    } else {
+        (n1 / 2.0) * (big_n2 / n2)
+    };
     let effort = difficulty * volume;
     let raw = [n1, n2, big_n1, big_n2, vocab, length, volume, effort];
     let mut v: Vec<f32> = raw.iter().map(|&x| (x / 50.0).tanh()).collect();
@@ -595,7 +604,13 @@ mod tests {
 
     #[test]
     fn signal_dimensions_are_fixed_and_concat_matches() {
-        let nodes = vec![node(1, "parse_config", "m::parse_config", "src/a.rs", "parse it")];
+        let nodes = vec![node(
+            1,
+            "parse_config",
+            "m::parse_config",
+            "src/a.rs",
+            "parse it",
+        )];
         let graph = graph_with(&nodes, &[]);
         let sig = symbol_signals(&nodes[0], &graph);
         assert_eq!(sig.tfidf.len(), LEX_DIM);
@@ -614,8 +629,20 @@ mod tests {
 
     #[test]
     fn identical_symbols_are_most_similar() {
-        let a = node(1, "parse_config", "m::parse_config", "src/a.rs", "parse config");
-        let b = node(2, "parse_config", "m::parse_config", "src/b.rs", "parse config");
+        let a = node(
+            1,
+            "parse_config",
+            "m::parse_config",
+            "src/a.rs",
+            "parse config",
+        );
+        let b = node(
+            2,
+            "parse_config",
+            "m::parse_config",
+            "src/b.rs",
+            "parse config",
+        );
         let c = node(3, "render_widget", "m::render_widget", "src/z.rs", "draw");
         let graph = graph_with(&[a.clone(), b.clone(), c.clone()], &[]);
         let sa = symbol_signals(&a, &graph);
@@ -660,7 +687,13 @@ mod tests {
 
     #[test]
     fn signals_are_deterministic() {
-        let nodes = vec![node(1, "parse_config", "m::parse_config", "src/a.rs", "parse")];
+        let nodes = vec![node(
+            1,
+            "parse_config",
+            "m::parse_config",
+            "src/a.rs",
+            "parse",
+        )];
         let graph = graph_with(&nodes, &[]);
         let a = symbol_signals(&nodes[0], &graph);
         let b = symbol_signals(&nodes[0], &graph);

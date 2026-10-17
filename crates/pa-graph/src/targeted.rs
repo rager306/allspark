@@ -100,13 +100,7 @@ mod tests {
 
     /// A plausible recall curve: more `ef` → more recall, saturating.
     fn curve() -> Vec<(usize, f32)> {
-        vec![
-            (10, 0.55),
-            (20, 0.72),
-            (40, 0.86),
-            (80, 0.94),
-            (160, 0.99),
-        ]
+        vec![(10, 0.55), (20, 0.72), (40, 0.86), (80, 0.94), (160, 0.99)]
     }
 
     #[test]

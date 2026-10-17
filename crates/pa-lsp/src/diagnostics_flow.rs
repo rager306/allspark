@@ -184,11 +184,7 @@ impl FreshnessGate {
     /// Convenience for the pull path, which knows the document version but not
     /// the publish version: a report for an older version is dropped whole.
     #[must_use]
-    pub fn filter_report<T>(
-        &self,
-        published_version: Option<i32>,
-        report: T,
-    ) -> Option<T> {
+    pub fn filter_report<T>(&self, published_version: Option<i32>, report: T) -> Option<T> {
         self.accepts(published_version).then_some(report)
     }
 }
@@ -376,10 +372,7 @@ pub fn checker_for(language: WorkspaceLanguage) -> CheckerSpec {
 /// are returned. `available` is injected so the selection is testable without a
 /// real `PATH`.
 #[must_use]
-pub fn select_checkers(
-    root: &Path,
-    available: impl Fn(&str) -> bool,
-) -> Vec<CheckerSpec> {
+pub fn select_checkers(root: &Path, available: impl Fn(&str) -> bool) -> Vec<CheckerSpec> {
     let mut specs = Vec::new();
     for language in detect_languages(root) {
         if specs.len() >= MAX_CONCURRENT_CHECKERS {
@@ -639,7 +632,10 @@ pub fn parse_pyright_json(output: &str, checker: &str, root: &Path) -> Vec<Works
         let Some(range) = diagnostic.get("range") else {
             continue;
         };
-        let start = range.get("start").cloned().unwrap_or(serde_json::Value::Null);
+        let start = range
+            .get("start")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         let file = diagnostic
             .get("file")
             .and_then(|v| v.as_str())
@@ -656,7 +652,10 @@ pub fn parse_pyright_json(output: &str, checker: &str, root: &Path) -> Vec<Works
         // pyright ranges are 0-based; lift to 1-based, clamping a runaway
         // value rather than truncating it.
         let line = u32::try_from(
-            start.get("line").and_then(serde_json::Value::as_u64).unwrap_or(0),
+            start
+                .get("line")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
         )
         .unwrap_or(u32::MAX)
         .saturating_add(1);
@@ -808,17 +807,28 @@ mod tests {
         let orphan = diag("Cannot find module 'x'", 1, Some("2307"));
         let normal = diag("real error", 1, Some("1000"));
 
-        assert!(!is_orphan_project_diagnostic(&orphan, &inside, root, TS_ROOT_MARKERS));
-        assert!(is_orphan_project_diagnostic(&orphan, &stray, root, TS_ROOT_MARKERS));
-        // A non-orphan code is never dropped.
-        assert!(!is_orphan_project_diagnostic(&normal, &stray, root, TS_ROOT_MARKERS));
-
-        let kept = filter_orphan_project_diagnostics(
-            &[orphan, normal],
+        assert!(!is_orphan_project_diagnostic(
+            &orphan,
+            &inside,
+            root,
+            TS_ROOT_MARKERS
+        ));
+        assert!(is_orphan_project_diagnostic(
+            &orphan,
             &stray,
             root,
-            TS_ROOT_MARKERS,
-        );
+            TS_ROOT_MARKERS
+        ));
+        // A non-orphan code is never dropped.
+        assert!(!is_orphan_project_diagnostic(
+            &normal,
+            &stray,
+            root,
+            TS_ROOT_MARKERS
+        ));
+
+        let kept =
+            filter_orphan_project_diagnostics(&[orphan, normal], &stray, root, TS_ROOT_MARKERS);
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].message, "real error");
     }
@@ -894,7 +904,10 @@ mod tests {
         }"#;
         let parsed = parse_pyright_json(json, "pyright", Path::new("/proj"));
         assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].line, 5, "pyright 0-based lines are lifted to 1-based");
+        assert_eq!(
+            parsed[0].line, 5,
+            "pyright 0-based lines are lifted to 1-based"
+        );
         assert_eq!(parsed[0].column, 3);
         assert_eq!(parsed[0].code.as_deref(), Some("reportUndefinedVariable"));
     }
@@ -906,7 +919,10 @@ mod tests {
             0
         );
         assert_eq!(parse_tsc("garbage", "tsc", Path::new("/p")).len(), 0);
-        assert_eq!(parse_pyright_json("{ not json", "pyright", Path::new("/p")).len(), 0);
+        assert_eq!(
+            parse_pyright_json("{ not json", "pyright", Path::new("/p")).len(),
+            0
+        );
     }
 
     #[tokio::test]

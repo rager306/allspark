@@ -280,6 +280,9 @@ mod tests {
         });
         // The cache overrides a mislabelled compiler id.
         assert_eq!(compiled.id, id);
-        assert_eq!(compiled.as_str(), Some(format!("custom:{}", canonicalize(&value)).as_str()));
+        assert_eq!(
+            compiled.as_str(),
+            Some(format!("custom:{}", canonicalize(&value)).as_str())
+        );
     }
 }

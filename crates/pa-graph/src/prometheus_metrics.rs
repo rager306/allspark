@@ -584,9 +584,13 @@ mod tests {
     #[test]
     fn render_emits_help_type_and_samples() {
         let metrics = MetricsRegistry::new();
-        metrics.counter("requests_total", "Requests served").inc_by(7.0);
+        metrics
+            .counter("requests_total", "Requests served")
+            .inc_by(7.0);
         metrics.gauge("in_flight", "In flight").set(2.0);
-        metrics.histogram("latency_seconds", "Latency", &[0.1, 1.0]).observe(0.5);
+        metrics
+            .histogram("latency_seconds", "Latency", &[0.1, 1.0])
+            .observe(0.5);
         let text = metrics.render();
 
         assert!(text.contains("# HELP requests_total Requests served"));

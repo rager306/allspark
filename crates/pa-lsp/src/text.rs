@@ -39,9 +39,10 @@ impl LineIndex {
     /// The byte offset where `line` begins, clamped to the buffer length.
     #[must_use]
     pub fn line_start(&self, line: usize) -> usize {
-        self.starts.get(line).copied().unwrap_or_else(|| {
-            self.starts.last().copied().unwrap_or(0)
-        })
+        self.starts
+            .get(line)
+            .copied()
+            .unwrap_or_else(|| self.starts.last().copied().unwrap_or(0))
     }
 }
 
@@ -51,8 +52,14 @@ pub fn position_at(text: &str, index: &LineIndex, byte: usize) -> Position {
     let byte = byte.min(text.len());
     let line = index.line_of(byte);
     let start = index.line_start(line);
-    let column = text[start..byte].chars().map(char::len_utf16).sum::<usize>();
-    Position::new(u32::try_from(line).unwrap_or(u32::MAX), u32::try_from(column).unwrap_or(u32::MAX))
+    let column = text[start..byte]
+        .chars()
+        .map(char::len_utf16)
+        .sum::<usize>();
+    Position::new(
+        u32::try_from(line).unwrap_or(u32::MAX),
+        u32::try_from(column).unwrap_or(u32::MAX),
+    )
 }
 
 /// The byte offset of an LSP position within `text`.
@@ -90,8 +97,16 @@ pub fn byte_range(text: &str, index: &LineIndex, range: &lsp_types::Range) -> (u
 
 /// Build an LSP range from byte offsets.
 #[must_use]
-pub fn range_from_bytes(text: &str, index: &LineIndex, start: usize, end: usize) -> lsp_types::Range {
-    lsp_types::Range::new(position_at(text, index, start), position_at(text, index, end))
+pub fn range_from_bytes(
+    text: &str,
+    index: &LineIndex,
+    start: usize,
+    end: usize,
+) -> lsp_types::Range {
+    lsp_types::Range::new(
+        position_at(text, index, start),
+        position_at(text, index, end),
+    )
 }
 
 /// Count the lines in `text` the way [`crate::symbols_body::split_lines`] does
@@ -138,7 +153,11 @@ mod tests {
     fn byte_range_handles_multiline() {
         let text = "one\ntwo\nthree\n";
         let index = LineIndex::new(text);
-        let (s, e) = byte_range(text, &index, &lsp_types::Range::new(Position::new(1, 0), Position::new(2, 5)));
+        let (s, e) = byte_range(
+            text,
+            &index,
+            &lsp_types::Range::new(Position::new(1, 0), Position::new(2, 5)),
+        );
         assert_eq!(&text[s..e], "two\nthree");
     }
 }

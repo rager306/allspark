@@ -106,7 +106,9 @@ impl ReceiptChain {
     /// The head receipt's hash (`""` for an empty chain).
     #[must_use]
     pub fn head_hash(&self) -> String {
-        self.receipts.last().map_or(String::new(), WitnessReceipt::hash)
+        self.receipts
+            .last()
+            .map_or(String::new(), WitnessReceipt::hash)
     }
 
     /// Append a receipt for `(query_hash, result_hash)` at `timestamp`,

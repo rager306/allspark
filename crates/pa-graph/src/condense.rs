@@ -88,11 +88,7 @@ pub fn condense(
 
     // Resolve every node to a super-node id, minting singletons for the nodes
     // the community map does not cover.
-    let mut next_singleton = communities
-        .values()
-        .copied()
-        .max()
-        .map_or(0, |m| m + 1);
+    let mut next_singleton = communities.values().copied().max().map_or(0, |m| m + 1);
     let mut super_of: BTreeMap<NodeId, SuperNode> = BTreeMap::new();
     for &n in &node_set {
         let s = if let Some(&c) = communities.get(&n) {
@@ -139,7 +135,11 @@ pub fn condense(
 mod tests {
     use super::*;
 
-    fn sample() -> (Vec<NodeId>, Vec<WeightedEdge>, BTreeMap<NodeId, CommunityId>) {
+    fn sample() -> (
+        Vec<NodeId>,
+        Vec<WeightedEdge>,
+        BTreeMap<NodeId, CommunityId>,
+    ) {
         let nodes: Vec<NodeId> = (0..6).collect();
         let edges = vec![
             // intra-community (both clusters)

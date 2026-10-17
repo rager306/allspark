@@ -1,4 +1,3 @@
-
 //! R9 — delta graph: node/edge deltas and delta-aware traversal.
 //!
 //! Where [`crate::delta`] is a generic keyed event log, this module models the
@@ -378,7 +377,10 @@ impl<'a> DeltaAwareTraversal<'a> {
         for seed in seeds {
             let result = self.traverse(seed, order, max_depth);
             for id in result.order {
-                if distance.insert(id, *result.distance.get(&id).unwrap_or(&0)).is_none() {
+                if distance
+                    .insert(id, *result.distance.get(&id).unwrap_or(&0))
+                    .is_none()
+                {
                     order_out.push(id);
                 }
             }
@@ -424,7 +426,12 @@ impl<'a> DeltaAwareTraversal<'a> {
                 continue;
             }
             // Push in reverse so the smallest neighbour is visited first.
-            let mut nbrs: Vec<i64> = self.adj.out_neighbors(node).iter().map(|(t, _)| *t).collect();
+            let mut nbrs: Vec<i64> = self
+                .adj
+                .out_neighbors(node)
+                .iter()
+                .map(|(t, _)| *t)
+                .collect();
             nbrs.sort_unstable_by(|a, b| b.cmp(a));
             for nbr in nbrs {
                 if !distance.contains_key(&nbr) {

@@ -1,4 +1,3 @@
-
 //! G7 — incremental reindexing with depth-1 closure repair.
 //!
 //! [`GraphStore::index_project`] re-parses every file whose *content* hash
@@ -359,7 +358,6 @@ fn pick_reason(reasons: &BTreeSet<ReindexReason>) -> ReindexReason {
         _ => ReindexReason::Mixed,
     }
 }
-
 
 #[cfg(test)]
 mod tests {

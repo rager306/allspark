@@ -210,7 +210,10 @@ impl<T> SpecEngine<T> {
     }
 
     fn lookup(&self, id: CallId) -> Result<usize, SpecError> {
-        self.index.get(&id).copied().ok_or(SpecError::UnknownCall(id))
+        self.index
+            .get(&id)
+            .copied()
+            .ok_or(SpecError::UnknownCall(id))
     }
 
     /// Ids of the calls that are ready to commit, in plan order.
@@ -254,7 +257,9 @@ impl<T> SpecEngine<T> {
     /// Borrows the artifact prepared for a call, if it exists.
     #[must_use]
     pub fn prepared(&self, id: CallId) -> Option<&T> {
-        self.lookup(id).ok().and_then(|i| self.nodes[i].prepare.as_ref())
+        self.lookup(id)
+            .ok()
+            .and_then(|i| self.nodes[i].prepare.as_ref())
     }
 
     /// Takes the artifact prepared for a call out of the engine.
@@ -421,17 +426,16 @@ impl ParallelSpec {
                 }
             }
 
-            let outcomes: Vec<(CallId, std::thread::Result<T>)> =
-                std::thread::scope(|scope| {
-                    let handles: Vec<_> = batch
-                        .into_iter()
-                        .map(|(id, job)| (id, scope.spawn(job)))
-                        .collect();
-                    handles
-                        .into_iter()
-                        .map(|(id, handle)| (id, handle.join()))
-                        .collect()
-                });
+            let outcomes: Vec<(CallId, std::thread::Result<T>)> = std::thread::scope(|scope| {
+                let handles: Vec<_> = batch
+                    .into_iter()
+                    .map(|(id, job)| (id, scope.spawn(job)))
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|(id, handle)| (id, handle.join()))
+                    .collect()
+            });
 
             for (id, outcome) in outcomes {
                 match outcome {
@@ -587,8 +591,14 @@ mod tests {
     #[test]
     fn unknown_ids_are_rejected() {
         let mut engine = diamond();
-        assert_eq!(engine.commit(id(99)).unwrap_err(), SpecError::UnknownCall(id(99)));
-        assert_eq!(engine.abort(id(99)).unwrap_err(), SpecError::UnknownCall(id(99)));
+        assert_eq!(
+            engine.commit(id(99)).unwrap_err(),
+            SpecError::UnknownCall(id(99))
+        );
+        assert_eq!(
+            engine.abort(id(99)).unwrap_err(),
+            SpecError::UnknownCall(id(99))
+        );
         assert_eq!(engine.state(id(99)), None);
     }
 

@@ -127,7 +127,8 @@ impl QueryCache {
     pub fn invalidate(&mut self, generation: u64) -> usize {
         self.generation = generation;
         let before = self.entries.len();
-        self.entries.retain(|_, entry| entry.generation == generation);
+        self.entries
+            .retain(|_, entry| entry.generation == generation);
         before - self.entries.len()
     }
 

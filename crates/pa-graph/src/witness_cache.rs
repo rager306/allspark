@@ -74,7 +74,8 @@ impl WitnessKeyedCache {
     /// Drop every entry bound to `witness_hash`. Returns the number dropped.
     pub fn invalidate_witness(&mut self, witness_hash: &str) -> usize {
         let before = self.entries.len();
-        self.entries.retain(|(witness, _), _| witness != witness_hash);
+        self.entries
+            .retain(|(witness, _), _| witness != witness_hash);
         before - self.entries.len()
     }
 }

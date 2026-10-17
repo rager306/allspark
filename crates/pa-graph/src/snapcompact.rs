@@ -32,7 +32,10 @@ impl SnapCompact {
                 nodes.insert(node.id, node.clone());
             }
             for edge in &delta.edges {
-                edges.insert((edge.source, edge.target, edge.edge_type.as_str()), edge.clone());
+                edges.insert(
+                    (edge.source, edge.target, edge.edge_type.as_str()),
+                    edge.clone(),
+                );
             }
         }
 
@@ -63,7 +66,12 @@ impl SnapCompact {
 
     /// Whether a compacted delta still adds/updates an edge.
     #[must_use]
-    pub fn is_edge_added(delta: &GraphDelta, source: i64, target: i64, edge_type: EdgeType) -> bool {
+    pub fn is_edge_added(
+        delta: &GraphDelta,
+        source: i64,
+        target: i64,
+        edge_type: EdgeType,
+    ) -> bool {
         delta
             .edges
             .iter()
@@ -118,7 +126,12 @@ mod tests {
         }];
         let compacted = SnapCompact::compact(&base, &increments);
         assert_eq!(compacted.edges.len(), 1, "same edge key collapses to one");
-        assert!(!SnapCompact::is_edge_added(&compacted, 1, 2, EdgeType::Calls));
+        assert!(!SnapCompact::is_edge_added(
+            &compacted,
+            1,
+            2,
+            EdgeType::Calls
+        ));
     }
 
     #[test]

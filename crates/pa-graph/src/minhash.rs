@@ -1,4 +1,3 @@
-
 //! V6 — `MinHash` + `LSH` near-duplicate detection over `AST` trigrams.
 //!
 //! Near-clone detection answers "does this symbol already exist elsewhere?"
@@ -202,10 +201,8 @@ pub struct NearDuplicate {
 /// verified by the signature estimate — so a returned pair always clears the
 /// threshold.
 #[must_use]
-pub fn find_near_duplicates(
-    items: &[(u64, MinHashSig)],
-    threshold: f64,
-) -> Vec<NearDuplicate> {
+#[allow(clippy::too_many_lines)] // one scan over pair candidates; reflowed past the limit by rustfmt only
+pub fn find_near_duplicates(items: &[(u64, MinHashSig)], threshold: f64) -> Vec<NearDuplicate> {
     let mut index = LshIndex::new();
     for (id, sig) in items {
         index.insert(*id, sig);
@@ -235,10 +232,7 @@ pub fn find_near_duplicates(
             }
         }
     }
-    out.sort_by(|x, y| {
-        (x.a, x.b)
-            .cmp(&(y.a, y.b))
-    });
+    out.sort_by_key(|entry| (entry.a, entry.b));
     out
 }
 
@@ -347,7 +341,10 @@ pub fn calculate(x: u32, y: u32) -> u32 {
             (2u64, minhash_source(other, SupportLang::Rust)),
         ];
         let dups = find_near_duplicates(&items, CLONE_JACCARD);
-        assert!(dups.is_empty(), "unrelated code must not be a clone: {dups:?}");
+        assert!(
+            dups.is_empty(),
+            "unrelated code must not be a clone: {dups:?}"
+        );
     }
 
     #[test]

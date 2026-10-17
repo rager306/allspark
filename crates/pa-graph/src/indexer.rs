@@ -520,7 +520,6 @@ mod tests {
         .expect("lib.rs");
     }
 
-
     #[test]
     fn indexes_and_resolves_calls() {
         let dir = tempfile::tempdir().expect("tempdir");

@@ -155,7 +155,10 @@ mod tests {
 
     #[test]
     fn empty_base_is_empty() {
-        assert_eq!(gnn_rerank(&[], &[(1, 2)], 2, 0.5, 0.5), Vec::<(i64, f32)>::new());
+        assert_eq!(
+            gnn_rerank(&[], &[(1, 2)], 2, 0.5, 0.5),
+            Vec::<(i64, f32)>::new()
+        );
     }
 
     #[test]

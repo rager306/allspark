@@ -1,4 +1,3 @@
-
 //! G13 — tri-modal hybrid retrieval: ANN vector + BM25 + graph traversal,
 //! fused with reciprocal rank fusion (RRF).
 //!
@@ -186,12 +185,7 @@ pub fn tri_modal_search_conn(
 }
 
 /// BM25 channel: FTS5 over the `tokens` column.
-fn bm25_channel(
-    conn: &Connection,
-    project: &str,
-    query: &str,
-    pool: usize,
-) -> Result<RankedList> {
+fn bm25_channel(conn: &Connection, project: &str, query: &str, pool: usize) -> Result<RankedList> {
     let Some(match_expr) = fts_match_expr(query) else {
         return Ok(Vec::new());
     };
@@ -200,10 +194,9 @@ fn bm25_channel(
                WHERE f.symbols_fts MATCH ?1 AND n.project = ?2
                ORDER BY bm25(symbols_fts, 8.0, 4.0, 2.0, 1.0, 0.5) LIMIT ?3";
     let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map(
-        rusqlite::params![column_match, project, pool as i64],
-        |r| r.get::<_, i64>(0),
-    )?;
+    let rows = stmt.query_map(rusqlite::params![column_match, project, pool as i64], |r| {
+        r.get::<_, i64>(0)
+    })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
@@ -292,10 +285,7 @@ fn load_hits(
     })?;
     for row in rows {
         let (id, label, name, qn, file) = row?;
-        out.insert(
-            id,
-            (Label::from_str_or_default(&label), name, qn, file),
-        );
+        out.insert(id, (Label::from_str_or_default(&label), name, qn, file));
     }
     Ok(out)
 }

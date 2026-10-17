@@ -114,7 +114,12 @@ mod tests {
 
     /// Builds a Matryoshka-like corpus: energy concentrated in the first
     /// `principal` dimensions (the "trained" prefix), with a decaying tail.
-    fn corpus(rng: &mut XorShift32, n: usize, dim: usize, principal: usize) -> Vec<MatryoshkaVector> {
+    fn corpus(
+        rng: &mut XorShift32,
+        n: usize,
+        dim: usize,
+        principal: usize,
+    ) -> Vec<MatryoshkaVector> {
         (0..n)
             .map(|_| {
                 let mut v = vec![0.0_f32; dim];

@@ -353,7 +353,10 @@ mod tests {
             Err(CollectionsError::NotFound("missing".into()))
         );
         c.alias("a", "blue").unwrap();
-        assert_eq!(c.alias("a", "blue"), Err(CollectionsError::AliasExists("a".into())));
+        assert_eq!(
+            c.alias("a", "blue"),
+            Err(CollectionsError::AliasExists("a".into()))
+        );
         assert_eq!(
             c.alias("blue", "blue"),
             Err(CollectionsError::AliasNameTaken("blue".into()))
@@ -362,7 +365,10 @@ mod tests {
             c.retarget("nope", "blue"),
             Err(CollectionsError::AliasNotFound("nope".into()))
         );
-        assert_eq!(c.create("blue"), Err(CollectionsError::Exists("blue".into())));
+        assert_eq!(
+            c.create("blue"),
+            Err(CollectionsError::Exists("blue".into()))
+        );
         assert_eq!(c.list(), vec!["blue".to_string()]);
     }
 }

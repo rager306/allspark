@@ -136,7 +136,10 @@ impl SelfReconstructingIndex {
             self.rebuilds += 1;
             match source.get(name) {
                 Some(bytes) => {
-                    self.parts.insert(name.clone(), Part::new(name.clone(), bytes.clone(), self.kind));
+                    self.parts.insert(
+                        name.clone(),
+                        Part::new(name.clone(), bytes.clone(), self.kind),
+                    );
                 }
                 None => {
                     self.parts.remove(name);

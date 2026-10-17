@@ -67,10 +67,7 @@ impl Partitions {
 /// Squared Euclidean distance (monotone with the distance, so fine for
 /// argmin/`≤ eps` comparisons).
 fn dist2(a: &[f32], b: &[f32]) -> f32 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(x, y)| (x - y) * (x - y))
-        .sum()
+    a.iter().zip(b.iter()).map(|(x, y)| (x - y) * (x - y)).sum()
 }
 
 /// Fixed-seed k-means-lite over `points`, then spill boundary points.

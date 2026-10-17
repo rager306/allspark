@@ -1,4 +1,3 @@
-
 //! R10 — incremental ANN index maintenance with repair policies.
 //!
 //! An approximate-nearest-neighbour index (HNSW-shaped) degrades as vectors are
@@ -438,7 +437,10 @@ mod tests {
         // 3 is isolated.
         g.link(1, 2);
         g.repair();
-        assert!(!g.neighbors(3).is_empty(), "isolated node must be reconnected");
+        assert!(
+            !g.neighbors(3).is_empty(),
+            "isolated node must be reconnected"
+        );
     }
 
     #[test]

@@ -127,8 +127,8 @@ pub fn render_info_results(results: &[InfoResult]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     fn target(symbol: &str, file: &str) -> InfoTarget {
         InfoTarget {
@@ -209,9 +209,24 @@ mod tests {
     #[test]
     fn renders_missing_and_timed_out_entries() {
         let results = vec![
-            InfoResult { symbol: "a".into(), file: "a.rs".into(), info: Some("hi".into()), timed_out: false },
-            InfoResult { symbol: "b".into(), file: "b.rs".into(), info: None, timed_out: false },
-            InfoResult { symbol: "c".into(), file: "c.rs".into(), info: None, timed_out: true },
+            InfoResult {
+                symbol: "a".into(),
+                file: "a.rs".into(),
+                info: Some("hi".into()),
+                timed_out: false,
+            },
+            InfoResult {
+                symbol: "b".into(),
+                file: "b.rs".into(),
+                info: None,
+                timed_out: false,
+            },
+            InfoResult {
+                symbol: "c".into(),
+                file: "c.rs".into(),
+                info: None,
+                timed_out: true,
+            },
         ];
         let text = render_info_results(&results);
         assert!(text.contains("- a: hi"));

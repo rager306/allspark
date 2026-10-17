@@ -1,4 +1,3 @@
-
 //! LSP-surface cache (L11): per-file consumed surface + a reference Bloom
 //! filter, persisted in SQLite and invalidated by surface hash.
 //!
@@ -131,8 +130,8 @@ impl RefBloom {
     pub fn insert(&mut self, name: &str) {
         let (h1, h2) = Self::hashes(name);
         for i in 0..self.k {
-            let bit = (h1.wrapping_add(u64::from(i).wrapping_mul(h2)) % (self.bit_len() as u64))
-                as usize;
+            let bit =
+                (h1.wrapping_add(u64::from(i).wrapping_mul(h2)) % (self.bit_len() as u64)) as usize;
             self.bits[bit / 8] |= 1 << (bit % 8);
         }
     }
@@ -143,8 +142,8 @@ impl RefBloom {
     pub fn contains(&self, name: &str) -> bool {
         let (h1, h2) = Self::hashes(name);
         for i in 0..self.k {
-            let bit = (h1.wrapping_add(u64::from(i).wrapping_mul(h2)) % (self.bit_len() as u64))
-                as usize;
+            let bit =
+                (h1.wrapping_add(u64::from(i).wrapping_mul(h2)) % (self.bit_len() as u64)) as usize;
             if self.bits[bit / 8] & (1 << (bit % 8)) == 0 {
                 return false;
             }
@@ -252,7 +251,11 @@ fn escape(value: &str) -> String {
 
 /// Compute the definitions and reference names of `source` from the AST.
 #[must_use]
-pub fn surface_parts(source: &str, lang: SupportLang, module: &str) -> (Vec<SurfaceDef>, Vec<String>) {
+pub fn surface_parts(
+    source: &str,
+    lang: SupportLang,
+    module: &str,
+) -> (Vec<SurfaceDef>, Vec<String>) {
     let surface = crate::surface::surface_of(source, lang, module);
     let defs: Vec<SurfaceDef> = surface
         .symbols
@@ -396,7 +399,10 @@ pub fn parse_config(path: &str) -> u32 {
         let mut b = a.clone();
         b.reverse();
         assert_eq!(canonical_defs_json(&a), canonical_defs_json(&b));
-        assert_eq!(canonical_defs_json(&a), "[{\"k\":\"Function\",\"n\":\"a\",\"l\":1},{\"k\":\"Function\",\"n\":\"b\",\"l\":2}]");
+        assert_eq!(
+            canonical_defs_json(&a),
+            "[{\"k\":\"Function\",\"n\":\"a\",\"l\":1},{\"k\":\"Function\",\"n\":\"b\",\"l\":2}]"
+        );
     }
 
     #[test]
@@ -429,7 +435,10 @@ pub fn parse_config(path: &str) -> u32 {
     fn reference_names_include_callees_and_imports() {
         let (defs, refs) = surface_parts(SRC, SupportLang::Rust, "m");
         assert!(defs.iter().any(|d| d.name == "parse_config"));
-        assert!(refs.contains(&"Helper".to_string()), "import target: {refs:?}");
+        assert!(
+            refs.contains(&"Helper".to_string()),
+            "import target: {refs:?}"
+        );
         assert!(refs.contains(&"load".to_string()), "callee: {refs:?}");
     }
 }

@@ -115,7 +115,10 @@ fn find_symbol_max_matches_caps_output() {
         }),
     );
     let text = text_of(&result);
-    assert!(text.contains("and 3 more") || text.contains("and 2 more"), "{text}");
+    assert!(
+        text.contains("and 3 more") || text.contains("and 2 more"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -129,8 +132,14 @@ fn replace_symbol_body_previews_and_applies() {
             "symbol": "top", "body": "pub fn top() { let y = 2; }"
         }),
     );
-    assert!(text_of(&preview).contains("apply=false"), "{}", text_of(&preview));
-    assert!(std::fs::read_to_string(dir.path().join("lib.rs")).unwrap().contains("pub fn top() {}"));
+    assert!(
+        text_of(&preview).contains("apply=false"),
+        "{}",
+        text_of(&preview)
+    );
+    assert!(std::fs::read_to_string(dir.path().join("lib.rs"))
+        .unwrap()
+        .contains("pub fn top() {}"));
 
     // Apply: the file changes.
     let applied = run(
@@ -140,7 +149,11 @@ fn replace_symbol_body_previews_and_applies() {
             "symbol": "top", "body": "pub fn top() { let y = 2; }", "apply": true
         }),
     );
-    assert!(text_of(&applied).contains("applied edit"), "{}", text_of(&applied));
+    assert!(
+        text_of(&applied).contains("applied edit"),
+        "{}",
+        text_of(&applied)
+    );
     let after = std::fs::read_to_string(dir.path().join("lib.rs")).unwrap();
     assert!(after.contains("pub fn top() { let y = 2; }"), "{after}");
 }
@@ -221,16 +234,17 @@ fn unknown_symbol_is_an_error() {
         .build()
         .unwrap()
         .block_on(async move {
-            tool2.execute(
-                "call".to_string(),
-                serde_json::json!({
-                    "action": "replace_symbol_body", "file": "lib.rs",
-                    "symbol": "Nope", "body": "x"
-                }),
-                AbortSignal::default(),
-                Arc::new(|_| {}),
-            )
-            .await
+            tool2
+                .execute(
+                    "call".to_string(),
+                    serde_json::json!({
+                        "action": "replace_symbol_body", "file": "lib.rs",
+                        "symbol": "Nope", "body": "x"
+                    }),
+                    AbortSignal::default(),
+                    Arc::new(|_| {}),
+                )
+                .await
         });
     assert!(result.is_err(), "an unknown symbol must error: {result:?}");
 }

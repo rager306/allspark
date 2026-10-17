@@ -488,7 +488,10 @@ fn is_wrapper_list(kind: &str) -> bool {
 /// type).
 fn name_node(node: Node<'_>) -> Option<Node<'_>> {
     node.child_by_field_name("name")
-        .or_else(|| node.child_by_field_name("type").filter(|_| node.kind() == "impl_item"))
+        .or_else(|| {
+            node.child_by_field_name("type")
+                .filter(|_| node.kind() == "impl_item")
+        })
         .or_else(|| node.child_by_field_name("declarator"))
 }
 
@@ -516,9 +519,14 @@ fn symbol_kind(kind: &str, container_kind: Option<&str>) -> Option<SymbolKind> {
     );
     Some(match kind {
         "struct_item" | "struct_specifier" => SymbolKind::STRUCT,
-        "class_definition" | "class_declaration" | "class_specifier"
-        | "abstract_class_declaration" | "type_alias_declaration" | "type_item"
-        | "type_spec" | "impl_item" => SymbolKind::CLASS,
+        "class_definition"
+        | "class_declaration"
+        | "class_specifier"
+        | "abstract_class_declaration"
+        | "type_alias_declaration"
+        | "type_item"
+        | "type_spec"
+        | "impl_item" => SymbolKind::CLASS,
         "trait_item" | "interface_declaration" | "interface_type" => SymbolKind::INTERFACE,
         "enum_item" | "enum_declaration" | "enum_specifier" => SymbolKind::ENUM,
         "mod_item" | "module" => SymbolKind::MODULE,
@@ -530,7 +538,9 @@ fn symbol_kind(kind: &str, container_kind: Option<&str>) -> Option<SymbolKind> {
         "function_item" | "function_definition" | "function_declaration" | "macro_definition" => {
             SymbolKind::FUNCTION
         }
-        "method_definition" | "method_declaration" | "function_signature_item" => SymbolKind::METHOD,
+        "method_definition" | "method_declaration" | "function_signature_item" => {
+            SymbolKind::METHOD
+        }
         "constructor_declaration" => SymbolKind::CONSTRUCTOR,
         "const_item" | "static_item" | "const_declaration" | "const_spec" => SymbolKind::CONSTANT,
         "field_declaration" | "field_spec" => SymbolKind::FIELD,
@@ -784,7 +794,9 @@ fn is_import_kind(kind: &str) -> bool {
 /// Whether `line` (1-based) falls inside one of `ranges`.
 #[must_use]
 pub fn line_in_ranges(line: u32, ranges: &[(u32, u32)]) -> bool {
-    ranges.iter().any(|(start, end)| line >= *start && line <= *end)
+    ranges
+        .iter()
+        .any(|(start, end)| line >= *start && line <= *end)
 }
 
 /// The protocol kind named by `name` (case-insensitive), for `kinds` filters.
@@ -938,7 +950,13 @@ enum E {\n    A,\n    B,\n}\n";
 
     #[test]
     fn replace_body_edit_is_byte_exact() {
-        let edit = replace_body_edit(RUST, Some(&rust_path()), "top", "pub fn top() { let x = 1; }").unwrap();
+        let edit = replace_body_edit(
+            RUST,
+            Some(&rust_path()),
+            "top",
+            "pub fn top() { let x = 1; }",
+        )
+        .unwrap();
         let out = edit.apply(RUST);
         assert!(out.contains("pub fn top() { let x = 1; }"));
         assert!(!out.contains("pub fn top() {}"));
@@ -1042,6 +1060,9 @@ enum E {\n    A,\n    B,\n}\n";
             assert_eq!(kind_name(kind), name);
         }
         assert!(kind_from_name("nonsense").is_none());
-        assert_eq!(parse_kinds("function, class"), vec![SymbolKind::FUNCTION, SymbolKind::CLASS]);
+        assert_eq!(
+            parse_kinds("function, class"),
+            vec![SymbolKind::FUNCTION, SymbolKind::CLASS]
+        );
     }
 }

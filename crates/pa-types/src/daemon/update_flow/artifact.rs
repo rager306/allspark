@@ -231,7 +231,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(parsed.epoch, 0);
-        assert!(parsed.failures.is_empty());
+        assert_eq!(parsed.failures, []);
         assert_eq!(
             parsed.rest.get("requestId").and_then(|v| v.as_str()),
             Some("r1")

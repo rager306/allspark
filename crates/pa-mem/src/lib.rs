@@ -94,16 +94,16 @@ pub mod hash;
 pub mod int8;
 pub mod matryoshka;
 pub mod maxsim;
-pub mod rabitq;
-pub mod turboquant;
-pub mod turbovec;
 pub mod ptr48;
+pub mod rabitq;
 pub mod refcount;
 pub mod robin_hood;
 pub mod sha_cache;
 pub mod shard;
 pub mod snapshot;
 pub mod spinlock;
+pub mod turboquant;
+pub mod turbovec;
 pub mod varint;
 
 pub use entry::{EntryArena, EntryOpts, EntryRef, EntryView, SizePrefix};
@@ -112,10 +112,8 @@ pub use hash::{mix13, th64};
 pub use int8::{Int8Quantizer, Int8Vector};
 pub use matryoshka::{MatryoshkaVector, DEFAULT_PREFIXES};
 pub use maxsim::{cosine, maxsim, maxsim_batch};
-pub use rabitq::RabitqVector;
-pub use turboquant::{Block4Quantizer, Block4Vector, BLOCK_DIM};
-pub use turbovec::{MultiBitQuantizer, MultiBitVector};
 pub use ptr48::{Bucket, SixBytePtr, BUCKET_BYTES, HASH_BYTES, MAX_INDEX, PTR_BITS, PTR_BYTES};
+pub use rabitq::RabitqVector;
 pub use refcount::{RefCounted, Retained, SnapshotList};
 pub use robin_hood::{RobinHoodMap, MAX_DIB};
 pub use sha_cache::ShaCache;
@@ -125,3 +123,5 @@ pub use snapshot::{
     BLOCK_HEADER_LEN, BLOCK_MAGIC, BLOCK_SIZE, FILE_HEADER_LEN, FILE_MAGIC,
 };
 pub use spinlock::{Batch, BatchGuard, SpinGuard, SpinLock, UINTPTR_MAX};
+pub use turboquant::{Block4Quantizer, Block4Vector, BLOCK_DIM};
+pub use turbovec::{MultiBitQuantizer, MultiBitVector};

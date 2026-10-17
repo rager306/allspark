@@ -205,7 +205,9 @@ mod tests {
         assert_eq!(q.codes().len(), 17); // ceil(33/2)
         assert_eq!(q.size_bytes(), 17 + 2 * 8);
         // The lone trailing dimension still reconstructs near its value.
-        assert!((q.dot(&[0.0; 32].into_iter().chain([1.0]).collect::<Vec<_>>()) - v[32]).abs() < 0.05);
+        assert!(
+            (q.dot(&[0.0; 32].into_iter().chain([1.0]).collect::<Vec<_>>()) - v[32]).abs() < 0.05
+        );
     }
 
     #[test]

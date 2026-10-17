@@ -328,11 +328,7 @@ mod tests {
     #[test]
     fn keeps_everything_under_the_limit() {
         let mut masker = ObservationMasker::new();
-        masker.extend([
-            Message::assistant("plan"),
-            tool("t1", "a"),
-            tool("t2", "b"),
-        ]);
+        masker.extend([Message::assistant("plan"), tool("t1", "a"), tool("t2", "b")]);
         let view = masker.mask();
         assert_eq!(view.elided, 0);
         assert_eq!(view.messages, masker.log());
@@ -390,7 +386,10 @@ mod tests {
             masker.append(tool(&format!("t{i}"), &"x".repeat(500)));
         }
         let full: usize = masker.log().iter().map(|m| m.content.len()).sum();
-        assert!(masker.mask().byte_len() < full, "projection must be smaller");
+        assert!(
+            masker.mask().byte_len() < full,
+            "projection must be smaller"
+        );
     }
 
     #[test]
@@ -423,6 +422,10 @@ mod tests {
         let before = masker.log().to_vec();
         let _ = masker.mask();
         let _ = masker.mask();
-        assert_eq!(masker.log(), before.as_slice(), "mask must not mutate the log");
+        assert_eq!(
+            masker.log(),
+            before.as_slice(),
+            "mask must not mutate the log"
+        );
     }
 }

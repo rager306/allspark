@@ -117,7 +117,10 @@ mod tests {
     #[test]
     fn unknown_id_has_no_ancestors() {
         let lineage = Lineage::new();
-        assert!(lineage.ancestors("nope").is_empty(), "unknown id has no ancestors");
+        assert!(
+            lineage.ancestors("nope").is_empty(),
+            "unknown id has no ancestors"
+        );
         assert!(!lineage.contains("nope"));
     }
 

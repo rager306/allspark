@@ -198,7 +198,10 @@ mod tests {
         let blob = PdxLayout::pack(&[]);
         assert_eq!(PdxLayout::count(&blob), Some(0));
         assert_eq!(PdxLayout::dim(&blob), Some(0));
-        assert_eq!(PdxLayout::unpack(&blob).expect("unpack"), Vec::<Vec<f32>>::new());
+        assert_eq!(
+            PdxLayout::unpack(&blob).expect("unpack"),
+            Vec::<Vec<f32>>::new()
+        );
     }
 
     #[test]
@@ -208,7 +211,10 @@ mod tests {
             PdxLayout::validate(&ragged),
             Err(PdxError::Ragged { .. })
         ));
-        assert!(PdxLayout::pack(&ragged).is_empty(), "ragged packs to nothing");
+        assert!(
+            PdxLayout::pack(&ragged).is_empty(),
+            "ragged packs to nothing"
+        );
     }
 
     #[test]
