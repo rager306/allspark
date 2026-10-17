@@ -176,6 +176,31 @@ static FORK_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
 });
 
 static FORK_RAW_MODELS: &[ForkModel] = &[
+    // --- Subquadratic (SubQ Snap) ----------------------------------------------
+    // A decision model speaking the TypeSafe System One wire byte-for-byte
+    // (`POST {base}/v1/systemone`, same {model, state, questions} request and
+    // {model, answers, usage} response, verified live 2026-10-17): it joins
+    // the judge chain through the existing `typesafe` dialect with no Rust of
+    // its own. Judgments only - the chat endpoints reject this model - so it
+    // is never a session model. Caps 16 questions per request (17 answers
+    // 422; batches above that must chunk, `pa-jev` does when configured);
+    // output is not billed. `SUBQ_API_KEY` authenticates (Bearer).
+    ForkModel {
+        provider: "subquadratic",
+        id: "subq-snap-preview",
+        name: "SubQ Snap (preview)",
+        api: "typesafe",
+        base_url: "https://api.subq.ai",
+        reasoning: false,
+        thinking_levels: &[],
+        input: &[ModelInput::Text],
+        cost: (0.05, 0.0, 0.0, 0.0),
+        context_window: 64_000,
+        max_tokens: 4_096,
+        headers: &[],
+        supports_developer_role: None,
+        max_tokens_field: None,
+    },
     // --- Muse (Meta Model API) -------------------------------------------------
     // PAYG Standard pricing; context/output per the Meta guide.
     ForkModel {
@@ -774,7 +799,7 @@ pub fn fork_provider_models() -> Vec<Model> {
 /// with this list).
 #[must_use]
 pub fn fork_providers() -> &'static [&'static str] {
-    &["muse", "codebuddy", "genspark"]
+    &["muse", "codebuddy", "genspark", "subquadratic"]
 }
 
 #[cfg(test)]
@@ -794,6 +819,24 @@ mod tests {
                 model.id
             );
         }
+    }
+
+    #[test]
+    fn subquadratic_snap_joins_the_judge_chain_through_the_typesafe_dialect() {
+        let models = fork_provider_models();
+        let snap = models
+            .iter()
+            .find(|model| model.provider == "subquadratic")
+            .expect("the subquadratic catalog entry exists");
+        assert_eq!(snap.id, "subq-snap-preview");
+        // The wire dialect is what resolves the judge candidate; a decision
+        // model must never resolve as a chat backend.
+        assert_eq!(snap.api, "typesafe");
+        assert_eq!(snap.base_url, "https://api.subq.ai");
+        // Input-only billing: the output side of the tuple stays zero so
+        // usage accounting never invents output cost.
+        assert_eq!(snap.cost.input, 0.05.into());
+        assert_eq!(snap.cost.output, 0.0.into());
     }
 
     #[test]
