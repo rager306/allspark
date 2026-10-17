@@ -734,8 +734,16 @@ async fn server_retry_after_over_cap_retries_at_the_m3_ceiling() {
     let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let events = Arc::new(Mutex::new(Vec::new()));
     let events_for_emit = Arc::clone(&events);
+    // A budget that admits the hint: the policy cap is a contract honored
+    // first (a hint above it gives up - the drill pins that), so this test
+    // widens the fast policy's cap above the 500ms hint to observe the
+    // ceiling behavior.
+    let hint_admitting_policy = ProviderRetryPolicy {
+        max_retry_delay_ms: 1_000,
+        ..fast_policy()
+    };
     let message = run_turn_with_auto_retry(
-        &fast_policy(),
+        &hint_admitting_policy,
         0,
         None,
         || {

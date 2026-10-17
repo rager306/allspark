@@ -557,8 +557,9 @@ pub fn rate_limit_reason_for_message(message: &AssistantMessage) -> Option<RateL
 }
 
 /// The M3 reason-aware retry delay: Retry-After is the MINIMUM wait,
-/// honored up to [`RETRY_AFTER_CAP_MS`] — a long hint no longer gives
-/// up on a retryable class, it waits the cap and retries. Without a
+/// honored up to [`RETRY_AFTER_CAP_MS`] within the policy's
+/// `maxRetryDelayMs` budget (a hint above the policy cap stays the
+/// above-cap give-up: the budget contract wins). Without a
 /// hint the class backoff replaces the exponential ladder (RATE 30s,
 /// CONCURRENT 5s, CAPACITY 45±15s, SERVER 20s). An account-local cause
 /// (quota/spend cap, or a hint at or beyond [`LONG_RATE_HINT_MS`])
@@ -589,8 +590,20 @@ pub fn provider_retry_delay_for_reason(
             _ => ProviderRetryDelay::Settle,
         };
     }
+    // The user's `retry.provider.maxRetryDelayMs` is a budget contract and
+    // wins over the hint: a wait the policy refuses stays the above-cap
+    // hand-off (`ExceedsCap` -> park/failover seam), never a silent
+    // budget overrun. Inside the budget the hint is a minimum honored up
+    // to the M3 ceiling.
     let delay_ms = match retry_after_ms {
-        Some(hint) => hint.min(RETRY_AFTER_CAP_MS),
+        Some(hint) => {
+            if policy.max_retry_delay_ms > 0 && hint > policy.max_retry_delay_ms {
+                return ProviderRetryDelay::ExceedsCap {
+                    retry_after_ms: hint,
+                };
+            }
+            hint.min(RETRY_AFTER_CAP_MS)
+        }
         None => reason.backoff_ms(rand01),
     };
     ProviderRetryDelay::Wait {
@@ -1013,14 +1026,35 @@ mod tests {
             ),
             ProviderRetryDelay::Wait { delay_ms: 5_000 }
         );
-        // A hint above the cap waits the cap instead of giving up —
-        // the subagent-death regression's guard.
+        // A hint above the POLICY cap is the budget's give-up: it settles
+        // into the failover/park seam instead of silently overrunning the
+        // user's maxRetryDelayMs (the failover reroute is the better
+        // remedy for a long-hinted 429 than a 60s sit).
         assert_eq!(
             provider_retry_delay_for_reason(
                 Some(RateLimitReason::RateLimit),
                 1,
                 Some(120_000),
                 &policy,
+                0.5,
+            ),
+            ProviderRetryDelay::ExceedsCap {
+                retry_after_ms: 120_000
+            }
+        );
+        // Inside an admitting budget the hint honors the M3 ceiling: a
+        // 120s hint under a 180s budget waits the 60s ceiling, never
+        // gives up and never overruns the ceiling.
+        let admitting = ProviderRetryPolicy {
+            max_retry_delay_ms: 180_000,
+            ..policy
+        };
+        assert_eq!(
+            provider_retry_delay_for_reason(
+                Some(RateLimitReason::RateLimit),
+                1,
+                Some(120_000),
+                &admitting,
                 0.5,
             ),
             ProviderRetryDelay::Wait { delay_ms: 60_000 }
