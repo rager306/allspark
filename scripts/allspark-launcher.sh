@@ -39,6 +39,12 @@ export HOME="$ALLSPARK_HOME"
 # config/models/auth.
 export PRIME_AGENT_CODING_AGENT_DIR="$ALLSPARK_HOME/.prime/agent"
 
+# Pin the sessions dir with the same discipline: an inherited
+# PRIME_AGENT_SESSION_DIR must not redirect the fork's session storage into
+# the upstream tree (found by the deviation suite's launcher-isolation task,
+# RT-007).
+export PRIME_AGENT_SESSION_DIR="$ALLSPARK_HOME/.prime/agent/sessions"
+
 # Pin the daemon socket to the fork's own file so it cannot fight the
 # upstream daemon (which uses the product default $TMPDIR/prime-agent-<uid>).
 export PRIME_AGENT_DAEMON_SOCKET="${PRIME_AGENT_DAEMON_SOCKET:-${TMPDIR:-/tmp}/allspark-daemon.sock}"
