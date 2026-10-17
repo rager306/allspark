@@ -1,7 +1,9 @@
 //! The Anthropic (Claude Pro/Max) OAuth flow: the PKCE request, the
 //! localhost callback server raced against the manual paste, the JSON
-//! token exchange, and the refresh. The TS flow doubles its PKCE
-//! verifier as the OAuth `state` — kept for wire parity.
+//! token exchange, and the refresh. The PKCE verifier is the
+//! token-exchange secret; a fresh random CSRF `state` rides the
+//! authorization URL — matching Anthropic's own Claude Code client
+//! (which mints `state` independently of the verifier).
 
 use std::time::Duration;
 
@@ -9,7 +11,7 @@ use serde_json::json;
 use url::Url;
 
 use super::anthropic_callback::{AnthropicCallbackServer, CallbackCode, REDIRECT_URI};
-use super::pkce::generate_pkce;
+use super::pkce::{generate_pkce, generate_state};
 use super::provider_http::{ProviderHttp, ProviderHttpMethod, ProviderHttpRequest};
 use super::types::{OAuthLoginUi, OAuthPrompt};
 
@@ -54,25 +56,28 @@ pub async fn login_anthropic(
         return Err(LOGIN_CANCELLED.to_string());
     }
     let (verifier, challenge) = generate_pkce();
-    let server = AnthropicCallbackServer::start(&verifier)?;
-    login_with_server(http, ui, &server, &verifier, &challenge).await
+    let state = generate_state();
+    let server = AnthropicCallbackServer::start(&state)?;
+    login_with_server(http, ui, &server, &verifier, &challenge, &state).await
 }
 
 /// The flow after the bind: present the URL, race the callback against
-/// the paste, exchange the code. `server` listens with `verifier` as
-/// its state.
+/// the paste, exchange the code. `server` listens for `state`, the CSRF
+/// token that also rides the authorization URL; `verifier` stays out of
+/// the URL and is used only in the token exchange.
 async fn login_with_server(
     http: &dyn ProviderHttp,
     ui: &dyn OAuthLoginUi,
     server: &AnthropicCallbackServer,
     verifier: &str,
     challenge: &str,
+    state: &str,
 ) -> Result<AnthropicCredentials, String> {
     ui.on_auth(
-        &authorization_url(challenge, verifier),
+        &authorization_url(challenge, state),
         Some(AUTH_INSTRUCTIONS),
     );
-    let code = wait_for_code(server, ui, verifier).await?;
+    let code = wait_for_code(server, ui, state).await?;
     if ui.is_cancelled() {
         return Err(LOGIN_CANCELLED.to_string());
     }
@@ -107,7 +112,7 @@ pub async fn refresh_anthropic_token(
     Ok(credentials_from(token))
 }
 
-fn authorization_url(challenge: &str, verifier: &str) -> String {
+fn authorization_url(challenge: &str, state: &str) -> String {
     let mut url = Url::parse(AUTHORIZE_URL).expect("the authorize url parses");
     for (name, value) in [
         ("code", "true"),
@@ -117,7 +122,7 @@ fn authorization_url(challenge: &str, verifier: &str) -> String {
         ("scope", SCOPES),
         ("code_challenge", challenge),
         ("code_challenge_method", "S256"),
-        ("state", verifier),
+        ("state", state),
     ] {
         url.query_pairs_mut().append_pair(name, value);
     }
@@ -127,7 +132,7 @@ fn authorization_url(challenge: &str, verifier: &str) -> String {
 async fn wait_for_code(
     server: &AnthropicCallbackServer,
     ui: &dyn OAuthLoginUi,
-    verifier: &str,
+    state: &str,
 ) -> Result<CallbackCode, String> {
     let manual = ui.on_manual_code_input();
     let manual_available = manual.is_some();
@@ -159,14 +164,14 @@ async fn wait_for_code(
             if manual_available {
                 match manual_answer.await {
                     None => return Err(LOGIN_CANCELLED.to_string()),
-                    Some(input) => parse_paste(&input, verifier)?,
+                    Some(input) => parse_paste(&input, state)?,
                 }
             } else {
                 None
             }
         }
         RaceOutcome::Manual(None) => return Err(LOGIN_CANCELLED.to_string()),
-        RaceOutcome::Manual(Some(input)) => parse_paste(&input, verifier)?,
+        RaceOutcome::Manual(Some(input)) => parse_paste(&input, state)?,
     };
     if let Some(code) = code {
         return Ok(code);
@@ -179,7 +184,7 @@ async fn wait_for_code(
         })
         .await;
     let input = answer.ok_or_else(|| LOGIN_CANCELLED.to_string())?;
-    parse_paste(&input, verifier)?.ok_or_else(|| "Missing authorization code".to_string())
+    parse_paste(&input, state)?.ok_or_else(|| "Missing authorization code".to_string())
 }
 
 enum RaceOutcome {
@@ -189,16 +194,16 @@ enum RaceOutcome {
     Manual(Option<String>),
 }
 
-fn parse_paste(input: &str, verifier: &str) -> Result<Option<CallbackCode>, String> {
+fn parse_paste(input: &str, expected_state: &str) -> Result<Option<CallbackCode>, String> {
     let (code, echoed) = parse_authorization_input(input);
     if let Some(echoed) = &echoed {
-        if echoed != verifier {
+        if echoed != expected_state {
             return Err("OAuth state mismatch".to_string());
         }
     }
     Ok(code.map(|code| CallbackCode {
         code,
-        state: echoed.unwrap_or_else(|| verifier.to_string()),
+        state: echoed.unwrap_or_else(|| expected_state.to_string()),
     }))
 }
 
@@ -554,14 +559,15 @@ mod tests {
         ui: &ScriptedUi,
     ) -> Result<AnthropicCredentials, String> {
         let (verifier, challenge) = generate_pkce();
-        let server = AnthropicCallbackServer::bind("127.0.0.1", 0, &verifier)
+        let state = generate_state();
+        let server = AnthropicCallbackServer::bind("127.0.0.1", 0, &state)
             .expect("a free loopback port binds");
-        login_with_server(http, ui, &server, &verifier, &challenge).await
+        login_with_server(http, ui, &server, &verifier, &challenge, &state).await
     }
 
     #[tokio::test]
     async fn the_authorization_url_carries_the_ts_parameters() {
-        let url = authorization_url("the-challenge", "the-verifier");
+        let url = authorization_url("the-challenge", "the-state");
         let parsed = url::Url::parse(&url).unwrap();
         assert_eq!(parsed.host_str(), Some("claude.ai"));
         assert_eq!(parsed.path(), "/oauth/authorize");
@@ -579,8 +585,7 @@ mod tests {
         assert_eq!(param("scope"), SCOPES);
         assert_eq!(param("code_challenge"), "the-challenge");
         assert_eq!(param("code_challenge_method"), "S256");
-        // TS doubles the PKCE verifier as the state.
-        assert_eq!(param("state"), "the-verifier");
+        assert_eq!(param("state"), "the-state");
     }
 
     #[tokio::test]
@@ -605,8 +610,16 @@ mod tests {
         assert_eq!(json["client_id"], ANTHROPIC_CLIENT_ID);
         assert_eq!(json["code"], "the-code");
         assert_eq!(json["redirect_uri"], REDIRECT_URI);
-        // The state and the verifier are the same TS secret.
-        assert_eq!(json["state"], json["code_verifier"]);
+        // The state is a CSRF token, independent of the PKCE verifier.
+        let state = json["state"].as_str().unwrap();
+        let verifier = json["code_verifier"].as_str().unwrap();
+        assert_ne!(state, verifier, "the state must not be the PKCE verifier");
+        assert_eq!(state.len(), 43, "the CSRF state is 32 base64url bytes");
+        assert_eq!(
+            verifier.len(),
+            43,
+            "the PKCE verifier is 32 base64url bytes"
+        );
         // The exchange is narrated (TS `onProgress`).
         assert!(ui
             .progress
@@ -614,6 +627,49 @@ mod tests {
             .unwrap()
             .iter()
             .any(|message| message == "Exchanging authorization code for tokens..."));
+    }
+
+    /// Regression (CWE-319): the PKCE verifier must never ride the
+    /// authorization URL. `state` is a fresh random CSRF token; the
+    /// verifier stays the token-exchange secret.
+    #[tokio::test]
+    async fn the_verifier_never_rides_the_authorization_url() {
+        let http = token_http();
+        let ui = ScriptedUi::new(Some(ScriptedAnswer::value("the-code")), None);
+        let (verifier, challenge) = generate_pkce();
+        let state = generate_state();
+        let server = AnthropicCallbackServer::bind("127.0.0.1", 0, &state)
+            .expect("a free loopback port binds");
+        login_with_server(&http, &ui, &server, &verifier, &challenge, &state)
+            .await
+            .unwrap();
+        let url = ui.captured_url().await;
+        let parsed = url::Url::parse(&url).unwrap();
+        let param = |name: &str| {
+            parsed
+                .query_pairs()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.to_string())
+                .unwrap_or_default()
+        };
+        assert_ne!(
+            param("state"),
+            verifier,
+            "the state must not be the verifier"
+        );
+        assert_eq!(
+            param("state"),
+            state,
+            "the URL carries the login's own state"
+        );
+        assert!(
+            !url.contains(&verifier),
+            "the verifier leaked into the authorize URL: {url}"
+        );
+        // The exchange still sends the verifier, and echoes the state.
+        let json: serde_json::Value = serde_json::from_str(&http.first_body(TOKEN_URL)).unwrap();
+        assert_eq!(json["code_verifier"], verifier.as_str());
+        assert_eq!(json["state"], state.as_str());
     }
 
     #[tokio::test]
@@ -726,7 +782,8 @@ mod tests {
         let http = Arc::new(token_http());
         let ui = Arc::new(ScriptedUi::new(Some(ScriptedAnswer::Pending), None));
         let (verifier, challenge) = generate_pkce();
-        let server = AnthropicCallbackServer::bind("127.0.0.1", 0, &verifier)
+        let state = generate_state();
+        let server = AnthropicCallbackServer::bind("127.0.0.1", 0, &state)
             .expect("a free loopback port binds");
         let port = server.port();
         let flow_ui = Arc::clone(&ui);
@@ -739,6 +796,7 @@ mod tests {
                     &server,
                     &verifier,
                     &challenge,
+                    &state,
                 )
                 .await
             })
@@ -792,9 +850,9 @@ mod tests {
             (Some("the-code".to_string()), None)
         );
         assert_eq!(parse_authorization_input("  "), (None, None));
-        // The bare-code paste substitutes the verifier as the state.
-        let parsed = parse_paste("the-code", "the-verifier").unwrap().unwrap();
+        // The bare-code paste substitutes the expected state.
+        let parsed = parse_paste("the-code", "the-state").unwrap().unwrap();
         assert_eq!(parsed.code, "the-code");
-        assert_eq!(parsed.state, "the-verifier");
+        assert_eq!(parsed.state, "the-state");
     }
 }
