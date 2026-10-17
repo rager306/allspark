@@ -196,8 +196,8 @@ model — do not "fix" either half.
 - **`--version` names the fork and the fork build**:
   `allspark <version> (fork build <id>; upstream prime-agent <version>)`. The
   build id is stamped at compile time via
-  `ALLSPARK_FORK_BUILD=fork.N cargo build ...` and must match the release tag
-  `allspark-v<version>-fork.N`; an unstamped build reports `dev`. Two allspark
+  `ALLSPARK_FORK_BUILD=fork.NNN cargo build ...` and must match the release tag
+  `allspark-v<version>-fork.NNN` (zero-padded counter: `fork.001`...); an unstamped build reports `dev`. Two allspark
   binaries are told apart by this id. The differential CLI test strips the
   branding before comparing against the upstream TypeScript binary; the words
   are the accepted divergence.

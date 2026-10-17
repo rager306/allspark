@@ -13,14 +13,14 @@ mod persistence_tests;
 
 pub use manager::{
     DebugLogConfig, IdleEviction, SessionArchivePolicy, SettingsError, SettingsManager,
-    DEFAULT_IDLE_EVICTION_MINUTES, DEFAULT_SESSION_ARCHIVE_MAX_AGE_DAYS,
-    DEFAULT_SESSION_ARCHIVE_MAX_SESSIONS,
+    DEFAULT_IDLE_EVICTION_MINUTES, DEFAULT_PROVIDER_CONCURRENCY_LIMIT,
+    DEFAULT_SESSION_ARCHIVE_MAX_AGE_DAYS, DEFAULT_SESSION_ARCHIVE_MAX_SESSIONS,
 };
 pub use storage::{
     FileSettingsStorage, InMemorySettingsStorage, SettingsScope, SettingsStorage, CONFIG_DIR_NAME,
 };
 pub use types::{
-    AutoRefineSettings, AutonomousSettings, CompactionSettings, GraphSettings, JevCacheSettings,
+    AgentsSettings, AutoRefineSettings, AutonomousSettings, CompactionSettings, GraphSettings, JevCacheSettings,
     JevEnabledSetting, JevSettings, LspSettings, McpServerConfig, QueueModeSetting, Settings,
     ThinkingLevelSetting, ToolProfileSettings, TransportSetting, UpdateChannel,
 };

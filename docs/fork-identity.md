@@ -88,7 +88,7 @@ assert, from a populated upstream `~/.prime`:
 2. the payload run **without** the launcher warns (or refuses on
    state-writing commands) that it will use upstream defaults;
 3. `allspark --version` carries the fork build id matching the release tag
-   `allspark-v<version>-fork.N`.
+   `allspark-v<version>-fork.NNN`.
 
 ## Verifying isolation after changes
 
@@ -103,6 +103,6 @@ so in its PR and re-verify this property.
 1. `git fetch upstream && git merge upstream/main` — the identity model above
    exists to keep this clean;
 2. resolve conflicts keeping this file and `AGENTS.md` (fork sections) intact;
-3. rebuild with `ALLSPARK_FORK_BUILD=fork.N cargo build --profile dist -p pa-cli`
-   and tag `allspark-v<version>-fork.N`;
+3. rebuild with `ALLSPARK_FORK_BUILD=fork.NNN cargo build --profile dist -p pa-cli`
+   and tag `allspark-v<version>-fork.NNN` (zero-padded fork counter);
 4. re-verify isolation (previous section).

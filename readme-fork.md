@@ -28,10 +28,10 @@ the upstream name **prime-agent**. See the "Fork identity and isolation
 ## 2. Fork versioning
 
 Stamp every release build with the fork build id matching the release tag
-`allspark-v<version>-fork.N`:
+`allspark-v<version>-fork.NNN` (zero-padded three-digit fork counter: `fork.001`, `fork.002`, `fork.003`, ...):
 
 ```sh
-ALLSPARK_FORK_BUILD=fork.N cargo build --profile dist --bin prime-agent --locked
+ALLSPARK_FORK_BUILD=fork.NNN cargo build --profile dist --bin prime-agent --locked
 ```
 
 Unstamped builds report `dev`. Two binaries are told apart by this id.
@@ -202,7 +202,7 @@ the session's own cost breakdown (no external pricing data needed).
 
 ```sh
 # stamped release build
-ALLSPARK_FORK_BUILD=fork.N cargo build --profile dist --bin prime-agent --locked
+ALLSPARK_FORK_BUILD=fork.NNN cargo build --profile dist --bin prime-agent --locked
 
 # deploy layout
 bin/allspark                 (launcher script, tracked)
@@ -211,5 +211,5 @@ libexec/prime-agent          (payload binary)
 # logs / diagnostics
 <agentDir>/logs/             daemon log, worker stderr, debug-*.log, agent.jsonl
 allspark incident --since "2 hours ago"
-allspark --version           # allspark <version> (fork build fork.N; upstream prime-agent <version>)
+allspark --version           # allspark <version> (fork build fork.NNN; upstream prime-agent <version>)
 ```

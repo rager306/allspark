@@ -17,6 +17,9 @@ pub const RECENT_MODELS_LIMIT: usize = 20;
 pub const DEFAULT_IDLE_EVICTION_MINUTES: u64 = 90;
 pub const DEFAULT_SESSION_ARCHIVE_MAX_AGE_DAYS: u64 = 30;
 pub const DEFAULT_SESSION_ARCHIVE_MAX_SESSIONS: usize = 200;
+/// The compiled per-`(provider, model)` admission limit: the AIMD start
+/// limit AND the default `[agents] maxConcurrentPerProvider` ceiling.
+pub const DEFAULT_PROVIDER_CONCURRENCY_LIMIT: usize = 6;
 
 #[derive(Debug, Clone)]
 pub struct SettingsError {
@@ -790,6 +793,22 @@ impl SettingsManager {
                     parks.min(u64::from(u32::MAX)) as u32
                 }),
         }
+    }
+
+    /// `[agents] maxConcurrentPerProvider`: the per-`(provider, model)`
+    /// ceiling for concurrent provider streams and admitted spawns. The
+    /// AIMD semaphore starts at [`DEFAULT_PROVIDER_CONCURRENCY_LIMIT`]
+    /// (clamped to this ceiling) and recovers up to it after a 429
+    /// backoff. Unset, non-numeric, or `0` reads the compiled default.
+    #[must_use]
+    pub fn get_max_concurrent_per_provider(&self) -> usize {
+        self.merged
+            .agents
+            .as_ref()
+            .and_then(|agents| agents.max_concurrent_per_provider)
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_PROVIDER_CONCURRENCY_LIMIT)
     }
 
     #[must_use]

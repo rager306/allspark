@@ -28,6 +28,7 @@ const KNOWN_FIELDS: &[&str] = &[
     "autoRefine",
     "agentTraces",
     "factory",
+    "agents",
     "telemetry",
     "branchSummary",
     "retry",

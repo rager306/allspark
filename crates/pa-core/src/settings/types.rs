@@ -300,6 +300,16 @@ pub struct JevSettings {
     pub cache: Option<JevCacheSettings>,
 }
 
+/// `[agents]`: the subagent admission surface. `maxConcurrentPerProvider`
+/// is the AIMD ceiling per resolved `(provider, model)` pair — the start
+/// limit is the compiled default, and a successful stream raises the
+/// limit up to this cap. Unset (or `0`) reads the compiled default.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentsSettings {
+    pub max_concurrent_per_provider: Option<u64>,
+}
+
 /// `[jev.cache]`: the judgment answer cache.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -453,6 +463,8 @@ pub struct Settings {
     /// defaults off - see [`JevSettings`]).
     pub jev: Option<JevSettings>,
     pub factory: Option<FactorySettings>,
+    /// `[agents]`: subagent admission (the per-provider AIMD ceiling).
+    pub agents: Option<AgentsSettings>,
     pub telemetry: Option<TelemetrySettings>,
     pub branch_summary: Option<BranchSummarySettings>,
     pub retry: Option<RetrySettings>,
