@@ -117,6 +117,27 @@ pub fn is_kernel_not_running(error: &anyhow::Error) -> bool {
     })
 }
 
+/// The supervisor's refusal when a session worker's socket closed
+/// mid-command: the daemon's `WORKER_SOCKET_CLOSED`
+/// (`pa-daemon/src/supervisor/routing.rs`; pa-tui cannot depend on the
+/// daemon crate, so the wire string is pinned here like the other
+/// exact-message fallbacks).
+const WORKER_SOCKET_CLOSED_MESSAGE: &str = "Daemon worker socket closed";
+
+/// Whether the error is the supervisor's worker-socket-closed refusal:
+/// unlike every other daemon rejection this one is an AMBIGUOUS
+/// delivery, not a definitive answer — the command reached a worker
+/// that then died, so the daemon deliberately does not retry it (a
+/// retry could duplicate the command) and the outcome is unknown.
+#[must_use]
+pub fn is_worker_socket_closed_rejection(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<RequestRejected>()
+            .is_some_and(|rejected| rejected.message == WORKER_SOCKET_CLOSED_MESSAGE)
+    })
+}
+
 /// Unwrap a settled response into its `data`, surfacing the daemon
 /// refusal as a typed [`RequestRejected`] on failure.
 pub(super) fn response_data_or_error(name: &str, response: DaemonResponse) -> Result<Value> {

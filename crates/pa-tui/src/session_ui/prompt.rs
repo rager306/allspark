@@ -76,9 +76,14 @@ pub(crate) struct PromptOrder {
     pub(crate) submitted_at: std::time::Instant,
 }
 
-// A refused request is definitive even when its message quotes a transport failure.
+// A refused request is definitive even when its message quotes a transport failure — except the
+// supervisor's worker-socket-closed refusal, whose meaning is an UNKNOWN outcome: the prompt
+// reached a worker that then died, so the daemon answered without retrying it.
 // Queued requests that lose their reply must stay consumed across session changes too.
 fn prompt_may_have_been_sent(error: &anyhow::Error) -> bool {
+    if crate::daemon_client::is_worker_socket_closed_rejection(error) {
+        return true;
+    }
     !crate::daemon_client::is_daemon_rejection(error)
         && (crate::daemon_client::is_daemon_timeout(error)
             || (crate::daemon_client::is_daemon_unreachable(error)
@@ -924,6 +929,20 @@ impl SessionUi {
                         return Ok(());
                     }
                 }
+                if crate::daemon_client::is_worker_socket_closed_rejection(&error) {
+                    // The supervisor's ambiguous answer for a worker that died mid-command: it
+                    // restarts the worker instead of retrying (a retry could duplicate the
+                    // command), so the turn may have partially executed before the crash —
+                    // restoring the draft would invite exactly that duplicate submission.
+                    self.error_row(
+                        &format!(
+                            "{rendered} — the session worker closed mid-turn; it is restarting, \
+                             and the turn may have partially executed"
+                        ),
+                        view,
+                    );
+                    return Ok(());
+                }
                 if crate::daemon_client::is_daemon_timeout(&error) {
                     // Sent but unanswered: the turn may already be admitted — restoring the
                     // draft would invite a duplicate submission, so the error row names the
@@ -1006,6 +1025,19 @@ impl SessionUi {
 #[cfg(test)]
 mod prompt_delivery_tests {
     use super::prompt_may_have_been_sent;
+
+    #[test]
+    fn worker_socket_closed_refusal_is_ambiguous_delivery() {
+        // The supervisor's WORKER_SOCKET_CLOSED refusal: the prompt reached a
+        // session worker that then died mid-command, so the outcome is unknown
+        // even though the daemon answered — a resubmit may duplicate the turn.
+        let refusal = crate::daemon_client::RequestRejected {
+            command: "prompt".to_string(),
+            message: "Daemon worker socket closed".to_string(),
+            error_info: None,
+        };
+        assert!(prompt_may_have_been_sent(&anyhow::Error::new(refusal)));
+    }
 
     #[test]
     fn distinguishes_ambiguous_delivery_from_definitive_failure() {

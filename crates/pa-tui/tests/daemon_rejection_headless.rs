@@ -36,6 +36,11 @@ use serde_json::{json, Value};
 const SUSPENDED_ADMISSION: &str =
     "Cannot admit a session action while queued session input is suspended.";
 
+/// The supervisor's own refusal when a session worker's socket closed mid-command (the daemon's
+/// `WORKER_SOCKET_CLOSED`): the command reached a worker that then died, so the answer is an
+/// unknown outcome, not a definitive refusal.
+const WORKER_SOCKET_CLOSED: &str = "Daemon worker socket closed";
+
 /// How long the first turn stays open so the rejected follow-up is provably mid-turn.
 const HOLD_TURN_OPEN_MS: u64 = 700;
 
@@ -44,9 +49,12 @@ struct MockSupervisor {
     prompt_requests: Arc<Mutex<Vec<Value>>>,
     /// Every recorded `create` request (the update-restart retry count reads its length).
     create_requests: Arc<Mutex<Vec<Value>>>,
-    /// Reject the prompt at this 0-based dispatch index with [`SUSPENDED_ADMISSION`] instead of
-    /// streaming a turn.
+    /// Reject the prompt at this 0-based dispatch index instead of streaming a turn — with
+    /// [`SUSPENDED_ADMISSION`], or `reject_prompt_message` when set (a supervisor refusal
+    /// string served verbatim).
     reject_prompt_index: Option<usize>,
+    /// The refusal message for `reject_prompt_index` (defaults to [`SUSPENDED_ADMISSION`]).
+    reject_prompt_message: Option<String>,
     hold_turn_ms: u64,
     /// Drop the connection when the next prompt arrives (the dead-daemon transport case).
     close_on_prompt: bool,
@@ -71,6 +79,7 @@ struct SharedAnswers {
     create_requests: Arc<Mutex<Vec<Value>>>,
     create_answers: Mutex<Vec<CreateAnswer>>,
     reject_prompt_index: Option<usize>,
+    reject_prompt_message: Option<String>,
     hold_turn_ms: u64,
     close_on_prompt: bool,
     /// Rebind to s2 before closing, so the pending prompt outcome outlives its active id.
@@ -85,6 +94,7 @@ impl MockSupervisor {
             prompt_requests: Arc::new(Mutex::new(Vec::new())),
             create_requests: Arc::new(Mutex::new(Vec::new())),
             reject_prompt_index: None,
+            reject_prompt_message: None,
             hold_turn_ms: 0,
             close_on_prompt: false,
             rebind_before_close: false,
@@ -106,6 +116,7 @@ impl MockSupervisor {
             create_requests: self.create_requests,
             create_answers: std::sync::Mutex::new(std::mem::take(&mut self.create_answers)),
             reject_prompt_index: self.reject_prompt_index,
+            reject_prompt_message: self.reject_prompt_message,
             hold_turn_ms: self.hold_turn_ms,
             close_on_prompt: self.close_on_prompt,
             rebind_before_close: self.rebind_before_close,
@@ -290,6 +301,10 @@ impl SharedAnswers {
                         break;
                     }
                     if Some(index) == self.reject_prompt_index {
+                        let refusal = self
+                            .reject_prompt_message
+                            .as_deref()
+                            .unwrap_or(SUSPENDED_ADMISSION);
                         write_json(
                             &mut writer,
                             &json!({
@@ -297,7 +312,7 @@ impl SharedAnswers {
                                 "id": id,
                                 "command": "prompt",
                                 "success": false,
-                                "error": SUSPENDED_ADMISSION,
+                                "error": refusal,
                             }),
                         );
                         continue;
@@ -656,6 +671,52 @@ fn rejected_mid_turn_submission_renders_the_error_row_and_keeps_running() {
     assert!(
         all.contains("the streamed answer"),
         "the held turn still rendered:\n{all}"
+    );
+}
+
+/// The supervisor's ambiguous answer for a worker that died mid-command (`WORKER_SOCKET_CLOSED`
+/// in the daemon's routing): the daemon deliberately does not retry (the outcome is unknown), and
+/// the client must NOT hand the draft back as a clean resubmit — the turn may have partially
+/// executed before the crash, so a resubmit duplicates it. The refusal surfaces with the
+/// partial-execution warning instead (TS parity fixture 4247 has no worker scenario: this refusal
+/// shape is Rust-daemon-specific, and the pinned `refusal` scenario keeps its definitive path).
+#[test]
+fn worker_socket_closed_refusal_keeps_the_draft_consumed() {
+    let steps = vec![
+        HeadlessStep::Type("hello".to_string()),
+        HeadlessStep::Key(enter()),
+        HeadlessStep::WaitRender {
+            needle: "may have partially executed".to_string(),
+            timeout_ms: 2000,
+        },
+    ];
+    let run = run_plan_with(steps, |supervisor| {
+        supervisor.reject_prompt_index = Some(0);
+        supervisor.reject_prompt_message = Some(WORKER_SOCKET_CLOSED.to_string());
+    })
+    .expect("the ambiguous refusal keeps the run mounted");
+    assert_eq!(
+        run.prompt_requests.len(),
+        1,
+        "the refused prompt dispatched exactly once"
+    );
+    let all = run.frames.join("\n");
+    // The `showError` row wraps at the render width, so compare the whitespace-flattened frames.
+    let flat = all.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains(&format!(
+            "\u{26a0} Error: the daemon rejected the prompt request: {WORKER_SOCKET_CLOSED}"
+        )),
+        "the ambiguous refusal renders as the error row:\n{all}"
+    );
+    assert!(
+        flat.contains("may have partially executed"),
+        "the error row names the partial-execution ambiguity:\n{all}"
+    );
+    let last = run.frames.last().map(String::as_str).unwrap_or_default();
+    assert!(
+        !last.contains("hello"),
+        "the draft stays consumed instead of returning as a clean resubmit:\n{last}"
     );
 }
 
