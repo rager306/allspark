@@ -11,6 +11,39 @@ Pre-numbering history: two single-digit tags (fork.1, fork.2, 2026-10-13)
 marked the abandoned in-binary rebrand branch (`feat/allspark-identity`);
 they were local-only artifacts and are superseded by the NNN scheme below.
 
+## fork.008 — tool arbiter, review hardening, daemon-lane QA
+
+- Tag: `allspark-v0.10.0-fork.008` (2026-10-18)
+- Base: `37e9164ee` (fork.007) — the arbiter, the second review's P1
+  fixes, the summarizer overflow guard, admission telemetry, and the QA
+  daemon lane.
+
+**The tool arbiter** (the last ADR consumer): a deterministic table of
+bash-command patterns (grep, sed, find, cat) that suggests the
+specialized fork tool (graph.search, edit, lsp) as an advisory note on
+the bash result — never blocking, never redirecting, the omp lesson
+applied. Behind `[jev] toolArbiter = auto` (the promoted default);
+corpus-gated like the other consumers.
+
+**Second review's P1s fixed**: the compaction summarizer now truncates
+history to the model's context window before building its request (the
+live "prompt is too long" compaction loop); the worker-side admission
+link deadline outlives the supervisor-side queue budget (no more orphan
+leases); the settle path checks the breaker before dispatching queued
+waiters (an open breaker now actually stops admissions); the admission
+token is shape-validated (not just non-empty) and lease ids start from
+a random offset.
+
+**Adoption telemetry for the admission plane**: breaker transitions,
+AIMD steps, and the snapshot rollup land in pa-telemetry
+(fire-and-forget through an unbounded channel).
+
+**QA daemon-lane**: the deviation suite drives the real daemon
+(JSON-RPC session management, worker kill) — RT-012 (failover) passes;
+RT-006 (exactly-once) is a known-red (the daemon replays the prompt to
+the restarted worker; the TUI fix covers the client path, the daemon
+path is an upstream candidate).
+
 ## fork.007 — jev consumer defaults promoted to `auto`
 
 - Tag: `allspark-v0.10.0-fork.007` (2026-10-18)
