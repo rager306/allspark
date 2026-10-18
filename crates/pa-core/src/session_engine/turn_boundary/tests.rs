@@ -155,6 +155,7 @@ async fn model_info_reports_the_bound_model() {
     let agent = Arc::new(Agent::new(AgentOptions {
         initial_state: AgentInitialState {
             system_prompt: Some("s".to_string()),
+            system_prompt_cache_prefix: None,
             model: Some(agent_model()),
             thinking_level: Some(ThinkingLevel::Off),
             tools: None,
@@ -209,6 +210,7 @@ async fn compact_run_validates_and_reports_no_active_turn() {
     let agent = Arc::new(Agent::new(AgentOptions {
         initial_state: AgentInitialState {
             system_prompt: Some("s".to_string()),
+            system_prompt_cache_prefix: None,
             model: Some(agent_model()),
             thinking_level: Some(ThinkingLevel::Off),
             tools: None,
@@ -255,6 +257,7 @@ async fn compact_run_prepare_skips_report_the_ts_reasons() {
         let agent = Arc::new(Agent::new(AgentOptions {
             initial_state: AgentInitialState {
                 system_prompt: Some("s".to_string()),
+                system_prompt_cache_prefix: None,
                 model: Some(agent_model()),
                 thinking_level: Some(ThinkingLevel::Off),
                 tools: Some(vec![probe.tool.clone()]),
@@ -298,6 +301,7 @@ async fn compact_run_schedules_inside_a_tool_call_and_status_sees_it() {
     let agent = Arc::new(Agent::new(AgentOptions {
         initial_state: AgentInitialState {
             system_prompt: Some("s".to_string()),
+            system_prompt_cache_prefix: None,
             model: Some(agent_model()),
             thinking_level: Some(ThinkingLevel::Off),
             tools: Some(vec![probe.tool.clone()]),
@@ -358,6 +362,7 @@ async fn refine_run_and_status_round_trip_inside_a_tool_call() {
     let agent = Arc::new(Agent::new(AgentOptions {
         initial_state: AgentInitialState {
             system_prompt: Some("s".to_string()),
+            system_prompt_cache_prefix: None,
             model: Some(agent_model()),
             thinking_level: Some(ThinkingLevel::Off),
             tools: Some(vec![probe.tool.clone()]),
@@ -422,6 +427,7 @@ async fn disabled_refine_run_reports_refusal_and_does_not_schedule() {
     let agent = Arc::new(Agent::new(AgentOptions {
         initial_state: AgentInitialState {
             system_prompt: Some("s".to_string()),
+            system_prompt_cache_prefix: None,
             model: Some(agent_model()),
             tools: Some(vec![probe.tool.clone()]),
             ..Default::default()
@@ -503,6 +509,7 @@ async fn refine_run_validates_and_merges_into_a_pending_request() {
     let agent = Arc::new(Agent::new(AgentOptions {
         initial_state: AgentInitialState {
             system_prompt: Some("s".to_string()),
+            system_prompt_cache_prefix: None,
             model: Some(agent_model()),
             thinking_level: Some(ThinkingLevel::Off),
             tools: Some(vec![probe.tool.clone(), probe_again.tool.clone()]),
@@ -548,6 +555,7 @@ async fn clear_pending_drops_scheduled_requests() {
     let agent = Arc::new(Agent::new(AgentOptions {
         initial_state: AgentInitialState {
             system_prompt: Some("s".to_string()),
+            system_prompt_cache_prefix: None,
             model: Some(agent_model()),
             thinking_level: Some(ThinkingLevel::Off),
             tools: Some(vec![probe.tool.clone()]),
@@ -591,6 +599,7 @@ async fn compact_run_merges_instructions_into_a_pending_request() {
     let agent = Arc::new(Agent::new(AgentOptions {
         initial_state: AgentInitialState {
             system_prompt: Some("s".to_string()),
+            system_prompt_cache_prefix: None,
             model: Some(agent_model()),
             thinking_level: Some(ThinkingLevel::Off),
             tools: Some(vec![probe.tool.clone(), probe_again.tool.clone()]),

@@ -185,6 +185,7 @@ pub async fn run_side_question(
     let side_agent = Arc::new(Agent::new(AgentOptions {
         initial_state: AgentInitialState {
             system_prompt: Some(parent_state.system_prompt.clone()),
+            system_prompt_cache_prefix: parent_state.system_prompt_cache_prefix,
             model: Some(parent_state.model.clone()),
             thinking_level: Some(parent_state.thinking_level),
             tools: Some(parent_state.tools.clone()),
@@ -496,6 +497,7 @@ mod tests {
         Arc::new(Agent::new(AgentOptions {
             initial_state: AgentInitialState {
                 system_prompt: Some("main system prompt".to_string()),
+                system_prompt_cache_prefix: None,
                 model: Some(test_model()),
                 thinking_level: None,
                 tools: Some(tools),
@@ -738,6 +740,7 @@ mod tests {
         let parent = Arc::new(Agent::new(AgentOptions {
             initial_state: AgentInitialState {
                 system_prompt: Some("prompt".to_string()),
+                system_prompt_cache_prefix: None,
                 model: None,
                 thinking_level: None,
                 tools: None,

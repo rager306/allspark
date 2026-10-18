@@ -105,6 +105,9 @@ pub struct ToolDefinition {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LlmContext {
     pub system_prompt: Option<String>,
+    /// Byte offset where the cacheable part of `system_prompt` ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_cache_prefix: Option<usize>,
     pub messages: Vec<crate::types::Message>,
     pub tools: Vec<ToolDefinition>,
 }

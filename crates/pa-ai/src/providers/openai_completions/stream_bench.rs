@@ -164,6 +164,7 @@ async fn abort_after_partial_preserves_content() {
         &model,
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![],
             tools: None,
         },

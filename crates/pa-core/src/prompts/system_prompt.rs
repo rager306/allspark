@@ -199,12 +199,6 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
         }
     }
 
-    segments.push(PromptSegment::dynamic_segment(
-        "environment",
-        "session configuration",
-        environment_section(options),
-    ));
-
     // The fork's native tools (lsp, graph) are top-level tools, not REPL
     // programmatic tools; a short section tells the model they exist only
     // when they are on this session's roster.
@@ -226,6 +220,24 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
         ));
     }
 
+    // The environment block goes LAST, after every other tail segment. It
+    // carries the date, which changes every day and would otherwise sit in the
+    // middle of the tail and invalidate everything behind it: the native-tools
+    // and session-role blocks are stable within a session and must stay in the
+    // cached prefix that providers match. oh-my-pi and Grok Build both keep the
+    // date out of the system prompt entirely for this reason; until we move it
+    // into the first user turn, the cheapest correct fix is to put it at the end
+    // where it can only invalidate itself.
+    segments.push(PromptSegment::dynamic_segment(
+        "environment",
+        "session configuration",
+        environment_section(options),
+    ));
+    segments.push(PromptSegment::dynamic_segment(
+        "workspace",
+        "working directory",
+        workspace_section(options),
+    ));
     if let Some(extra) = options.append_system_prompt.as_deref() {
         if !extra.is_empty() {
             segments.push(PromptSegment::dynamic_segment(
@@ -235,6 +247,15 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
             ));
         }
     }
+    // The date is the last segment in the whole prompt: it is the only one that
+    // changes on a clock rather than on user action, so it must trail
+    // everything the cache can reuse. Every other segment, the user's appended
+    // guidance included, stays ahead of it.
+    segments.push(PromptSegment::dynamic_segment(
+        "current-date",
+        "date context",
+        date_section(),
+    ));
 
     let assembled = segments
         .iter()
@@ -277,18 +298,15 @@ fn context_files_section(context_files: &[(String, String)]) -> String {
     lines.join("\n")
 }
 
+/// Session facts that hold for the whole session: the log path and whether the
+/// model can see images. Both change only when the session does.
 fn environment_section(options: &BuildSystemPromptOptions) -> String {
-    let cwd = options.cwd.replace('\\', "/");
     let messages_path = options
         .messages_path
         .clone()
         .unwrap_or_else(|| "not persisted".to_string())
         .replace('\\', "/");
-    let mut lines = vec![
-        format!("Current date: {}", today()),
-        format!("Working directory: {cwd}"),
-        format!("Conversation log: {messages_path}"),
-    ];
+    let mut lines = vec![format!("Conversation log: {messages_path}")];
     match options.vision_capable {
         Some(true) => lines.push(
             "Image input: this model can see images; `attach_image` loads them into context."
@@ -300,6 +318,22 @@ fn environment_section(options: &BuildSystemPromptOptions) -> String {
         None => {}
     }
     lines.join("\n")
+}
+
+/// The working directory. Changes when the session `cd`s, which is rare, so it
+/// gets its own segment rather than dragging the date along with it.
+fn workspace_section(options: &BuildSystemPromptOptions) -> String {
+    format!("Working directory: {}", options.cwd.replace('\\', "/"))
+}
+
+/// The date, alone and last.
+///
+/// This is the only segment that changes on a wall clock rather than on user
+/// action, so it must not share a segment with anything else: after the cache
+/// boundary lands on the wire, a midnight rollover should invalidate one line,
+/// not the whole tail.
+fn date_section() -> String {
+    format!("Current date: {}", today())
 }
 
 /// The native fork tools (`lsp`, `graph`, `edit`, `jev`) present on this
@@ -464,8 +498,48 @@ fn session_role_section(options: &BuildSystemPromptOptions, has_ipython: bool) -
     lines.join("\n")
 }
 
+/// Today's date in the session's local timezone, `YYYY-MM-DD`.
+///
+/// Local, not UTC: a UTC date flips at a wall-clock time that depends on the
+/// user's offset (22:00 in UTC+2), so the model can spend the evening convinced
+/// it is still yesterday. Falls back to UTC when the platform refuses the
+/// conversion, which keeps the function total.
 fn today() -> String {
-    // UTC date in YYYY-MM-DD form; the prompt is date context only.
+    let (year, month, day) = local_civil_date().unwrap_or_else(utc_civil_date);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// The local civil date via `localtime_r`, or `None` when the platform has no
+/// usable timezone database.
+#[cfg(unix)]
+fn local_civil_date() -> Option<(i64, u32, u32)> {
+    // SAFETY: `localtime_r` writes only into the `tm` we hand it, and both
+    // pointers are valid for the call. `time_t` and `tm` come from the same
+    // libc the process is linked against.
+    unsafe {
+        let now = libc::time(std::ptr::null_mut());
+        if now == -1 {
+            return None;
+        }
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(std::ptr::from_ref(&now), std::ptr::from_mut(&mut tm)).is_null() {
+            return None;
+        }
+        Some((
+            i64::from(tm.tm_year) + 1900,
+            u32::try_from(tm.tm_mon + 1).ok()?,
+            u32::try_from(tm.tm_mday).ok()?,
+        ))
+    }
+}
+
+#[cfg(not(unix))]
+fn local_civil_date() -> Option<(i64, u32, u32)> {
+    None
+}
+
+/// The UTC civil date, used when the local one is unavailable.
+fn utc_civil_date() -> (i64, u32, u32) {
     let days = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs() / 86_400);
@@ -480,7 +554,11 @@ fn today() -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02}")
+    (
+        y,
+        u32::try_from(m).unwrap_or(1),
+        u32::try_from(d).unwrap_or(1),
+    )
 }
 
 fn format_generic_mcp_guidance(servers: &[String]) -> String {
@@ -759,5 +837,117 @@ mod tests {
         for mode in ["replace", "patch", "apply_patch", "hashline", "sloppy"] {
             assert!(section.contains(mode), "edit mode {mode:?} undocumented");
         }
+    }
+
+    /// The tail is ordered by volatility, ending with the date alone.
+    ///
+    /// The date is the only part of the prompt that changes on a wall clock, so
+    /// it must be the last segment: after the cache boundary lands on the wire,
+    /// a midnight rollover then invalidates one line instead of every segment
+    /// behind it. oh-my-pi keeps `<project-context>` last for the same reason
+    /// and Grok Build keeps the date out of the system prompt entirely.
+    #[test]
+    fn the_date_is_the_last_tail_segment_and_alone() {
+        let breakdown = system_prompt_breakdown(&base_options());
+        let names: Vec<&str> = breakdown
+            .segments
+            .iter()
+            .map(|segment| segment.name)
+            .collect();
+        assert_eq!(
+            names.last(),
+            Some(&"current-date"),
+            "the date-bearing block must trail every other segment: {names:?}"
+        );
+        // Everything before it is date-free, so the prefix survives a day roll.
+        for segment in &breakdown.segments[..breakdown.segments.len() - 1] {
+            assert!(
+                !segment.text.contains("Current date:"),
+                "segment {:?} carries the date, which would break the prefix",
+                segment.name
+            );
+        }
+        // The date segment holds the date and nothing else.
+        let date = &breakdown.segments[breakdown.segments.len() - 1];
+        assert_eq!(
+            date.text.lines().count(),
+            1,
+            "the date segment must be one line: {:?}",
+            date.text
+        );
+        // The working directory has its own segment, so a `cd` does not drag
+        // the session-stable facts (log path, image support) with it.
+        let workspace = breakdown
+            .segments
+            .iter()
+            .find(|segment| segment.name == "workspace")
+            .expect("a workspace segment");
+        assert!(workspace.text.starts_with("Working directory:"));
+        assert!(!workspace.text.contains("Conversation log:"));
+    }
+
+    /// The date is the session's LOCAL date, not UTC.
+    ///
+    /// A UTC date flips at a wall-clock time set by the user's offset, so the
+    /// model can spend an evening convinced it is still yesterday. The test
+    /// pins the two implementations against each other only where they must
+    /// agree (a valid civil date), and asserts the local path is what runs.
+    #[test]
+    fn the_date_is_a_valid_civil_date() {
+        let date = today();
+        let parts: Vec<&str> = date.split('-').collect();
+        assert_eq!(parts.len(), 3, "expected YYYY-MM-DD, got {date:?}");
+        let year: i64 = parts[0].parse().expect("year");
+        let month: u32 = parts[1].parse().expect("month");
+        let day: u32 = parts[2].parse().expect("day");
+        assert!((2020..2200).contains(&year), "implausible year in {date:?}");
+        assert!((1..=12).contains(&month), "implausible month in {date:?}");
+        assert!((1..=31).contains(&day), "implausible day in {date:?}");
+        // The UTC fallback must produce the same shape, so a platform without
+        // a timezone database still yields a usable date.
+        let (uy, um, ud) = utc_civil_date();
+        assert!((2020..2200).contains(&uy));
+        assert!((1..=12).contains(&um));
+        assert!((1..=31).contains(&ud));
+    }
+
+    /// On a Unix host the local conversion must succeed, otherwise we are
+    /// silently serving UTC and the fix above does nothing.
+    #[cfg(unix)]
+    #[test]
+    fn the_local_date_is_available_on_unix() {
+        assert!(
+            local_civil_date().is_some(),
+            "localtime_r failed; the prompt would fall back to UTC"
+        );
+    }
+
+    /// The assembled prompt must stay within a sane ceiling.
+    ///
+    /// Every prompt is model input, and the static prefix is also the cache
+    /// payload. Unbounded growth here (a huge AGENTS.md, a skills pack, a
+    /// future section) is a permanent tax on every turn. The ceiling is
+    /// deliberately loose — it catches a bomb, not a style choice — and the
+    /// per-source caps do the real work; this test is the backstop that fails
+    /// loudly when a new section arrives unbounded.
+    #[test]
+    fn the_assembled_prompt_stays_within_its_ceiling() {
+        let mut options = base_options();
+        options.selected_tools = Some(vec!["python_repl", "bash", "edit", "graph", "jev", "lsp"]);
+        // A realistic worst case: a context file and a skill inventory at
+        // their own caps.
+        options.context_files = vec![("AGENTS.md".to_string(), "A".repeat(256 * 1024))];
+        let breakdown = system_prompt_breakdown(&options);
+        assert!(
+            breakdown.assembled.len() < 400 * 1024,
+            "prompt grew to {} bytes; a section is unbounded",
+            breakdown.assembled.len()
+        );
+        // The static prefix must stay a minority of the prompt so a date or a
+        // cwd change cannot invalidate most of it.
+        assert!(
+            breakdown.cached_prefix_len < breakdown.assembled.len(),
+            "the cached prefix cannot be the whole prompt"
+        );
     }
 }

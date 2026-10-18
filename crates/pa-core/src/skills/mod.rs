@@ -15,6 +15,21 @@ pub const MAX_NAME_LENGTH: usize = 64;
 /// Max description length per the Agent Skills spec.
 pub const MAX_DESCRIPTION_LENGTH: usize = 1024;
 
+/// Largest skills inventory the prompt will render, in bytes.
+///
+/// The inventory ships on every request, so its size is a permanent tax on
+/// every turn and on the cached prefix. A repository that drops a thousand
+/// generated SKILL.md files (or a user who installs a large pack) would
+/// otherwise add hundreds of thousands of tokens to every call. Over the cap
+/// the tail is dropped and the prompt says so, rather than growing silently.
+pub const MAX_SKILLS_INVENTORY_BYTES: usize = 64 * 1024;
+
+/// Largest number of skills listed in the prompt inventory.
+///
+/// A byte cap alone still lets a pack of tiny skills crowd out the tool
+/// documentation that follows; the count cap bounds the structural cost.
+pub const MAX_SKILLS_INVENTORY: usize = 64;
+
 pub use diagnostics::{ResourceCollision, ResourceDiagnostic};
 pub use discovery::load_skills_from_dir;
 pub use loader::{load_skills, LoadSkillsOptions, LoadSkillsResult};
@@ -222,25 +237,46 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
         String::new(),
         "<available_skills>".to_string(),
     ];
+    // Two ceilings, both reported when hit: a count (structural cost) and a
+    // byte budget (the inventory ships on every request, so unbounded growth
+    // is a permanent tax on the cached prefix).
+    let mut rendered = 0usize;
+    let mut bytes = lines.iter().map(String::len).sum::<usize>();
+    let mut dropped = 0usize;
     for skill in visible {
-        lines.push("  <skill>".to_string());
-        lines.push(format!("    <name>{}</name>", escape_xml(&skill.name)));
-        lines.push(format!("    <type>{}</type>", skill.kind_label()));
+        let mut block: Vec<String> = vec!["  <skill>".to_string()];
+        block.push(format!("    <name>{}</name>", escape_xml(&skill.name)));
+        block.push(format!("    <type>{}</type>", skill.kind_label()));
         if let Some(python) = &skill.python {
-            lines.push(format!(
+            block.push(format!(
                 "    <python_import>{}</python_import>",
                 escape_xml(&python.import_name)
             ));
         }
-        lines.push(format!(
+        block.push(format!(
             "    <description>{}</description>",
             escape_xml(&skill.description)
         ));
-        lines.push(format!(
+        block.push(format!(
             "    <location>{}</location>",
             escape_xml(&skill.file_path.display().to_string())
         ));
-        lines.push("  </skill>".to_string());
+        block.push("  </skill>".to_string());
+        let block_bytes: usize = block.iter().map(String::len).sum::<usize>() + 1;
+        if rendered >= MAX_SKILLS_INVENTORY || bytes + block_bytes > MAX_SKILLS_INVENTORY_BYTES {
+            dropped += 1;
+            continue;
+        }
+        bytes += block_bytes;
+        rendered += 1;
+        lines.extend(block);
+    }
+    if dropped > 0 {
+        lines.push(format!(
+            "  <!-- {dropped} more skill(s) not listed: the inventory is capped at \
+             {MAX_SKILLS_INVENTORY} entries / {MAX_SKILLS_INVENTORY_BYTES} bytes. \
+             Skills are still installed and callable by name. -->"
+        ));
     }
     lines.push("</available_skills>".to_string());
     lines.join("\n")
@@ -272,6 +308,12 @@ pub fn expand_skill_command<'a>(text: &str, skills: &'a [Skill]) -> (String, Opt
     let Ok(content) = std::fs::read_to_string(&skill.file_path) else {
         return (text.to_string(), None);
     };
+    // The expanded skill body is prompt input; cap it like any other untrusted
+    // file so a huge SKILL.md cannot blow the turn's context.
+    let (content, _truncated) = crate::resources::truncate_context_content(
+        &content,
+        crate::resources::MAX_CONTEXT_FILE_BYTES,
+    );
     let body = frontmatter::strip_frontmatter(&content).trim().to_string();
     let block = format!(
         "<skill name=\"{}\" location=\"{}\">\nReferences are relative to {}.\n\n{}\n</skill>",
@@ -448,5 +490,91 @@ mod tests {
         assert!(formatted.contains("<name>web-search</name>"));
         assert!(formatted.contains("<type>markdown</type>"));
         assert!(formatted.contains("<description>Does web-search</description>"));
+    }
+
+    /// The skills inventory ships on every request, so its size must be
+    /// bounded: a repository that drops a thousand generated SKILL.md files
+    /// used to add ~294k tokens to every single call.
+    #[test]
+    fn an_oversized_skills_inventory_is_capped() {
+        let skills: Vec<Skill> = (0..1000)
+            .map(|i| Skill {
+                name: format!("skill-{i:04}"),
+                description: "D".repeat(1024),
+                file_path: format!("/x/skill-{i}/SKILL.md").into(),
+                base_dir: format!("/x/skill-{i}").into(),
+                source_info: create_synthetic_source_info(
+                    "/x/SKILL.md",
+                    "project",
+                    SourceScope::Project,
+                    None,
+                ),
+                disable_model_invocation: false,
+                kind: SkillKind::Markdown,
+                python: None,
+            })
+            .collect();
+
+        let rendered = format_skills_for_prompt(&skills);
+        assert!(
+            rendered.len() <= MAX_SKILLS_INVENTORY_BYTES + 1024,
+            "inventory must stay near the byte cap, got {} bytes",
+            rendered.len()
+        );
+        // The truncation is reported, never silent.
+        assert!(rendered.contains("more skill(s) not listed"), "{rendered}");
+        // The cap is a ceiling, not a silent wipe: some skills survive.
+        assert!(rendered.contains("<skill>"));
+    }
+
+    /// The count cap bounds the structural cost even when every skill is tiny.
+    #[test]
+    fn the_skills_count_is_capped() {
+        let skills: Vec<Skill> = (0..200)
+            .map(|i| Skill {
+                name: format!("s{i}"),
+                description: "d".into(),
+                file_path: "/x/SKILL.md".into(),
+                base_dir: "/x".into(),
+                source_info: create_synthetic_source_info(
+                    "/x/SKILL.md",
+                    "project",
+                    SourceScope::Project,
+                    None,
+                ),
+                disable_model_invocation: false,
+                kind: SkillKind::Markdown,
+                python: None,
+            })
+            .collect();
+        let rendered = format_skills_for_prompt(&skills);
+        let listed = rendered.matches("<skill>").count();
+        assert_eq!(listed, MAX_SKILLS_INVENTORY, "listed {listed}");
+        assert!(rendered.contains("more skill(s) not listed"));
+    }
+
+    /// A normal inventory renders unchanged and carries no truncation notice.
+    #[test]
+    fn a_small_skills_inventory_is_untouched() {
+        let skills: Vec<Skill> = (0..3)
+            .map(|i| Skill {
+                name: format!("s{i}"),
+                description: "does a thing".into(),
+                file_path: "/x/SKILL.md".into(),
+                base_dir: "/x".into(),
+                source_info: create_synthetic_source_info(
+                    "/x/SKILL.md",
+                    "project",
+                    SourceScope::Project,
+                    None,
+                ),
+                disable_model_invocation: false,
+                kind: SkillKind::Markdown,
+                python: None,
+            })
+            .collect();
+        let rendered = format_skills_for_prompt(&skills);
+        assert_eq!(rendered.matches("<skill>").count(), 3);
+        assert!(!rendered.contains("not listed"), "{rendered}");
     }
 }

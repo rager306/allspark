@@ -253,6 +253,7 @@ pub(crate) async fn run_loop(
 pub(crate) fn clone_context(context: &AgentContext) -> AgentContext {
     AgentContext {
         system_prompt: context.system_prompt.clone(),
+        system_prompt_cache_prefix: context.system_prompt_cache_prefix,
         messages: context.messages.clone(),
         tools: context.tools.clone(),
     }

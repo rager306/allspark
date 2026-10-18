@@ -44,6 +44,7 @@ async fn registers_a_custom_provider_and_estimates_usage() {
 
     let context = Context {
         system_prompt: Some("Be concise.".into()),
+        system_prompt_cache_prefix: None,
         messages: vec![user_text("hi there")],
         tools: None,
     };
@@ -81,6 +82,7 @@ async fn supports_helper_blocks_for_text_thinking_and_tool_calls() {
         &registration.get_model(),
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![user_text("hi")],
             tools: None,
         },
@@ -159,6 +161,7 @@ async fn supports_multiple_models_with_per_model_reasoning_and_model_aware_facto
         &registration.get_model_by_id("faux-fast").unwrap(),
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![user_text("hi")],
             tools: None,
         },
@@ -170,6 +173,7 @@ async fn supports_multiple_models_with_per_model_reasoning_and_model_aware_facto
         &registration.get_model_by_id("faux-thinker").unwrap(),
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![user_text("hi")],
             tools: None,
         },
@@ -200,6 +204,7 @@ async fn rewrites_api_provider_and_model_on_returned_messages() {
         &registration.get_model(),
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![user_text("hi")],
             tools: None,
         },
@@ -221,6 +226,7 @@ async fn consumes_queued_responses_in_order_and_errors_when_exhausted() {
 
     let context = Context {
         system_prompt: None,
+        system_prompt_cache_prefix: None,
         messages: vec![user_text("hi")],
         tools: None,
     };
@@ -254,6 +260,7 @@ async fn repeat_last_response_replays_the_last_step_once_the_queue_runs_dry() {
 
     let context = Context {
         system_prompt: None,
+        system_prompt_cache_prefix: None,
         messages: vec![user_text("hi")],
         tools: None,
     };
@@ -292,6 +299,7 @@ async fn parses_the_repeat_last_response_script_key_into_the_registration() {
 
     let context = Context {
         system_prompt: None,
+        system_prompt_cache_prefix: None,
         messages: vec![user_text("hi")],
         tools: None,
     };
@@ -321,6 +329,7 @@ async fn repeat_last_response_switched_on_after_serving_replays_the_last_step() 
 
     let context = Context {
         system_prompt: None,
+        system_prompt_cache_prefix: None,
         messages: vec![user_text("hi")],
         tools: None,
     };
@@ -351,6 +360,7 @@ async fn overlapping_streams_in_repeat_last_mode_never_hit_the_exhaustion_error(
 
     let context = Context {
         system_prompt: None,
+        system_prompt_cache_prefix: None,
         messages: vec![user_text("hi")],
         tools: None,
     };
@@ -377,6 +387,7 @@ async fn can_replace_and_append_queued_responses() {
 
     let context = Context {
         system_prompt: None,
+        system_prompt_cache_prefix: None,
         messages: vec![user_text("hi")],
         tools: None,
     };
@@ -439,6 +450,7 @@ async fn supports_async_response_factories() {
         &registration.get_model(),
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![user_text("hi")],
             tools: None,
         },
@@ -462,6 +474,7 @@ async fn emits_an_error_when_a_response_factory_throws() {
         &registration.get_model(),
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![user_text("hi")],
             tools: None,
         },
@@ -502,6 +515,7 @@ async fn estimates_prompt_and_output_tokens_from_serialized_context() {
     };
     let context = Context {
         system_prompt: Some("sys".into()),
+        system_prompt_cache_prefix: None,
         messages: vec![
             Message::User(UserMessage {
                 content: UserMessageContent::Blocks(vec![
@@ -589,6 +603,7 @@ async fn does_not_share_cache_across_sessions_or_requests_without_session_id() {
 
     let mut context = Context {
         system_prompt: None,
+        system_prompt_cache_prefix: None,
         messages: vec![user_text("hello")],
         tools: None,
     };
@@ -637,6 +652,7 @@ async fn simulates_prompt_caching_per_session_id() {
 
     let mut context = Context {
         system_prompt: Some("Be concise.".into()),
+        system_prompt_cache_prefix: None,
         messages: vec![user_text("hello")],
         tools: None,
     };
@@ -681,6 +697,7 @@ async fn does_not_simulate_caching_when_cache_retention_is_none() {
 
     let mut context = Context {
         system_prompt: None,
+        system_prompt_cache_prefix: None,
         messages: vec![user_text("hello")],
         tools: None,
     };
@@ -737,6 +754,7 @@ async fn streams_thinking_text_and_partial_tool_call_deltas() {
         &registration.get_model(),
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![user_text("hi")],
             tools: None,
         },
@@ -800,6 +818,7 @@ async fn streams_an_exact_event_order_for_fixed_size_chunks() {
         &registration.get_model(),
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![user_text("hi")],
             tools: None,
         },
@@ -843,6 +862,7 @@ async fn streams_multiple_tool_calls_in_one_message() {
         &registration.get_model(),
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![user_text("hi")],
             tools: None,
         },
@@ -892,6 +912,7 @@ async fn streams_an_explicit_assistant_error_message_as_a_terminal_error() {
         &registration.get_model(),
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![user_text("hi")],
             tools: None,
         },
@@ -933,6 +954,7 @@ async fn streams_an_explicit_assistant_aborted_message_as_a_terminal_error() {
         &registration.get_model(),
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![user_text("hi")],
             tools: None,
         },
@@ -981,6 +1003,7 @@ async fn supports_aborting_before_the_first_chunk() {
         &registration.get_model(),
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![user_text("hi")],
             tools: None,
         },
@@ -1018,6 +1041,7 @@ async fn supports_aborting_mid_text_stream_when_paced() {
         &registration.get_model(),
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![user_text("hi")],
             tools: None,
         },
@@ -1060,6 +1084,7 @@ async fn supports_aborting_mid_thinking_stream_when_paced() {
         &registration.get_model(),
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![user_text("hi")],
             tools: None,
         },
@@ -1112,6 +1137,7 @@ async fn supports_aborting_mid_toolcall_stream_when_paced() {
         &registration.get_model(),
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![user_text("hi")],
             tools: None,
         },
@@ -1152,6 +1178,7 @@ async fn unregisters_the_provider() {
         &registration.get_model(),
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![user_text("hi")],
             tools: None,
         },

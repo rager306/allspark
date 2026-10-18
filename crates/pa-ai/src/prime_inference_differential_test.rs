@@ -58,6 +58,7 @@ fn glm_53_flash(base_url: &str) -> Model {
 async fn normalized_result(model: &Model) -> Value {
     let context = crate::types::Context {
         system_prompt: Some("You are a helpful assistant. Be concise.".into()),
+        system_prompt_cache_prefix: None,
         messages: vec![crate::types::Message::User(crate::types::UserMessage {
             content: crate::types::UserMessageContent::Text(
                 "In one short sentence: what is the capital of France, and what is 7 times 8?"

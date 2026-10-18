@@ -73,8 +73,16 @@ async fn assert_prompt_case(case: PromptCase) {
             assert_eq!(prompt.matches(context).count(), 1);
         }
         let expected = case.expected;
+        // The appended guidance is the last *semantic* block. The date trails
+        // it deliberately: the date is the only part of the prompt that changes
+        // on a wall clock, so it sits at the very end where a rollover
+        // invalidates one line instead of everything the cache can reuse.
+        let trimmed = prompt
+            .rsplit_once("Current date: ")
+            .map_or(prompt, |(head, _)| head)
+            .trim_end();
         assert!(
-            prompt.ends_with(expected),
+            trimmed.ends_with(expected),
             "daemonless={daemonless}: missing appended {expected:?}"
         );
         for candidate in [case.global, case.project].into_iter().flatten() {

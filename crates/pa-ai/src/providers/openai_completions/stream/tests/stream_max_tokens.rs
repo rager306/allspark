@@ -120,6 +120,7 @@ async fn wire_body_for(model: Value) -> Value {
         &model,
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![],
             tools: None,
         },

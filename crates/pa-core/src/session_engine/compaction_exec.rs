@@ -150,6 +150,7 @@ pub async fn complete_summary_call(
         .collect();
     let context = pa_types::ai::Context {
         system_prompt: Some(super::compaction_utils::SUMMARIZATION_SYSTEM_PROMPT.to_string()),
+        system_prompt_cache_prefix: None,
         messages,
         tools: None,
     };

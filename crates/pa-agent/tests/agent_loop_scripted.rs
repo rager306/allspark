@@ -427,6 +427,7 @@ async fn provider_stream_failure_mid_turn_ends_run_and_retry_continues() {
     let config = AgentLoopConfig::new(test_model(), AgentLoopConfig::default_convert_to_llm());
     let context = AgentContext {
         system_prompt: String::new(),
+        system_prompt_cache_prefix: None,
         tools: Vec::new(),
         messages: vec![AgentMessage::user("hello")],
     };

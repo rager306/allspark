@@ -673,6 +673,7 @@ mod tests {
         let model = model("codebuddy", 0.5, 0.5);
         let context = Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![user_message(UserMessageContent::Text("hi".into()))],
             tools: None,
         };
@@ -690,6 +691,7 @@ mod tests {
         let model = model("openai", 0.5, 0.5);
         let context = Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![user_message(UserMessageContent::Text("hi".into()))],
             tools: None,
         };
@@ -705,6 +707,7 @@ mod tests {
         let model = model("codebuddy", 0.5, 0.5);
         let context = Context {
             system_prompt: Some("sys".into()),
+            system_prompt_cache_prefix: None,
             messages: vec![user_message(UserMessageContent::Text("hi".into()))],
             tools: None,
         };
@@ -720,6 +723,7 @@ mod tests {
         let model = model("codebuddy", 0.5, 0.5);
         let context = Context {
             system_prompt: Some("sys".into()),
+            system_prompt_cache_prefix: None,
             messages: vec![user_message(UserMessageContent::Blocks(vec![
                 UserOrToolContent::Text(TextContent {
                     text: "hi".into(),

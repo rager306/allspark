@@ -501,6 +501,7 @@ async fn run_websocket_attempt(
                         messages: vec![assistant_as_message(output)],
                         tools: None,
                         system_prompt: None,
+                        system_prompt_cache_prefix: None,
                     },
                     &OPENAI_TOOL_CALL_PROVIDERS,
                     ConvertResponsesMessagesOptions {
@@ -994,6 +995,7 @@ mod tests {
     ) -> Vec<Value> {
         let context = Context {
             system_prompt: Some("You are a helpful assistant.".into()),
+            system_prompt_cache_prefix: None,
             messages: vec![
                 Message::User(UserMessage {
                     content: UserMessageContent::Text("run ls".into()),
@@ -1360,6 +1362,7 @@ mod tests {
     fn codex_test_context(text: &str) -> Context {
         Context {
             system_prompt: Some("You are a helpful assistant.".to_string()),
+            system_prompt_cache_prefix: None,
             messages: vec![crate::types::Message::User(crate::types::UserMessage {
                 content: crate::types::UserMessageContent::Text(text.to_string()),
                 timestamp: 1,
@@ -1374,6 +1377,7 @@ mod tests {
     fn codex_followup_context(first: &AssistantMessage, text: &str) -> Context {
         Context {
             system_prompt: Some("You are a helpful assistant.".to_string()),
+            system_prompt_cache_prefix: None,
             messages: vec![
                 crate::types::Message::User(crate::types::UserMessage {
                     content: crate::types::UserMessageContent::Text("Say hello".to_string()),

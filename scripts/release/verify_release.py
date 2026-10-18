@@ -208,9 +208,21 @@ def main() -> int:
         )
         if args.expect_package_json is not None:
             expected_version = args.expect_package_json
-        if version_out != expected_version:
+        # The fork's `--version` names the product it ships: the payload keeps
+        # the upstream binary name for merge parity, but the printed line is
+        # `allspark <version> (fork build <id>; upstream prime-agent <version>)`.
+        # Accept that shape and compare the version it reports, so the gate
+        # checks the stamped version rather than the marketing wrapper.
+        reported_version = version_out
+        fork_marker = " (fork build "
+        if fork_marker in version_out:
+            head = version_out.split(fork_marker, 1)[0]
+            # Drop the product name: `allspark 1.2.3` -> `1.2.3`.
+            reported_version = head.rsplit(" ", 1)[-1] if " " in head else head
+        if reported_version != expected_version:
             fail(
-                f"staged prime-agent reports {version_out!r}, "
+                f"staged prime-agent reports {version_out!r} "
+                f"(version {reported_version!r}), "
                 f"expected {expected_version!r}"
             )
     finally:

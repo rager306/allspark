@@ -397,6 +397,7 @@ mod tests {
     fn reasoning_params_for(model: &Model, level: ModelThinkingLevel) -> Map<String, Value> {
         let context = Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![Message::User(UserMessage {
                 content: UserMessageContent::Text("Hi".into()),
                 timestamp: 1,
@@ -436,6 +437,7 @@ mod tests {
             .unwrap_or_else(|| panic!("compiled catalog carries {provider}/{model_id}"));
         let context = Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![Message::User(UserMessage {
                 content: UserMessageContent::Text("Hi".into()),
                 timestamp: 1,

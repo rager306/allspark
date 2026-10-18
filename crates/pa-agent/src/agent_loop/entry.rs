@@ -23,6 +23,7 @@ pub async fn run_agent_loop(
     let mut new_messages: Vec<AgentMessage> = prompts.clone();
     let mut current_context = AgentContext {
         system_prompt: context.system_prompt.clone(),
+        system_prompt_cache_prefix: context.system_prompt_cache_prefix,
         tools: context.tools.clone(),
         messages: context.messages.clone(),
     };

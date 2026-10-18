@@ -70,6 +70,7 @@ data: {"type":"message_stop"}"#,
         &model,
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![],
             tools: None,
         },
@@ -238,6 +239,7 @@ data: {"type":"message_stop"}"#,
         &model,
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![],
             tools: None,
         },
@@ -313,6 +315,7 @@ async fn in_stream_credit_frame_classifies_as_payment_required() {
         &model,
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![],
             tools: None,
         },

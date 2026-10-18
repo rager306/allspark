@@ -52,6 +52,7 @@ async fn stream_events(body: String) -> (Vec<&'static str>, AssistantMessageEven
         &model,
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![],
             tools: None,
         },
@@ -265,6 +266,7 @@ async fn the_done_marker_ends_a_stream_whose_body_stays_open() {
         &model,
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![],
             tools: None,
         },

@@ -127,7 +127,14 @@ fn read_regular_file(path: &Path) -> io::Result<String> {
             "expected a regular file",
         ));
     }
-    std::fs::read_to_string(path)
+    // Model-prompt layers join the system prompt verbatim, so the same cap as
+    // a context file applies: an oversized layer is prompt input, not config.
+    let content = std::fs::read_to_string(path)?;
+    let (content, _truncated) = crate::resources::truncate_context_content(
+        &content,
+        crate::resources::MAX_CONTEXT_FILE_BYTES,
+    );
+    Ok(content)
 }
 
 fn resolve_layer_files(

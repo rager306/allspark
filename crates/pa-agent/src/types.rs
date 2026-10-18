@@ -574,6 +574,11 @@ pub trait AgentTool: Send + Sync {
 #[derive(Clone, Default)]
 pub struct AgentContext {
     pub system_prompt: String,
+    /// Byte offset in `system_prompt` where the cacheable prefix ends.
+    ///
+    /// Carried to the provider so the cache breakpoint lands on the wire at
+    /// the real boundary instead of at the end of one monolithic block.
+    pub system_prompt_cache_prefix: Option<usize>,
     pub messages: Vec<AgentMessage>,
     pub tools: Vec<Arc<dyn AgentTool>>,
 }

@@ -111,6 +111,9 @@ async fn stream_assistant_response_inner(
         None => config.api_key.clone(),
     };
 
+    // A hook that rewrites the prompt invalidates the boundary: the offset
+    // measured on the original text no longer addresses the new one.
+    let hook_rewrote_prompt = config.get_system_prompt.is_some();
     let llm_context = LlmContext {
         system_prompt: Some(
             config
@@ -118,6 +121,11 @@ async fn stream_assistant_response_inner(
                 .as_ref()
                 .map_or_else(|| context.system_prompt.clone(), |hook| hook()),
         ),
+        system_prompt_cache_prefix: if hook_rewrote_prompt {
+            None
+        } else {
+            context.system_prompt_cache_prefix
+        },
         messages: llm_messages,
         tools: context
             .tools

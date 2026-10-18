@@ -212,6 +212,7 @@ mod tests {
     fn text_context(chars: usize) -> Context {
         Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![crate::types::Message::User(UserMessage {
                 content: UserMessageContent::Text("x".repeat(chars)),
                 timestamp: 0,
@@ -382,6 +383,7 @@ mod tests {
     fn estimator_counts_text_thinking_tool_calls_and_images() {
         let context = Context {
             system_prompt: Some("1234".to_string()), // 1 token
+            system_prompt_cache_prefix: None,
             messages: vec![
                 crate::types::Message::User(UserMessage {
                     content: UserMessageContent::Blocks(vec![

@@ -664,6 +664,13 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     if !resolved_profile.layers.is_empty() {
         tools = crate::tool_profile::apply_layers(&tools, &resolved_profile.layers);
     }
+    // Deterministic roster order. Providers match a prompt cache on the
+    // serialized request prefix, and the tool array is the FIRST thing in it
+    // (Anthropic checks tools -> system -> messages), so an unstable order
+    // invalidates the entire cache for every session. Sorting here keeps the
+    // roster a function of its contents rather than of registration order,
+    // MCP connection order, or hash iteration.
+    tools.sort_by(|left, right| left.name().cmp(right.name()));
     let active_tool_names: Vec<String> = tools.iter().map(|tool| tool.name().to_string()).collect();
     // FORK-ONLY: keep only the fork tools that survived the profile filter, so
     // `native_tool_names` mirrors the effective surface the prompt advertises.
@@ -738,7 +745,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 &model_prompts.errors,
             ));
     }
-    let system_prompt = crate::prompts::system_prompt::build_system_prompt(
+    let prompt_breakdown = crate::prompts::system_prompt::system_prompt_breakdown(
         &crate::prompts::system_prompt::BuildSystemPromptOptions {
             custom_prompt: resources.system_prompt.clone(),
             model_prompt_extras: model_prompts.extras.as_deref(),
@@ -771,6 +778,12 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             ..Default::default()
         },
     );
+    // The cache boundary is the end of the static prefix: everything after it
+    // (project context, skills, the date) is per-session or per-day, and a
+    // breakpoint at the very end of one monolithic block would re-bill the
+    // stable half whenever any of it changes.
+    let system_prompt_cache_prefix = Some(prompt_breakdown.cached_prefix_len);
+    let system_prompt = prompt_breakdown.assembled;
 
     // Captured before the digest context moves the local harness dir and
     // the loop wiring moves the session model: the factory host bridge's
@@ -868,6 +881,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let agent = Agent::new(AgentOptions {
         initial_state: AgentInitialState {
             system_prompt: Some(system_prompt.clone()),
+            system_prompt_cache_prefix,
             model: Some(model),
             thinking_level: Some(thinking_level),
             tools: Some(tools),

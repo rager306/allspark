@@ -64,6 +64,8 @@ impl AgentContinueError {
 #[derive(Clone)]
 pub struct AgentStateSnapshot {
     pub system_prompt: String,
+    /// Byte offset where the cacheable part of `system_prompt` ends.
+    pub system_prompt_cache_prefix: Option<usize>,
     pub model: Model,
     pub thinking_level: ThinkingLevel,
     pub tools: Vec<Arc<dyn AgentTool>>,
@@ -77,6 +79,8 @@ pub struct AgentStateSnapshot {
 #[derive(Default)]
 pub struct AgentInitialState {
     pub system_prompt: Option<String>,
+    /// Byte offset where the cacheable part of `system_prompt` ends.
+    pub system_prompt_cache_prefix: Option<usize>,
     pub model: Option<Model>,
     pub thinking_level: Option<ThinkingLevel>,
     pub tools: Option<Vec<Arc<dyn AgentTool>>>,
@@ -106,6 +110,8 @@ pub struct AgentOptions {
 
 struct MutableAgentState {
     system_prompt: String,
+    /// Byte offset where the cacheable part of `system_prompt` ends.
+    system_prompt_cache_prefix: Option<usize>,
     model: Model,
     thinking_level: ThinkingLevel,
     tools: Vec<Arc<dyn AgentTool>>,
@@ -120,6 +126,7 @@ impl Default for MutableAgentState {
     fn default() -> Self {
         MutableAgentState {
             system_prompt: String::new(),
+            system_prompt_cache_prefix: None,
             model: Model::unknown(),
             thinking_level: ThinkingLevel::Off,
             tools: Vec::new(),
@@ -489,6 +496,7 @@ impl AgentInner {
     fn snapshot_locked(shared: &Shared) -> crate::types::AgentContext {
         crate::types::AgentContext {
             system_prompt: shared.state.system_prompt.clone(),
+            system_prompt_cache_prefix: shared.state.system_prompt_cache_prefix,
             messages: shared.state.messages.clone(),
             tools: shared.state.tools.clone(),
         }
@@ -738,6 +746,7 @@ impl Agent {
         let initial = options.initial_state;
         let state = MutableAgentState {
             system_prompt: initial.system_prompt.unwrap_or_default(),
+            system_prompt_cache_prefix: initial.system_prompt_cache_prefix,
             model: initial.model.unwrap_or_else(Model::unknown),
             thinking_level: initial.thinking_level.unwrap_or(ThinkingLevel::Off),
             tools: initial.tools.unwrap_or_default(),
@@ -817,6 +826,7 @@ impl Agent {
         let shared = self.inner.shared.lock().await;
         AgentStateSnapshot {
             system_prompt: shared.state.system_prompt.clone(),
+            system_prompt_cache_prefix: shared.state.system_prompt_cache_prefix,
             model: shared.state.model.clone(),
             thinking_level: shared.state.thinking_level,
             tools: shared.state.tools.clone(),

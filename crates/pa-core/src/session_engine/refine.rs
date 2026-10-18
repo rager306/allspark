@@ -617,6 +617,7 @@ pub fn default_refiner_call(api_key: Option<String>) -> crate::refinement::execu
         Box::pin(async move {
             let context = pa_types::ai::Context {
                 system_prompt: Some(system_prompt.to_string()),
+                system_prompt_cache_prefix: None,
                 messages: vec![pa_types::ai::Message::User(UserMessage {
                     content: UserContent::Text(prompt),
                     timestamp: 0,

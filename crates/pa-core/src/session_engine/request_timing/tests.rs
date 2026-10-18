@@ -211,6 +211,7 @@ async fn run_timed_request(
     };
     let context = LlmContext {
         system_prompt: None,
+        system_prompt_cache_prefix: None,
         messages: llm_messages,
         tools: Vec::new(),
     };
@@ -467,6 +468,7 @@ async fn a_cloned_stream_seam_never_steals_the_parent_correlation() {
     // same wrapped stream seam.
     let side_context = LlmContext {
         system_prompt: None,
+        system_prompt_cache_prefix: None,
         messages: vec![Message::User(UserMessage {
             content: UserContent::Text("meanwhile".to_string()),
             timestamp: 0,
@@ -504,6 +506,7 @@ async fn a_cloned_stream_seam_never_steals_the_parent_correlation() {
             test_model(),
             LlmContext {
                 system_prompt: None,
+                system_prompt_cache_prefix: None,
                 messages: parent_messages,
                 tools: Vec::new(),
             },

@@ -582,6 +582,18 @@ pub struct Tool {
 pub struct Context {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    /// Where the cacheable part of `system_prompt` ends, in bytes.
+    ///
+    /// Providers match a prompt cache by the longest common *prefix* of the
+    /// serialized request, so the boundary has to exist on the wire, not just
+    /// in the harness: a single system block with one breakpoint at its end
+    /// means any volatile byte anywhere in it (a date, a cwd, a file list)
+    /// re-bills the whole block. When set, a provider that supports cache
+    /// breakpoints places one at this offset and another at the end, so the
+    /// stable part stays cached across turns while the volatile tail is
+    /// re-sent. `None` keeps the historical single-breakpoint behaviour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_cache_prefix: Option<usize>,
     pub messages: Vec<Message>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Tool>>,

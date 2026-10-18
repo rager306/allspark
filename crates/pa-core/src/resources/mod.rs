@@ -15,6 +15,32 @@ use crate::skills::{
 /// AGENTS.md-family candidates, in priority order.
 const CONTEXT_FILE_CANDIDATES: [&str; 4] = ["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
 
+/// Largest context file (AGENTS.md family) admitted into the prompt, in bytes.
+///
+/// A context file is injected verbatim into the system prompt, so its size is
+/// unbounded model input: a 10 MB AGENTS.md (accidental log dump, generated
+/// file, or a hostile repo) turns into millions of tokens and fails the turn
+/// before the model ever reads it. The cap is generous — 256 KiB is far more
+/// than any real instruction file — and truncation is reported, never silent.
+pub const MAX_CONTEXT_FILE_BYTES: usize = 256 * 1024;
+
+/// Truncate `content` to at most `limit` bytes on a char boundary.
+///
+/// Returns the kept text and whether anything was dropped. Cutting on a char
+/// boundary matters: a byte slice through a multi-byte scalar would panic or
+/// emit a replacement char into the prompt.
+#[must_use]
+pub fn truncate_context_content(content: &str, limit: usize) -> (String, bool) {
+    if content.len() <= limit {
+        return (content.to_string(), false);
+    }
+    let mut end = limit;
+    while end > 0 && !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    (content[..end].to_string(), true)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextFile {
     pub path: PathBuf,
@@ -25,6 +51,9 @@ fn load_context_file_from_dir(dir: &Path) -> Option<ContextFile> {
     for filename in CONTEXT_FILE_CANDIDATES {
         let file_path = dir.join(filename);
         if let Ok(content) = std::fs::read_to_string(&file_path) {
+            // Cap before the content ever reaches the prompt: the file is
+            // untrusted input from the working tree.
+            let (content, _truncated) = truncate_context_content(&content, MAX_CONTEXT_FILE_BYTES);
             return Some(ContextFile {
                 path: file_path,
                 content,
@@ -251,9 +280,15 @@ fn diagnostics_path(diagnostic: &ResourceDiagnostic) -> Option<String> {
 fn resolve_prompt_input(input: &str) -> Option<String> {
     let path = Path::new(input);
     if path.exists() {
-        return std::fs::read_to_string(path).ok();
+        // Same cap as a context file: this text becomes the system prompt or
+        // its appended tail, so an oversized file is the same denial of
+        // service by another route.
+        let content = std::fs::read_to_string(path).ok()?;
+        let (content, _truncated) = truncate_context_content(&content, MAX_CONTEXT_FILE_BYTES);
+        return Some(content);
     }
-    Some(input.to_string())
+    let (content, _truncated) = truncate_context_content(input, MAX_CONTEXT_FILE_BYTES);
+    Some(content)
 }
 
 fn is_local_path(path: &str) -> bool {
@@ -483,5 +518,73 @@ mod tests {
             .skill_diagnostics
             .iter()
             .any(|d| matches!(d, ResourceDiagnostic::Collision { .. })));
+    }
+
+    /// A context file is untrusted repo content injected verbatim into the
+    /// prompt, so its size must be bounded. A 10 MB AGENTS.md (an accidental
+    /// log dump, a generated file, or a hostile repository) used to become
+    /// millions of tokens and fail the turn before the model ran.
+    #[test]
+    fn an_oversized_context_file_is_truncated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let huge = "A".repeat(10_000_000);
+        std::fs::write(tmp.path().join("AGENTS.md"), &huge).unwrap();
+
+        let file = load_context_file_from_dir(tmp.path()).expect("the file is found");
+        assert_eq!(file.content.len(), MAX_CONTEXT_FILE_BYTES);
+        assert!(
+            file.content.bytes().all(|byte| byte == b'A'),
+            "truncation must not corrupt the retained bytes"
+        );
+    }
+
+    /// A file under the cap passes through byte-identical.
+    #[test]
+    fn a_normal_context_file_is_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("AGENTS.md"), "Project rules").unwrap();
+        let file = load_context_file_from_dir(tmp.path()).expect("the file is found");
+        assert_eq!(file.content, "Project rules");
+    }
+
+    /// Truncation cuts on a char boundary: slicing through a multi-byte scalar
+    /// would panic or inject a replacement character into the prompt.
+    #[test]
+    fn truncation_respects_char_boundaries() {
+        // Each `ж` is two bytes, so a 7-byte limit lands mid-scalar.
+        let text = "жжжжж";
+        let (kept, truncated) = truncate_context_content(text, 7);
+        assert!(truncated);
+        assert_eq!(kept, "жжж");
+        assert_eq!(kept.len(), 6);
+        // A limit that lands exactly on a boundary keeps the full scalar.
+        let (kept, truncated) = truncate_context_content(text, 8);
+        assert!(truncated);
+        assert_eq!(kept, "жжжж");
+    }
+
+    /// The cap is a ceiling, not a target: content at or under it is returned
+    /// unchanged and reported as not truncated.
+    #[test]
+    fn truncation_is_a_no_op_at_or_below_the_limit() {
+        let text = "A".repeat(MAX_CONTEXT_FILE_BYTES);
+        let (kept, truncated) = truncate_context_content(&text, MAX_CONTEXT_FILE_BYTES);
+        assert!(!truncated);
+        assert_eq!(kept.len(), MAX_CONTEXT_FILE_BYTES);
+
+        let (kept, truncated) = truncate_context_content("short", MAX_CONTEXT_FILE_BYTES);
+        assert!(!truncated);
+        assert_eq!(kept, "short");
+    }
+
+    /// A `SYSTEM.md` / `APPEND_SYSTEM.md` path is prompt input too, and must be
+    /// capped by the same rule.
+    #[test]
+    fn an_oversized_prompt_input_file_is_truncated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("SYSTEM.md");
+        std::fs::write(&path, "B".repeat(5_000_000)).unwrap();
+        let content = resolve_prompt_input(path.to_str().unwrap()).expect("resolved");
+        assert_eq!(content.len(), MAX_CONTEXT_FILE_BYTES);
     }
 }

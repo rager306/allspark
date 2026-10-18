@@ -150,6 +150,7 @@ pub fn stream_once(
     let tools: Vec<pa_types::ai::Tool> = context.tools.iter().filter_map(json_round_trip).collect();
     let ai_context = pa_types::ai::Context {
         system_prompt: context.system_prompt,
+        system_prompt_cache_prefix: context.system_prompt_cache_prefix,
         messages,
         tools: Some(tools),
     };

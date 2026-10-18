@@ -70,8 +70,25 @@ pub(crate) fn load_skill_from_file(
     source: &str,
 ) -> (Option<Skill>, Vec<ResourceDiagnostic>) {
     let mut diagnostics = Vec::new();
+    // A SKILL.md is untrusted repo content that reaches the prompt verbatim.
+    // Cap it here so a generated or hostile file cannot flood the context.
     let raw_content = match std::fs::read_to_string(file_path) {
-        Ok(content) => content,
+        Ok(content) => {
+            let (content, truncated) = crate::resources::truncate_context_content(
+                &content,
+                crate::resources::MAX_CONTEXT_FILE_BYTES,
+            );
+            if truncated {
+                diagnostics.push(ResourceDiagnostic::Warning {
+                    message: format!(
+                        "skill file exceeds {} bytes and was truncated",
+                        crate::resources::MAX_CONTEXT_FILE_BYTES
+                    ),
+                    path: Some(file_path.display().to_string()),
+                });
+            }
+            content
+        }
         Err(error) => {
             diagnostics.push(ResourceDiagnostic::Warning {
                 message: error.to_string(),

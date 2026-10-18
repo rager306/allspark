@@ -67,6 +67,7 @@ async fn stream_capture_head(
         &model,
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![],
             tools: None,
         },
@@ -163,6 +164,7 @@ async fn stream_capture_request_body(model: Value) -> Value {
         &model,
         &Context {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: vec![],
             tools: None,
         },

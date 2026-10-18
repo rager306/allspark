@@ -472,6 +472,7 @@ mod tests {
             model,
             &Context {
                 system_prompt: None,
+                system_prompt_cache_prefix: None,
                 messages,
                 tools: None,
             },
