@@ -33,6 +33,13 @@ pub fn write_u64(out: &mut Vec<u8>, mut value: u64) -> usize {
 pub fn read_u64(data: &[u8]) -> MemResult<(u64, usize)> {
     let mut value = 0u64;
     for (i, &byte) in data.iter().enumerate().take(10) {
+        if i == 9 && (byte & 0x7f) > 1 {
+            // A tenth byte carries only bit 63; anything beyond silently
+            // shifted out of the u64 before, truncating the value. The
+            // canonical encoding never produces it, so refuse instead of
+            // decoding a different number than the bytes spell.
+            return Err(MemError::BadVarint);
+        }
         value |= u64::from(byte & 0x7f) << (7 * i);
         if byte < 128 {
             return Ok((value, i + 1));
@@ -43,6 +50,36 @@ pub fn read_u64(data: &[u8]) -> MemResult<(u64, usize)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_non_canonical_tenth_byte_is_refused_not_truncated() {
+        use super::{read_u64, MemError};
+        // Bits above 63 have nowhere to land: before the guard this decoded
+        // as Some((1 << 63, 10)), silently dropping the tenth byte's upper
+        // bits instead of rejecting the non-canonical encoding.
+        let bad = [0x80u8; 9]
+            .iter()
+            .copied()
+            .chain([0x7f])
+            .collect::<Vec<_>>();
+        assert!(matches!(read_u64(&bad), Err(MemError::BadVarint)));
+        let bad_two = [0x80u8; 9]
+            .iter()
+            .copied()
+            .chain([0x02])
+            .collect::<Vec<_>>();
+        assert!(matches!(read_u64(&bad_two), Err(MemError::BadVarint)));
+        // The canonical tenth byte (bit 63 alone) still decodes.
+        let canonical = [0x80u8; 9]
+            .iter()
+            .copied()
+            .chain([0x01])
+            .collect::<Vec<_>>();
+        assert_eq!(
+            read_u64(&canonical).expect("canonical decodes"),
+            (1u64 << 63, 10)
+        );
+    }
+
     use super::*;
 
     fn round_trip(value: u64) {
