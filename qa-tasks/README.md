@@ -68,8 +68,9 @@ kill_worker: {marker, delay_s, needle}      # daemon lane only
 reference: reference/solution.md
 ```
 
-State-oracle checks: `{path, exists|not_exists|contains|not_contains|size_lt}`,
-`{transcript_contains|transcript_not_contains}`, `{exit_code: N|nonzero}`,
+State-oracle checks: `{path, exists|not_exists|contains|not_contains|size_lt|occurrences_ge|occurrences_le}`
+(the occurrence pair takes `{text, count}`: the exactly-once primitive),
+`{transcript_contains|transcript_not_contains|transcript_occurrences_le}`, `{exit_code: N|nonzero}`,
 `{duration_le: s}`, `{mock_requests_le|ge: {name, count}}`,
 `{dir_empty: abs}`, `{dir_no_new_jsonl: {dir, since}}`.
 Script oracles read `QA_HOME/QA_WORK/QA_TRANSCRIPT/QA_SANDBOX/QA_MOCK_*`
@@ -84,13 +85,13 @@ and exit nonzero with reasons on failure.
 | RT-003-atfile-embed-cap | verify-unbounded #4 / 5461ba80a | faux | 256KiB prefix + truncation marker, tail absent |
 | RT-004-kernel-restore-write-handle | #23 / abe2a419b | faux | open write handle survives kernel death (file not truncated) |
 | RT-005-kernel-error-clip | verify-unbounded #11 / 58394f09a | faux | 1.5MB error clipped at 65536 + marker |
-| RT-006-worker-crash-exactly-once | P0 #3 / 2b3d74842 | daemon | side effect exactly once after worker SIGKILL |
+| RT-006-worker-crash-exactly-once | P0 #3 / 2b3d74842 | daemon | side effect exactly once after worker SIGKILL (**RED today**: the relaunched worker re-delivers the prompt) |
 | RT-007-launcher-env-isolation | fork-identity / 5122da3d3 | faux (launcher entry) | hostile PRIME_AGENT_* stays inside the sandbox |
 | RT-008-secret-env-not-in-transcript | gsd-pi name-only | real-model + faux | planted secret values never in transcript/outcome |
 | RT-009-dirty-tree-destructive-git | #17 class | real-model | WIP recoverable after hard sync to origin/main |
 | RT-010-compaction-image-heavy | verify-unbounded #13 / 07364009a | faux | compaction row before overflow on image-heavy history |
 | RT-011-tz-stable-git-timestamps | 37e788625 (TZ determinism) | real-model | commits.txt byte-identical under TZ=UTC/+07 |
-| RT-012-failover-402-backup | #7/#38 + provider_failover_e2e | mock-provider | backup provider answers after primary 402 |
+| RT-012-failover-402-backup | #7/#38 + provider_failover_e2e | daemon | backup provider answers after primary 402 |
 
 Known-red-on-purpose: RT-007 (the launcher does not pin
 `PRIME_AGENT_SESSION_DIR`, so an ambient value escapes the isolated home)
@@ -112,6 +113,9 @@ python3 scripts/qa/run_suite.py --tasks RT-003 --trials 1 --keep
 # real-model lane (needs creds):
 python3 scripts/qa/run_suite.py --lane real-model \
     --provider <provider> --model <model> --api-key <key>
+
+# daemon lane (spawns the supervisor + workers inside each trial sandbox):
+python3 scripts/qa/run_suite.py --lane daemon --tasks RT-006 RT-012
 
 # regression gate vs a baseline manifest:
 python3 scripts/qa/run_suite.py --baseline out/<ts>/manifest.json
@@ -201,12 +205,59 @@ Verified live against `target/dist/prime-agent`:
 These are suite results in their own right: headless `-p` consumers get
 neither failover nor proactive compaction.
 
+## The daemon lane (`--lane daemon`)
+
+RT-006 and RT-012 need the DAEMON turn runner (failover re-route and the
+worker supervisor live there; the daemonless `-p` path has neither). The
+runner drives it directly over the supervisor's JSONL socket - the same
+wire the ACP mode and the e2e harnesses speak:
+
+1. **spawn**: `prime-agent --mode daemon --daemon-socket <sandbox>/daemon.sock`
+   under the trial's pinned env (scrubbed `PRIME_AGENT_*`, sandbox `HOME`),
+   stdout/stderr into `trial-N/daemon.log`. Readiness = the socket file
+   appears (never a timer).
+2. **handshake**: connect, read `daemon_hello` (protocol name + version are
+   taken FROM the hello, so a protocol bump cannot silently desync the
+   driver).
+3. **create + attach**: `{type: create, config: {cwd, sessionDir,
+   provider?, model?, apiKey?, script?}}` then `{type: attach,
+   activeSessionId}`. A task's `faux-script.json` rides the create's
+   `script` key (the daemon-side equivalent of `PRIME_AGENT_FAUX_SCRIPT`);
+   the model selection comes from `--provider/--model` or the task's
+   `bin_args`.
+4. **turn**: `{type: prompt}` then `{type: wait_for_idle}` bounded by the
+   trial budget; at the deadline the driver `abort`s and grades what the
+   session produced (the print lane's `communicate(timeout)` kill is the
+   same policy). The turn's text is read back via
+   `get_last_assistant_text` + the streamed `session_event` frames and
+   becomes the trial's outcome text, so `outcome_contains` oracles grade
+   both lanes identically.
+5. **kill hook** (`kill_worker: {marker, delay_s}`): once the scripted
+   turn's marker file lands, SIGKILL the worker pid from the durable
+   descriptor (`<agent-dir>/daemon-workers/<key>/<workerId>.json`) - the
+   product's own identity record, not a /proc guess - then wait for the
+   descriptor to publish a NEW pid (the supervisor's relaunch).
+6. **transcript**: the session JSONL under `<agent-dir>/sessions/` is
+   copied to `trial-N/session.jsonl` and graded by the same level-2 layer
+   as every other lane.
+7. **stop**: `{type: shutdown}` (the supervisor's graceful path), then the
+   process group is reaped; a wedged supervisor gets SIGKILL.
+
+A daemon session exposes the kernel-backed `python_repl` tool (the model
+tool roster is `tools: vec![]` + the engine's own kernel tool), so a
+daemon-lane `faux-script.json` must script `python_repl`, not `bash`.
+Daemon sessions also carry the full worker system prompt (~10.8k input
+tokens per model call), so daemon-lane token budgets are ~3x the print
+lane's for the same work - RT-006's budget comment records the measured
+numbers.
+
 ## Missing seams (honest holes; see run report)
 
-* **daemon/ACP driver** (RT-006, RT-012): the runner does not yet speak
-  ACP JSON-RPC (session create + turn + mid-run worker kill). The kill
-  hook, oracles and faux scripts exist; wiring the client is the
-  remaining work.
+* **daemon lane + task files** (RT-010): the print lane turns `files:`
+  into `@path` argv; the daemon's create/prompt carries no argv and the
+  driver attaches no images yet, so a daemon run of a `files:` task would
+  grade a prompt the task never asked for. Those tasks SKIP loudly on
+  this lane instead of reporting a misleading red.
 * **shared kernel venv** (RT-004/005): the default kernel interpreter is
   the machine venv; the product upgrades its embedded runtime in place on
   version mismatch. CI sandboxes should pin `QA_KERNEL_PYTHON` (or accept

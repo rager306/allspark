@@ -220,7 +220,6 @@ pub(crate) fn prepare_attempt(
 }
 
 /// SUMMARIZE: run the summarizer calls with no session lock held.
-
 /// Cap the history so the summarization request fits the model's context
 /// window. When the conversation outgrew the window (the compaction
 /// trigger fired but the history itself is the overflow), the
@@ -242,10 +241,7 @@ pub(crate) fn truncate_history_for_summarizer(
     let max_input = model_context_window
         .saturating_sub(completion_budget)
         .saturating_sub(safety_margin);
-    let total: u64 = history
-        .iter()
-        .map(|message| super::compaction::estimate_tokens(message))
-        .sum();
+    let total: u64 = history.iter().map(super::compaction::estimate_tokens).sum();
     if total <= max_input {
         return history.to_vec();
     }

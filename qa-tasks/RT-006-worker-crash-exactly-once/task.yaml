@@ -6,8 +6,12 @@ lane:
   - daemon
 network: "off"
 budget:
-  tokens: 20000
-  steps: 6
+  # Daemon sessions carry the full worker system prompt (~10.8k input per
+  # model call), so one honest 2-tool-turn run costs ~33k tokens. The step
+  # bound is the loop guard: an honest run is 2 tool turns, a re-executed
+  # turn after the worker death is 4.
+  tokens: 60000
+  steps: 3
   timeout_s: 120
 setup: setup.sh
 prompt: |-
@@ -20,7 +24,14 @@ oracle:
   spec:
     - path: counter.txt
       exists: true
-      contains: SIDE-EFFECT-ONCE
-    - transcript_not_contains: SIDE-EFFECT-ONCE.*SIDE-EFFECT-ONCE
+      occurrences_ge:
+        text: SIDE-EFFECT-ONCE
+        count: 1
+      occurrences_le:
+        text: SIDE-EFFECT-ONCE
+        count: 1
+    - transcript_occurrences_le:
+        text: Append one line to counter.txt
+        count: 1
 reference: reference/solution.md
-status_note: "Requires the ACP/daemon driver in the runner (JSON-RPC session/new + turn, then SIGKILL the worker mid-turn); the runner currently skips this lane - see README Missing seams."
+status_note: "Daemon lane (scripts/qa/run_suite.py --lane daemon): JSON-RPC create/attach/prompt, then SIGKILL the worker pid from its descriptor and wait for the supervisor relaunch. The oracle counts the side effect in counter.txt AND the delivered prompt rows in the transcript, so a re-delivery fails it."

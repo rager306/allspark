@@ -1,1 +1,30 @@
-{"responses": [{"content": [{"type": "toolCall", "name": "bash", "arguments": {"command": "echo SIDE-EFFECT-ONCE >> counter.txt; touch side-effect.done"}}]}, {"content": [{"type": "toolCall", "name": "bash", "arguments": {"command": "sleep 30"}}], "delayMs": 0}], "repeatLastResponse": true}
+{
+  "engine": "faux",
+  "responses": [
+    {
+      "content": [
+        {
+          "type": "toolCall",
+          "name": "python_repl",
+          "arguments": {
+            "code": "open('counter.txt', 'a').write('SIDE-EFFECT-ONCE\\n')\nopen('side-effect.done', 'w').write('done')\nprint('side effect done')"
+          }
+        }
+      ]
+    },
+    {
+      "content": [
+        {
+          "type": "toolCall",
+          "name": "python_repl",
+          "arguments": {
+            "code": "import time\ntime.sleep(12)\nprint('still working')"
+          }
+        }
+      ]
+    },
+    {
+      "text": "The turn finished after the slow step."
+    }
+  ]
+}

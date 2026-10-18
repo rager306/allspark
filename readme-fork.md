@@ -72,6 +72,14 @@ Extras:
   are moved below the survivors, labelled `demoted-by-jev (p=…)`, and the rest are marked
   `verified-by-jev` (`details.verified_jev`). A judge failure returns the store's own
   order untouched;
+- `jev.toolArbiter = "auto"` (**default `auto`**) adds a `[tool-arbiter]` note to a
+  `bash` result when the command is a shell habit a fork tool covers better (`grep`/`rg`/
+  `find`/`fd` → `graph.search` or `lsp.find_symbol`, `sed -i`/`perl -i`/`awk -i inplace`/
+  `cat`/`head`/`tail` → `edit`). Advisory by construction: the command runs unchanged, its
+  exit status is untouched, and the note is appended after the output
+  (`details.toolArbiter`). The deterministic table needs no judge; behind a native judge
+  the arbiter asks one `choice` and a confident `use_specialized` strengthens the wording.
+  `off` silences it entirely;
 - both consumers ride the same native-only gate as the tool (`[jev] enabled` must admit
   the layer and the chain must start native) and must pass the offline corpus gate in
   `crates/pa-core/src/jev/eval/` before a default flip: frozen corpus, dev/test split,

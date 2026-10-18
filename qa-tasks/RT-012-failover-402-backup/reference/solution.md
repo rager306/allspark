@@ -16,8 +16,20 @@ The re-route driver lives in the DAEMON turn runner
 policies; the code even states "Faux-script sessions never fail over").
 The daemonless `-p` print path aborts the turn on the payment error
 without consulting the chain - verified live: primary 402 -> turn fails,
-backup mock saw 0 requests. Hence this task is `daemon` lane: it needs
-the ACP/daemon driver (README "Missing seams"), same as RT-006.
+backup mock saw 0 requests. Hence this task is `daemon` lane.
+
+## Verified end-to-end (2026-10-18)
+`python3 scripts/qa/run_suite.py --lane daemon --tasks RT-012` drives the
+supervisor over its JSONL socket (create with `provider: qa-primary`,
+`model: mock-1` -> attach -> prompt -> wait_for_idle) and grades the
+outcome: PASS on every trial. The wire evidence the oracle reads:
+
+* `auto_retry_start` attempt=1 (the quick retry, no `reason`) then
+  attempt=2 with `reason: "backup"`, `backupModel: "qa-backup/mock-1"`;
+* `auto_retry_end` success with `restoredModel: "qa-primary/mock-1"`;
+* the terminal assistant `turn_end` carries `provider: qa-backup` and the
+  text `BACKUP-ANSWER-7f3a`;
+* the backup loopback mock saw >= 1 request (the primary saw exactly 1).
 
 ## Reference behavior (daemon lane)
 1. POST primary/chat/completions -> 402 (classified insufficient_credits).

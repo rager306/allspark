@@ -309,6 +309,14 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // moves into the resource loader (both default OFF).
     let jev_auto_thinking = settings.get_jev_auto_thinking();
     let jev_graph_rerank = settings.get_jev_graph_rerank();
+    // FORK-ONLY (jev Phase 2): the tool-selection arbiter's gate. The
+    // deterministic table needs no judge, so the object exists whenever the
+    // settings admit the layer; it is ARMED once the roster is final (the
+    // table never suggests a tool the model cannot call).
+    let jev_tool_arbiter = settings.get_jev_tool_arbiter();
+    let tool_arbiter: Option<Arc<crate::jev::ToolArbiter>> =
+        crate::jev::tool_arbiter::arbiter_admitted(jev_enabled, jev_tool_arbiter)
+            .then(|| Arc::new(crate::jev::ToolArbiter::new()));
     // Phase-7 tool-surface profile, captured before `settings` moves into the
     // resource loader (the profile selects a context and modes).
     let resolved_profile =
@@ -532,6 +540,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             super::runtime_wiring::ipython_tool_options(
                 provisioner.clone(),
                 config.on_late_sent_agent_message.clone(),
+                tool_arbiter.clone(),
             ),
         );
         tools.push(Arc::new(
@@ -659,6 +668,28 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // FORK-ONLY: keep only the fork tools that survived the profile filter, so
     // `native_tool_names` mirrors the effective surface the prompt advertises.
     native_tool_names.retain(|name| active_tool_names.iter().any(|active| active == name));
+    // FORK-ONLY (jev Phase 2): arm the tool-selection arbiter now that both
+    // halves are known - the roster it may suggest from, and the judge chain
+    // that may strengthen a note (`[jev] toolArbiter = auto` behind a native
+    // judge; without one the deterministic table alone applies).
+    if let Some(arbiter) = tool_arbiter.as_ref() {
+        let judge: Option<Arc<dyn crate::jev::Judge>> =
+            if crate::jev::tool_arbiter::should_run_tool_arbiter(
+                jev_enabled,
+                jev_tool_arbiter,
+                jev_judge.as_deref(),
+            ) {
+                jev_judge
+                    .as_ref()
+                    .map(|chain| Arc::clone(chain) as Arc<dyn crate::jev::Judge>)
+            } else {
+                None
+            };
+        arbiter.arm(
+            crate::jev::ToolAvailability::from_tool_names(&active_tool_names),
+            judge,
+        );
+    }
 
     // The snapshot arm is not depth-gated: a resumed session prewarms even
     // when the config flag is off, so its namespace revives before the first turn.
@@ -923,6 +954,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             )));
         }
     }
+    // The arbiter is armed by now (the roster and the judge are both final),
+    // so the session seam reports exactly what the tools consult.
+    session.set_tool_arbiter(tool_arbiter.clone());
     session.set_agent_dir(config.agent_dir.clone());
     // Keep the context descriptor even while disabled, so re-enabling can load it.
     session.harness_digest = Some(digest_context);

@@ -184,6 +184,10 @@ pub struct AgentSession {
     /// session's thinking level exactly as configured - the pre-jev
     /// behaviour, byte for byte.
     auto_thinking: std::sync::Mutex<Option<auto_thinking::AutoThinkingWiring>>,
+    /// FORK-ONLY (jev Phase 2): the tool-selection arbiter the bash paths
+    /// consult. `None` (the default) leaves every tool result byte-identical
+    /// to the pre-jev path.
+    tool_arbiter: std::sync::Mutex<Option<std::sync::Arc<crate::jev::ToolArbiter>>>,
     /// The session's agent dir (the settings root): the refine flow
     /// resolves the `factory.enabled` opt-in from its settings.json on
     /// every run, immediately before the plan applies, mirroring the
@@ -260,6 +264,7 @@ impl AgentSession {
             semantic_edges: std::sync::Mutex::new(None),
             side_question_stream_fn: std::sync::Mutex::new(None),
             auto_thinking: std::sync::Mutex::new(None),
+            tool_arbiter: std::sync::Mutex::new(None),
             agent_dir: None,
             compaction_flight: tokio::sync::Mutex::new(()),
         };
@@ -282,6 +287,26 @@ impl AgentSession {
     #[must_use]
     pub fn auto_thinking_wiring(&self) -> Option<auto_thinking::AutoThinkingWiring> {
         self.auto_thinking
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Install the FORK-ONLY tool-selection arbiter (the engine resolves the
+    /// `[jev]` gates and the roster at session creation). `None` leaves every
+    /// tool result exactly as the pre-jev path produced it.
+    pub fn set_tool_arbiter(&mut self, arbiter: Option<std::sync::Arc<crate::jev::ToolArbiter>>) {
+        *self
+            .tool_arbiter
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = arbiter;
+    }
+
+    /// The installed tool-selection arbiter, if any (tests read the armed
+    /// roster; the tools hold their own `Arc`).
+    #[must_use]
+    pub fn tool_arbiter(&self) -> Option<std::sync::Arc<crate::jev::ToolArbiter>> {
+        self.tool_arbiter
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()

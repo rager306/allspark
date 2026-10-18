@@ -334,6 +334,11 @@ pub struct IpythonToolOptions {
     /// UI surface; `None` in headless sessions.
     pub ui: Option<Arc<dyn IpythonToolUi>>,
     pub on_late_sent_agent_message: Option<LateSentAgentMessageHandler>,
+    /// FORK-ONLY (jev Phase 2): the advisory tool-selection arbiter. When
+    /// armed, a cell whose `bash()` command matches a rule gets a
+    /// `[tool-arbiter]` note naming the specialized tool. Nothing is blocked
+    /// or rerun - the note is appended to the cell's own result.
+    pub arbiter: Option<Arc<crate::jev::ToolArbiter>>,
 }
 
 pub fn ipython_tool_schema() -> serde_json::Value {
@@ -419,6 +424,14 @@ pub async fn execute_ipython(
 
     let (r, kernel_restarted) = result.map_err(|err| anyhow::anyhow!("{}", err.message()))?;
 
+    // FORK-ONLY (jev Phase 2): the advisory arbiter note over the cell's
+    // `bash()` command. Fail-open: no arbiter, no rule, or a judge failure
+    // leaves the cell's own text byte-identical.
+    let arbiter_note = match (&options.arbiter, &r.bash_commands) {
+        (Some(arbiter), Some(bash)) => arbiter.note(&bash.first).await,
+        _ => None,
+    };
+
     let mut text = format_execute_text(&r, r.background_output.as_deref());
     if kernel_restarted {
         text = if text.is_empty() {
@@ -426,6 +439,12 @@ pub async fn execute_ipython(
         } else {
             format!("{}\n\n{}", kernel_restart_notice(), text)
         };
+    }
+    // The arbiter note rides AFTER the cell's own text (appended, never a
+    // replacement: the cell already ran).
+    if let Some(note) = &arbiter_note {
+        let separator = if text.is_empty() { "" } else { "\n\n" };
+        let _ = write!(text, "{separator}{}", note.text);
     }
 
     let image_blocks = image_blocks_from_attachments(&r.attachments);
@@ -469,6 +488,9 @@ pub async fn execute_ipython(
             "traceback": error.traceback,
         });
         details["errorEname"] = json!(error.ename);
+    }
+    if let Some(note) = &arbiter_note {
+        details["toolArbiter"] = note.to_json();
     }
     if !r.sent_agent_messages.is_empty() {
         details["sentAgentMessages"] = json!(r
@@ -535,6 +557,7 @@ pub fn create_ipython_tool_definition(_cwd: &str, options: IpythonToolOptions) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     #[test]
     fn sent_agent_message_json_matches_ts_wire_shape() {
@@ -584,5 +607,129 @@ mod tests {
                 "target": { "activeSessionId": "a1", "sessionId": "s1" },
             })
         );
+    }
+    // ── the advisory tool-selection arbiter (jev Phase 2) ──
+
+    struct StubKernel {
+        result: Mutex<Option<ExecuteResult>>,
+    }
+
+    impl KernelExecutor for StubKernel {
+        fn execute(
+            &self,
+            _code: &str,
+            _options: KernelExecuteOptions<'_>,
+        ) -> Pin<Box<dyn Future<Output = Result<ExecuteResult, KernelExecError>> + Send>> {
+            let result = self
+                .result
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+                .unwrap_or_default();
+            Box::pin(std::future::ready(Ok(result)))
+        }
+    }
+
+    struct StubProvisioner {
+        kernel: Arc<StubKernel>,
+    }
+
+    impl IpythonKernelProvisioner for StubProvisioner {
+        fn ensure(
+            &self,
+            _on_progress: Option<BootstrapProgressHandler>,
+            _signal: Option<AbortSignal>,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Box<dyn KernelExecutor>>> + Send>> {
+            let kernel = Arc::clone(&self.kernel);
+            let executor: Box<dyn KernelExecutor> = Box::new(StubExecutor(kernel));
+            Box::pin(std::future::ready(Ok(executor)))
+        }
+
+        fn kill(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+            Box::pin(std::future::ready(()))
+        }
+    }
+
+    struct StubExecutor(Arc<StubKernel>);
+
+    impl KernelExecutor for StubExecutor {
+        fn execute(
+            &self,
+            code: &str,
+            options: KernelExecuteOptions<'_>,
+        ) -> Pin<Box<dyn Future<Output = Result<ExecuteResult, KernelExecError>> + Send>> {
+            self.0.execute(code, options)
+        }
+    }
+
+    fn arbiter_options(bash_command: Option<&str>) -> IpythonToolOptions {
+        let result = ExecuteResult {
+            status: ExecuteStatus::Ok,
+            stdout: "src/lib.rs:12:    fn main() {}\n".to_string(),
+            bash_commands: bash_command.map(|command| crate::kernel::shared::KernelBashCommands {
+                first: command.to_string(),
+                count: 1,
+                lines: 3,
+            }),
+            ..ExecuteResult::default()
+        };
+        let arbiter = crate::jev::ToolArbiter::new();
+        arbiter.arm(crate::jev::ToolAvailability::all(), None);
+        IpythonToolOptions {
+            provisioner: Arc::new(StubProvisioner {
+                kernel: Arc::new(StubKernel {
+                    result: Mutex::new(Some(result)),
+                }),
+            }),
+            ui: None,
+            on_late_sent_agent_message: None,
+            arbiter: Some(Arc::new(arbiter)),
+        }
+    }
+
+    fn text_of(result: &ToolExecutionResult) -> &str {
+        match &result.content[0] {
+            ToolContentBlock::Text { text } => text,
+            other @ ToolContentBlock::Image { .. } => {
+                panic!("expected text, got {other:?}")
+            }
+        }
+    }
+
+    /// A cell whose `bash()` call is a grep habit gains the note AFTER its own
+    /// output; the cell's stdout is untouched and the cell is not re-run.
+    #[tokio::test]
+    async fn a_bash_cell_gets_the_note_appended_not_substituted() {
+        let options = arbiter_options(Some(r#"grep -rn "fn main" src"#));
+        let result = execute_ipython(&options, "await bash('grep -rn x src')", None, None, None)
+            .await
+            .expect("the cell succeeds");
+        let text = text_of(&result);
+        assert!(text.starts_with("src/lib.rs:12"), "{text}");
+        assert!(text.contains("[tool-arbiter]"), "{text}");
+        assert!(text.contains("graph.search"), "{text}");
+        assert!(text.contains("ran unchanged"), "{text}");
+        let details = result.details.expect("details");
+        assert_eq!(details["toolArbiter"]["tool"], "graph.search");
+        assert_eq!(
+            details["bashCommands"]["count"], 1,
+            "the cell's own row stands"
+        );
+        assert!(!result.is_error);
+    }
+
+    /// No `bash()` in the cell (or a `bash()` that matches no rule): nothing
+    /// is appended and the details carry no arbiter key.
+    #[tokio::test]
+    async fn a_cell_without_a_habit_gets_no_note() {
+        for command in [None, Some("cargo test --lib")] {
+            let options = arbiter_options(command);
+            let result = execute_ipython(&options, "print(1)", None, None, None)
+                .await
+                .expect("the cell succeeds");
+            assert!(!text_of(&result).contains("[tool-arbiter]"), "{command:?}");
+            let details = result.details.expect("details");
+            assert!(details.get("toolArbiter").is_none(), "{command:?}");
+        }
     }
 }

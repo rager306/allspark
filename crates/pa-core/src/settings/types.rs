@@ -315,6 +315,10 @@ pub struct JevSettings {
     pub auto_thinking: Option<String>,
     /// FORK-ONLY Phase 2: the graph search re-rank (`off` when unset).
     pub graph_rerank: Option<String>,
+    /// FORK-ONLY Phase 2: the tool-selection arbiter (`auto` when unset; the
+    /// deterministic table always applies, the judgment layer needs a native
+    /// judge).
+    pub tool_arbiter: Option<String>,
 }
 
 /// `[agents]`: the subagent admission surface. `maxConcurrentPerProvider`
@@ -405,6 +409,33 @@ impl JevGraphRerankSetting {
         match value.trim().to_ascii_lowercase().as_str() {
             "auto" | "on" => JevGraphRerankSetting::Auto,
             _ => JevGraphRerankSetting::Off,
+        }
+    }
+}
+
+/// The resolved `jev.toolArbiter` gate (same shape as
+/// [`JevGraphRerankSetting`]: `auto` or off). The arbiter is advisory by
+/// construction - it appends a note and never blocks or rewrites a call - so
+/// `auto` (the default, matching the other Phase-2 consumers) only arms the
+/// judgment layer behind a native judge.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum JevToolArbiterSetting {
+    /// The arbiter emits nothing at all (the pre-jev bash result).
+    Off,
+    /// The deterministic table always applies; the judgment layer runs only
+    /// behind a native (calibrated) judge (the default).
+    #[default]
+    Auto,
+}
+
+impl JevToolArbiterSetting {
+    /// Parse the settings string; unrecognized spellings read as `off`
+    /// (fail-closed on a typo, never fail-open).
+    #[must_use]
+    pub fn parse(value: &str) -> JevToolArbiterSetting {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" | "on" => JevToolArbiterSetting::Auto,
+            _ => JevToolArbiterSetting::Off,
         }
     }
 }

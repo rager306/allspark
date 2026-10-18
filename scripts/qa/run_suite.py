@@ -28,11 +28,26 @@ never in the blocking gate (levels 3-4 in
 Python stdlib only. Task files are `qa-tasks/<id>/task.yaml` parsed by the
 strict mini-YAML subset documented in qa-tasks/README.md.
 
-Waits/polls (per the suite's no-sleep discipline): the binary run is a
+Two lanes drive the binary:
+
+  * `print` (faux / mock-provider / real-model): the headless `-p` path -
+    one process, one `communicate(timeout)`.
+  * `daemon`: the supervisor's JSONL socket (create -> attach -> prompt ->
+    wait_for_idle -> shutdown), the same wire the ACP mode and the e2e
+    harnesses speak. This lane reaches the daemon-only behaviors (the
+    failover re-route, the worker supervisor) and is the only lane where
+    the `kill_worker` hook can SIGKILL a session worker mid-turn. Both
+    lanes converge on one grader (`grade_trial`), so a daemon trial is
+    graded by exactly the same invariants as a print one.
+
+Waits/polls (per the suite's no-sleep discipline): the print run is a
 single `communicate(timeout=...)`; mock providers bind before setup runs
-(no readiness wait); the only poll loop is the daemon-lane worker-kill
-hook (0.5s marker-file interval against a hard deadline) because mid-run
-process interference has no observable-readiness event.
+(no readiness wait); the daemon lane waits on the product's OWN readiness
+events (the socket file, the `daemon_hello` frame, the descriptor's new
+worker pid) and bounds every wait by the trial budget. The only poll
+loops are the daemon lane's marker-file wait (the mid-turn interference
+trigger: no wire event exists for "the side effect landed") and the
+descriptor relaunch wait (0.1s interval, hard deadline).
 """
 
 from __future__ import annotations
@@ -441,8 +456,13 @@ class Task:
         return int(self.budget.get("tokens", 0) or 0)
 
     def needs_kernel(self) -> bool:
+        """The trial drives the kernel-backed `python_repl` tool (the only
+        tool a daemon session exposes besides the fork natives)."""
         path = self.dir / "faux-script.json"
-        return path.is_file() and "ipython" in path.read_text(encoding="utf-8")
+        if not path.is_file():
+            return False
+        text = path.read_text(encoding="utf-8")
+        return "ipython" in text or "python_repl" in text
 
 
 def load_tasks(patterns=None) -> list[Task]:
@@ -683,12 +703,37 @@ def run_state_oracle(task: Task, spec, ctx: dict) -> list[str]:
                     problems.append(f"state: {check['path']} contains {check['not_contains']!r}")
                 if "size_lt" in check and len(data) >= int(check["size_lt"]):
                     problems.append(f"state: {check['path']} size {len(data)} >= {check['size_lt']}")
+                # The exactly-once primitive: a side effect's occurrence count
+                # in a file. A bounded count is state, not prose - the print
+                # and daemon lanes are graded identically by it.
+                if "occurrences_le" in check:
+                    rule = check["occurrences_le"]
+                    got = data.count(str(rule["text"]).encode())
+                    if got > int(rule["count"]):
+                        problems.append(
+                            f"state: {check['path']} has {got} occurrence(s) of "
+                            f"{rule['text']!r} > {rule['count']}")
+                if "occurrences_ge" in check:
+                    rule = check["occurrences_ge"]
+                    got = data.count(str(rule["text"]).encode())
+                    if got < int(rule["count"]):
+                        problems.append(
+                            f"state: {check['path']} has {got} occurrence(s) of "
+                            f"{rule['text']!r} < {rule['count']}")
         elif "transcript_contains" in check:
             if transcript and check["transcript_contains"].encode() not in transcript.read_bytes():
                 problems.append(f"state: transcript missing {check['transcript_contains']!r}")
         elif "transcript_not_contains" in check:
             if transcript and check["transcript_not_contains"].encode() in transcript.read_bytes():
                 problems.append(f"state: transcript contains {check['transcript_not_contains']!r}")
+        elif "transcript_occurrences_le" in check:
+            rule = check["transcript_occurrences_le"]
+            got = (transcript.read_bytes().count(str(rule["text"]).encode())
+                   if transcript else 0)
+            if got > int(rule["count"]):
+                problems.append(
+                    f"state: transcript has {got} occurrence(s) of "
+                    f"{rule['text']!r} > {rule['count']}")
         elif "exit_code" in check:
             code = ctx["exit_code"]
             want = check["exit_code"]
@@ -769,49 +814,6 @@ def find_transcript(home: Path, started: float) -> Path | None:
             if mtime >= started - 1 and (best is None or mtime > best.stat().st_mtime):
                 best = entry
     return best
-
-
-def scan_proc_cmdline(needle: str) -> list[int]:
-    """PIDs whose /proc/<pid>/cmdline or environ holds `needle` (root-only
-    environ read; workers re-exec the same binary, so cmdline alone is not
-    unique)."""
-    hits = []
-    blob = needle.encode()
-    for pid_dir in Path("/proc").iterdir():
-        if not pid_dir.name.isdigit():
-            continue
-        try:
-            if blob in (pid_dir / "cmdline").read_bytes():
-                hits.append(int(pid_dir.name))
-                continue
-            if blob in (pid_dir / "environ").read_bytes():
-                hits.append(int(pid_dir.name))
-        except OSError:
-            continue
-    return hits
-
-
-def kill_worker_hook(task: Task, sandbox: Path, proc, needle: str) -> None:
-    """Daemon-lane mid-run interference (RT-006): once the marker file
-    appears, SIGKILL every process holding the trial's daemon socket except
-    the client itself. 0.5s poll against the trial deadline: the only poll
-    in the suite (no observable-readiness event exists for "worker mid-turn")."""
-    spec = task.kill_worker or {}
-    marker = Path(spec.get("marker", "side-effect.done"))
-    target = Path(spec["marker_path"]) if spec.get("marker_path") else sandbox / "work" / marker
-    deadline = time.monotonic() + task.timeout_s - 5
-    while time.monotonic() < deadline and not target.exists():
-        time.sleep(0.5)
-    if not target.exists():
-        return
-    time.sleep(float(spec.get("delay_s", 0.5)))
-    for pid in scan_proc_cmdline(needle):
-        if pid in (os.getpid(), proc.pid):
-            continue
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            continue
 
 
 def _fmt_probs(probs) -> str:
@@ -914,6 +916,576 @@ def apply_judge_delta(manifest: dict, baseline: dict, report: list[str]) -> None
     manifest["judge_delta"] = delta
 
 
+def trial_env(task: Task, sandbox: Path, home: Path, work: Path,
+              mocks: dict, kernel_python: str | None, *, lane: str) -> tuple[dict, str]:
+    """The trial's environment: the sandbox-pinned base plus the task's
+    planted/hostile/extra vars, the loopback mock URLs, the observability
+    switches and a fresh canary. Shared by every lane so an isolation
+    property proved on one lane holds on the others."""
+    env = base_env(home, work)
+    for mock in mocks.values():
+        env[f"QA_MOCK_{mock.mock_name.upper()}_URL"] = mock.base_url
+        env[f"QA_MOCK_{mock.mock_name.upper()}_PORT"] = str(mock.port)
+    env["QA_TASK_DIR"] = str(task.dir)
+    env["QA_SANDBOX"] = str(sandbox)
+    # Observability: the sandbox-local request-timing JSONL and the
+    # rotating tracing log (see qa_logs.py). Both are read after the run
+    # and copied into the trial dir; neither is a product dependency.
+    env.update(LOG_ENV)
+    env["QA_SUITE_CANARY"] = canary = f"qa-canary-{uuid.uuid4().hex}"
+    for key, value in task.secrets_env.items():
+        env[key] = str(value)
+    for key, value in task.hostile_env.items():
+        value = str(value)
+        env[key] = value if os.path.isabs(value) else str(sandbox / value)
+    for key, value in task.env.items():
+        env[key] = str(value)
+    if lane == "faux":
+        faux_path = task.dir / "faux-script.json"
+        if faux_path.is_file():
+            env["PRIME_AGENT_FAUX_SCRIPT"] = faux_path.read_text(encoding="utf-8")
+    if kernel_python:
+        env["PRIME_AGENT_KERNEL_PYTHON"] = kernel_python
+    return env, canary
+
+
+# ---------------------------------------------------------------------------
+# Daemon lane: the ACP/JSON-RPC driver (create -> prompt -> kill -> observe)
+# ---------------------------------------------------------------------------
+
+# The supervisor's worker-socket-closed refusal: the prompt reached a worker
+# that then died, so the turn's outcome is UNKNOWN (TS `daemon-worker-client`
+# semantics; the fix 2b3d74842 classifies it as an ambiguous delivery).
+WORKER_SOCKET_CLOSED = "Daemon worker socket closed"
+# The daemon's protocol name (every command envelope carries it).
+DAEMON_PROTOCOL_NAME = "prime-agent.daemon"
+
+
+class DaemonError(RuntimeError):
+    """The daemon driver could not complete its exchange: a startup failure,
+    a closed socket, or a command refusal. Always a trial failure reason."""
+
+
+class DaemonTimeout(DaemonError):
+    """No frame arrived inside the socket's read window. The caller decides
+    whether that is fatal (a request with a deadline) or just a quiet stream
+    (a bounded settle wait)."""
+
+
+class DaemonClient:
+    """One JSONL connection to the daemon socket: the `daemon_hello`
+    handshake, envelope commands, and the session events streamed while a
+    request is outstanding.
+
+    Frames are newline-delimited JSON read from a byte buffer (never a
+    buffered `readline`, whose buffer a socket timeout poisons): every wait
+    is bounded by the caller's deadline, so a wedged daemon surfaces as a
+    timeout, never a hang.
+    """
+
+    def __init__(self, socket_path: Path, timeout: float):
+        self.socket_path = socket_path
+        self.timeout = timeout
+        self.stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.stream.settimeout(timeout)
+        self.stream.connect(str(socket_path))
+        self.buffer = b""
+        self.events: list[dict] = []
+        self.hello = self._read_frame()
+        if self.hello.get("type") != "daemon_hello":
+            raise DaemonError(f"no daemon_hello frame (got {self.hello.get('type')!r})")
+        self.protocol = self.hello.get("protocol") or {
+            "name": DAEMON_PROTOCOL_NAME, "version": 7}
+        self.next_id = 0
+
+    def _read_frame(self) -> dict:
+        while b"\n" not in self.buffer:
+            try:
+                chunk = self.stream.recv(65536)
+            except socket.timeout as exc:
+                raise DaemonTimeout("the daemon socket timed out") from exc
+            except OSError as exc:
+                raise DaemonError(f"the daemon socket read failed: {exc}") from exc
+            if not chunk:
+                raise DaemonError("the daemon closed the socket")
+            self.buffer += chunk
+        line, _, self.buffer = self.buffer.partition(b"\n")
+        line = line.strip()
+        if not line:
+            return self._read_frame()
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise DaemonError(f"non-JSON daemon frame: {line[:120]!r}") from exc
+
+    def send(self, command: dict) -> str:
+        """Write one command envelope and return its id (the response key)."""
+        self.next_id += 1
+        command_id = f"qa-{self.next_id}"
+        frame = {"type": "command", "id": command_id, "protocol": self.protocol,
+                 "command": command}
+        try:
+            self.stream.sendall((json.dumps(frame) + "\n").encode())
+        except OSError as exc:
+            raise DaemonError(f"the daemon socket write failed: {exc}") from exc
+        return command_id
+
+    def wait_response(self, command_id: str) -> dict:
+        """Read frames until `command_id` answers, collecting the session
+        events seen on the way (the response/event split is the wire's own)."""
+        while True:
+            frame = self._read_frame()
+            if frame.get("id") == command_id:
+                return frame
+            if frame.get("type") == "session_event":
+                self.events.append(frame.get("event") or {})
+
+    def request(self, command: dict) -> dict:
+        return self.wait_response(self.send(command))
+
+    def wait_response_until(self, command_id: str, deadline: float) -> dict | None:
+        """Wait for `command_id`'s answer until `deadline`; `None` when the
+        deadline passes first (the caller bounds a turn-long wait this way:
+        a session that never idles must not hang the trial)."""
+        while True:
+            if time.monotonic() >= deadline:
+                return None
+            try:
+                frame = self._read_frame()
+            except DaemonTimeout:
+                continue
+            if frame.get("id") == command_id:
+                return frame
+            if frame.get("type") == "session_event":
+                self.events.append(frame.get("event") or {})
+
+    def drain(self, quiet_s: float = 0.3, deadline_s: float = 10.0) -> None:
+        """Collect the events still in flight until the stream goes quiet
+        (bounded: a session that keeps streaming never stalls the trial)."""
+        original = self.stream.gettimeout()
+        self.stream.settimeout(quiet_s)
+        end = time.monotonic() + deadline_s
+        try:
+            while time.monotonic() < end:
+                try:
+                    frame = self._read_frame()
+                except DaemonError:
+                    break
+                if frame.get("type") == "session_event":
+                    self.events.append(frame.get("event") or {})
+        finally:
+            self.stream.settimeout(original)
+
+    def close(self) -> None:
+        try:
+            self.stream.close()
+        except OSError:
+            pass
+
+
+def flag_value(argv: list[str], flag: str) -> str | None:
+    """The value after `flag` in an argv list (`--provider qa-primary`)."""
+    for index, item in enumerate(argv):
+        if item == flag and index + 1 < len(argv):
+            return argv[index + 1]
+        if item.startswith(flag + "="):
+            return item[len(flag) + 1:]
+    return None
+
+
+def daemon_worker_pid(agent_dir: Path) -> int | None:
+    """The live worker's pid from the durable descriptor
+    (`<agent-dir>/daemon-workers/<socket-key>/<workerId>.json`). The
+    descriptor is the product's own identity record - no /proc guessing."""
+    root = agent_dir / "daemon-workers"
+    if not root.is_dir():
+        return None
+    for path in sorted(root.rglob("*.json")):
+        try:
+            descriptor = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        # The token-bearing record is the worker descriptor (the sibling
+        # files are journals/supervisor config).
+        if not descriptor.get("authenticationToken"):
+            continue
+        pid = descriptor.get("pid")
+        if isinstance(pid, int) and pid > 0:
+            return pid
+    return None
+
+
+def wait_worker_pid(agent_dir: Path, previous: int | None, deadline: float) -> int | None:
+    """Poll the descriptor until it names a worker pid different from
+    `previous` (the supervisor's relaunch) or the deadline passes. The
+    descriptor write IS the readiness event: the supervisor publishes the
+    new pid before the worker serves."""
+    while time.monotonic() < deadline:
+        pid = daemon_worker_pid(agent_dir)
+        if pid and pid != previous:
+            return pid
+        time.sleep(0.1)
+    return None
+
+
+def wait_marker(path: Path, deadline: float) -> bool:
+    """The mid-run interference trigger: the scripted turn's own marker file.
+    The only poll in the suite besides the relaunch wait (no wire event exists
+    for "the turn reached the side effect")."""
+    while time.monotonic() < deadline:
+        if path.exists():
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def drive_daemon_trial(task: Task, binary: Path, env: dict, sandbox: Path, home: Path,
+                       work: Path, out_dir: Path, result: dict,
+                       model_cfg: dict | None) -> dict:
+    """The daemon lane: spawn the supervisor, create + attach a session over
+    the JSONL socket, submit the prompt as a turn, optionally SIGKILL the
+    worker mid-turn (the task's `kill_worker` hook), settle the turn, and
+    hand the observed outcome to the shared grader.
+
+    The supervisor is spawned `--mode daemon --daemon-socket <tmp>` under the
+    trial's pinned env, exactly like the e2e harnesses
+    (crates/pa-cli/tests/acp_mode_e2e.rs): the socket lives in the sandbox, so
+    no host daemon is ever touched."""
+    agent_dir = home / ".prime" / "agent"
+    session_dir = agent_dir / "sessions"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    socket_path = sandbox / "daemon.sock"
+    log_path = out_dir / "daemon.log"
+    daemon_env = dict(env)
+    # A daemon-spawned worker inherits the supervisor's env; the worker's
+    # internal identity vars must never leak in from an enclosing session.
+    for key in [k for k in daemon_env if k.startswith("PRIME_AGENT_INTERNAL_DAEMON_")]:
+        del daemon_env[key]
+
+    argv = [str(binary), "--mode", "daemon", "--daemon-socket", str(socket_path)]
+    argv += task.bin_args
+    if model_cfg:
+        if model_cfg.get("provider"):
+            argv += ["--provider", model_cfg["provider"]]
+        if model_cfg.get("model"):
+            argv += ["--model", model_cfg["model"]]
+        if model_cfg.get("api_key"):
+            argv += ["--api-key", model_cfg["api_key"]]
+
+    started = time.monotonic()
+    wall_start = time.time()
+    deadline = started + task.timeout_s
+    killed = False
+    stdout_parts: list[str] = []
+    stderr_parts: list[str] = []
+    client: DaemonClient | None = None
+    proc = None
+    try:
+        with log_path.open("wb") as daemon_log:
+            proc = subprocess.Popen(argv, cwd=work, env=daemon_env,
+                                    stdin=subprocess.DEVNULL, stdout=daemon_log,
+                                    stderr=subprocess.STDOUT, start_new_session=True)
+            # The socket's existence is the supervisor's readiness event
+            # (the e2e harnesses wait on the same file, never a timer).
+            while time.monotonic() < deadline and not socket_path.exists():
+                if proc.poll() is not None:
+                    raise DaemonError(
+                        f"the daemon exited ({proc.returncode}) before its socket appeared: "
+                        f"{tail_text(log_path)}")
+                time.sleep(0.02)
+            if not socket_path.exists():
+                raise DaemonError(f"the daemon socket never appeared: {tail_text(log_path)}")
+
+            client = DaemonClient(socket_path, timeout=min(30.0, task.timeout_s))
+            create_config = {
+                "cwd": str(work),
+                "sessionDir": str(session_dir),
+                "executionMode": "acp",
+            }
+            # The scripted-model seam: a `faux-script.json` in the task dir
+            # drives the daemon's real agent engine over the faux provider
+            # (the same contract as the print lane's PRIME_AGENT_FAUX_SCRIPT).
+            script_path = task.dir / "faux-script.json"
+            if script_path.is_file():
+                create_config["script"] = str(script_path)
+            # The model selection: the CLI flags win, then the task's own
+            # `bin_args` (the daemon mode reads no model flags from its argv -
+            # the create command is where a session's model is pinned).
+            selection = dict(model_cfg or {})
+            for flag, key in (("--provider", "provider"), ("--model", "model"),
+                              ("--api-key", "api_key")):
+                if key not in selection or not selection[key]:
+                    value = flag_value(task.bin_args, flag)
+                    if value:
+                        selection[key] = value
+            for key, wire in (("provider", "provider"), ("model", "model"),
+                              ("api_key", "apiKey")):
+                if selection.get(key):
+                    create_config[wire] = selection[key]
+
+            created = client.request({"type": "create", "config": create_config})
+            if not created.get("success"):
+                raise DaemonError(f"create refused: {created.get('error')}")
+            data = created.get("data") or {}
+            session_id = data.get("activeSessionId") or data.get("id")
+            if not session_id:
+                raise DaemonError(f"create returned no session id: {data}")
+            result["session_id"] = session_id
+            attached = client.request({"type": "attach", "activeSessionId": session_id})
+            if not attached.get("success"):
+                raise DaemonError(f"attach refused: {attached.get('error')}")
+
+            # ---- the turn ----
+            prompt = client.request({"type": "prompt", "activeSessionId": session_id,
+                                     "message": task.prompt})
+            if not prompt.get("success"):
+                raise DaemonError(f"prompt refused: {prompt.get('error')}")
+            result["turn_submitted"] = True
+
+            if task.kill_worker:
+                killed_pid, relaunched_pid = _kill_worker_mid_turn(
+                    task, sandbox, work, agent_dir, deadline)
+                result["killed_worker_pid"] = killed_pid
+                result["relaunched_worker_pid"] = relaunched_pid
+                result["kill_hook"] = "ran" if killed_pid else "missed"
+                if not killed_pid:
+                    result["reasons"].append(
+                        "kill_worker: the mid-turn marker never appeared "
+                        f"({task.kill_worker.get('marker', 'side-effect.done')})")
+
+            # ---- settle: wait_for_idle, then read the outcome ----
+            # The wait is bounded by the trial budget: a session that keeps
+            # streaming (a replay loop, a stalled provider) is ABORTED at the
+            # deadline and the trial still grades the state it produced. The
+            # print lane's `communicate(timeout)` kill is the same policy.
+            settled = client.wait_response_until(
+                client.send({"type": "wait_for_idle", "activeSessionId": session_id}),
+                deadline)
+            if settled is None:
+                # The trial budget expired with the turn still running: the
+                # trial is a cancel (the fingerprint's cancel share reads it).
+                killed = True
+                result["settle_timed_out"] = True
+                result["reasons"].append(
+                    f"budget: the session never went idle within {task.timeout_s}s")
+                try:
+                    client.request({"type": "abort", "activeSessionId": session_id})
+                    client.wait_response_until(
+                        client.send({"type": "wait_for_idle",
+                                     "activeSessionId": session_id}),
+                        time.monotonic() + 20)
+                except DaemonError:
+                    pass
+            else:
+                result["settled"] = bool(settled.get("success"))
+                if not settled.get("success"):
+                    result["reasons"].append(
+                        f"wait_for_idle refused: {settled.get('error')}")
+            # The turn's own text (the last assistant message) is the lane's
+            # outcome surface: `outcome_contains` oracles read it exactly as
+            # they read the print lane's stdout.
+            last = client.request({"type": "get_last_assistant_text",
+                                   "activeSessionId": session_id})
+            if last.get("success"):
+                stdout_parts.append(((last.get("data") or {}).get("text") or ""))
+            client.drain()
+            stdout_parts.append(_events_text(client.events))
+            result["events"] = _summarize_events(client.events)
+            _shutdown(client)
+            client = None
+        duration = time.monotonic() - started
+        exit_code = _terminate(proc, deadline)
+        result.update({"exit_code": exit_code, "killed": killed,
+                       "duration_s": round(duration, 2)})
+        return {"stdout": "\n".join(p for p in stdout_parts if p),
+                "stderr": "\n".join(stderr_parts),
+                "duration": duration, "exit_code": exit_code, "killed": killed,
+                "wall_start": wall_start}
+    except DaemonError as exc:
+        duration = time.monotonic() - started
+        stderr_parts.append(f"daemon driver: {exc}")
+        stderr_parts.append(tail_text(log_path))
+        result["reasons"].append(f"daemon: {exc}")
+        if client is not None:
+            try:
+                client.drain()
+                result["events"] = _summarize_events(client.events)
+            except DaemonError:
+                pass
+            _shutdown(client)
+            client = None
+        exit_code = _terminate(proc, time.monotonic() + 30)
+        result.update({"exit_code": exit_code, "killed": killed,
+                       "duration_s": round(duration, 2)})
+        return {"stdout": "\n".join(p for p in stdout_parts if p),
+                "stderr": "\n".join(stderr_parts),
+                "duration": duration, "exit_code": exit_code, "killed": killed,
+                "wall_start": wall_start}
+    finally:
+        if client is not None:
+            client.close()
+
+
+def _kill_worker_mid_turn(task: Task, sandbox: Path, work: Path, agent_dir: Path,
+                          deadline: float) -> tuple[int | None, int | None]:
+    """RT-006's interference: once the scripted turn's marker file lands,
+    SIGKILL the session worker and wait for the supervisor to relaunch it.
+    Returns (killed pid, relaunched pid); the killed pid is None when the
+    marker never appeared (the turn finished first or never started)."""
+    spec = task.kill_worker or {}
+    marker = Path(spec["marker_path"]) if spec.get("marker_path") else \
+        work / spec.get("marker", "side-effect.done")
+    if not wait_marker(marker, deadline):
+        return None, None
+    # The marker proves the side effect landed; a short grace lets the turn
+    # enter the next (stalling) tool call, so the kill lands mid-turn.
+    time.sleep(float(spec.get("delay_s", 0.5)))
+    pid = daemon_worker_pid(agent_dir)
+    if pid is None:
+        return None, None
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        return None, None
+    relaunched = wait_worker_pid(agent_dir, pid, min(deadline, time.monotonic() + 30))
+    return pid, relaunched
+
+
+def _shutdown(client: DaemonClient) -> None:
+    """Stop the supervisor by protocol (its own graceful path: workers get
+    their stop, sessions finalize). A refusal is not a trial failure - the
+    process is killed right after."""
+    try:
+        client.request({"type": "shutdown"})
+    except DaemonError:
+        pass
+    finally:
+        client.close()
+
+
+def _terminate(proc, deadline: float) -> int | None:
+    """Reap the supervisor: the graceful `shutdown` reply unlocks its exit, so
+    the wait is short; a wedged supervisor gets the process group killed."""
+    if proc is None:
+        return None
+    try:
+        proc.wait(timeout=max(1.0, min(15.0, deadline - time.monotonic())))
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            return None
+    return proc.returncode
+
+
+def _summarize_events(events: list[dict]) -> dict:
+    """The daemon lane's event roll-up (the wire counterpart of the log
+    layer's timeline): event kinds, the retry/failover chain, and the
+    terminal turn rows."""
+    kinds = Counter(event.get("type") for event in events)
+    retries = [event for event in events if event.get("type") == "auto_retry_start"]
+    turn_ends = [event for event in events if event.get("type") == "turn_end"]
+    return {
+        "count": len(events),
+        "kinds": dict(sorted(kinds.items())),
+        "retries": [{"attempt": r.get("attempt"), "reason": r.get("reason"),
+                     "backupModel": r.get("backupModel")} for r in retries],
+        "turn_end_stop_reasons": [
+            (t.get("message") or {}).get("stopReason") for t in turn_ends],
+        "turn_end_providers": [
+            (t.get("message") or {}).get("provider") for t in turn_ends],
+        "errors": [event.get("errorMessage") for event in turn_ends
+                   if (event.get("message") or {}).get("errorMessage")],
+    }
+
+
+def _events_text(events: list[dict]) -> str:
+    """The event stream as greppable text: assistant text blocks and error
+    messages, so `outcome_contains`/`must_not` oracles see what the client
+    saw. Deliberately plain - the structured roll-up is in the manifest."""
+    lines = []
+    for event in events:
+        kind = event.get("type")
+        if kind in ("message_end", "turn_end"):
+            message = event.get("message") or {}
+            if message.get("role") != "assistant":
+                continue
+            for block in message.get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text = block.get("text") or ""
+                    if text:
+                        lines.append(text)
+            if message.get("errorMessage"):
+                lines.append(str(message["errorMessage"]))
+        elif kind == "auto_retry_start":
+            lines.append(f"auto_retry_start attempt={event.get('attempt')} "
+                         f"reason={event.get('reason')}")
+    return "\n".join(lines)
+
+
+def tail_text(path: Path, limit: int = 2000) -> str:
+    """The tail of a daemon log, for the failure reason."""
+    try:
+        data = path.read_text(errors="replace")
+    except OSError:
+        return ""
+    return data[-limit:].strip()
+
+
+def drive_print_trial(task: Task, binary: Path, env: dict, sandbox: Path, home: Path,
+                      work: Path, out_dir: Path, result: dict, lane: str,
+                      model_cfg: dict | None) -> dict:
+    """The headless `-p` lane: one process, one `communicate(timeout)`, no
+    readiness poll. The trial outcome is the process's own output."""
+    argv = [str(binary)]
+    if task.entry == "launcher":
+        layout = sandbox / "launch"
+        (layout / "bin").mkdir(parents=True)
+        (layout / "libexec").mkdir()
+        launcher = layout / "bin" / "allspark-launcher.sh"
+        shutil.copy2(REPO_ROOT / "scripts" / "allspark-launcher.sh", launcher)
+        os.chmod(launcher, 0o755)
+        os.symlink(binary, layout / "libexec" / "prime-agent")
+        env["ALLSPARK_HOME"] = str(home)
+        argv = ["sh", str(launcher)]
+    argv += task.bin_args
+    if lane != "faux" and model_cfg:
+        if model_cfg.get("provider"):
+            argv += ["--provider", model_cfg["provider"]]
+        if model_cfg.get("model"):
+            argv += ["--model", model_cfg["model"]]
+        if model_cfg.get("api_key"):
+            argv += ["--api-key", model_cfg["api_key"]]
+    argv += ["-p", task.prompt] + [f"@{name}" for name in task.files]
+
+    started = time.monotonic()
+    wall_start = time.time()
+    proc = subprocess.Popen(argv, cwd=work, env=env, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, errors="replace",
+                            start_new_session=True)
+    killed = False
+    try:
+        stdout, stderr = proc.communicate(timeout=task.timeout_s)
+    except subprocess.TimeoutExpired:
+        killed = True
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        stdout, stderr = proc.communicate()
+    duration = time.monotonic() - started
+    (out_dir / "stdout.txt").write_text(stdout or "")
+    (out_dir / "stderr.txt").write_text(stderr or "")
+    result.update({"exit_code": proc.returncode, "killed": killed,
+                   "duration_s": round(duration, 2)})
+    return {"stdout": stdout or "", "stderr": stderr or "", "duration": duration,
+            "exit_code": proc.returncode, "killed": killed, "wall_start": wall_start}
+
+
 def run_trial(task: Task, binary: Path, index: int, out_root: Path, lane: str,
               model_cfg: dict | None, kernel_python: str | None, keep: bool) -> dict:
     trial_id = f"trial-{index + 1}"
@@ -939,8 +1511,6 @@ def run_trial(task: Task, binary: Path, index: int, out_root: Path, lane: str,
         "tool_freq": {},
     }
     mocks: dict[str, MockProvider] = {}
-    killer = None
-    proc = None
     try:
         for mock_spec in task.mocks:
             mock_spec = mock_spec or {}
@@ -950,30 +1520,8 @@ def run_trial(task: Task, binary: Path, index: int, out_root: Path, lane: str,
             mock.start()
             mocks[mock.mock_name] = mock
 
-        env = base_env(home, work)
-        for mock in mocks.values():
-            env[f"QA_MOCK_{mock.mock_name.upper()}_URL"] = mock.base_url
-            env[f"QA_MOCK_{mock.mock_name.upper()}_PORT"] = str(mock.port)
-        env["QA_TASK_DIR"] = str(task.dir)
-        env["QA_SANDBOX"] = str(sandbox)
-        # Observability: the sandbox-local request-timing JSONL and the
-        # rotating tracing log (see qa_logs.py). Both are read after the run
-        # and copied into the trial dir; neither is a product dependency.
-        env.update(LOG_ENV)
-        env["QA_SUITE_CANARY"] = canary = f"qa-canary-{uuid.uuid4().hex}"
-        for key, value in task.secrets_env.items():
-            env[key] = str(value)
-        for key, value in task.hostile_env.items():
-            value = str(value)
-            env[key] = value if os.path.isabs(value) else str(sandbox / value)
-        for key, value in task.env.items():
-            env[key] = str(value)
-        if lane == "faux":
-            faux_path = task.dir / "faux-script.json"
-            if faux_path.is_file():
-                env["PRIME_AGENT_FAUX_SCRIPT"] = faux_path.read_text(encoding="utf-8")
-        if kernel_python:
-            env["PRIME_AGENT_KERNEL_PYTHON"] = kernel_python
+        env, canary = trial_env(task, sandbox, home, work, mocks, kernel_python,
+                                lane=lane)
 
         if task.setup:
             setup_proc = subprocess.run(["bash", str(task.dir / task.setup)],
@@ -990,141 +1538,117 @@ def run_trial(task: Task, binary: Path, index: int, out_root: Path, lane: str,
             settings_hash.update(cfg.read_bytes())
         result["settings_hash"] = settings_hash.hexdigest()[:16]
 
-        argv = [str(binary)]
-        if task.entry == "launcher":
-            layout = sandbox / "launch"
-            (layout / "bin").mkdir(parents=True)
-            (layout / "libexec").mkdir()
-            launcher = layout / "bin" / "allspark-launcher.sh"
-            shutil.copy2(REPO_ROOT / "scripts" / "allspark-launcher.sh", launcher)
-            os.chmod(launcher, 0o755)
-            os.symlink(binary, layout / "libexec" / "prime-agent")
-            env["ALLSPARK_HOME"] = str(home)
-            argv = ["sh", str(launcher)]
-        argv += task.bin_args
-        if lane != "faux" and model_cfg:
-            if model_cfg.get("provider"):
-                argv += ["--provider", model_cfg["provider"]]
-            if model_cfg.get("model"):
-                argv += ["--model", model_cfg["model"]]
-            if model_cfg.get("api_key"):
-                argv += ["--api-key", model_cfg["api_key"]]
-        argv += ["-p", task.prompt] + [f"@{name}" for name in task.files]
+        if lane == "daemon":
+            drive = drive_daemon_trial(task, binary, env, sandbox, home, work,
+                                       out_dir, result, model_cfg)
+        else:
+            drive = drive_print_trial(task, binary, env, sandbox, home, work,
+                                      out_dir, result, lane, model_cfg)
 
-        started = time.monotonic()
-        wall_start = time.time()
-        proc = subprocess.Popen(argv, cwd=work, env=env, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, errors="replace",
-                                start_new_session=True)
-        if task.kill_worker:
-            needle = task.kill_worker.get("needle", str(sandbox))
-            killer = threading.Thread(target=kill_worker_hook,
-                                      args=(task, sandbox, proc, needle), daemon=True)
-            killer.start()
-        killed = False
-        try:
-            stdout, stderr = proc.communicate(timeout=task.timeout_s)
-        except subprocess.TimeoutExpired:
-            killed = True
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                proc.kill()
-            stdout, stderr = proc.communicate()
-        duration = time.monotonic() - started
-        (out_dir / "stdout.txt").write_text(stdout or "")
-        (out_dir / "stderr.txt").write_text(stderr or "")
-        result.update({"exit_code": proc.returncode, "killed": killed,
-                       "duration_s": round(duration, 2)})
-
-        transcript = find_transcript(home, wall_start)
+        transcript = find_transcript(home, drive["wall_start"])
         if transcript:
             shutil.copy2(transcript, out_dir / "session.jsonl")
 
         secrets = [canary] + [str(v) for v in task.secrets_env.values()]
-        trace = {"calls": [], "turns": 0, "turns_with_tools": 0, "tokens": 0,
-                 "row_types": {}, "raw": b"", "tool_calls": 0, "tool_errors": 0}
-        rows: list[dict] = []
-        if transcript and (out_dir / "session.jsonl").is_file():
-            trace = parse_transcript(out_dir / "session.jsonl")
-            rows = qa_logs.load_rows(out_dir / "session.jsonl")
-            result["steps"] = trace["turns_with_tools"]
-            result["tokens"] = trace["tokens"]
-            result["tool_freq"] = dict(Counter(c["name"] for c in trace["calls"]))
-        else:
-            result["reasons"].append("no session transcript was written")
-        result["reasons"] += check_invariants(task, trace, stdout or "", stderr or "",
-                                              duration, killed, secrets, task.network)
-
-        # ---- level-2 log layer (timeline, telemetry, schema, invariants) ----
-        timeline = qa_logs.build_timeline(rows)
-        agent_logs = home / ".prime" / "agent" / "logs"
-        requests = qa_logs.parse_request_log(agent_logs / "agent.jsonl")
-        debug = qa_logs.parse_debug_log(home / ".prime" / "agent")
-        schema = qa_logs.transcript_schema(rows)
-        log_checks = qa_logs.evaluate_log_invariants(
-            task.logs, timeline, requests, debug, task.timeout_s)
-        result["reasons"] += qa_logs.invariant_problems(log_checks)
-        result["logs"] = {
-            "timeline": timeline["summary"],
-            "requests": {k: v for k, v in requests.items() if k != "requests"},
-            "debug": {k: v for k, v in debug.items() if k != "admission_sample"},
-            "checks": log_checks,
-            "skipped_checks": qa_logs.skipped_checks(log_checks),
-            "schema_sha256": schema["sha256"],
-            "schema_fields": schema["field_count"],
-        }
-        (out_dir / "timeline.json").write_text(
-            json.dumps(timeline, indent=1) + "\n")
-        (out_dir / "telemetry.json").write_text(json.dumps(
-            {"requests": requests, "debug": debug, "schema": schema}, indent=1) + "\n")
-        for log_file in qa_logs.debug_log_paths(home / ".prime" / "agent"):
-            try:
-                text, hits = qa_logs.redact(log_file.read_text(errors="replace"), secrets)
-                (out_dir / f"product-{log_file.name}.txt").write_text(text)
-                if hits:
-                    result["reasons"].append(
-                        f"secret: a planted secret value appears in {log_file.name}")
-            except OSError:
-                pass
-
-        # ---- output layer (deterministic patterns + judge) ----
-        answer = qa_judge.extract_final_answer(rows)
-        outcome_text = (stdout or "") + (stderr or "")
-        result["answer"] = {"chars": len(answer), "sha256": hashlib.sha256(
-            answer.encode()).hexdigest()[:12], "preview": answer[:280]}
-        if task.output:
-            output_problems = qa_judge.evaluate_output_patterns(task.output, answer, outcome_text)
-            result["reasons"] += output_problems
-        else:
-            output_problems = []
-
-        ctx = {"home": home, "work": work, "out_dir": out_dir,
-               "transcript_path": out_dir / "session.jsonl" if transcript else None,
-               "exit_code": proc.returncode, "duration": duration, "mocks": mocks,
-               "sandbox": sandbox}
-        if task.oracle.get("type") == "script":
-            result["reasons"] += run_script_oracle(task, ctx)
-        elif task.oracle.get("type") == "state":
-            result["reasons"] += run_state_oracle(task, task.oracle.get("spec"), ctx)
-        else:
-            result["reasons"].append(f"unknown oracle type {task.oracle.get('type')!r}")
-
-        result["ok"] = not result["reasons"]
-        # Judge input for the single per-task call in main() (never persisted raw).
-        result["_judge_input"] = {
-            "answer": answer,
-            "outcome": (stdout or "")[-1200:] + (stderr or "")[-800:],
-            "oracle_problems": [r for r in result["reasons"]
-                                if not r.startswith("log:")][:6],
-            "log_summary": timeline["summary"],
-        }
-        return result
+        return grade_trial(task, result, out_dir=out_dir, home=home, work=work,
+                           sandbox=sandbox, transcript=transcript,
+                           stdout=drive["stdout"], stderr=drive["stderr"],
+                           duration=drive["duration"], exit_code=drive["exit_code"],
+                           killed=drive["killed"], secrets=secrets, mocks=mocks)
     finally:
         for mock in mocks.values():
             mock.stop()
         if not keep:
             shutil.rmtree(sandbox, ignore_errors=True)
+
+
+def grade_trial(task: Task, result: dict, *, out_dir: Path, home: Path, work: Path,
+                sandbox: Path, transcript: Path | None, stdout: str, stderr: str,
+                duration: float, exit_code: int | None, killed: bool,
+                secrets: list[str], mocks: dict) -> dict:
+    """Grade one trial from its OBSERVED outcome: the transcript, the product's
+    own logs, the process output and the task oracle. Both lanes converge here,
+    so a daemon trial is graded by exactly the same invariants as a print one.
+    `stdout` is the lane's outcome text (the print lane's stdout, the daemon
+    lane's turn text) - never a lane-specific grading path."""
+    trace = {"calls": [], "turns": 0, "turns_with_tools": 0, "tokens": 0,
+             "row_types": {}, "raw": b"", "tool_calls": 0, "tool_errors": 0}
+    rows: list[dict] = []
+    if transcript and (out_dir / "session.jsonl").is_file():
+        trace = parse_transcript(out_dir / "session.jsonl")
+        rows = qa_logs.load_rows(out_dir / "session.jsonl")
+        result["steps"] = trace["turns_with_tools"]
+        result["tokens"] = trace["tokens"]
+        result["tool_freq"] = dict(Counter(c["name"] for c in trace["calls"]))
+    else:
+        result["reasons"].append("no session transcript was written")
+    result["reasons"] += check_invariants(task, trace, stdout, stderr,
+                                          duration, killed, secrets, task.network)
+
+    # ---- level-2 log layer (timeline, telemetry, schema, invariants) ----
+    timeline = qa_logs.build_timeline(rows)
+    agent_logs = home / ".prime" / "agent" / "logs"
+    requests = qa_logs.parse_request_log(agent_logs / "agent.jsonl")
+    debug = qa_logs.parse_debug_log(home / ".prime" / "agent")
+    schema = qa_logs.transcript_schema(rows)
+    log_checks = qa_logs.evaluate_log_invariants(
+        task.logs, timeline, requests, debug, task.timeout_s)
+    result["reasons"] += qa_logs.invariant_problems(log_checks)
+    result["logs"] = {
+        "timeline": timeline["summary"],
+        "requests": {k: v for k, v in requests.items() if k != "requests"},
+        "debug": {k: v for k, v in debug.items() if k != "admission_sample"},
+        "checks": log_checks,
+        "skipped_checks": qa_logs.skipped_checks(log_checks),
+        "schema_sha256": schema["sha256"],
+        "schema_fields": schema["field_count"],
+    }
+    (out_dir / "timeline.json").write_text(
+        json.dumps(timeline, indent=1) + "\n")
+    (out_dir / "telemetry.json").write_text(json.dumps(
+        {"requests": requests, "debug": debug, "schema": schema}, indent=1) + "\n")
+    for log_file in qa_logs.debug_log_paths(home / ".prime" / "agent"):
+        try:
+            text, hits = qa_logs.redact(log_file.read_text(errors="replace"), secrets)
+            (out_dir / f"product-{log_file.name}.txt").write_text(text)
+            if hits:
+                result["reasons"].append(
+                    f"secret: a planted secret value appears in {log_file.name}")
+        except OSError:
+            pass
+
+    # ---- output layer (deterministic patterns + judge) ----
+    answer = qa_judge.extract_final_answer(rows)
+    outcome_text = (stdout or "") + (stderr or "")
+    result["answer"] = {"chars": len(answer), "sha256": hashlib.sha256(
+        answer.encode()).hexdigest()[:12], "preview": answer[:280]}
+    if task.output:
+        output_problems = qa_judge.evaluate_output_patterns(task.output, answer, outcome_text)
+        result["reasons"] += output_problems
+    else:
+        output_problems = []
+
+    ctx = {"home": home, "work": work, "out_dir": out_dir,
+           "transcript_path": out_dir / "session.jsonl" if transcript else None,
+           "exit_code": exit_code, "duration": duration, "mocks": mocks,
+           "sandbox": sandbox}
+    if task.oracle.get("type") == "script":
+        result["reasons"] += run_script_oracle(task, ctx)
+    elif task.oracle.get("type") == "state":
+        result["reasons"] += run_state_oracle(task, task.oracle.get("spec"), ctx)
+    else:
+        result["reasons"].append(f"unknown oracle type {task.oracle.get('type')!r}")
+
+    result["ok"] = not result["reasons"]
+    # Judge input for the single per-task call in main() (never persisted raw).
+    result["_judge_input"] = {
+        "answer": answer,
+        "outcome": (stdout or "")[-1200:] + (stderr or "")[-800:],
+        "oracle_problems": [r for r in result["reasons"]
+                            if not r.startswith("log:")][:6],
+        "log_summary": timeline["summary"],
+    }
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1299,8 +1823,17 @@ def main() -> int:
         if lane is None:
             skip("no runnable lane")
             continue
-        if lane == "daemon":
-            skip("daemon/ACP driver not wired yet (README: Missing seams)")
+        if lane == "daemon" and task.needs_kernel() and kernel_python is None:
+            skip("daemon lane needs the kernel interpreter (set QA_KERNEL_PYTHON)")
+            continue
+        if lane == "daemon" and task.files:
+            # The print lane turns `files:` into `@path` args (an embedded-text
+            # or image prompt). The daemon's create/prompt carries no argv, and
+            # the driver attaches no images yet, so running the task here would
+            # grade a prompt the task never asked for: skip loudly instead of
+            # reporting a misleading red.
+            skip("daemon lane cannot attach task files yet "
+                 f"({', '.join(task.files)}) - README: Missing seams")
             continue
         if lane == "real-model" and not model_cfg:
             skip("real-model lane needs --provider/--model/--api-key")

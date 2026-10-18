@@ -607,7 +607,7 @@ fn jev_settings_parse_every_gate_and_default_the_rest() {
 /// Phase 2: the consumer gates default OFF and only `auto` turns them on.
 #[test]
 fn the_phase_two_consumer_gates_default_auto_behind_a_native_judge() {
-    use crate::settings::{JevAutoThinkingSetting, JevGraphRerankSetting};
+    use crate::settings::{JevAutoThinkingSetting, JevGraphRerankSetting, JevToolArbiterSetting};
     // Unset reads as the promoted default (`auto`, the live-run decision):
     // the consumers are armed but only activate behind a resolved native
     // judge - without one the behaviour is byte-identical to `off`.
@@ -618,9 +618,14 @@ fn the_phase_two_consumer_gates_default_auto_behind_a_native_judge() {
         JevAutoThinkingSetting::Auto
     );
     assert_eq!(manager.get_jev_graph_rerank(), JevGraphRerankSetting::Auto);
+    assert_eq!(
+        manager.get_jev_tool_arbiter(),
+        JevToolArbiterSetting::Auto,
+        "the arbiter is armed by default: its deterministic table is free"
+    );
 
     let on: Settings = serde_json::from_value(serde_json::json!({
-        "jev": {"enabled": "auto", "autoThinking": "auto", "graphRerank": "auto"}
+        "jev": {"enabled": "auto", "autoThinking": "auto", "graphRerank": "auto", "toolArbiter": "auto"}
     }))
     .unwrap();
     let manager = manager_with(&on);
@@ -629,9 +634,10 @@ fn the_phase_two_consumer_gates_default_auto_behind_a_native_judge() {
         JevAutoThinkingSetting::Auto
     );
     assert_eq!(manager.get_jev_graph_rerank(), JevGraphRerankSetting::Auto);
+    assert_eq!(manager.get_jev_tool_arbiter(), JevToolArbiterSetting::Auto);
 
     let typo: Settings = serde_json::from_value(serde_json::json!({
-        "jev": {"autoThinking": "yes", "graphRerank": "true"}
+        "jev": {"autoThinking": "yes", "graphRerank": "true", "toolArbiter": "sometimes"}
     }))
     .unwrap();
     let manager = manager_with(&typo);
@@ -641,6 +647,17 @@ fn the_phase_two_consumer_gates_default_auto_behind_a_native_judge() {
         "a typo never enables a consumer"
     );
     assert_eq!(manager.get_jev_graph_rerank(), JevGraphRerankSetting::Off);
+    assert_eq!(manager.get_jev_tool_arbiter(), JevToolArbiterSetting::Off);
+
+    let off: Settings = serde_json::from_value(serde_json::json!({
+        "jev": {"enabled": "auto", "toolArbiter": "off"}
+    }))
+    .unwrap();
+    assert_eq!(
+        manager_with(&off).get_jev_tool_arbiter(),
+        JevToolArbiterSetting::Off,
+        "an explicit off silences the arbiter"
+    );
 }
 
 #[test]
@@ -1135,4 +1152,109 @@ async fn create_session_installs_jev_tool_only_when_enabled() {
         native.iter().any(|name| name == "jev"),
         "the recorded fork roster names jev: {native:?}"
     );
+}
+
+/// The Phase-2 tool-arbiter wiring follows the `[jev]` gates AND the roster:
+/// absent by default (the pre-jev bash result), present with `enabled` + a
+/// non-`off` `toolArbiter`, and armed with exactly the specialized tools the
+/// session actually carries.
+#[tokio::test]
+async fn create_session_arms_the_tool_arbiter_over_the_real_roster() {
+    // Default: no `[jev]` block, so no arbiter - every bash result stays
+    // byte-identical to the pre-jev path.
+    let default_dir = tempfile::tempdir().expect("tempdir");
+    let engine = session_engine_over(default_dir.path()).await;
+    assert!(
+        engine.session.tool_arbiter().is_none(),
+        "the default session suggests nothing"
+    );
+
+    // The layer on but the consumer off: still nothing.
+    let arbiter_off = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        arbiter_off.path().join("settings.json"),
+        serde_json::json!({ "jev": { "enabled": "on", "toolArbiter": "off" } }).to_string(),
+    )
+    .expect("settings.json");
+    let engine = session_engine_over(arbiter_off.path()).await;
+    assert!(
+        engine.session.tool_arbiter().is_none(),
+        "an explicit off silences the arbiter"
+    );
+
+    // Both gates open: the arbiter exists and its roster is the session's.
+    let wired = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        wired.path().join("settings.json"),
+        serde_json::json!({ "jev": { "enabled": "on", "toolArbiter": "auto" } }).to_string(),
+    )
+    .expect("settings.json");
+    let engine = session_engine_over(wired.path()).await;
+    let arbiter = engine
+        .session
+        .tool_arbiter()
+        .expect("the arbiter is installed");
+    let availability = arbiter.availability();
+    let roster: Vec<String> = engine
+        .session
+        .agent()
+        .state()
+        .await
+        .tools
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect();
+    assert_eq!(
+        availability,
+        crate::jev::ToolAvailability::from_tool_names(&roster),
+        "the armed roster mirrors the session's tools: {roster:?}"
+    );
+    assert!(
+        availability.any(),
+        "the fork tools are on by default, so the arbiter has somewhere to point: {roster:?}"
+    );
+    // The table answers from the real roster: a grep habit on this session
+    // points at a tool the model can actually call.
+    let note = arbiter
+        .note("grep -rn \"fn main\" crates")
+        .await
+        .expect("the table fires");
+    assert!(
+        roster.iter().any(|name| name
+            == note
+                .suggestion
+                .tool_name()
+                .split('.')
+                .next()
+                .unwrap_or_default()),
+        "the suggestion names a real tool: {} vs {roster:?}",
+        note.suggestion.tool_name()
+    );
+}
+
+/// The judgment half of the arbiter is armed only behind a resolved native
+/// judge - the same native-only rule as the tool and the other consumers.
+#[tokio::test]
+async fn the_tool_arbiter_judgment_layer_needs_a_native_judge() {
+    let wired = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        wired.path().join("settings.json"),
+        serde_json::json!({ "jev": { "enabled": "on", "toolArbiter": "auto" } }).to_string(),
+    )
+    .expect("settings.json");
+    std::fs::write(
+        wired.path().join("models.json"),
+        r#"{ "providers": { "typesafe": {
+            "baseUrl": "http://127.0.0.1:9", "apiKey": "test-key", "api": "typesafe",
+            "models": [ { "id": "jev-1.13.0" } ]
+        } } }"#,
+    )
+    .expect("models.json");
+    let engine = session_engine_over(wired.path()).await;
+    let arbiter = engine.session.tool_arbiter().expect("installed");
+    assert!(
+        arbiter.has_judge(),
+        "a resolved native candidate arms the judgment layer"
+    );
+    assert_eq!(arbiter.consecutive_failures(), 0);
 }

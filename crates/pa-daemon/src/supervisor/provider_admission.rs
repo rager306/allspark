@@ -273,6 +273,15 @@ impl Supervisor {
     }
 }
 
+/// The worker tokens the supervisor mints are UUIDs (v4); a mutating
+/// admission action needs something plausible. The shape check (length
+/// ≥ 8, alphanumeric) closes the blank-and-single-char lane the finding
+/// demonstrated; a full check against the live worker set is the
+/// complete fix.
+fn is_worker_token_shape(token: &str) -> bool {
+    token.len() >= 8 && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,13 +450,4 @@ mod tests {
         assert_eq!(row["budgetFailures"], serde_json::json!(1));
         assert_eq!(row["budgetSamples"], serde_json::json!(1));
     }
-}
-
-/// The worker tokens the supervisor mints are UUIDs (v4); a mutating
-/// admission action needs something plausible. The shape check (length
-/// ≥ 8, alphanumeric) closes the blank-and-single-char lane the finding
-/// demonstrated; a full check against the live worker set is the
-/// complete fix.
-fn is_worker_token_shape(token: &str) -> bool {
-    token.len() >= 8 && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }

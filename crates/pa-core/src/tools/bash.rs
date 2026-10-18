@@ -98,6 +98,11 @@ pub struct BashToolOptions {
     pub shell_path: Option<String>,
     /// Hook to adjust command, cwd, or env before execution.
     pub spawn_hook: Option<BashSpawnHook>,
+    /// FORK-ONLY (jev Phase 2): the advisory tool-selection arbiter. When
+    /// armed and a rule fires, the result carries a `[tool-arbiter]` note
+    /// pointing at the specialized tool. The command runs unchanged and its
+    /// exit status is untouched - the note is appended, never substituted.
+    pub arbiter: Option<Arc<crate::jev::ToolArbiter>>,
 }
 
 /// Probe for at-risk files via `git status --porcelain`. Returns `Ok(None)`
@@ -455,9 +460,27 @@ pub async fn execute_bash(
                 )),
                 None => anyhow::bail!(append_status(&text, "Command was killed by a signal")),
             }
+            // FORK-ONLY (jev Phase 2): the advisory arbiter note rides the
+            // successful result. Fail-open: no arbiter, no matching rule, or
+            // a judge failure leaves the text and details byte-identical.
+            let mut text = text;
+            let mut details = formatted.details;
+            if let Some(arbiter) = &options.arbiter {
+                if let Some(note) = arbiter.note(command).await {
+                    let payload = note.to_json();
+                    if let Some(details) =
+                        details.as_mut().and_then(serde_json::Value::as_object_mut)
+                    {
+                        details.insert("toolArbiter".to_string(), payload);
+                    } else {
+                        details = Some(json!({ "toolArbiter": payload }));
+                    }
+                    text = append_status(&text, &note.text);
+                }
+            }
             Ok(ToolExecutionResult {
                 content: vec![ToolContentBlock::text(text)],
-                details: formatted.details,
+                details,
                 is_error: false,
             })
         }
@@ -508,6 +531,7 @@ pub fn create_bash_tool_definition_with_options(
     let command_prefix = options.command_prefix.clone();
     let shell_path = options.shell_path.clone();
     let spawn_hook = options.spawn_hook.clone();
+    let arbiter = options.arbiter.clone();
     let execute: crate::tools::tool_definition::ExecuteFn = {
         Arc::new(move |_tool_call_id, params, signal, on_update| {
             let cwd = cwd.clone();
@@ -516,6 +540,7 @@ pub fn create_bash_tool_definition_with_options(
                 command_prefix: command_prefix.clone(),
                 shell_path: shell_path.clone(),
                 spawn_hook: spawn_hook.clone(),
+                arbiter: arbiter.clone(),
             };
             Box::pin(async move {
                 let command = params
@@ -590,5 +615,126 @@ mod signal_exit_tests {
             error.to_string().contains("killed by a signal"),
             "the failure names the signal kill: {error}"
         );
+    }
+}
+
+#[cfg(test)]
+mod arbiter_note_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    use crate::jev::{ToolArbiter, ToolAvailability};
+
+    /// Operations that record the commands they were asked to run and answer
+    /// with a fixed exit code - so the test asserts the arbiter never altered
+    /// what reached the shell.
+    struct RecordingOps {
+        commands: Arc<Mutex<Vec<String>>>,
+        exit_code: i32,
+    }
+
+    impl BashOperations for RecordingOps {
+        fn exec<'a>(
+            &'a self,
+            command: &'a str,
+            _cwd: &'a str,
+            options: ExecOptions<'a>,
+        ) -> ExecFuture<'a> {
+            self.commands
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(command.to_string());
+            (options.on_data)(b"src/lib.rs:12:    fn main() {}\n");
+            let code = self.exit_code;
+            Box::pin(async move { Ok(Some(code)) })
+        }
+    }
+
+    fn recording_options(exit_code: i32) -> (BashToolOptions, Arc<Mutex<Vec<String>>>) {
+        let commands = Arc::new(Mutex::new(Vec::new()));
+        let arbiter = ToolArbiter::new();
+        arbiter.arm(ToolAvailability::all(), None);
+        let options = BashToolOptions {
+            operations: Some(Arc::new(RecordingOps {
+                commands: Arc::clone(&commands),
+                exit_code,
+            })),
+            arbiter: Some(Arc::new(arbiter)),
+            ..Default::default()
+        };
+        (options, commands)
+    }
+
+    /// The core promise: the note is ADVISORY. The command reaches the shell
+    /// exactly as written, the exit status decides success, and the hint is
+    /// appended after the output.
+    #[tokio::test]
+    async fn a_matching_command_runs_unchanged_and_gains_a_note() {
+        let (options, commands) = recording_options(0);
+        let command = r#"grep -rn "fn main" src"#;
+        let result = execute_bash("/tmp", &options, command, None, None, None, None)
+            .await
+            .expect("a zero exit is a success");
+        assert_eq!(
+            commands.lock().unwrap().as_slice(),
+            [command.to_string()],
+            "the arbiter never rewrites the command"
+        );
+        let text = match &result.content[0] {
+            ToolContentBlock::Text { text } => text,
+            other @ ToolContentBlock::Image { .. } => {
+                panic!("expected text, got {other:?}")
+            }
+        };
+        assert!(
+            text.contains("src/lib.rs:12"),
+            "the output is intact: {text}"
+        );
+        assert!(
+            text.contains("[tool-arbiter]"),
+            "the note is appended: {text}"
+        );
+        assert!(text.contains("graph.search"), "{text}");
+        assert!(text.contains("ran unchanged"), "{text}");
+        let details = result.details.expect("the note rides the details");
+        assert_eq!(details["toolArbiter"]["tool"], "graph.search");
+        assert_eq!(details["toolArbiter"]["judged"], false);
+    }
+
+    /// No rule, no note: an unrelated command's result is byte-identical to
+    /// the pre-arbiter path.
+    #[tokio::test]
+    async fn an_unrelated_command_gets_no_note() {
+        let (options, _commands) = recording_options(0);
+        let result = execute_bash("/tmp", &options, "cargo test --lib", None, None, None, None)
+            .await
+            .expect("success");
+        let text = match &result.content[0] {
+            ToolContentBlock::Text { text } => text,
+            other @ ToolContentBlock::Image { .. } => {
+                panic!("expected text, got {other:?}")
+            }
+        };
+        assert!(!text.contains("[tool-arbiter]"), "{text}");
+        assert!(result.details.is_none(), "{:?}", result.details);
+    }
+
+    /// A failing command keeps its failure: the arbiter does not turn a
+    /// non-zero exit into a success just because it has advice.
+    #[tokio::test]
+    async fn a_failing_command_still_fails() {
+        let (options, _commands) = recording_options(2);
+        let error = execute_bash(
+            "/tmp",
+            &options,
+            r#"grep -rn "fn main" src"#,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect_err("exit 2 is a failure");
+        assert!(error.to_string().contains("exited with code 2"), "{error}");
     }
 }

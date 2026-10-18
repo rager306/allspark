@@ -19,7 +19,9 @@ use crate::jev::auto_thinking::{
     DifficultyClassifier, QUESTION_ID, UNSURE_OPTION,
 };
 use crate::jev::chain::{ChainJudge, JudgeCandidate, JudgeKind};
-use crate::jev::eval::corpus::{rerank_corpus, thinking_corpus};
+use crate::jev::eval::corpus::{
+    arbiter_corpus, rerank_corpus, thinking_corpus, ArbiterCase, ToolRoute,
+};
 use crate::jev::eval::scripted::{ScriptEntry, ScriptedJudge};
 use crate::jev::eval::{
     gate, Candidate, Case, Corpus, EvalError, GateDecision, GateRejection, Prediction,
@@ -29,8 +31,13 @@ use crate::jev::graph_rerank::{
     question_id, should_run_graph_rerank, GraphReranker, RerankCandidate, DEMOTE_BELOW,
     MAX_RERANK_CANDIDATES,
 };
+use crate::jev::tool_arbiter::{
+    should_run_tool_arbiter, ToolArbiter, ToolAvailability, ARBITER_TIMEOUT,
+};
 use crate::jev::{Judge, JudgeError};
-use crate::settings::{JevAutoThinkingSetting, JevEnabledSetting, JevGraphRerankSetting};
+use crate::settings::{
+    JevAutoThinkingSetting, JevEnabledSetting, JevGraphRerankSetting, JevToolArbiterSetting,
+};
 
 // ───────────────────────── gate framework ─────────────────────────
 
@@ -522,10 +529,45 @@ async fn the_rerank_corpus_is_frozen_and_balanced() {
     );
 }
 
+#[tokio::test]
+async fn the_arbiter_corpus_is_frozen_and_balanced() {
+    let corpus = arbiter_corpus().expect("the fixture validates");
+    assert_eq!(corpus.name(), "tool-arbiter");
+    assert_eq!(corpus.len(), 15);
+    assert_eq!(corpus.dev().len(), 9);
+    assert_eq!(corpus.test().len(), 6);
+    // Both splits must be able to lose: the `bash` label (the shell was the
+    // right surface) and a specialized route are in each.
+    for split in [corpus.dev(), corpus.test()] {
+        assert!(split.iter().any(|case| case.label == ToolRoute::Bash));
+        assert!(split.iter().any(|case| case.label != ToolRoute::Bash));
+    }
+    // Every case names a roster that can reach its own label: a suggestion
+    // for an absent tool would be unreachable, and a `bash` case on an empty
+    // roster would be trivially right.
+    for case in corpus.dev().iter().chain(corpus.test().iter()) {
+        let (graph, lsp, edit) = case.input.available;
+        assert!(graph || lsp || edit, "{}: an empty roster", case.id);
+        match case.label {
+            ToolRoute::GraphSearch => assert!(graph, "{} needs graph", case.id),
+            ToolRoute::LspFindSymbol => assert!(lsp, "{} needs lsp", case.id),
+            ToolRoute::Edit => assert!(edit, "{} needs edit", case.id),
+            ToolRoute::Bash => {}
+        }
+    }
+    assert_eq!(
+        corpus.fingerprint(),
+        ARBITER_FINGERPRINT,
+        "the tool-arbiter corpus changed: re-freeze only with a measured re-run"
+    );
+}
+
 /// Pinned fingerprints (see the tests above).
 const THINKING_FINGERPRINT: &str =
     "281525f1f02a619b4c7fc6d7e9f97572ebe38758fe68972a579e184dfc4b15cc";
 const RERANK_FINGERPRINT: &str = "28addc2c5d82761d0768820c44933f0b7787f15825e071f8e3965dd9595f7548";
+const ARBITER_FINGERPRINT: &str =
+    "40c81032bb5c37959c368af615527bfad14d5dd9c0ca7dcdcace138022c9ec55";
 
 // ─────────────────────── auto-thinking ───────────────────────
 
@@ -1330,4 +1372,175 @@ async fn the_graph_rerank_corpus_runs_the_gate_end_to_end() {
         gate(&baseline_test, &candidate_test, &thresholds).is_promote(),
         "the re-rank wins on the frozen test split"
     );
+}
+
+// ─────────────────────── tool arbiter ───────────────────────
+
+/// The arbiter baseline: never suggest anything (`bash` for every case) -
+/// exactly what the fork does today.
+struct ArbiterBaseline;
+
+#[async_trait::async_trait]
+impl Candidate<ArbiterCase, ToolRoute> for ArbiterBaseline {
+    fn name(&self) -> &'static str {
+        "baseline:never-suggest"
+    }
+
+    async fn predict(&self, _case: &Case<ArbiterCase, ToolRoute>) -> Prediction<ToolRoute> {
+        Prediction::certain(ToolRoute::Bash, PredictionSource::Baseline)
+    }
+}
+
+/// Arm an arbiter for one case's roster (the table alone: the corpus scores
+/// the deterministic layer, which is the one that always runs).
+fn arbiter_for(case: &ArbiterCase) -> Arc<ToolArbiter> {
+    let (graph, lsp, edit) = case.available;
+    let arbiter = ToolArbiter::new().with_timeout(ARBITER_TIMEOUT);
+    arbiter.arm(ToolAvailability { graph, lsp, edit }, None);
+    Arc::new(arbiter)
+}
+
+/// A candidate that arms the arbiter per case from the case's own roster (a
+/// session's roster is fixed, but the corpus spans rosters so the table's
+/// "never suggest an absent tool" rule is exercised).
+struct RosterAwareArbiter;
+
+#[async_trait::async_trait]
+impl Candidate<ArbiterCase, ToolRoute> for RosterAwareArbiter {
+    fn name(&self) -> &'static str {
+        "candidate:jev-tool-arbiter"
+    }
+
+    async fn predict(&self, case: &Case<ArbiterCase, ToolRoute>) -> Prediction<ToolRoute> {
+        let arbiter = arbiter_for(&case.input);
+        match arbiter.note(&case.input.command).await {
+            Some(note) => Prediction {
+                label: ToolRoute::of(note.suggestion.tool),
+                confidence: None,
+                elapsed: None,
+                source: PredictionSource::Judge,
+            },
+            None => Prediction::certain(ToolRoute::Bash, PredictionSource::Fallback),
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_tool_arbiter_corpus_runs_the_gate_end_to_end() {
+    let mut corpus = arbiter_corpus().expect("fixture");
+    let baseline = ArbiterBaseline;
+    let candidate = RosterAwareArbiter;
+    let baseline_dev = corpus.evaluate_dev(&baseline).await;
+    let candidate_dev = corpus.evaluate_dev(&candidate).await;
+    // The baseline is right only on the cases where the shell was the
+    // surface; the table routes every specialized case.
+    let dev_bash = corpus
+        .dev()
+        .iter()
+        .filter(|case| case.label == ToolRoute::Bash)
+        .count();
+    assert_eq!(baseline_dev.correct, dev_bash);
+    assert_eq!(
+        candidate_dev.correct,
+        corpus.dev().len(),
+        "the table routes every dev case: {:?}",
+        candidate_dev.misclassified
+    );
+    let thresholds = TunedThresholds::tune(
+        &baseline_dev,
+        &candidate_dev,
+        &TuningPolicy {
+            min_cases: 6,
+            ..TuningPolicy::default()
+        },
+    )
+    .expect("dev supports the win");
+    let test = corpus.unseal_test().expect("one touch");
+    let baseline_test = test.evaluate(&baseline).await;
+    let candidate_test = test.evaluate(&candidate).await;
+    assert_eq!(
+        candidate_test.misclassified,
+        Vec::new(),
+        "every test case routes as labelled"
+    );
+    assert!(matches!(
+        gate(&baseline_test, &candidate_test, &thresholds),
+        GateDecision::Promote { .. }
+    ));
+}
+
+#[tokio::test]
+async fn a_judge_that_never_answers_leaves_the_table_standing() {
+    // The judgment layer is armed but its judge always fails: every case
+    // falls back to the table's own note (the arbiter's deterministic
+    // layer), which still routes as labelled - and the fallback counter
+    // proves the layer was actually asked.
+    let corpus = arbiter_corpus().expect("fixture");
+    let failing: Arc<dyn Judge> = Arc::new(ScriptedJudge::new("scripted/empty", Vec::new()));
+    let mut judged = 0usize;
+    let mut correct = 0usize;
+    for case in corpus.dev().iter().chain(corpus.test().iter()) {
+        let (graph, lsp, edit) = case.input.available;
+        let arbiter = ToolArbiter::new();
+        arbiter.arm(
+            ToolAvailability { graph, lsp, edit },
+            Some(Arc::clone(&failing)),
+        );
+        let prediction = match arbiter.note(&case.input.command).await {
+            Some(note) => {
+                assert!(note.verdict.is_none(), "a failing judge invents nothing");
+                judged += 1;
+                ToolRoute::of(note.suggestion.tool)
+            }
+            None => ToolRoute::Bash,
+        };
+        if prediction == case.label {
+            correct += 1;
+        }
+    }
+    assert!(judged > 0, "the judge was consulted");
+    assert_eq!(
+        correct,
+        corpus.dev().len() + corpus.test().len(),
+        "a broken judge degrades to the table, not to silence"
+    );
+}
+
+#[test]
+fn the_tool_arbiter_gate_demands_a_native_judge() {
+    let native = ChainJudge::new(vec![JudgeCandidate {
+        identity: "typesafe/jev".to_string(),
+        kind: JudgeKind::Native,
+        judge: None,
+    }]);
+    let prompted = ChainJudge::new(vec![JudgeCandidate {
+        identity: "local/model".to_string(),
+        kind: JudgeKind::Prompted,
+        judge: None,
+    }]);
+    assert!(!should_run_tool_arbiter(
+        JevEnabledSetting::Off,
+        JevToolArbiterSetting::Auto,
+        Some(&native)
+    ));
+    assert!(!should_run_tool_arbiter(
+        JevEnabledSetting::On,
+        JevToolArbiterSetting::Off,
+        Some(&native)
+    ));
+    assert!(!should_run_tool_arbiter(
+        JevEnabledSetting::On,
+        JevToolArbiterSetting::Auto,
+        None
+    ));
+    assert!(!should_run_tool_arbiter(
+        JevEnabledSetting::On,
+        JevToolArbiterSetting::Auto,
+        Some(&prompted)
+    ));
+    assert!(should_run_tool_arbiter(
+        JevEnabledSetting::On,
+        JevToolArbiterSetting::Auto,
+        Some(&native)
+    ));
 }

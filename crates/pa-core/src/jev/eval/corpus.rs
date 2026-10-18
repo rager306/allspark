@@ -27,6 +27,54 @@ pub type ThinkingCorpus = Corpus<String, Difficulty>;
 /// the baseline always picks index 0 (the RRF top-1).
 pub type RerankCorpus = Corpus<RerankCase, usize>;
 
+/// The tool-arbiter corpus: 15 shell commands, dev 9 / test 6; the label is
+/// the tool the command *should* have used (or `bash` when the shell was the
+/// right surface), and the baseline is "never suggest" (`bash` for every
+/// case) - exactly what the fork does today.
+pub type ToolArbiterCorpus = Corpus<ArbiterCase, ToolRoute>;
+
+/// The tool a bash command should have used, as the corpus labels it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+pub enum ToolRoute {
+    /// `graph` `search` (the indexed code graph).
+    GraphSearch,
+    /// `lsp` `find_symbol` (language-server symbol resolution).
+    LspFindSymbol,
+    /// The native `edit` tool.
+    Edit,
+    /// The shell was the right surface (no note at all).
+    Bash,
+}
+
+impl ToolRoute {
+    /// The wire name (`graph.search`, `lsp.find_symbol`, `edit`, `bash`).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ToolRoute::GraphSearch => "graph.search",
+            ToolRoute::LspFindSymbol => "lsp.find_symbol",
+            ToolRoute::Edit => "edit",
+            ToolRoute::Bash => "bash",
+        }
+    }
+
+    /// The route for a suggested tool (the arbiter's own vocabulary).
+    #[must_use]
+    pub fn of(tool: crate::jev::tool_arbiter::SuggestedTool) -> ToolRoute {
+        match tool {
+            crate::jev::tool_arbiter::SuggestedTool::GraphSearch => ToolRoute::GraphSearch,
+            crate::jev::tool_arbiter::SuggestedTool::LspFindSymbol => ToolRoute::LspFindSymbol,
+            crate::jev::tool_arbiter::SuggestedTool::Edit => ToolRoute::Edit,
+        }
+    }
+}
+
+impl std::fmt::Display for ToolRoute {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 /// One re-rank case: a query plus the candidate list the search returned,
 /// in RRF order (index 0 is the search's own top-1).
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1007,4 +1055,178 @@ pub fn rerank_corpus() -> Result<RerankCorpus, EvalError> {
         })
         .collect();
     Corpus::new("graph-rerank", "2026-10-16", cases)
+}
+
+/// One arbiter fixture case: the shell command plus the tools the session's
+/// roster carried when the model typed it (a suggestion for an absent tool
+/// would be unreachable, so the roster is part of the input).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ArbiterCase {
+    pub command: String,
+    /// `(graph, lsp, edit)`.
+    pub available: (bool, bool, bool),
+}
+
+impl ArbiterCase {
+    /// A case on the full roster (every fork tool present).
+    #[must_use]
+    pub fn full(command: &str) -> ArbiterCase {
+        ArbiterCase {
+            command: command.to_string(),
+            available: (true, true, true),
+        }
+    }
+
+    /// A case on a restricted roster.
+    #[must_use]
+    pub fn on(command: &str, available: (bool, bool, bool)) -> ArbiterCase {
+        ArbiterCase {
+            command: command.to_string(),
+            available,
+        }
+    }
+}
+
+/// One arbiter fixture row: `(id, split, label, command, roster)`.
+type ArbiterRow = (
+    &'static str,
+    Split,
+    ToolRoute,
+    &'static str,
+    (bool, bool, bool),
+);
+
+/// The tool-arbiter cases: real shell invocations from fork work, labelled
+/// with the tool that would have served the intent (or `bash` when the shell
+/// was right). Three cases exist to keep the table honest - a monitoring
+/// `tail -f`, a `grep` that reads a pipe, and a `grep` inside a string - and
+/// one case runs on a roster without `graph`, where the same scan must route
+/// to `lsp` instead.
+pub const ARBITER_CASES: &[ArbiterRow] = &[
+    // ── dev ──
+    (
+        "arbiter-dev-01",
+        Split::Dev,
+        ToolRoute::GraphSearch,
+        r#"grep -rn "fn resolve_judge" crates/pa-core"#,
+        (true, true, true),
+    ),
+    (
+        "arbiter-dev-02",
+        Split::Dev,
+        ToolRoute::GraphSearch,
+        r#"rg "GraphReranker" --type rust"#,
+        (true, true, true),
+    ),
+    (
+        "arbiter-dev-03",
+        Split::Dev,
+        ToolRoute::Edit,
+        r"sed -i 's/old_name/new_name/g' crates/pa-core/src/jev/mod.rs",
+        (true, true, true),
+    ),
+    (
+        "arbiter-dev-04",
+        Split::Dev,
+        ToolRoute::GraphSearch,
+        r#"find crates -name "*.rs" -newer Cargo.toml"#,
+        (true, true, true),
+    ),
+    (
+        "arbiter-dev-05",
+        Split::Dev,
+        ToolRoute::Edit,
+        "cat crates/pa-core/src/jev/cache.rs",
+        (true, true, true),
+    ),
+    (
+        "arbiter-dev-06",
+        Split::Dev,
+        ToolRoute::Bash,
+        "cargo test -p pa-core --lib",
+        (true, true, true),
+    ),
+    (
+        "arbiter-dev-07",
+        Split::Dev,
+        ToolRoute::Bash,
+        "tail -f target/debug/app.log",
+        (true, true, true),
+    ),
+    (
+        "arbiter-dev-08",
+        Split::Dev,
+        ToolRoute::Bash,
+        r"git log --oneline | grep jev",
+        (true, true, true),
+    ),
+    (
+        "arbiter-dev-09",
+        Split::Dev,
+        ToolRoute::LspFindSymbol,
+        r#"grep -rn "MAX_RERANK_CANDIDATES" crates/"#,
+        (false, true, true),
+    ),
+    // ── test ──
+    (
+        "arbiter-test-01",
+        Split::Test,
+        ToolRoute::GraphSearch,
+        r#"grep -rn "should_run_graph_rerank" crates/"#,
+        (true, true, true),
+    ),
+    (
+        "arbiter-test-02",
+        Split::Test,
+        ToolRoute::GraphSearch,
+        r#"rg -n "TODO" crates/pa-core/src/jev"#,
+        (true, true, true),
+    ),
+    (
+        "arbiter-test-03",
+        Split::Test,
+        ToolRoute::Edit,
+        r"perl -pi -e 's/foo/bar/g' crates/pa-core/src/jev/tool.rs",
+        (true, true, true),
+    ),
+    (
+        "arbiter-test-04",
+        Split::Test,
+        ToolRoute::Bash,
+        "git status --porcelain",
+        (true, true, true),
+    ),
+    (
+        "arbiter-test-05",
+        Split::Test,
+        ToolRoute::Bash,
+        r#"echo "grep -rn foo""#,
+        (true, true, true),
+    ),
+    (
+        "arbiter-test-06",
+        Split::Test,
+        ToolRoute::Edit,
+        r"sed -i.bak 's/a/b/' crates/pa-core/src/jev/mod.rs",
+        (true, true, true),
+    ),
+];
+
+/// Build the tool-arbiter corpus.
+///
+/// # Errors
+///
+/// Whatever [`Corpus::new`] rejects.
+pub fn arbiter_corpus() -> Result<ToolArbiterCorpus, EvalError> {
+    let cases = ARBITER_CASES
+        .iter()
+        .map(|(id, split, label, command, available)| Case {
+            id: (*id).to_string(),
+            input: ArbiterCase::on(command, *available),
+            label: *label,
+            split: *split,
+            tags: Vec::new(),
+        })
+        .collect();
+    Corpus::new("tool-arbiter", "2026-10-18", cases)
 }

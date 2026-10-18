@@ -1053,3 +1053,258 @@ async fn a_disabled_client_admits_without_a_plane() {
         .await;
     client.release(1).await;
 }
+
+// ===== Admission adoption telemetry (M3-M5) =====
+
+/// A registry wired to a mock-sink telemetry client: the adoption seam's
+/// battery. The client delivers only on an explicit flush, so every
+/// assertion below reads a drained queue — never a sleep.
+fn telemetry_registry(
+    cap: usize,
+    clock: Arc<dyn ClockSource>,
+) -> (
+    Arc<ProviderAdmission>,
+    Arc<pa_telemetry::MockSink>,
+    pa_telemetry::TelemetryClient,
+) {
+    let mock = Arc::new(pa_telemetry::MockSink::new());
+    let mut config = pa_telemetry::TelemetryClientConfig::new("install-1");
+    config.flush_interval = Duration::from_mins(5);
+    config.sinks = vec![mock.clone() as Arc<dyn pa_telemetry::TelemetrySink>];
+    let client = pa_telemetry::TelemetryClient::spawn(config).expect("spawn telemetry client");
+    let registry = ProviderAdmission::with_parts(cap, Arc::new(JitteredStagger::new()), clock);
+    registry.attach_telemetry(client.clone());
+    (registry, mock, client)
+}
+
+/// The full storm-and-recovery ride the seam: each AIMD change is one
+/// `admission_demoted`/`admission_promoted`, each breaker flip one
+/// `admission_breaker_transition` with the decision-moment failure count.
+#[tokio::test]
+async fn breaker_and_aimd_transitions_emit_adoption_events() {
+    let clock = ScriptedClock::new(1_000);
+    let (registry, mock, client) =
+        telemetry_registry(6, Arc::clone(&clock) as Arc<dyn ClockSource>);
+    let key = key();
+
+    // The storm: ten rate-limited settles. AIMD halves 6 -> 3 -> 1 (two
+    // demotions; the floor holds after that), then the spent budget
+    // opens the breaker on the tenth sample.
+    for _ in 0..RETRY_BUDGET_MIN_SAMPLES {
+        let lease = admitted(&registry, &key, "storm-worker").await;
+        registry.settle(
+            lease,
+            StreamOutcome::RateLimited(RateLimitReason::RateLimit),
+        );
+    }
+    // Past the cooldown the first acquire is the probe; its settle
+    // promotes the limit one slot and closes the breaker.
+    clock.advance(BREAKER_COOLDOWN_MS);
+    let probe = match registry
+        .acquire_stream_within(&key, "probe", Duration::from_millis(50))
+        .await
+    {
+        StreamAdmission::Admitted(lease) => lease,
+        other => panic!("the probe must admit, got {other:?}"),
+    };
+    registry.settle(probe, StreamOutcome::Settled);
+    client.flush().await.expect("flush telemetry");
+
+    let events = mock.events();
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "admission_demoted",
+            "admission_demoted",
+            "admission_breaker_transition",
+            "admission_breaker_transition",
+            "admission_promoted",
+            "admission_breaker_transition",
+        ],
+        "one event per transition, in settle order"
+    );
+    // The plain 429s halve: 6 -> 3 -> 1.
+    for (index, (old_limit, new_limit)) in [(0usize, (6i64, 3i64)), (1, (3, 1))] {
+        assert_eq!(
+            events[index].properties.get("provider"),
+            Some(&serde_json::json!("zai"))
+        );
+        assert_eq!(
+            events[index].properties.get("reason"),
+            Some(&serde_json::json!("rate_limited"))
+        );
+        assert_eq!(
+            events[index].properties.get("old_limit"),
+            Some(&serde_json::json!(old_limit))
+        );
+        assert_eq!(
+            events[index].properties.get("new_limit"),
+            Some(&serde_json::json!(new_limit))
+        );
+    }
+    // closed -> open at the spent budget: ten failures of ten samples.
+    assert_eq!(
+        events[2].properties.get("from_state"),
+        Some(&serde_json::json!("closed"))
+    );
+    assert_eq!(
+        events[2].properties.get("to_state"),
+        Some(&serde_json::json!("open"))
+    );
+    assert_eq!(
+        events[2].properties.get("failure_count"),
+        Some(&serde_json::json!(RETRY_BUDGET_MIN_SAMPLES))
+    );
+    // open -> half_open when the cooldown passes and the probe dispatches.
+    assert_eq!(
+        events[3].properties.get("from_state"),
+        Some(&serde_json::json!("open"))
+    );
+    assert_eq!(
+        events[3].properties.get("to_state"),
+        Some(&serde_json::json!("half_open"))
+    );
+    // The settled probe promotes 1 -> 2...
+    assert_eq!(
+        events[4].properties.get("reason"),
+        Some(&serde_json::json!("settled"))
+    );
+    assert_eq!(
+        events[4].properties.get("old_limit"),
+        Some(&serde_json::json!(1))
+    );
+    assert_eq!(
+        events[4].properties.get("new_limit"),
+        Some(&serde_json::json!(2))
+    );
+    // ...and closes the breaker, reporting the storm's count as decided.
+    assert_eq!(
+        events[5].properties.get("from_state"),
+        Some(&serde_json::json!("half_open"))
+    );
+    assert_eq!(
+        events[5].properties.get("to_state"),
+        Some(&serde_json::json!("closed"))
+    );
+    assert_eq!(
+        events[5].properties.get("failure_count"),
+        Some(&serde_json::json!(RETRY_BUDGET_MIN_SAMPLES))
+    );
+    client.shutdown().await.expect("shutdown telemetry");
+}
+
+/// M3 rides the event: an account-local cause (a spent quota) drops the
+/// limit to the floor at once and the demotion names its reason.
+#[tokio::test]
+async fn an_account_local_demote_names_its_reason() {
+    let (registry, mock, client) =
+        telemetry_registry(6, ScriptedClock::new(1_000) as Arc<dyn ClockSource>);
+    let key = key();
+    let lease = admitted(&registry, &key, "worker-a").await;
+    registry.settle(
+        lease,
+        StreamOutcome::RateLimited(RateLimitReason::QuotaExhausted),
+    );
+    client.flush().await.expect("flush telemetry");
+
+    let events = mock.events();
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["admission_demoted"],
+        "one sample is no breaker verdict, one floor drop is one demotion"
+    );
+    assert_eq!(
+        events[0].properties.get("reason"),
+        Some(&serde_json::json!("account_local"))
+    );
+    assert_eq!(
+        events[0].properties.get("old_limit"),
+        Some(&serde_json::json!(6))
+    );
+    assert_eq!(
+        events[0].properties.get("new_limit"),
+        Some(&serde_json::json!(1))
+    );
+    client.shutdown().await.expect("shutdown telemetry");
+}
+
+/// M5 rides the seam: one served snapshot ask emits the registry's
+/// counter rollup — provider pairs, in-flight and queued sums, and
+/// whether any breaker stands open.
+#[tokio::test]
+async fn provider_rows_emit_the_snapshot_rollup() {
+    let (registry, mock, client) =
+        telemetry_registry(6, ScriptedClock::new(1_000) as Arc<dyn ClockSource>);
+    let glm = ProviderKey::new("zai", "glm-5.3");
+    let kimi = ProviderKey::new("zai", "kimi-k2");
+    let stormy = ProviderKey::new("stormy", "m1");
+
+    // One lease held on glm (in flight), a settled round trip on kimi,
+    // and a spent budget on stormy: its breaker opens at the floor.
+    let _held = admitted(&registry, &glm, "worker-a").await;
+    let kimi_lease = admitted(&registry, &kimi, "worker-b").await;
+    registry.settle(kimi_lease, StreamOutcome::Settled);
+    for _ in 0..RETRY_BUDGET_MIN_SAMPLES {
+        let lease = admitted(&registry, &stormy, "storm-worker").await;
+        registry.settle(
+            lease,
+            StreamOutcome::RateLimited(RateLimitReason::RateLimit),
+        );
+    }
+    // The stormy limit sits at the floor and its breaker is open, so the
+    // held lease is a spawn reservation (spawns never gate on the
+    // breaker): one slot in flight, and a second spawn parks in the queue.
+    let (_stormy_held, _) = registry
+        .spawn_gate_within(&stormy, "spawn-held", Duration::from_millis(50))
+        .await
+        .expect("the floor's one slot admits a spawn");
+    let parked = tokio::spawn({
+        let registry = Arc::clone(&registry);
+        let stormy = stormy.clone();
+        async move {
+            registry
+                .spawn_gate_within(&stormy, "spawn-queued", Duration::from_secs(5))
+                .await
+        }
+    });
+    until(
+        || registry.snapshot(&stormy).queued == 1,
+        "one queued spawn on stormy",
+    )
+    .await;
+
+    let rows = registry.provider_rows();
+    client.flush().await.expect("flush telemetry");
+    assert_eq!(rows.len(), 3);
+
+    let snapshots: Vec<_> = mock
+        .events()
+        .into_iter()
+        .filter(|event| event.name == "admission_snapshot")
+        .collect();
+    assert_eq!(snapshots.len(), 1, "one ask, one rollup");
+    let properties = &snapshots[0].properties;
+    assert_eq!(
+        properties.get("providers_count"),
+        Some(&serde_json::json!(3))
+    );
+    assert_eq!(
+        properties.get("total_in_flight"),
+        Some(&serde_json::json!(2)),
+        "glm's held lease plus stormy's floor lease"
+    );
+    assert_eq!(properties.get("total_queued"), Some(&serde_json::json!(1)));
+    assert_eq!(
+        properties.get("any_open_breakers"),
+        Some(&serde_json::json!(true)),
+        "stormy's breaker stands open"
+    );
+    parked.abort();
+    client.shutdown().await.expect("shutdown telemetry");
+}

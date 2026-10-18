@@ -26,6 +26,9 @@ pub mod eval;
 pub mod graph_rerank;
 pub mod native;
 pub mod tool;
+// FORK-ONLY (Phase 2): the tool-selection arbiter (bash -> graph/lsp/edit
+// routing hints; advisory only, never a redirect).
+pub mod tool_arbiter;
 
 #[cfg(test)]
 mod tests;
@@ -36,6 +39,7 @@ pub use chain::{ChainJudge, JudgeCandidate, JudgeKind, CANDIDATE_REJECTION_COOLD
 pub use graph_rerank::{GraphReranker, RerankCandidate, RerankOutcome};
 pub use native::NativeJudge;
 pub use tool::{params_schema as jev_tool_params_schema, JevTool};
+pub use tool_arbiter::{ToolArbiter, ToolAvailability};
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

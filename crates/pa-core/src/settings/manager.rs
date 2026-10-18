@@ -1017,6 +1017,19 @@ impl SettingsManager {
             .unwrap_or_default()
     }
 
+    /// FORK-ONLY: the tool-selection arbiter's gate (`jev.toolArbiter`),
+    /// `auto` when unset (armed behind a native judge; the deterministic
+    /// table needs no judge at all).
+    #[must_use]
+    pub fn get_jev_tool_arbiter(&self) -> super::types::JevToolArbiterSetting {
+        self.merged
+            .jev
+            .as_ref()
+            .and_then(|jev| jev.tool_arbiter.as_deref())
+            .map(super::types::JevToolArbiterSetting::parse)
+            .unwrap_or_default()
+    }
+
     /// The judgment answer cache gate (`jev.cache.enabled`, default on).
     #[must_use]
     pub fn get_jev_cache_enabled(&self) -> bool {
