@@ -189,8 +189,9 @@ pub enum DaemonCommand {
     },
     /// Worker -> supervisor provider admission (the daemon's cross-session
     /// AIMD limit, ADR `ratelimit-admission`): `action` is one of
-    /// `acquire_stream` / `spawn_gate` / `settle_stream` / `release_stream`.
-    /// Authenticated by the worker token; clients never send this.
+    /// `acquire_stream` / `spawn_gate` / `settle_stream` / `release_stream`,
+    /// authenticated by the worker token, or the read-only `snapshot` (M5):
+    /// counters only, servable to any client with no worker identity.
     ProviderAdmission {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,

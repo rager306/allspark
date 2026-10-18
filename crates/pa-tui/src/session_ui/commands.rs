@@ -700,6 +700,48 @@ impl SessionUi {
                     }
                 }
             }
+            // FORK-ONLY `/admission`: the provider-admission plane's
+            // observability readout (ADR `ratelimit-admission`, M5). One
+            // readonly `snapshot` ask on the daemon socket; the panel is a
+            // demand snapshot, refreshed by re-running the command.
+            "admission" => {
+                if !resolved.args.is_empty() {
+                    view.editor.set_text(text);
+                    self.error_row("Usage: /admission", view);
+                    return Ok(());
+                }
+                let snapshot = self
+                    .bounded_request(
+                        Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
+                        DaemonCommand::ProviderAdmission {
+                            id: None,
+                            // The snapshot ask is worker-identity-free: the
+                            // supervisor serves counters only to any client.
+                            worker_token: String::new(),
+                            action: "snapshot".to_string(),
+                            provider: None,
+                            model: None,
+                            spawn_id: None,
+                            lease_id: None,
+                            outcome: None,
+                            rest: Map::default(),
+                        },
+                    )
+                    .await;
+                match snapshot {
+                    Ok(snapshot) => {
+                        self.open_info_panel(
+                            view,
+                            None,
+                            InfoContent::Rows(info_commands::admission_rows(&snapshot)),
+                        );
+                        self.track_menu_opened("admission", "command");
+                    }
+                    Err(error) => {
+                        self.error_row(&format!("{error:#}"), view);
+                    }
+                }
+            }
             // The exact assembled prompt is unbounded, so it renders in the
             // scrollable info panel instead of flooding the transcript.
             "system-prompt" => {

@@ -13,6 +13,7 @@ use crate::theme::{Theme, ThemeColor};
 use crate::{Line, Span};
 use ratatui::style::Style;
 
+mod admission;
 mod cache;
 mod context_tree;
 #[cfg(test)]
@@ -21,6 +22,7 @@ mod tests;
 #[cfg(test)]
 use context_tree::truncate_plain;
 
+pub use admission::admission_rows;
 pub use cache::cache_rows;
 pub use context_tree::{context_tree_rows, ContextTreeScope};
 

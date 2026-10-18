@@ -935,6 +935,71 @@ fn cache_rows_report_hit_rate_savings_and_current_model() {
 }
 
 #[test]
+fn admission_rows_report_limits_breaker_and_budget() {
+    let snapshot = json(
+        r#"{
+                "providers": [
+                    {"provider": "zai", "model": "glm-5.3",
+                     "currentLimit": 4, "inFlight": 2, "ceiling": 8,
+                     "streak429": 1, "queueDepth": 3,
+                     "breakerState": "half_open",
+                     "budgetFailures": 2, "budgetSamples": 20},
+                    {"provider": "openai", "model": "gpt-5.6-sol",
+                     "currentLimit": 8, "inFlight": 8, "ceiling": 8,
+                     "streak429": 5, "queueDepth": 2,
+                     "breakerState": "open",
+                     "budgetFailures": 9, "budgetSamples": 10}
+                ],
+                "queuedTotal": 5
+            }"#,
+    );
+    let rows = admission_rows(&snapshot);
+    assert_eq!(
+        plain(&rows),
+        vec![
+            "Provider Admission",
+            "",
+            "zai/glm-5.3  limit=4  in_flight=2  ceiling=8  429_streak=1  queue_depth=3  breaker=half_open  budget=2/20",
+            "openai/gpt-5.6-sol  limit=8  in_flight=8  ceiling=8  429_streak=5  queue_depth=2  breaker=open  budget=9/10",
+            "",
+            "Queued: 5 waiting across providers",
+            "Demand snapshot \u{2014} run /admission again to refresh.",
+        ]
+    );
+    // The breaker value carries its standing color: half_open warns, open
+    // errors, and a closed row reads as normal traffic.
+    assert_eq!(rows[2][1].color, Some(ThemeColor::Warning));
+    assert_eq!(rows[3][1].color, Some(ThemeColor::Error));
+}
+
+#[test]
+fn admission_rows_empty_state_without_providers() {
+    // An empty registry (and a payload without the field at all) renders
+    // the empty state, never a panic or a bare header.
+    for snapshot in [json(r#"{"providers": [], "queuedTotal": 0}"#), json(r"{}")] {
+        assert_eq!(
+            plain(&admission_rows(&snapshot)),
+            vec![
+                "Provider Admission",
+                "",
+                "No provider admission state yet; rows appear once streams take slots.",
+            ]
+        );
+    }
+    // A spawn-gate row without a model renders its bare provider.
+    let snapshot = json(
+        r#"{"providers": [{"provider": "zai", "model": "", "currentLimit": 2,
+                            "inFlight": 0, "ceiling": 8, "streak429": 0,
+                            "queueDepth": 1, "breakerState": "closed",
+                            "budgetFailures": 0, "budgetSamples": 3}],
+              "queuedTotal": 1}"#,
+    );
+    let rows = plain(&admission_rows(&snapshot));
+    assert_eq!(rows[2], "zai  limit=2  in_flight=0  ceiling=8  429_streak=0  queue_depth=1  breaker=closed  budget=0/3");
+    assert_eq!(rows[4], "Queued: 1 waiting across providers");
+}
+
+#[test]
 fn cache_rows_empty_state_without_activity() {
     let tree = json(r#"{"models": []}"#);
     assert_eq!(
