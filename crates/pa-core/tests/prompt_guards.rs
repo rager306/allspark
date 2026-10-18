@@ -123,7 +123,16 @@ fn cached_prefix_is_stable_across_sessions() {
     assert!(second_tail.contains("Recursive agent depth: 3 (not root)"));
     assert!(second_tail.contains("You are a child agent spawned by orchestrator."));
     assert!(second_tail.contains("# Project Context"));
-    assert!(second_tail.ends_with("And one more thing."));
+    // The appended guidance is the last semantic block; the date trails it
+    // deliberately so a midnight rollover invalidates one line, not the tail.
+    let before_date = second_tail
+        .rsplit_once("Current date: ")
+        .map_or(second_tail, |(head, _)| head)
+        .trim_end();
+    assert!(
+        before_date.ends_with("And one more thing."),
+        "appended guidance must be the last semantic block: {before_date:?}"
+    );
 
     for segment in &first.segments {
         let inside = first

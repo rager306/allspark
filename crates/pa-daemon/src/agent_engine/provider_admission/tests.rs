@@ -551,6 +551,7 @@ async fn a_wrapped_stream_holds_its_slot_only_for_its_own_lifetime() {
     };
     let context = LlmContext {
         system_prompt: None,
+        system_prompt_cache_prefix: None,
         messages: Vec::new(),
         tools: Vec::new(),
     };
@@ -994,6 +995,7 @@ async fn a_refused_acquire_fails_fast_as_a_rate_limit_for_failover() {
         model,
         LlmContext {
             system_prompt: None,
+            system_prompt_cache_prefix: None,
             messages: Vec::new(),
             tools: Vec::new(),
         },

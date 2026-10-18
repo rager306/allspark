@@ -51,6 +51,7 @@ fn model_for(server: &MockInferenceServer) -> Model {
 fn empty_context() -> Context {
     Context {
         system_prompt: None,
+        system_prompt_cache_prefix: None,
         messages: vec![],
         tools: None,
     }

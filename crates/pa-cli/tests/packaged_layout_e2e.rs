@@ -321,7 +321,7 @@ fn packaged_binary_reports_manifest_version() {
         .expect("run packaged binary");
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
-        String::from_utf8_lossy(&output.stdout).trim(),
+        reported_version(&String::from_utf8_lossy(&output.stdout)),
         "9.8.7-test",
         "the packaged manifest version must win"
     );
@@ -390,6 +390,20 @@ const HOSTILE_CHILD_STAGE: &str = "PA_PACKAGED_E2E_HOSTILE_STAGE";
 
 /// The child half of the hostile-host-env regression: the whole process
 /// carries the hostile env, and the layout must still behave as on a clean host.
+/// The version a `--version` line reports.
+///
+/// The fork prints `allspark <version> (fork build <id>; upstream prime-agent
+/// <version>)` while the payload keeps the upstream binary name. The packaged
+/// version is what these tests care about, so read it out of that shape rather
+/// than pinning the marketing wrapper.
+fn reported_version(stdout: &str) -> String {
+    let line = stdout.trim();
+    let Some((head, _)) = line.split_once(" (fork build ") else {
+        return line.to_string();
+    };
+    head.rsplit(' ').next().unwrap_or(head).to_string()
+}
+
 fn hostile_child_assertions(staged: &Path) {
     let _guard = serial_lock();
     let box_ = sandbox();
@@ -401,7 +415,7 @@ fn hostile_child_assertions(staged: &Path) {
         .expect("run packaged binary");
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
-        String::from_utf8_lossy(&output.stdout).trim(),
+        reported_version(&String::from_utf8_lossy(&output.stdout)),
         HOSTILE_STAGED_VERSION,
         "the hostile PI_PACKAGE_DIR must not win: {}",
         String::from_utf8_lossy(&output.stderr)
