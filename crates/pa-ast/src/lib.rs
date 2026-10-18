@@ -14,11 +14,9 @@
 //   - match_same_arms / enum_glob_use: the language dispatch tables are
 //     intentionally explicit and enumerate variants for readability.
 //   - too_many_lines: the language registration table is one long function.
-//   - assert_is_empty: test-side `assert!(!x.is_empty())` states intent.
 //   - redundant_closure_for_method_calls: `.map(ToString::to_string)` and
 //     friends can read clearer than the method form.
 #![allow(
-    clippy::assert_is_empty,
     clippy::cast_possible_truncation,
     clippy::enum_glob_use,
     clippy::match_same_arms,

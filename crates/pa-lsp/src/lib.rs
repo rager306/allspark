@@ -30,6 +30,7 @@ pub mod client;
 pub mod diagnostics_flow;
 pub mod ledger;
 pub mod manager;
+#[cfg(unix)]
 pub mod mux;
 pub mod render;
 pub mod retriever;
