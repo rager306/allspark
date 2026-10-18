@@ -227,6 +227,20 @@ pub(crate) fn parse_custom_message(value: Option<&Value>) -> Result<Option<Value
 pub(crate) enum QueueCheckpoint {
     /// The lanes hold admitted live work: `busy = true`.
     Admitted { operation: &'static str },
+    /// A delivery LEFT the lanes and is about to run: the verdict is `busy`
+    /// whatever the (now drained) lanes hold, and the snapshot it publishes
+    /// is the durable proof that these rows were handed to the engine.
+    ///
+    /// This is the exactly-once write-ahead record (RT-006): the pickup
+    /// drains the lane in memory, so without it the journal keeps promising
+    /// a row the turn is already executing — a respawned worker restores it
+    /// from the snapshot and re-executes the prompt (a duplicate side
+    /// effect, and a duplicate user row in the transcript). Written BEFORE
+    /// the engine runs, so every window it leaves behind is safe: a kill
+    /// that lands before the append proves nothing was executed (the row
+    /// replays as a never-started turn), a kill after it proves the delivery
+    /// was already made (the row must NOT replay).
+    Delivered { operation: &'static str },
     /// The verdict follows the lanes (`busy = lanes remain queued`); mutations
     /// with no TS record use it too, so the journal keeps no stale verdict.
     Settle { operation: &'static str },
@@ -272,7 +286,9 @@ pub(crate) fn checkpoint_queue_recovery(
         )
     };
     let (busy, operation) = match checkpoint {
-        QueueCheckpoint::Admitted { operation } => (true, operation),
+        QueueCheckpoint::Admitted { operation } | QueueCheckpoint::Delivered { operation } => {
+            (true, operation)
+        }
         // A settled verdict never comes from the lanes alone: a withdrawal landing
         // mid-turn must not flip the journal to idle while the turn still streams,
         // or a crash in that window parks live work.

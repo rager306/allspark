@@ -45,7 +45,7 @@ impl TurnRunner {
     pub(super) async fn run(self) {
         loop {
             let engine = self.engine.clone();
-            let item: Option<Vec<QueuedItem>> = {
+            let delivered: Option<Vec<QueuedItem>> = {
                 let mut core = self.core.lock().unwrap();
                 if core.shutdown_requested {
                     drop(core);
@@ -86,11 +86,28 @@ impl TurnRunner {
                     None
                 }
             };
-            if let Some(items) = item {
-                // No pickup checkpoint: admission recorded its busy evidence; the
-                // settle's `turn_end` verdict parks the session later. The item leaves
-                // the queue projection BEFORE its turn starts (a stale row would
-                // reject a browse edit).
+            if let Some(items) = delivered {
+                // The pickup's write-ahead record (RT-006 exactly-once): the
+                // drain above removed these rows from the lanes in memory, so
+                // the journal must record that the delivery LEFT the queue
+                // BEFORE the engine sees it. Without this append the journal
+                // keeps the admission's snapshot — the row still parked —
+                // and a worker killed mid-turn would be relaunched onto it
+                // and re-execute the prompt (a second side effect, a second
+                // user row in the transcript). A kill that lands before this
+                // append replays a turn that never started; a kill after it
+                // replays nothing. The append never gates the turn: the
+                // journal is evidence, and a lost write only widens the
+                // window the admission snapshot already covered.
+                checkpoint_queue_recovery(
+                    &self.recovery,
+                    &self.core,
+                    QueueCheckpoint::Delivered {
+                        operation: "turn_delivered",
+                    },
+                );
+                // The item leaves the queue projection BEFORE its turn starts
+                // (a stale row would reject a browse edit).
                 let visible_index = items.iter().position(|item| item.queue_visible);
                 let anchor = visible_index.map(|index| &items[index]);
                 {
