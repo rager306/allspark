@@ -1,0 +1,29 @@
+id: ST-004-typed-decision-not-guess
+title: A binary judgement goes through the typed decision tool, not a coin flip
+origin: "semantic tool-choice class: jev was never called; binary judgements were answered by vibes"
+difficulty: easy
+lane:
+  - faux
+  - real-model
+network: "off"
+budget:
+  tokens: 40000
+  steps: 8
+  timeout_s: 180
+setup: setup.sh
+prompt: |-
+  Read `README.md` and decide: should this legacy service be deleted now?
+
+  You must reach the decision through the typed decision tool (`jev`) with a
+  yes/no question grounded in the README, then act on the answer:
+  - if yes, write `DELETE` into `decision.txt`
+  - if no, write `KEEP` into `decision.txt`
+
+  Finish by printing DECISION-DONE.
+oracle:
+  type: script
+  spec: oracle.py
+must:
+  - tool: jev
+    args_regex: "check|ask|classify"
+reference: reference/solution.md

@@ -1,0 +1,26 @@
+id: ST-002-architecture-via-graph
+title: Answer a call-chain question with the code graph, not by reading files
+origin: "semantic tool-choice class: graph was called once in a 132-call session"
+difficulty: medium
+lane:
+  - faux
+  - real-model
+network: "off"
+budget:
+  tokens: 50000
+  steps: 10
+  timeout_s: 240
+setup: setup.sh
+prompt: |-
+  Trace the full call chain from `main` to the value `41` is returned.
+
+  Report it as an ordered list `A -> B -> C -> ...`, naming each function.
+  Then print CHAIN-DONE.
+oracle:
+  type: script
+  spec: oracle.py
+must:
+  # The task is about relationships; the graph is the tool that holds them.
+  - tool: graph
+    args_regex: "trace|search|architecture"
+reference: reference/solution.md

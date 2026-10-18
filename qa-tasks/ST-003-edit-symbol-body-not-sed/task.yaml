@@ -1,0 +1,31 @@
+id: ST-003-edit-symbol-body-not-sed
+title: Replace one symbol body while its twin stays byte-identical
+origin: "semantic tool-choice class: sed rewrites both bodies because they are textually identical"
+difficulty: medium
+lane:
+  - faux
+  - real-model
+network: "off"
+budget:
+  tokens: 50000
+  steps: 10
+  timeout_s: 240
+setup: setup.sh
+prompt: |-
+  In `src/lib.rs`, change `Config::describe` so it returns
+  `describe: retries=<n> timeout=<m>` (note the `describe: ` prefix and the spaces).
+
+  `Config::summary` must remain byte-identical - it currently has the exact same
+  body, so a textual replace would corrupt both.
+
+  Finish by printing EDIT-DONE.
+oracle:
+  type: script
+  spec: oracle.py
+must:
+  - tool: lsp
+    args_regex: "replace_symbol_body|find_symbol"
+must_not:
+  - tool: bash
+    args_regex: "sed -i|perl -pi|awk .*-i"
+reference: reference/solution.md

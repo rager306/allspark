@@ -1,0 +1,41 @@
+id: ST-001-symbol-nav-not-grep
+title: Distinguish same-named methods by semantics, not by text search
+origin: "semantic tool-choice class: the agent used python_repl/grep 132x vs lsp 15x on a task that needed references"
+difficulty: medium
+lane:
+  - faux
+  - real-model
+network: "off"
+budget:
+  tokens: 60000
+  steps: 12
+  timeout_s: 240
+setup: setup.sh
+prompt: |-
+  In this Rust crate there are two methods with the same name `run`: one on `Worker`,
+  one on `Backup`. Only ONE of them is actually reachable from a call site.
+
+  Answer precisely: which call site invokes `Worker::run`, and which invokes `Backup::run`?
+  Then change `Worker::run` to return `self.id * 10` and leave `Backup::run` untouched.
+
+  Finish by printing NAV-DONE.
+oracle:
+  type: state
+  spec:
+    # The real assertion: only the Worker body changed.
+    - path: src/lib.rs
+      contains: "self.id * 10"
+    - path: src/lib.rs
+      contains: "self.id * 3"
+    - path: src/lib.rs
+      not_contains: "self.id * 2"
+must:
+  # The semantic core: the agent must ask the language server which symbol it is
+  # touching. A pure text edit cannot establish the caller set.
+  - tool: lsp
+    args_regex: "references|find_symbol|find_referencing_symbols|symbols"
+must_not:
+  # The anti-pattern this task exists to catch: a blind textual rewrite.
+  - tool: bash
+    args_regex: "sed -i|perl -pi|> *src/lib.rs"
+reference: reference/solution.md

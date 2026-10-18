@@ -102,6 +102,16 @@ impl TraceOptions {
         self
     }
 
+    /// Cap the number of returned steps.
+    ///
+    /// Reaching the cap sets [`TraceResult::truncated`], so a caller can tell a
+    /// capped listing from the complete reachable set.
+    #[must_use]
+    pub fn with_limit(mut self, limit: usize) -> Self {
+        self.limit = limit;
+        self
+    }
+
     /// Restrict traversal to specific edge types.
     #[must_use]
     pub fn with_edge_types(mut self, types: Vec<EdgeType>) -> Self {
@@ -167,6 +177,13 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
             break;
         }
         for edge in outgoing_edges(conn, node_id, &edge_types, opts.direction)? {
+            // Check the cap per neighbour, not per dequeued node: one node can
+            // have hundreds of outgoing edges, and testing only at the top of
+            // the loop let a single fan-out overshoot the limit.
+            if steps.len() >= opts.limit {
+                truncated = true;
+                break;
+            }
             if !visited.insert(edge.target) {
                 continue;
             }
@@ -189,6 +206,9 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
                 });
                 queue.push_back((edge.target, depth + 1, path_conf));
             }
+        }
+        if truncated {
+            break;
         }
     }
 
@@ -549,5 +569,66 @@ mod tests {
         let edges = cross_service(&store, "p").expect("cross");
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].url_path.as_deref(), Some("/api/load"));
+    }
+
+    /// Hitting the node cap must be reported, not silently truncate.
+    ///
+    /// A caller that reads only `steps` cannot tell a capped listing from the
+    /// complete reachable set, so a truncated walk used to look exhaustive.
+    /// gitnexus treats this as a first-class contract (`truncated`,
+    /// `enumeration`); we now match it.
+    #[test]
+    fn a_capped_walk_is_flagged_truncated() {
+        let store = GraphStore::open_in_memory().expect("store");
+        store.register_project("p", "/tmp").expect("project");
+        let mk = |name: &str| {
+            store
+                .upsert_node(&Node {
+                    id: 0,
+                    project: "p".into(),
+                    label: Label::Function,
+                    name: name.into(),
+                    qualified_name: format!("p::{name}"),
+                    file_path: "src/lib.rs".into(),
+                    start_line: 1,
+                    end_line: 3,
+                    props: json!({}),
+                })
+                .expect("node")
+        };
+        let root = mk("root");
+        // A wide fan-out: 20 direct callees, walked with a limit of 5.
+        for i in 0..20 {
+            let callee = mk(&format!("callee{i}"));
+            store
+                .insert_edge(
+                    "p",
+                    root,
+                    callee,
+                    EdgeType::Calls,
+                    &json!({"confidence": 0.9, "strategy": "same_module"}),
+                )
+                .expect("edge");
+        }
+
+        let capped = trace(
+            &store,
+            &TraceOptions::new("p", "root").with_depth(2).with_limit(5),
+        )
+        .expect("trace");
+        assert_eq!(capped.steps.len(), 5, "the limit is honoured");
+        assert!(
+            capped.truncated,
+            "a walk that stopped at the cap must say so"
+        );
+
+        // With room for every callee the flag stays false.
+        let full = trace(
+            &store,
+            &TraceOptions::new("p", "root").with_depth(2).with_limit(100),
+        )
+        .expect("trace");
+        assert_eq!(full.steps.len(), 20);
+        assert!(!full.truncated, "a complete walk must not claim truncation");
     }
 }

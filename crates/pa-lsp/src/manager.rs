@@ -479,4 +479,54 @@ mod tests {
         assert!(backoff.recent_failure(&fresh).await.is_some());
         assert!(backoff.recent_failure(&stale).await.is_none());
     }
+
+    /// Renaming onto an existing file must refuse, not overwrite.
+    ///
+    /// `std::fs::rename` replaces the destination silently on POSIX, so a typo
+    /// in `dest` destroyed an unrelated file and reported success (oh-my-pi
+    /// shipped exactly this). The manager must reject the move before touching
+    /// either path.
+    #[tokio::test]
+    async fn rename_refuses_to_overwrite_an_existing_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("from.rs");
+        let to = dir.path().join("to.rs");
+        std::fs::write(&from, "fn a() {}\n").unwrap();
+        std::fs::write(&to, "fn keep_me() {}\n").unwrap();
+
+        let manager = LspManager::new();
+        let error = manager
+            .rename_file(&from, &to)
+            .await
+            .expect_err("the move must be refused");
+        assert!(
+            error.to_string().contains("already exists"),
+            "the error must name the cause: {error}"
+        );
+        // Neither file moved or changed.
+        assert_eq!(std::fs::read_to_string(&from).unwrap(), "fn a() {}\n");
+        assert_eq!(
+            std::fs::read_to_string(&to).unwrap(),
+            "fn keep_me() {}\n",
+            "the destination must survive untouched"
+        );
+    }
+
+    /// A missing source must fail loudly rather than report a successful move.
+    #[tokio::test]
+    async fn rename_refuses_a_missing_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("absent.rs");
+        let to = dir.path().join("to.rs");
+        let manager = LspManager::new();
+        let error = manager
+            .rename_file(&from, &to)
+            .await
+            .expect_err("the move must be refused");
+        assert!(
+            error.to_string().contains("does not exist"),
+            "the error must name the cause: {error}"
+        );
+        assert!(!to.exists(), "nothing may be created");
+    }
 }

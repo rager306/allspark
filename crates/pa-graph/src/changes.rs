@@ -182,6 +182,14 @@ pub struct ChangeReport {
     pub symbols: Vec<AffectedSymbol>,
     /// Pairs of paths that changed together in a commit in this range.
     pub co_changes: Vec<(String, String)>,
+    /// Changed files the graph has no nodes for.
+    ///
+    /// Their symbols cannot be attributed to hunks, so they contribute nothing
+    /// to `symbols`. Without this count a report over a stale index looks
+    /// complete while silently missing files (gitnexus marks the same case
+    /// `partial: true`). `0` means every changed file was known to the index.
+    #[serde(default)]
+    pub unindexed_files: usize,
 }
 
 impl ChangeReport {
@@ -226,6 +234,7 @@ pub fn detect_changes(
         files: Vec::new(),
         symbols: Vec::new(),
         co_changes: Vec::new(),
+        unindexed_files: 0,
     };
 
     if !is_work_tree(root) {
@@ -250,6 +259,16 @@ pub fn detect_changes(
             hunks,
         };
         collect_symbols(store, project, &file, &file_nodes, &mut report.symbols)?;
+        // A changed file the index never saw contributes no symbols; count it
+        // so the report cannot read as complete over a stale index.
+        let indexed_path = if file.status == ChangeStatus::Deleted {
+            file.old_path.as_deref().unwrap_or(&file.path)
+        } else {
+            &file.path
+        };
+        if !file_nodes.contains_key(indexed_path) {
+            report.unindexed_files += 1;
+        }
         report.files.push(file);
     }
     report.files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -663,5 +682,69 @@ mod tests {
         assert_eq!(ChangeStatus::from_git('D'), ChangeStatus::Deleted);
         assert_eq!(ChangeStatus::from_git('R'), ChangeStatus::Renamed);
         assert_eq!(ChangeStatus::from_git('?'), ChangeStatus::Unknown);
+    }
+
+    /// A changed file that is not in the index must be reported, not dropped.
+    ///
+    /// `collect_symbols` returns early for a path the graph does not know, so a
+    /// file added since the last index silently contributes no affected
+    /// symbols and the report reads as complete. gitnexus marks this case
+    /// `partial: true`; the report must at least carry the count.
+    #[test]
+    fn changed_files_outside_the_index_are_counted() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let root = dir.path();
+        // A real git repo with one commit.
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@example.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@example.com")
+                .status()
+                .expect("git");
+            assert!(status.success(), "git {args:?} failed");
+        };
+        run(&["init", "-q"]);
+        std::fs::write(root.join("known.rs"), "pub fn known() {}\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "one"]);
+
+        // The store indexes `known.rs` only.
+        let store = GraphStore::open_in_memory().expect("store");
+        store
+            .register_project("p", root.to_str().unwrap())
+            .expect("project");
+        store
+            .upsert_node(&Node {
+                id: 0,
+                project: "p".into(),
+                label: Label::File,
+                name: "known.rs".into(),
+                qualified_name: "known.rs".into(),
+                file_path: "known.rs".into(),
+                start_line: 1,
+                end_line: 1,
+                props: serde_json::json!({}),
+            })
+            .expect("file node");
+
+        // A second file lands in the commit but never entered the graph.
+        std::fs::write(root.join("unindexed.rs"), "pub fn fresh() {}\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "two"]);
+
+        let report = detect_changes(&store, "p", "HEAD~1", "HEAD").expect("changes");
+        assert!(
+            report.files.iter().any(|f| f.path.contains("unindexed.rs")),
+            "the changed file is listed: {:#?}",
+            report.files
+        );
+        assert_eq!(
+            report.unindexed_files, 1,
+            "a changed file the index never saw must be counted, not silently dropped"
+        );
     }
 }

@@ -78,6 +78,70 @@ Every contributor (human or agent) must read this before working on this repo.
   test must be disabled, give a reason at the test. Use isolated ports and temporary paths, and
   restore shared state. Run focused tests when changing their behavior.
 
+### The test matrix: pick the cheapest tier that can fail
+
+A change belongs to exactly one tier. Climbing a tier costs CI minutes, so climb only when
+the cheaper tier cannot observe the defect.
+
+| Tier | What it proves | Where | Cost |
+|---|---|---|---|
+| Unit | one function's contract, in isolation | `#[cfg(test)]` beside the code | ms |
+| Integration | two or more real components, no model | `crates/<crate>/tests/` | seconds |
+| Provider wire | the exact request/response bytes a provider sees | `crates/pa-ai/src/providers/*/tests`, mock server | seconds |
+| QA task (faux) | one behavioural invariant through the real binary, scripted model | `qa-tasks/`, `--lane faux` | ~30 s |
+| QA task (mock-provider) | the same, with a provider that misbehaves on purpose | `qa-tasks/`, `--lane mock-provider` | ~60 s |
+| QA task (real-model) | semantic behaviour: did the agent choose the right tool | `qa-tasks/`, `--lane real-model` | minutes |
+| Daemon lane | supervisor/worker lifecycle, crash recovery | `qa-tasks/`, `--lane daemon` | minutes |
+
+Rules that follow from the table:
+
+- **A bug fix needs a regression test at the tier where the bug lived.** A wrong tool choice
+  needs a `real-model` QA task; a broken cache breakpoint needs a provider-wire test; a
+  fail-open default needs a unit test.
+- **Prove the test can fail.** Temporarily invert the fix (or `if false &&`) and confirm the
+  test goes red. A regression test that passes on the broken code documents nothing.
+- **Assert state, not prose.** Oracles read files, counts, exit codes, and tool-call
+  patterns. Text matching on the model's answer is a last resort and belongs in the
+  advisory judge, never in the blocking gate.
+
+### Semantic QA tasks (`ST-*`)
+
+The `RT-*` tasks guard reliability: a 402 is retried a bounded number of times, a stalled
+provider times out, compaction fires before overflow. None of them can observe *which tool
+the agent chose*, which is how the fork shipped a session where `python_repl` was called 132
+times and `lsp` 15 times on work that needed the symbol layer.
+
+`ST-*` tasks close that gap. Each one is a small fixture repository plus a prompt whose
+correct answer is only reachable through one specialized tool, and each asserts both sides:
+
+```yaml
+must:                      # the semantic core: the right tool was used
+  - tool: lsp
+    args_regex: "references|find_symbol"
+must_not:                  # the anti-pattern the task exists to catch
+  - tool: bash
+    args_regex: "sed -i|perl -pi"
+```
+
+The fixture is the load-bearing part: it must contain a *trap* that the wrong tool cannot
+see through (two methods with the same name and the same body, a call chain spread across
+three files, a decision that needs a calibrated answer). Without the trap the task passes on
+luck. `ST-001` is the reference shape.
+
+Run them with the free-tier provider when no paid credentials are available:
+
+```bash
+python3 scripts/qa/run_suite.py --lane real-model --tasks ST-001 ST-002
+```
+
+### Prompt-input caps are part of the contract
+
+Anything that reads a file into the prompt (context files, prompt-input files, skill bodies,
+model-prompt layers) must cap its size and report the truncation. A prompt is model input and
+cache payload at once, so an unbounded read is both a denial of service and a permanent cost.
+`MAX_CONTEXT_FILE_BYTES` and `MAX_SKILLS_INVENTORY*` are the current ceilings; a new input path
+must reuse `truncate_context_content` rather than reading whole.
+
 ## Lint discipline
 
 - Zero-warning posture: the merge gates run fmt + clippy + tests at `-D warnings`, so a `warn`
