@@ -8,6 +8,7 @@ pub mod headers;
 pub mod http;
 pub mod json_parse;
 pub mod log;
+pub mod opencode;
 pub mod overflow;
 pub mod sanitize_unicode;
 pub mod sse;

@@ -176,6 +176,47 @@ static FORK_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
 });
 
 static FORK_RAW_MODELS: &[ForkModel] = &[
+    // --- OpenCode (native free tier, fork-only) ----------------------------
+    // Direct access to OpenCode's free models (no proxy needed). The free
+    // tier requires three things HTTP/1.1 clients miss: (1) HTTP/2 via
+    // ALPN, (2) stream:true on every request, (3) the v2 protocol shape
+    // (UA `opencode/<channel>/<version>/cli`, session-id triplet headers,
+    // timestamp-encoded session ids with a small counter, fingerprint
+    // tools bash/glob/grep/read, `Authorization: Bearer public`).
+    // Reverse-engineered from the OpenCode CLI (Go) and the 9router proxy
+    // (Node.js); verified live 2026-10-18.
+    ForkModel {
+        provider: "opencode",
+        id: "deepseek-v4.1-flash-free",
+        name: "DeepSeek v4.1 Flash (OpenCode free)",
+        api: "openai-completions",
+        base_url: "https://opencode.ai/inference/v1",
+        reasoning: true,
+        thinking_levels: EFFORT_NO_OFF,
+        input: &[ModelInput::Text],
+        cost: (0.0, 0.0, 0.0, 0.0),
+        context_window: 128_000,
+        max_tokens: 8_192,
+        headers: &[],
+        supports_developer_role: None,
+        max_tokens_field: None,
+    },
+    ForkModel {
+        provider: "opencode",
+        id: "glm-5.3-flash-free",
+        name: "GLM 5.3 Flash (OpenCode free)",
+        api: "openai-completions",
+        base_url: "https://opencode.ai/inference/v1",
+        reasoning: true,
+        thinking_levels: EFFORT_NO_OFF,
+        input: &[ModelInput::Text, ModelInput::Image],
+        cost: (0.0, 0.0, 0.0, 0.0),
+        context_window: 128_000,
+        max_tokens: 8_192,
+        headers: &[],
+        supports_developer_role: None,
+        max_tokens_field: None,
+    },
     // --- 9router (free LLM gateway) --------------------------------------------
     // An OpenAI-compatible proxy (Node.js) that routes to free tiers:
     // OpenCode free (`oc/` models), OpenRouter `:free` models, and
