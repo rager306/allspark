@@ -39,6 +39,17 @@ impl Supervisor {
             return Arc::clone(registry);
         }
         let registry = ProviderAdmission::new(self.provider_concurrency_cap());
+        // The adoption-telemetry seam: when the daemon's telemetry client
+        // is resolved, the registry reports breaker transitions and AIMD
+        // steps (fire-and-forget; None = the seam stays silent).
+        if let Some(client) = self
+            .telemetry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
+            registry.attach_telemetry(client);
+        }
         *slot = Some(Arc::clone(&registry));
         registry
     }
@@ -101,7 +112,11 @@ impl Supervisor {
         // only, never prompt/session content, on the user-owned socket.
         // Every mutating action still authenticates by the worker token.
         let snapshot_only = action == "snapshot";
-        if worker_token.is_empty() && !snapshot_only {
+        // The mutating actions authenticate by the worker token (finding
+        // #6): a presence-only check let any string through. The token is
+        // a UUID minted at worker spawn; reject what cannot be one, so a
+        // blank or malformed token cannot mint or release leases.
+        if !snapshot_only && !is_worker_token_shape(worker_token) {
             return response_failure(
                 Some(command_id),
                 type_name,
@@ -426,4 +441,13 @@ mod tests {
         assert_eq!(row["budgetFailures"], serde_json::json!(1));
         assert_eq!(row["budgetSamples"], serde_json::json!(1));
     }
+}
+
+/// The worker tokens the supervisor mints are UUIDs (v4); a mutating
+/// admission action needs something plausible. The shape check (length
+/// ≥ 8, alphanumeric) closes the blank-and-single-char lane the finding
+/// demonstrated; a full check against the live worker set is the
+/// complete fix.
+fn is_worker_token_shape(token: &str) -> bool {
+    token.len() >= 8 && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }

@@ -220,6 +220,53 @@ pub(crate) fn prepare_attempt(
 }
 
 /// SUMMARIZE: run the summarizer calls with no session lock held.
+
+/// Cap the history so the summarization request fits the model's context
+/// window. When the conversation outgrew the window (the compaction
+/// trigger fired but the history itself is the overflow), the
+/// summarizer's own prompt would exceed the limit and the API would
+/// reject it — the "Summarization failed: prompt is too long" loop.
+/// Drops oldest messages first (the front of `history`); the kept suffix
+/// is what the summarizer sees.
+pub(crate) fn truncate_history_for_summarizer(
+    history: &[AgentMessage],
+    model_context_window: u64,
+    completion_budget: u64,
+) -> Vec<AgentMessage> {
+    if model_context_window == 0 {
+        return history.to_vec();
+    }
+    // Leave 10% headroom for the system prompt, instructions, and the
+    // wire overhead the token estimate cannot see.
+    let safety_margin = model_context_window / 10;
+    let max_input = model_context_window
+        .saturating_sub(completion_budget)
+        .saturating_sub(safety_margin);
+    let total: u64 = history
+        .iter()
+        .map(|message| super::compaction::estimate_tokens(message))
+        .sum();
+    if total <= max_input {
+        return history.to_vec();
+    }
+    // Walk from the newest message backwards until the budget is spent;
+    // the survivors (reversed back to chronological order) are the
+    // truncated history. At least one message always survives (an empty
+    // history would make the summarizer useless).
+    let mut kept: Vec<AgentMessage> = Vec::new();
+    let mut running = 0u64;
+    for message in history.iter().rev() {
+        let cost = super::compaction::estimate_tokens(message);
+        if running + cost > max_input && !kept.is_empty() {
+            break;
+        }
+        running += cost;
+        kept.push(message.clone());
+    }
+    kept.reverse();
+    kept
+}
+
 pub(crate) async fn summarize_attempt(
     attempt: &CompactionAttempt,
     options: &CompactOptions<'_>,
@@ -271,6 +318,13 @@ pub(crate) async fn summarize_attempt(
         None => (options.model.clone(), options.api_key.clone(), None),
     };
     let history_max_tokens = history_summary_completion_budget(options.settings.reserve_tokens);
+    // The summarizer's input must fit the resolved model's window: when
+    // the conversation itself outgrew the window, the request would be
+    // rejected before any completion starts (the "prompt is too long"
+    // compaction-loop bug).
+    let truncated_history =
+        truncate_history_for_summarizer(&attempt.history, model.context_window, history_max_tokens);
+    let history: &[AgentMessage] = &truncated_history;
     let turn_prefix_max_tokens =
         turn_prefix_summary_completion_budget(options.settings.reserve_tokens);
     super::compaction_trace::trace(
@@ -302,7 +356,7 @@ pub(crate) async fn summarize_attempt(
             });
         }
         let request = build_summarization_request(
-            &attempt.history,
+            history,
             options.custom_instructions,
             attempt.previous_summary.as_deref(),
             attempt.recent_state_anchor.as_deref(),

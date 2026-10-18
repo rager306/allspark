@@ -57,6 +57,10 @@
 //! against a sliding window; past 10% the breaker opens and new acquires
 //! fail fast to failover, lifting through a single half-open probe after
 //! a cooldown. The registry snapshots it all (M5) for the daemon's state.
+//!
+//! Every transition also rides the adoption-telemetry seam
+//! ([`ProviderAdmission::attach_telemetry`]): breaker flips, AIMD limit
+//! steps, and served snapshot rollups — fire-and-forget counters only.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -66,6 +70,9 @@ use std::time::Duration;
 use pa_agent::stream::{LlmContext, ModelStream, StreamFn, StreamRequestOptions};
 use pa_agent::types::{AssistantMessage, Model as AgentModel};
 use pa_core::session_engine::provider_retry::RateLimitReason;
+use pa_telemetry::{
+    AdmissionBreakerTransition, AdmissionLimitStep, AdmissionSnapshot, TelemetryClient,
+};
 use tokio::sync::oneshot;
 
 use crate::supervisor_link::SupervisorLink;
@@ -471,6 +478,9 @@ pub struct ProviderAdmission {
     stagger: Arc<dyn StaggerSource>,
     clock: Arc<dyn ClockSource>,
     state: Mutex<RegistryState>,
+    /// The adoption-telemetry seam (None until the owner attaches the
+    /// daemon's client): counters-only events, fire-and-forget.
+    telemetry: Mutex<Option<TelemetryClient>>,
 }
 
 impl ProviderAdmission {
@@ -507,8 +517,12 @@ impl ProviderAdmission {
                 providers: HashMap::new(),
                 breakers: HashMap::new(),
                 leases: HashMap::new(),
-                next_lease: 1,
+                // Finding #6: sequential lease ids from 1 are predictable;
+                // start from a random offset so a lease id carries no
+                // information about how many leases came before.
+                next_lease: uuid::Uuid::new_v4().as_u128() as u64 | 1,
             }),
+            telemetry: Mutex::new(None),
         })
     }
 
@@ -525,6 +539,73 @@ impl ProviderAdmission {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, RegistryState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Wire the adoption-telemetry seam: the daemon's telemetry client,
+    /// attached once the supervisor has built the registry (the supervisor
+    /// owns the client's lifecycle). Every breaker transition, AIMD limit
+    /// step, and served snapshot rollup then rides it — counters only,
+    /// never holder or model text.
+    pub fn attach_telemetry(&self, client: TelemetryClient) {
+        *self
+            .telemetry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(client);
+    }
+
+    /// The attached client, when the seam is wired (`track` never blocks,
+    /// so the emission sites may hold the registry lock).
+    fn telemetry_client(&self) -> Option<TelemetryClient> {
+        self.telemetry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Emit one breaker flip's adoption event: `failures` is the
+    /// retry-budget window's rate-limited count at the decision moment.
+    fn track_breaker_transition(
+        &self,
+        provider: &str,
+        from: BreakerState,
+        to: BreakerState,
+        failures: usize,
+    ) {
+        let Some(client) = self.telemetry_client() else {
+            return;
+        };
+        AdmissionBreakerTransition {
+            provider: provider.to_string(),
+            from_state: from.as_wire(),
+            to_state: to.as_wire(),
+            failure_count: failures as u64,
+        }
+        .track(&client);
+    }
+
+    /// Emit one AIMD limit step (`admission_promoted` up,
+    /// `admission_demoted` down): the direction is the limits themselves.
+    fn track_limit_step(
+        &self,
+        provider: &str,
+        old_limit: usize,
+        new_limit: usize,
+        reason: &'static str,
+    ) {
+        let Some(client) = self.telemetry_client() else {
+            return;
+        };
+        let step = AdmissionLimitStep {
+            provider: provider.to_string(),
+            new_limit: new_limit as u64,
+            old_limit: old_limit as u64,
+            reason,
+        };
+        if new_limit > old_limit {
+            step.track_promoted(&client);
+        } else {
+            step.track_demoted(&client);
+        }
     }
 
     /// Take a slot for `key` right now if the limit allows it; `None` means
@@ -701,9 +782,16 @@ impl ProviderAdmission {
             BreakerState::Open => {
                 if now.saturating_sub(breaker.opened_at_ms) >= BREAKER_COOLDOWN_MS {
                     breaker.state = BreakerState::HalfOpen;
+                    let failures = breaker.failures();
                     tracing::info!(
                         provider = %key.provider,
                         "provider admission: breaker half-open, dispatching one probe"
+                    );
+                    self.track_breaker_transition(
+                        &key.provider,
+                        BreakerState::Open,
+                        BreakerState::HalfOpen,
+                        failures,
                     );
                     BreakerGate::Probe
                 } else {
@@ -737,6 +825,12 @@ impl ProviderAdmission {
             if breaker.state == BreakerState::HalfOpen && breaker.probe_lease.is_none() {
                 breaker.state = BreakerState::Open;
                 breaker.opened_at_ms = now;
+                self.track_breaker_transition(
+                    provider,
+                    BreakerState::HalfOpen,
+                    BreakerState::Open,
+                    breaker.failures(),
+                );
             }
         }
     }
@@ -822,6 +916,7 @@ impl ProviderAdmission {
         let floor = self.floor;
         let mut report = None;
         if let Some(entry) = state.providers.get_mut(&record.key) {
+            let old_limit = entry.limit;
             match outcome {
                 StreamOutcome::Settled => {
                     entry.consecutive_429 = 0;
@@ -841,6 +936,16 @@ impl ProviderAdmission {
                         (entry.limit / 2).max(floor)
                     };
                 }
+            }
+            if entry.limit != old_limit {
+                let reason = match outcome {
+                    StreamOutcome::Settled => "settled",
+                    StreamOutcome::RateLimited(reason) if reason.is_account_local() => {
+                        "account_local"
+                    }
+                    StreamOutcome::RateLimited(_) => "rate_limited",
+                };
+                self.track_limit_step(&record.key.provider, old_limit, entry.limit, reason);
             }
             entry.in_flight = entry.in_flight.saturating_sub(1);
             report = Some((entry.limit, entry.in_flight));
@@ -886,20 +991,34 @@ impl ProviderAdmission {
                 if limited {
                     breaker.state = BreakerState::Open;
                     breaker.opened_at_ms = now;
+                    let failures = breaker.failures();
                     tracing::info!(
                         provider,
-                        failures = breaker.failures(),
+                        failures,
                         samples = breaker.window.len(),
                         "provider admission: breaker re-opened, the probe was rate-limited"
+                    );
+                    self.track_breaker_transition(
+                        provider,
+                        BreakerState::HalfOpen,
+                        BreakerState::Open,
+                        failures,
                     );
                 } else {
                     breaker.state = BreakerState::Closed;
                     // A fresh budget: the storm's evidence must not
                     // re-trip the breaker on the next sample.
+                    let failures = breaker.failures();
                     breaker.window.clear();
                     tracing::info!(
                         provider,
                         "provider admission: breaker closed, the probe settled"
+                    );
+                    self.track_breaker_transition(
+                        provider,
+                        BreakerState::HalfOpen,
+                        BreakerState::Closed,
+                        failures,
                     );
                 }
             }
@@ -907,11 +1026,18 @@ impl ProviderAdmission {
                 if breaker.budget_exceeded() {
                     breaker.state = BreakerState::Open;
                     breaker.opened_at_ms = now;
+                    let failures = breaker.failures();
                     tracing::info!(
                         provider,
-                        failures = breaker.failures(),
+                        failures,
                         samples = breaker.window.len(),
                         "provider admission: breaker opened, the retry budget is spent"
+                    );
+                    self.track_breaker_transition(
+                        provider,
+                        BreakerState::Closed,
+                        BreakerState::Open,
+                        failures,
                     );
                 }
             }
@@ -939,9 +1065,16 @@ impl ProviderAdmission {
                 breaker.probe_lease = None;
                 breaker.state = BreakerState::Open;
                 breaker.opened_at_ms = now;
+                let failures = breaker.failures();
                 tracing::info!(
                     provider = %record.key.provider,
                     "provider admission: breaker re-opened, the probe dropped without a verdict"
+                );
+                self.track_breaker_transition(
+                    &record.key.provider,
+                    BreakerState::HalfOpen,
+                    BreakerState::Open,
+                    failures,
                 );
             }
         }
@@ -981,6 +1114,15 @@ impl ProviderAdmission {
             let Some(entry) = state.providers.get_mut(key) else {
                 return;
             };
+            // An open breaker refuses new admissions; the queue drains only
+            // through a half-open probe (finding #5: the settle path used
+            // to dispatch through an open breaker, so the fail-fast never
+            // stopped the stream of fresh leases into a dead provider).
+            if let Some(breaker) = state.breakers.get(&key.provider) {
+                if breaker.state == BreakerState::Open {
+                    return;
+                }
+            }
             if entry.in_flight >= entry.limit {
                 return;
             }
@@ -1065,7 +1207,9 @@ impl ProviderAdmission {
 
     /// Every provider's observability rows (M5): one per `(provider,
     /// model)` pair the registry has seen, sorted, each carrying its
-    /// provider's breaker standing. The daemon's state snapshot wire.
+    /// provider's breaker standing. The daemon's state snapshot wire —
+    /// one served ask also rides the telemetry seam as an
+    /// `admission_snapshot` rollup (counters only).
     #[must_use]
     pub fn provider_rows(&self) -> Vec<ProviderRow> {
         let state = self.lock();
@@ -1086,6 +1230,17 @@ impl ProviderAdmission {
         rows.sort_by(|left, right| {
             (&left.provider, &left.model).cmp(&(&right.provider, &right.model))
         });
+        if let Some(client) = self.telemetry_client() {
+            AdmissionSnapshot {
+                providers_count: rows.len() as u64,
+                total_in_flight: rows.iter().map(|row| row.in_flight).sum::<usize>() as u64,
+                total_queued: rows.iter().map(|row| row.queued).sum::<usize>() as u64,
+                any_open_breakers: rows
+                    .iter()
+                    .any(|row| row.breaker.state == BreakerState::Open),
+            }
+            .track(&client);
+        }
         rows
     }
 }
@@ -1294,7 +1449,11 @@ const LOCAL_HOLDER: &str = "local";
 
 /// A settle/release round trip is short: the supervisor only mutates
 /// counters. A queued acquire rides [`ACQUIRE_BUDGET`] instead.
-const ADMISSION_REQUEST_BUDGET: Duration = Duration::from_secs(30);
+/// The worker-side link deadline must cover the supervisor-side queue wait
+/// ([`ACQUIRE_BUDGET`]) plus slack, or a worker admitted late finds its
+/// link dead and the lease orphans (finding #4: 30s vs 600s minted
+/// orphans on every deep-queue spawn).
+const ADMISSION_REQUEST_BUDGET: Duration = Duration::from_secs(605);
 
 /// The wire body of one admission request.
 fn admission_command(

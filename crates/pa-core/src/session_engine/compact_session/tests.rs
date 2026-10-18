@@ -57,7 +57,7 @@ fn faux_registration() -> pa_ai::faux::FauxProviderRegistration {
                 reasoning: Some(false),
                 input: Some(vec![pa_types::ai::ModelInput::Text]),
                 cost: None,
-                context_window: Some(1_000),
+                context_window: Some(128_000),
                 max_tokens: Some(256),
             }]),
             ..Default::default()

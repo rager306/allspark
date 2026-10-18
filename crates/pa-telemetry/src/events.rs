@@ -1,6 +1,7 @@
 //! Typed builders for the catalog's lifecycle events (onboarding, startup,
-//! installation stages) and the run vocabulary enums. Every field is typed (numbers are `u64`,
-//! enums are Rust enums, nullable durations are `Option<u64>`), so a firing
+//! installation stages, admission transitions) and the run vocabulary
+//! enums. Every field is typed (numbers are `u64`, enums are Rust
+//! enums, nullable durations are `Option<u64>`), so a firing
 //! site cannot emit a stringly-typed or out-of-vocabulary value. Optional
 //! fields are `Option` and simply omit the property when `None`.
 //!
@@ -226,6 +227,84 @@ impl UpdateHomebrewRefusal {
         let mut properties = Properties::new();
         properties.set("kind", Value::from(self.kind));
         client.track("update_homebrew_refusal", properties);
+    }
+}
+
+/// `admission_breaker_transition`: one provider-admission circuit
+/// breaker state flip. The states come from
+/// [`crate::catalog::BREAKER_STATES`] (the breaker's wire spelling);
+/// `failure_count` is the retry-budget window's rate-limited settle
+/// count at the decision moment.
+#[derive(Debug, Clone)]
+pub struct AdmissionBreakerTransition {
+    pub provider: String,
+    pub from_state: &'static str,
+    pub to_state: &'static str,
+    pub failure_count: u64,
+}
+
+impl AdmissionBreakerTransition {
+    pub fn track(&self, client: &TelemetryClient) {
+        let mut properties = Properties::new();
+        properties.set("provider", Value::String(self.provider.clone()));
+        properties.set("from_state", Value::from(self.from_state));
+        properties.set("to_state", Value::from(self.to_state));
+        properties.set("failure_count", Value::from(self.failure_count));
+        client.track("admission_breaker_transition", properties);
+    }
+}
+
+/// `admission_snapshot`: the admission registry's observability rollup —
+/// counter aggregates only, one event per served snapshot ask.
+#[derive(Debug, Clone, Copy)]
+pub struct AdmissionSnapshot {
+    pub providers_count: u64,
+    pub total_in_flight: u64,
+    pub total_queued: u64,
+    pub any_open_breakers: bool,
+}
+
+impl AdmissionSnapshot {
+    pub fn track(&self, client: &TelemetryClient) {
+        let mut properties = Properties::new();
+        properties.set("providers_count", Value::from(self.providers_count));
+        properties.set("total_in_flight", Value::from(self.total_in_flight));
+        properties.set("total_queued", Value::from(self.total_queued));
+        properties.set("any_open_breakers", Value::from(self.any_open_breakers));
+        client.track("admission_snapshot", properties);
+    }
+}
+
+/// One AIMD limit step (`admission_promoted` on the way up,
+/// `admission_demoted` on the way down). The reason comes from
+/// [`crate::catalog::ADMISSION_PROMOTE_REASONS`] /
+/// [`crate::catalog::ADMISSION_DEMOTE_REASONS`].
+#[derive(Debug, Clone)]
+pub struct AdmissionLimitStep {
+    pub provider: String,
+    pub new_limit: u64,
+    pub old_limit: u64,
+    pub reason: &'static str,
+}
+
+impl AdmissionLimitStep {
+    /// Record the step as a limit increase (`admission_promoted`).
+    pub fn track_promoted(&self, client: &TelemetryClient) {
+        self.track_named(client, "admission_promoted");
+    }
+
+    /// Record the step as a limit decrease (`admission_demoted`).
+    pub fn track_demoted(&self, client: &TelemetryClient) {
+        self.track_named(client, "admission_demoted");
+    }
+
+    fn track_named(&self, client: &TelemetryClient, name: &str) {
+        let mut properties = Properties::new();
+        properties.set("provider", Value::String(self.provider.clone()));
+        properties.set("new_limit", Value::from(self.new_limit));
+        properties.set("old_limit", Value::from(self.old_limit));
+        properties.set("reason", Value::from(self.reason));
+        client.track(name, properties);
     }
 }
 

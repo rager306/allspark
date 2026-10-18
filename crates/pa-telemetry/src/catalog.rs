@@ -397,6 +397,19 @@ pub const BUILD_CHANNELS: &[&str] = &["release", "prerelease", "development", "u
 
 pub const WORKLOAD_ORIGINS: &[&str] = &["interactive", "automated", "internal", "test", "unknown"];
 
+/// The provider-admission breaker's states (ADR `ratelimit-admission` M4):
+/// the wire spelling the snapshots and the telemetry events share.
+pub const BREAKER_STATES: &[&str] = &["closed", "open", "half_open"];
+
+/// Why an AIMD limit rose (`admission_promoted`): v1 has one signal, the
+/// settled stream's additive increase.
+pub const ADMISSION_PROMOTE_REASONS: &[&str] = &["settled"];
+
+/// Why an AIMD limit fell (`admission_demoted`): a plain 429 halves the
+/// limit, an account-local cause (a spent quota or spend cap) drops it to
+/// the floor at once.
+pub const ADMISSION_DEMOTE_REASONS: &[&str] = &["rate_limited", "account_local"];
+
 // Rule constructors
 
 const fn enum_rule(values: &'static [&'static str], fallback: &'static str) -> PropKind {
@@ -1107,6 +1120,67 @@ const TUI_EXIT: EventRule = EventRule {
     ],
 };
 
+/// `admission_breaker_transition` (v2): one provider-admission circuit
+/// breaker state flip (M4). `failure_count` is the retry-budget window's
+/// rate-limited settle count at the decision moment. Provider ids are
+/// bounded strings, never holder or model text.
+const ADMISSION_BREAKER_TRANSITION: EventRule = EventRule {
+    name: "admission_breaker_transition",
+    since: 2,
+    properties: &[
+        ("provider", required(free_string(64))),
+        ("from_state", required(enum_rule(BREAKER_STATES, "closed"))),
+        ("to_state", required(enum_rule(BREAKER_STATES, "closed"))),
+        ("failure_count", required(count())),
+    ],
+};
+
+/// `admission_snapshot` (v2): the admission registry's observability
+/// rollup (M5), emitted when the daemon serves a snapshot ask: counter
+/// aggregates only.
+const ADMISSION_SNAPSHOT: EventRule = EventRule {
+    name: "admission_snapshot",
+    since: 2,
+    properties: &[
+        ("providers_count", required(count())),
+        ("total_in_flight", required(count())),
+        ("total_queued", required(count())),
+        ("any_open_breakers", required(boolean())),
+    ],
+};
+
+/// `admission_promoted` (v2): one AIMD limit step up (M1), the additive
+/// increase of a settled stream.
+const ADMISSION_PROMOTED: EventRule = EventRule {
+    name: "admission_promoted",
+    since: 2,
+    properties: &[
+        ("provider", required(free_string(64))),
+        ("new_limit", required(count())),
+        ("old_limit", required(count())),
+        (
+            "reason",
+            required(enum_rule(ADMISSION_PROMOTE_REASONS, "settled")),
+        ),
+    ],
+};
+
+/// `admission_demoted` (v2): one AIMD limit step down (M1/M3): a plain
+/// 429 halves the limit, an account-local cause drops it to the floor.
+const ADMISSION_DEMOTED: EventRule = EventRule {
+    name: "admission_demoted",
+    since: 2,
+    properties: &[
+        ("provider", required(free_string(64))),
+        ("new_limit", required(count())),
+        ("old_limit", required(count())),
+        (
+            "reason",
+            required(enum_rule(ADMISSION_DEMOTE_REASONS, "rate_limited")),
+        ),
+    ],
+};
+
 /// `update completed` plus the per-phase events (one per status
 /// transition, the same names the `phase` property carries).
 const UPDATE_EVENTS: &[EventRule] = &[
@@ -1259,6 +1333,10 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &SESSION_ARCHIVED,
         &TUI_EXIT,
         &TUI_IPYTHON_BASH_RENDERED,
+        &ADMISSION_BREAKER_TRANSITION,
+        &ADMISSION_SNAPSHOT,
+        &ADMISSION_PROMOTED,
+        &ADMISSION_DEMOTED,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all
@@ -1513,6 +1591,21 @@ mod tests {
         let _ = sanitize("agent run completed", &mut properties);
         assert_eq!(properties.get("error_category"), Some(&Value::Null));
         assert!(properties.get("compaction_count").is_none());
+    }
+
+    #[test]
+    fn admission_events_normalize_against_their_rules() {
+        let mut properties = Properties::new();
+        properties.set("provider", json!("zai"));
+        properties.set("from_state", json!("closed"));
+        properties.set("to_state", json!("exploded")); // out of vocabulary
+        properties.set("failure_count", json!(10));
+        properties.set("holder", json!("worker-a")); // not a catalogued property
+        let adjusted = sanitize("admission_breaker_transition", &mut properties);
+        assert_eq!(properties.get("to_state"), Some(&json!("closed")));
+        assert_eq!(properties.get("failure_count"), Some(&json!(10)));
+        assert!(properties.get("holder").is_none(), "unknown key dropped");
+        assert_eq!(adjusted, 2, "one fallback + one dropped key");
     }
 
     #[test]
