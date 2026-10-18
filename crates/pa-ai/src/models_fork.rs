@@ -182,7 +182,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
     // provider free tiers (Kiro, Vertex). The TLS/client fingerprint that
     // OpenCode requires is handled by the 9router process — allspark only
     // speaks standard OpenAI chat completions to it.
-    // Env: NINEROUTER_URL (default http://localhost:20128/v1),
+    // Env: NINEROUTER_URL (default http://127.0.0.1:20128/v1),
     //      NINEROUTER_API_KEY (the 9router dashboard key).
     // Model ids carry the 9router routing prefix (`oc/`, `openrouter/`, ...).
     ForkModel {
@@ -190,7 +190,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         id: "oc/deepseek-v4.1-flash-free",
         name: "DeepSeek v4.1 Flash (free, via 9router)",
         api: "openai-completions",
-        base_url: "http://localhost:20128/v1",
+        base_url: "http://127.0.0.1:20128/v1",
         reasoning: true,
         thinking_levels: EFFORT_NO_OFF,
         input: &[ModelInput::Text],
@@ -206,7 +206,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         id: "oc/glm-5.3-flash-free",
         name: "GLM 5.3 Flash (free, via 9router)",
         api: "openai-completions",
-        base_url: "http://localhost:20128/v1",
+        base_url: "http://127.0.0.1:20128/v1",
         reasoning: true,
         thinking_levels: EFFORT_NO_OFF,
         input: &[ModelInput::Text, ModelInput::Image],
@@ -222,7 +222,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         id: "oc/muse-spark-1.3-contributor-free",
         name: "Muse Spark 1.3 Contributor (free, via 9router)",
         api: "openai-completions",
-        base_url: "http://localhost:20128/v1",
+        base_url: "http://127.0.0.1:20128/v1",
         reasoning: true,
         thinking_levels: EFFORT_NO_OFF,
         input: &[ModelInput::Text],
