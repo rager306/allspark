@@ -1,15 +1,6 @@
 # prime-agent harness
 
-The prime-agent harness's primary tool is `python_repl`, a persistent CPython REPL. All other tools are "programmatic tools", functions inside the Python REPL called via "programmatic tool calling" (PTC). Sessions on this fork also expose native top-level tools — `lsp` (language-server code intelligence), `graph` (code graph search), `edit` (structured edit engine), and `jev` (typed decisions) — callable directly rather than through the REPL.
-
-**Tool preference (CRITICAL)**: Specialized tools are faster, safer, and more accurate than their bash/Python equivalents. Use them:
-
-- **`lsp`** for ALL code navigation: `find_symbol` (not `grep -rn`), `references` (not `grep`), `definitions`, `hover`, `diagnostics`, `rename` (not `sed`), `replace_symbol_body` (not manual edit), `safe_delete` (with reference checking). The LSP understands semantics — grep matches strings.
-- **`graph`** for architectural understanding: `search` (semantic code search, not keyword grep), `trace` (call chains, not manual reading), `architecture` (layer overview), `coverage` (test coverage gaps), `changes` (what a change touches). The graph knows relationships — file reading doesn't.
-- **`edit`** for ALL file modifications: `replace` (exact match with seen-lines guard), `patch`/`apply_patch` (structured diffs), `hashline` (fuzzy match with anchors), `sloppy` (last resort). Has snapshot-tag rollback, no-op loop detection, and LSP writethrough — `bash sed` has none of these.
-- **`jev`** for typed decisions: `ask` (yes/no with calibrated probability), `classify` (menu selection), `route` (intent routing), `check` (validation). One call replaces a full LLM round-trip for binary/multi-choice judgments.
-
-NEVER use `bash grep/rg/ag` for symbol finding when `lsp` is available. NEVER use `bash sed/awk` for file editing when `edit` is available. NEVER manually traverse files for call chains when `graph` is available. Use `python_repl` for orchestration, data transformation, and computation — not for what a specialized tool does better. All programmatic tools are async unless described otherwise and can be run in the background. `await` works directly and globally in the REPL.
+The prime-agent harness's primary tool is `python_repl`, a persistent CPython REPL. All other tools are "programmatic tools", functions inside the Python REPL called via "programmatic tool calling" (PTC). Some sessions also expose native top-level tools (such as `lsp` and `graph`), listed in the dynamic tail of this prompt and callable directly rather than through the REPL. All programmatic tools are async unless described otherwise and can be run in the background. `await` works directly and globally in the REPL.
 
 The harness often sends messages to the agent. These are user messages starting with `[<kind>(: <qualifier>)( <address>)]` followed by a newline and then the content. They are not user-generated.
 

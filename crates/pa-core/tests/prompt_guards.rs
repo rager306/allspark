@@ -209,6 +209,69 @@ fn is_request_type_literal(literal: &str) -> bool {
         && literal.contains('.')
 }
 
+/// Remove every `#[cfg(test)]`-annotated item from `source`, so a scan for
+/// live registrations cannot pick up test fixtures. Handles the common shapes:
+/// the attribute followed by an optional doc/attribute run and then a
+/// braced item (`mod tests { .. }`, `fn .. { .. }`) or a `;`-terminated one.
+fn strip_cfg_test_items(source: &str) -> String {
+    const MARKER: &str = "#[cfg(test)]";
+    if !source.contains(MARKER) {
+        return source.to_string();
+    }
+    let mut out = String::with_capacity(source.len());
+    let mut rest = source;
+    while let Some(pos) = rest.find(MARKER) {
+        out.push_str(&rest[..pos]);
+        let after = &rest[pos + MARKER.len()..];
+        // Skip further attributes and whitespace up to the item's opening
+        // brace or terminating semicolon, tracking strings so a `{` inside a
+        // literal cannot open the item early.
+        let bytes = after.as_bytes();
+        let mut i = 0;
+        let mut in_str = false;
+        let mut escaped = false;
+        let mut depth = 0usize;
+        let mut opened = false;
+        while i < bytes.len() {
+            let ch = bytes[i] as char;
+            if in_str {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    in_str = false;
+                }
+                i += 1;
+                continue;
+            }
+            match ch {
+                '"' => in_str = true,
+                '{' => {
+                    depth += 1;
+                    opened = true;
+                }
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    if opened && depth == 0 {
+                        i += 1;
+                        break;
+                    }
+                }
+                ';' if !opened => {
+                    i += 1;
+                    break;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        rest = &after[i..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Scan the pa-core sources for every host-request type the session engine
 /// registers: `handlers.register("<type>", ...)` literals plus
 /// `for request_type in [ "<type>", ... ]` loop tables.
@@ -229,7 +292,15 @@ fn registered_host_requests() -> BTreeSet<String> {
             if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
                 continue;
             }
+            // Test modules register nothing on the live surface: their
+            // `.register(...)` calls are fixtures (e.g. a disclosure test that
+            // builds a `lsp.find_symbol` item), and counting them would demand
+            // prompt documentation for tools the session never exposes.
+            if path.file_name().and_then(|name| name.to_str()) == Some("tests.rs") {
+                continue;
+            }
             let source = std::fs::read_to_string(&path).expect("read source");
+            let source = strip_cfg_test_items(&source);
             // Direct registrations: the first string literal after each
             // `.register(` (the request type comes first in the call).
             for remainder in source.split(".register(").skip(1) {

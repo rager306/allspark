@@ -302,50 +302,124 @@ fn environment_section(options: &BuildSystemPromptOptions) -> String {
     lines.join("\n")
 }
 
-/// The native fork tools (`lsp`, `graph`, `edit`) present on this session's
-/// roster. Empty when none is active, so the segment never renders for
-/// sessions that keep only the REPL surface.
+/// The native fork tools (`lsp`, `graph`, `edit`, `jev`) present on this
+/// session's roster. Empty when none is active, so the segment never renders
+/// for sessions that keep only the REPL surface.
 fn native_tools_section(tools: &[&str]) -> String {
     let has_lsp = tools.contains(&"lsp");
     let has_graph = tools.contains(&"graph");
     let has_edit = tools.contains(&"edit");
-    if !has_lsp && !has_graph && !has_edit {
+    let has_jev = tools.contains(&"jev");
+    if !has_lsp && !has_graph && !has_edit && !has_jev {
         return String::new();
     }
+    // Hybrid of two reference prompts, adapted to this fork's tools: Serena's
+    // system/editing instructions (symbol-first exploration, symbol-level vs
+    // file-level editing, trust a refactor once it returns) and oh-my-pi's
+    // "Specialized Tools" policy (MUST use the specialized tool over the shell
+    // equivalent, plus the reference-before-exported-edit rule). Both source
+    // prompts gate their blocks on which tools are on the roster; so does this
+    // one, because it is a dynamic-tail segment and may name tools freely.
     let mut lines = vec![
         "# Native tools".to_string(),
         String::new(),
-        "These native tools are callable directly (top-level tool calls), not through the Python REPL."
+        "These native tools are callable directly (top-level tool calls), not through the Python REPL.".to_string(),
+        String::new(),
+        "**MUST use the specialized tool over its shell or REPL equivalent.** They are structured, \
+         semantic, and cheaper than reaching the same answer by hand:"
             .to_string(),
     ];
     if has_edit {
-        // The `edit` tool drives the pa-edit engine: a short replace
-        // summary plus the engine's own hashline-format prompt.
         lines.push(
-            "- `edit`: edit files through the pa-edit engine. `replace` (the default) takes `path` + `edits` (`[{ oldText, newText, replaceAll? }]`); `patch`/`apply_patch`/`hashline`/`sloppy` take a raw `payload` string."
+            "- `edit`: every file modification. `replace` (the default) takes `path` + `edits` \
+             (`[{ oldText, newText, replaceAll? }]`) and requires a prior read of the file; \
+             `patch`/`apply_patch`/`hashline`/`sloppy` take a raw `payload` string. NEVER issue an \
+             individual edit with `sed`/`perl`/`python` through `bash` — this engine matches fuzzily \
+             on whitespace, reports a unique-match error you can refine, previews the diff, and \
+             detects no-op loops that a silent `sed` would hide."
                 .to_string(),
         );
         lines.push(pa_edit::description(pa_edit::EditMode::Hashline).to_string());
     }
     if has_lsp {
         lines.push(
-            "- `lsp`: language-server queries and a tree-sitter symbol layer over a file or the workspace. Actions: `status`, `diagnostics`, `definition`/`declaration`/`type_definition`/`implementation`, `references`, `hover`, `symbols` (file or workspace), `find_symbol`, `find_referencing_symbols`, `find_implementations`, `rename`, `code_actions`, and symbol-aware edits (`replace_symbol_body`, `insert_before_symbol`/`insert_after_symbol`, `safe_delete_symbol`). Address a symbol by a `Class/method` name path (`symbol`) or a 1-based `line`."
+            "- `lsp`: code intelligence from real language servers plus a tree-sitter symbol layer. \
+             Actions: `status`, `capabilities`, `diagnostics` (file, glob, or workspace), \
+             `definition`/`declaration`/`type_definition`/`implementation`, `references`, `hover`, \
+             `symbols` (file overview or workspace search), `find_symbol`, \
+             `find_referencing_symbols`, `find_implementations`, `find_declaration`, `rename`, \
+             `rename_file`, `code_actions`, `reload`, and symbol-aware edits \
+             (`replace_symbol_body`, `insert_before_symbol`/`insert_after_symbol`, \
+             `safe_delete_symbol`). Address a symbol by a `Class/method` name path (`symbol`) or by \
+             a 1-based `line`. MUST use it for definitions, references, implementations, hover, and \
+             renames; NEVER text-search for code intelligence — a text search misses shadowing, \
+             re-exports, and cross-file callsites, and a `sed` rename silently drops them. Reach for \
+             `code_actions` on imports, quick fixes, and server-known refactors before editing by hand."
                 .to_string(),
         );
     }
     if has_graph {
         lines.push(
-            "- `graph`: the on-disk code graph for the working directory. Actions: `index`/`reindex` (build or incrementally repair the symbol/call/import graph), `search` (hybrid symbol search), `trace` (callers/callees from a symbol), `architecture` (overview/structure/layers/clusters/cycles/hotspots/entry_points/file_tree), `coverage` (index honesty report), `changes` (git-diff to affected symbols), `status` (store counts)."
+            "- `graph`: the on-disk code graph for the working directory. Actions: `index`/`reindex` \
+             (build or incrementally repair the symbol/call/import graph), `search` (hybrid symbol \
+             search — describe behavior in words, not a regex), `trace` (callers/callees from a \
+             symbol; `direction` in/out/both, `depth`, `edge_types`), `architecture` (`view`: \
+             overview/structure/layers/clusters/cycles/hotspots/entry_points/file_tree), `coverage` \
+             (index honesty report), `changes` (git diff → affected symbols), `status`. MUST use it \
+             for architectural questions and call-chain questions instead of reading file after \
+             file: the graph already holds the relationships."
                 .to_string(),
         );
     }
-    // Prefer the native tools in their domains: they are structured and
-    // cheaper than reaching the same answer through the Python REPL.
+    if has_jev {
+        lines.push(
+            "- `jev`: typed calibrated decisions — `classify` into a menu, `route` with an escape, \
+             `check` a yes/no probability, `ask` an explicit choice/score/noul question. One call \
+             replaces a whole model round-trip for a gray-zone judgment; NOT for arithmetic or \
+             lookups."
+                .to_string(),
+        );
+    }
     lines.push(String::new());
-    lines.push(
-        "Prefer these native tools over `python_repl` for their domains: `lsp` for code navigation (symbols/references/definitions), `edit` for file edits, `graph` for project-structure questions."
-            .to_string(),
+    lines.push("## Working with these tools".to_string());
+    lines.push(String::new());
+    let mut workflow: Vec<&str> = Vec::new();
+    workflow.push(
+        "- Acquire context step by step; NEVER open a guessed file or read a whole file to find one \
+         symbol. Get an overview first (`lsp` `symbols`), narrow to the symbol, and read only the \
+         body you need. Once you have read a file, do not re-analyse it with the symbol tools — you \
+         already have it.",
     );
+    if has_lsp {
+        workflow.push(
+            "- Before changing an exported or widely used symbol, run `lsp` `references` first, then \
+             keep the change backward-compatible or update every callsite in the same pass.",
+        );
+        workflow.push(
+            "- A successful `rename`, `rename_file`, or `safe_delete_symbol` is already complete and \
+             consistent across declarations, references, overrides, and imports. Trust it: do not \
+             re-read the changed files or re-run the build just to confirm the refactor propagated.",
+        );
+    }
+    if has_edit {
+        workflow.push(
+            "- Choose the edit granularity: replace a whole symbol with `lsp` \
+             `replace_symbol_body` when the entire body changes, and use `edit` `replace` when only a \
+             few lines inside a larger symbol change. For several small edits in one file, prefer a \
+             batch of targeted `replace` calls over re-emitting the whole file.",
+        );
+    }
+    workflow.push(
+        "- Independent calls are safe to batch in one turn; only serialize when one call genuinely \
+         needs another's result.",
+    );
+    workflow.push(
+        "- `python_repl` remains the right tool for orchestration, data transformation, and \
+         computation — not for what one of these tools does better.",
+    );
+    for line in workflow {
+        lines.push(line.to_string());
+    }
     lines.join("\n")
 }
 
@@ -587,5 +661,103 @@ mod tests {
             ["core", "usage", "opinionated", "model-prompts", "packages"],
             "extras are the last static segment, directly before the dynamic tail"
         );
+    }
+
+    /// The native-tools section is the fork's hybrid of Serena's symbol-first
+    /// instructions and oh-my-pi's "specialized tool over shell equivalent"
+    /// policy. Each block must name the tool it belongs to and carry its
+    /// directive; the section must never advertise a tool the roster lacks.
+    #[test]
+    fn native_tools_section_documents_each_active_tool_and_no_other() {
+        let all = native_tools_section(&["bash", "edit", "graph", "jev", "lsp"]);
+        for expected in [
+            "- `edit`:",
+            "- `lsp`:",
+            "- `graph`:",
+            "- `jev`:",
+            "MUST use the specialized tool over its shell or REPL equivalent",
+            "NEVER issue an individual edit with `sed`",
+            "NEVER text-search for code intelligence",
+            "Trust it: do not re-read the changed files",
+        ] {
+            assert!(all.contains(expected), "missing {expected:?} in:\n{all}");
+        }
+
+        // A roster without `lsp` must not advertise lsp actions.
+        let no_lsp = native_tools_section(&["edit", "graph"]);
+        assert!(no_lsp.contains("- `edit`:"));
+        assert!(no_lsp.contains("- `graph`:"));
+        assert!(!no_lsp.contains("- `lsp`:"), "leaked lsp into:\n{no_lsp}");
+        assert!(!no_lsp.contains("- `jev`:"));
+        // The lsp-only workflow lines must follow their tool.
+        assert!(!no_lsp.contains("`references` first"));
+        assert!(!no_lsp.contains("safe_delete_symbol` is already complete"));
+
+        // A roster with none of them renders no section at all.
+        assert!(native_tools_section(&["bash", "python_repl"]).is_empty());
+    }
+
+    /// Every action named in the native-tools section must exist on the tool
+    /// that owns it, so the prompt cannot drift from the real surface.
+    #[test]
+    fn native_tools_section_names_real_actions() {
+        let section = native_tools_section(&["edit", "graph", "jev", "lsp"]);
+        // pa-lsp's action enum (crates/pa-lsp/src/types.rs).
+        for action in [
+            "status",
+            "capabilities",
+            "diagnostics",
+            "definition",
+            "declaration",
+            "type_definition",
+            "implementation",
+            "references",
+            "hover",
+            "symbols",
+            "find_symbol",
+            "find_referencing_symbols",
+            "find_implementations",
+            "find_declaration",
+            "rename",
+            "rename_file",
+            "code_actions",
+            "reload",
+            "replace_symbol_body",
+            "insert_before_symbol",
+            "insert_after_symbol",
+            "safe_delete_symbol",
+        ] {
+            assert!(
+                section.contains(action),
+                "lsp action {action:?} undocumented"
+            );
+        }
+        // The graph tool's dispatch table (crates/pa-core/src/tools/graph.rs).
+        for action in [
+            "index",
+            "reindex",
+            "search",
+            "trace",
+            "architecture",
+            "coverage",
+            "changes",
+            "status",
+        ] {
+            assert!(
+                section.contains(action),
+                "graph action {action:?} undocumented"
+            );
+        }
+        // The jev tool's dispatch table (crates/pa-core/src/jev/tool.rs).
+        for action in ["classify", "route", "check", "ask"] {
+            assert!(
+                section.contains(action),
+                "jev action {action:?} undocumented"
+            );
+        }
+        // The pa-edit engine's modes (crates/pa-edit/src/engine.rs).
+        for mode in ["replace", "patch", "apply_patch", "hashline", "sloppy"] {
+            assert!(section.contains(mode), "edit mode {mode:?} undocumented");
+        }
     }
 }
