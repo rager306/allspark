@@ -605,7 +605,7 @@ async fn run_stream(
     }
 
     let url = format!("{}/chat/completions", model.base_url.trim_end_matches('/'));
-    let headers = build_headers(
+    let mut headers = build_headers(
         model,
         &api_key,
         base_options.headers.as_ref(),
@@ -613,6 +613,24 @@ async fn run_stream(
         &compat,
         base_options.session_id.as_deref(),
     );
+    // FORK-ONLY (opencode): the free tier's v2 protocol — HTTP/2, the
+    // session-id triplet headers, Bearer public, and the body preparation
+    // (stream:true + fingerprint tools) — injected after the standard
+    // OpenAI headers so the opencode-specific values win.
+    if model.provider == "opencode" {
+        let session = crate::utils_inner::opencode::generate_session_id();
+        headers.retain(|(key, _)| {
+            let lower = key.to_lowercase();
+            lower != "authorization" && lower != "user-agent"
+        });
+        headers.push(("Authorization".to_string(), "Bearer public".to_string()));
+        for (key, value) in crate::utils_inner::opencode::v2_headers(&session) {
+            headers.push((key, value));
+        }
+        let mut value = params.clone();
+        crate::utils_inner::opencode::prepare_body(&mut value);
+        params = value;
+    }
 
     let mut response: HttpResponse = send(RequestOptions {
         method: reqwest::Method::POST,
@@ -622,7 +640,11 @@ async fn run_stream(
         signal: base_options.signal.clone(),
         timeout_ms: base_options.timeout_ms,
         connection: crate::utils_inner::stream_failure::ConnectionErrorProfile::Sdk,
-        transport: crate::utils_inner::http::Transport::Http1,
+        transport: if model.provider == "opencode" {
+            crate::utils_inner::http::Transport::H2Alpn
+        } else {
+            crate::utils_inner::http::Transport::Http1
+        },
     })
     .await?;
 
