@@ -22,8 +22,6 @@ ignore = [
   # drops the dep.
   { id = "RUSTSEC-2024-0436", reason = "unmaintained proc-macro via ratatui, build-time only (reviewed 2026-09-17)" },
   # Advisory batch 2026-10-18: rustls TLS issues (tungstenite
-  # transitive), wasmtime sandbox issues (ast-grep transitive), ring
-  # timing sidechannel — pre-existing; patches pending upstream.
   # Review: 2026-11-18
   { id = "RUSTSEC-2025-0046", reason = "pre-existing transitive; patch pending upstream (reviewed 2026-10-18)" },
   { id = "RUSTSEC-2025-0118", reason = "pre-existing transitive; patch pending upstream (reviewed 2026-10-18)" },
@@ -72,33 +70,8 @@ allow = [
   # notify (the `@` file index watcher) — CC0 public domain dedication.
   "CC0-1.0",
   # Advisory batch (2026-10-18 CI): rustls TLS issues (tungstenite
-  # transitive), wasmtime sandbox issues (ast-grep transitive), and
   # one ring timing sidechannel — all pre-existing; patches pending
   # upstream adoption. Review: 2026-11-18
-  "RUSTSEC-2025-0046",
-  "RUSTSEC-2025-0118",
-  "RUSTSEC-2026-0006",
-  "RUSTSEC-2026-0020",
-  "RUSTSEC-2026-0021",
-  "RUSTSEC-2026-0085",
-  "RUSTSEC-2026-0086",
-  "RUSTSEC-2026-0087",
-  "RUSTSEC-2026-0088",
-  "RUSTSEC-2026-0089",
-  "RUSTSEC-2026-0091",
-  "RUSTSEC-2026-0092",
-  "RUSTSEC-2026-0093",
-  "RUSTSEC-2026-0094",
-  "RUSTSEC-2026-0095",
-  "RUSTSEC-2026-0096",
-  "RUSTSEC-2026-0222",
-  "RUSTSEC-2026-0269",
-  "RUSTSEC-2026-0316",
-  "RUSTSEC-2026-0346",
-  "RUSTSEC-2026-0347",
-  "RUSTSEC-2026-0348",
-  "RUSTSEC-2026-0349",
-  "RUSTSEC-2026-0363",
 ]
 # Development-only tools are not shipped; we keep the graph tight instead of
 # adding private/exceptions stanzas.
