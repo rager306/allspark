@@ -11,6 +11,27 @@ Pre-numbering history: two single-digit tags (fork.1, fork.2, 2026-10-13)
 marked the abandoned in-binary rebrand branch (`feat/allspark-identity`);
 they were local-only artifacts and are superseded by the NNN scheme below.
 
+## fork.007 — jev consumer defaults promoted to `auto`
+
+- Tag: `allspark-v0.10.0-fork.007` (2026-10-18)
+- Base: `6984252fa` — the default flip, one settings change plus the
+  test that pins it.
+
+The live promotion runs over the frozen corpora (through SubQ Snap, the
+real judge) measured auto-thinking at **+50.0 points** on the test split
+(0.417 → 0.917) and graph re-rank at **+8.3 points** (0.333 → 0.417).
+Both consumer defaults move from `off` to `auto`: armed, but only
+activating behind a resolved native judge. Without a judge (or on any
+judge failure, or after two consecutive failures) the behaviour is
+byte-identical to the pre-jev path — the consumers are advisory and
+fail-open by construction. A settings typo still reads as `off`
+(fail-closed on user error).
+
+Also in this release: the pa-mem varint decoder refuses non-canonical
+tenth bytes instead of silently truncating bits above 63, and the opt-in
+hotpath profiling feature instruments the admission plane's acquire and
+settle spans in diagnostic builds.
+
 ## fork.006 — upstream v0.10.1-beta.35 merged
 
 - Tag: `allspark-v0.10.0-fork.006` (2026-10-18)

@@ -606,12 +606,18 @@ fn jev_settings_parse_every_gate_and_default_the_rest() {
 
 /// Phase 2: the consumer gates default OFF and only `auto` turns them on.
 #[test]
-fn the_phase_two_consumer_gates_default_off() {
+fn the_phase_two_consumer_gates_default_auto_behind_a_native_judge() {
     use crate::settings::{JevAutoThinkingSetting, JevGraphRerankSetting};
+    // Unset reads as the promoted default (`auto`, the live-run decision):
+    // the consumers are armed but only activate behind a resolved native
+    // judge - without one the behaviour is byte-identical to `off`.
     let unset: Settings = serde_json::from_value(serde_json::json!({"jev": {}})).unwrap();
     let manager = manager_with(&unset);
-    assert_eq!(manager.get_jev_auto_thinking(), JevAutoThinkingSetting::Off);
-    assert_eq!(manager.get_jev_graph_rerank(), JevGraphRerankSetting::Off);
+    assert_eq!(
+        manager.get_jev_auto_thinking(),
+        JevAutoThinkingSetting::Auto
+    );
+    assert_eq!(manager.get_jev_graph_rerank(), JevGraphRerankSetting::Auto);
 
     let on: Settings = serde_json::from_value(serde_json::json!({
         "jev": {"enabled": "auto", "autoThinking": "auto", "graphRerank": "auto"}

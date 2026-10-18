@@ -363,13 +363,15 @@ impl JevEnabledSetting {
 /// The resolved `jev.autoThinking` gate. Both spellings that mean "not off"
 /// are the same behaviour (`auto`): a consumer is never forced on by a
 /// settings typo, and `on` reads as `auto` so no value can bypass the
-/// native-judge requirement.
+/// native-judge requirement. The default is `auto` since the live
+/// promotion runs (see CHANGELOG-FORK fork.007).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum JevAutoThinkingSetting {
-    /// The consumer never runs (the default: advisory surface, off).
-    #[default]
+    /// The consumer never runs.
     Off,
-    /// Run only behind a native (calibrated) judge.
+    /// Run only behind a native (calibrated) judge (the default since
+    /// the live promotion run: +50.0 points on the frozen test split).
+    #[default]
     Auto,
 }
 
@@ -389,8 +391,10 @@ impl JevAutoThinkingSetting {
 /// [`JevAutoThinkingSetting`]: `auto` or off).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum JevGraphRerankSetting {
-    #[default]
     Off,
+    /// Run only behind a native (calibrated) judge (the default since
+    /// the live promotion run: +8.3 points on the frozen test split).
+    #[default]
     Auto,
 }
 
