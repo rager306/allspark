@@ -201,6 +201,12 @@ pub struct LspParams {
     /// Destination path for `rename_file`.
     #[serde(default)]
     pub dest: Option<String>,
+    /// Delete even when references cannot be verified (`safe_delete_symbol`).
+    ///
+    /// By default an unavailable reference lookup refuses the delete: an empty
+    /// or failed answer is not proof that nothing references the symbol.
+    #[serde(default)]
+    pub force: Option<bool>,
 }
 
 /// The JSON schema advertised to the model.
@@ -281,6 +287,10 @@ pub fn params_schema() -> serde_json::Value {
             "dest": {
                 "type": "string",
                 "description": "Destination path for action=\"rename_file\"."
+            },
+            "force": {
+                "type": "boolean",
+                "description": "action=\"safe_delete_symbol\": delete even when the reference lookup fails. Off by default, because an empty or unavailable answer is not proof that nothing references the symbol."
             }
         },
         "required": ["action"]
@@ -372,6 +382,7 @@ mod tests {
             include_declaration: None,
             include_imports: None,
             dest: None,
+            force: None,
         };
         assert_eq!(p.timeout_secs(), DEFAULT_TIMEOUT_SECS);
         p.timeout = Some(1);

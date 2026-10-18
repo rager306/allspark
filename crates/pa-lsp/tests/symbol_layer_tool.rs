@@ -175,14 +175,41 @@ fn insert_after_symbol_places_content_below() {
     assert!(extra > foo, "{after}");
 }
 
+/// An unavailable reference lookup must NOT be read as "nothing references
+/// this". Serena shipped that bug: `safe_delete_symbol` deleted symbols with
+/// live callers whenever the server was cold, restarting, or timed out, because
+/// an empty `references` reply looked like proof of no callers. Deletion is
+/// irreversible, so the default is to refuse and name the escape hatch.
 #[test]
-fn safe_delete_symbol_removes_an_unreferenced_symbol() {
+fn safe_delete_refuses_when_references_cannot_be_checked() {
     let (dir, tool) = project();
     let result = run(
         &tool,
         serde_json::json!({
             "action": "safe_delete_symbol", "file": "lib.rs",
             "symbol": "Foo/bar", "apply": true
+        }),
+    );
+    let text = text_of(&result);
+    assert!(text.contains("refusing to delete"), "{text}");
+    assert!(
+        text.contains("force: true"),
+        "the escape hatch is named: {text}"
+    );
+    let after = std::fs::read_to_string(dir.path().join("lib.rs")).unwrap();
+    assert_eq!(after, RUST, "the file must be untouched: {after}");
+}
+
+/// `force: true` keeps the old behaviour available for a caller that has
+/// established the symbol is unreferenced by other means.
+#[test]
+fn safe_delete_with_force_removes_an_unreferenced_symbol() {
+    let (dir, tool) = project();
+    let result = run(
+        &tool,
+        serde_json::json!({
+            "action": "safe_delete_symbol", "file": "lib.rs",
+            "symbol": "Foo/bar", "apply": true, "force": true
         }),
     );
     assert!(!result.is_error, "{:?}", text_of(&result));

@@ -119,6 +119,13 @@ pub struct TraceResult {
     pub origin: String,
     /// Every reached step, ordered by depth then confidence (descending).
     pub steps: Vec<TraceStep>,
+    /// True when the walk stopped at `limit` while reachable nodes remained.
+    ///
+    /// A caller that reads only `steps` would otherwise treat a capped listing
+    /// as the complete reachable set. gitnexus learned this the hard way: its
+    /// `trace` reports `truncated: true` and the furthest reachable node, so a
+    /// capped walk is never mistaken for an exhaustive one.
+    pub truncated: bool,
 }
 
 impl TraceResult {
@@ -148,9 +155,16 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
     let mut queue: VecDeque<(i64, usize, f32)> = VecDeque::new();
     queue.push_back((origin, 0, 1.0));
 
+    let mut truncated = false;
     while let Some((node_id, depth, path_conf)) = queue.pop_front() {
-        if depth >= opts.depth || steps.len() >= opts.limit {
+        if depth >= opts.depth {
             continue;
+        }
+        // Reaching the cap with nodes still queued means the listing is a
+        // prefix, not the whole reachable set.
+        if steps.len() >= opts.limit {
+            truncated = true;
+            break;
         }
         for edge in outgoing_edges(conn, node_id, &edge_types, opts.direction)? {
             if !visited.insert(edge.target) {
@@ -189,6 +203,7 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
         origin_id: origin,
         origin: opts.symbol.clone(),
         steps,
+        truncated,
     })
 }
 

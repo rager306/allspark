@@ -396,9 +396,18 @@ impl GraphTool {
                 .map_err(|err| anyhow::anyhow!("trace failed: {err}"))
         })?;
         let mut lines = vec![format!(
-            "Trace from {} ({} step(s)):",
+            "Trace from {} ({} step(s)){}:",
             result.origin,
-            result.steps.len()
+            result.steps.len(),
+            if result.truncated {
+                format!(
+                    " — TRUNCATED at the {} node limit; more reachable nodes were not listed, \
+                     raise `limit` for the full set",
+                    result.steps.len()
+                )
+            } else {
+                String::new()
+            }
         )];
         for step in &result.steps {
             lines.push(format!(
@@ -435,6 +444,7 @@ impl GraphTool {
                 "origin_id": result.origin_id,
                 "origin": result.origin,
                 "steps": steps,
+                "truncated": result.truncated,
             }),
             terminate: None,
             is_error: false,

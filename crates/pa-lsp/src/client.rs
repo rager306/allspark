@@ -1191,27 +1191,31 @@ fn client_capabilities() -> ClientCapabilities {
 /// Fails when an edit targets a non-file URI, a file cannot be read or
 /// written, a range is out of bounds, or a file-operation edit is present.
 pub async fn apply_workspace_edit(edit: &WorkspaceEdit) -> anyhow::Result<Vec<PathBuf>> {
-    let mut touched = Vec::new();
+    // Validate the whole edit BEFORE touching the filesystem. oh-my-pi shipped
+    // the opposite order: it applied `changes`, then bailed on an unsupported
+    // `documentChanges` shape, so the caller saw a failure while the files were
+    // already half-mutated (their F03). A rejected edit must leave every file
+    // exactly as it was.
+    if let Some(lsp_types::DocumentChanges::Operations(_)) = &edit.document_changes {
+        anyhow::bail!(
+            "file-operation workspace edits (create/rename/delete) are not supported yet; \
+             nothing was written"
+        );
+    }
 
+    let mut touched = Vec::new();
     if let Some(changes) = &edit.changes {
         for (uri, edits) in changes {
             apply_text_edits(uri, edits)?;
             touched.push(uri_path(uri)?);
         }
     }
-    if let Some(document_changes) = &edit.document_changes {
-        match document_changes {
-            lsp_types::DocumentChanges::Edits(edits) => {
-                for text_document_edit in edits {
-                    let uri = &text_document_edit.text_document.uri;
-                    let text_edits = flatten_text_edits(&text_document_edit.edits);
-                    apply_text_edits(uri, &text_edits)?;
-                    touched.push(uri_path(uri)?);
-                }
-            }
-            lsp_types::DocumentChanges::Operations(_) => {
-                anyhow::bail!("file-operation workspace edits are not supported yet");
-            }
+    if let Some(lsp_types::DocumentChanges::Edits(edits)) = &edit.document_changes {
+        for text_document_edit in edits {
+            let uri = &text_document_edit.text_document.uri;
+            let text_edits = flatten_text_edits(&text_document_edit.edits);
+            apply_text_edits(uri, &text_edits)?;
+            touched.push(uri_path(uri)?);
         }
     }
     Ok(touched)
@@ -1454,5 +1458,41 @@ mod tests {
         deferred.abandon();
         // Aborting is immediate; the runtime has nothing to wait on.
         tokio::task::yield_now().await;
+    }
+
+    /// A rejected workspace edit must not leave files half-mutated.
+    ///
+    /// oh-my-pi shipped the opposite order: it applied `changes`, then bailed
+    /// on an unsupported `documentChanges` shape, so the caller saw a failure
+    /// while the files were already written (their F03). Validation now runs
+    /// before any write, so this edit leaves the file byte-identical.
+    #[tokio::test]
+    async fn unsupported_document_changes_write_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lib.rs");
+        std::fs::write(&path, "fn a() {}\n").unwrap();
+        let uri = Url::from_file_path(&path).unwrap();
+
+        let mut changes = std::collections::HashMap::new();
+        changes.insert(
+            uri.clone(),
+            vec![TextEdit {
+                range: Range::new(Position::new(0, 0), Position::new(0, 5)),
+                new_text: "fn b".into(),
+            }],
+        );
+        let edit = WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: Some(lsp_types::DocumentChanges::Operations(Vec::new())),
+            change_annotations: None,
+        };
+
+        let err = apply_workspace_edit(&edit).await.unwrap_err();
+        assert!(err.to_string().contains("not supported"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "fn a() {}\n",
+            "the rejected edit must not touch the file"
+        );
     }
 }

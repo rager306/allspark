@@ -301,12 +301,38 @@ impl LspManager {
             .map_err(|()| anyhow::anyhow!("not an absolute path: {}", to.display()))?;
         let renames = [(from_url.clone(), to_url.clone())];
 
+        // Refuse to overwrite: `std::fs::rename` replaces the destination
+        // silently on POSIX, so a typo in `dest` would destroy an unrelated
+        // file and report success (oh-my-pi F05).
+        if tokio::fs::try_exists(to).await.unwrap_or(false) {
+            anyhow::bail!(
+                "rename destination already exists: {} — remove it or pick another path",
+                to.display()
+            );
+        }
+        if !tokio::fs::try_exists(from).await.unwrap_or(false) {
+            anyhow::bail!("rename source does not exist: {}", from.display());
+        }
+
         // Pre-rename edits from every live server, applied before the move.
+        // A server that cannot answer is NOT the same as "no import edits
+        // needed": silently swallowing the error would move the file and leave
+        // every import broken while reporting success (oh-my-pi F04). Refuse
+        // and say which server failed, so the move can be retried.
         let mut touched = Vec::new();
         let clients = self.clients().await;
         for client in &clients {
-            if let Ok(Some(edit)) = client.rename_files(&renames).await {
-                touched.extend(crate::client::apply_workspace_edit(&edit).await?);
+            match client.rename_files(&renames).await {
+                Ok(Some(edit)) => {
+                    touched.extend(crate::client::apply_workspace_edit(&edit).await?);
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    anyhow::bail!(
+                        "the language server could not compute import edits for this rename, \
+                         so the file was NOT moved ({err})"
+                    );
+                }
             }
         }
 

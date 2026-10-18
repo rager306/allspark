@@ -504,17 +504,35 @@ impl LspTool {
     async fn goto(
         &self,
         params: &LspParams,
-        _timeout: Duration,
+        timeout: Duration,
         kind: Goto,
     ) -> anyhow::Result<AgentToolResult> {
         let path = self.file_path(params)?;
         let client = self.manager.ensure_client(&path).await?;
         let (position, symbol) = self.target(&client, &path, params).await?;
         let response = match kind {
-            Goto::Definition => client.definition(&path, position).await?,
-            Goto::Declaration => client.declaration(&path, position).await?,
-            Goto::TypeDefinition => client.type_definition(&path, position).await?,
-            Goto::Implementation => client.implementation(&path, position).await?,
+            Goto::Definition => {
+                with_timeout(timeout, kind.label(), client.definition(&path, position)).await?
+            }
+            Goto::Declaration => {
+                with_timeout(timeout, kind.label(), client.declaration(&path, position)).await?
+            }
+            Goto::TypeDefinition => {
+                with_timeout(
+                    timeout,
+                    kind.label(),
+                    client.type_definition(&path, position),
+                )
+                .await?
+            }
+            Goto::Implementation => {
+                with_timeout(
+                    timeout,
+                    kind.label(),
+                    client.implementation(&path, position),
+                )
+                .await?
+            }
         };
         let locations = definition_locations(response);
         let origin = symbol.map_or_else(
@@ -537,17 +555,20 @@ impl LspTool {
     async fn references(
         &self,
         params: &LspParams,
-        _timeout: Duration,
+        timeout: Duration,
         include_declaration: bool,
         drop_imports: bool,
     ) -> anyhow::Result<AgentToolResult> {
         let path = self.file_path(params)?;
         let client = self.manager.ensure_client(&path).await?;
         let (position, symbol) = self.target(&client, &path, params).await?;
-        let locations = client
-            .references(&path, position, include_declaration)
-            .await?
-            .unwrap_or_default();
+        let locations = with_timeout(
+            timeout,
+            "references",
+            client.references(&path, position, include_declaration),
+        )
+        .await?
+        .unwrap_or_default();
         let origin = symbol.map_or_else(
             || format!("{}:{}", path.display(), position.line + 1),
             |s| s.name_path(),
@@ -588,12 +609,12 @@ impl LspTool {
     async fn hover(
         &self,
         params: &LspParams,
-        _timeout: Duration,
+        timeout: Duration,
     ) -> anyhow::Result<AgentToolResult> {
         let path = self.file_path(params)?;
         let client = self.manager.ensure_client(&path).await?;
         let (position, _) = self.target(&client, &path, params).await?;
-        match client.hover(&path, position).await? {
+        match with_timeout(timeout, "hover", client.hover(&path, position)).await? {
             Some(hover) => Ok(AgentToolResult::text(hover_text(&hover))),
             None => Ok(AgentToolResult::text("(no hover information)")),
         }
@@ -602,7 +623,7 @@ impl LspTool {
     async fn rename(
         &self,
         params: &LspParams,
-        _timeout: Duration,
+        timeout: Duration,
     ) -> anyhow::Result<AgentToolResult> {
         let path = self.file_path(params)?;
         let new_name = params
@@ -612,7 +633,9 @@ impl LspTool {
             .ok_or_else(|| anyhow::anyhow!("`new_name` is required for action `rename`"))?;
         let client = self.manager.ensure_client(&path).await?;
         let (position, _) = self.target(&client, &path, params).await?;
-        let Some(edit) = client.rename(&path, position, new_name).await? else {
+        let Some(edit) =
+            with_timeout(timeout, "rename", client.rename(&path, position, new_name)).await?
+        else {
             return Ok(AgentToolResult::text("(server returned no rename edit)"));
         };
         if params.apply.unwrap_or(false) {
@@ -666,7 +689,7 @@ impl LspTool {
     async fn safe_delete(
         &self,
         params: &LspParams,
-        _timeout: Duration,
+        timeout: Duration,
     ) -> anyhow::Result<AgentToolResult> {
         let (path, text) = self.read_file(params).await?;
         let symbol = params
@@ -695,17 +718,45 @@ impl LspTool {
         };
         let position = chosen.selection_range.start;
 
+        // A failed reference lookup is NOT evidence that nothing references the
+        // symbol. Serena shipped exactly this bug: `safe_delete_symbol` deleted
+        // symbols that still had callers whenever the server was cold,
+        // restarting, or timed out, because an empty `references` reply was read
+        // as "no callers" (their issue class #1814). The deletion is
+        // irreversible, so an unavailable answer must refuse rather than
+        // proceed. `force: true` remains for a caller who established the
+        // symbol is unreferenced some other way.
+        let force = params.force.unwrap_or(false);
         let references = match self.manager.ensure_client(&path).await {
             Ok(client) => {
                 // `include_declaration = false`: the declaration itself is not a
                 // reference that blocks the delete.
-                client
-                    .references(&path, position, false)
-                    .await
-                    .unwrap_or_default()
-                    .unwrap_or_default()
+                match with_timeout(
+                    timeout,
+                    "safe_delete_symbol references",
+                    client.references(&path, position, false),
+                )
+                .await
+                {
+                    Ok(locations) => locations.unwrap_or_default(),
+                    Err(_) if force => Vec::new(),
+                    Err(err) => {
+                        return Ok(AgentToolResult::text(format!(
+                            "refusing to delete `{symbol}`: the reference lookup failed, so \
+                             callers cannot be ruled out ({err}). Re-run with `force: true` \
+                             only after confirming nothing references the symbol."
+                        )));
+                    }
+                }
             }
-            Err(_) => Vec::new(),
+            Err(_) if force => Vec::new(),
+            Err(err) => {
+                return Ok(AgentToolResult::text(format!(
+                    "refusing to delete `{symbol}`: no language server is available to check \
+                     references, so callers cannot be ruled out ({err}). Re-run with \
+                     `force: true` only after confirming nothing references the symbol."
+                )));
+            }
         };
         if !references.is_empty() {
             let mut text_out = format!(
@@ -759,13 +810,15 @@ impl LspTool {
     async fn code_actions(
         &self,
         params: &LspParams,
-        _timeout: Duration,
+        timeout: Duration,
     ) -> anyhow::Result<AgentToolResult> {
         let path = self.file_path(params)?;
         let client = self.manager.ensure_client(&path).await?;
         let (position, _) = self.target(&client, &path, params).await?;
         let range = lsp_types::Range::new(position, position);
-        let actions = client.code_actions(&path, range).await?.unwrap_or_default();
+        let actions = with_timeout(timeout, "code_actions", client.code_actions(&path, range))
+            .await?
+            .unwrap_or_default();
 
         let mut text = format!("{} code action(s):\n", actions.len());
         for (index, action) in actions.iter().enumerate() {
@@ -986,6 +1039,27 @@ impl AgentTool for LspTool {
             let timeout = Duration::from_secs(parsed.timeout_secs());
             self.dispatch(&parsed, timeout).await
         })
+    }
+}
+
+/// Run one language-server request under the call's timeout.
+///
+/// Every LSP round-trip must be bounded: a server that is indexing, wedged, or
+/// waiting on a lock would otherwise hang the tool forever, and the model has
+/// no way to cancel. oh-my-pi shipped `lsp` with the timeout parameter declared
+/// but unused in most actions (their F08); the fix is one wrapper applied at
+/// every call site rather than a per-action convention.
+async fn with_timeout<T>(
+    budget: Duration,
+    action: &str,
+    fut: impl std::future::Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    match tokio::time::timeout(budget, fut).await {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!(
+            "`{action}` did not answer within {budget:?}; the language server may still be \
+             indexing. Raise `timeout` (seconds) and retry."
+        ),
     }
 }
 
