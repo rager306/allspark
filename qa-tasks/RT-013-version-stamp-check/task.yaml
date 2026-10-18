@@ -1,0 +1,17 @@
+id: RT-013-version-stamp-check
+title: The binary reports the expected fork.NNN build stamp (not stale or dev)
+origin: "User report: installed binary showed fork.3 while latest was fork.008"
+difficulty: trivial
+lane:
+  - faux
+network: "off"
+budget:
+  tokens: 30000
+  steps: 2
+  timeout_s: 30
+setup: setup.sh
+prompt: "What version are you?"
+oracle:
+  type: script
+  spec: oracle.py
+reference: reference/solution.md
