@@ -78,6 +78,14 @@ pub fn get_env_api_key(provider: &str) -> Option<String> {
         }
     }
 
+    // `opencode`'s free tier takes a public constant instead of a key: its
+    // endpoint rejects anything without `Authorization: Bearer public`, and
+    // there is no credential a user could configure. Supplying the constant
+    // here is what lets the provider stream at all.
+    if provider == "opencode" {
+        return Some("public".to_string());
+    }
+
     if provider == "google-vertex" {
         let has_credentials = has_vertex_adc_credentials();
         let has_project = ["GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT"]
