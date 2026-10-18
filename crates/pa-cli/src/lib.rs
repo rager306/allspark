@@ -1,3 +1,11 @@
+//! The `prime-agent` binary: argument parsing, the interactive and print
+//! entrypoints, and the composition root that wires every other crate together.
+//!
+//! This crate holds no business logic by design. A behaviour that belongs to
+//! the product lives in `pa-core` (session engine, tools, prompts); a behaviour
+//! that belongs to the terminal lives in `pa-tui`. What stays here is wiring:
+//! config resolution, mode selection, and the process lifecycle.
+
 // large_futures: stack futures on hot paths by design.
 // too_many_lines: style gate only (the harness fns are intentionally linear).
 // Casts: 64-bit targets; narrowing sits at bounded OS/protocol boundaries.

@@ -1,3 +1,23 @@
+//! The session engine and everything the model touches.
+//!
+//! This crate owns the agent loop's tools, the layered system prompt, skills,
+//! the Python kernel, settings, the code-graph and LSP tool surfaces, and the
+//! continual-harness refinement loop.
+//!
+//! Public API is the tool-definition contract; subsystem internals stay
+//! `pub(crate)`. `SessionEngine` (message in, events out) is the facade.
+//!
+//! Two invariants shape the crate.
+//!
+//! - **The prompt has a cache boundary.** `prompts::system_prompt` splits its
+//!   output into a static prefix and a dynamic tail, and the boundary travels
+//!   to the provider so a date or cwd change does not re-bill the stable half.
+//!   Anything that injects file text must cap its size; see
+//!   `resources::MAX_CONTEXT_FILE_BYTES`.
+//! - **Tools are the product surface.** `session_engine::engine` builds the
+//!   roster and `tools` implements it. A tool's action names are asserted
+//!   against the prompt by `tests/prompt_guards.rs`, so the two cannot drift.
+
 // large_futures: stack futures on hot paths by design. too_many_lines:
 // style gate only. Casts: 64-bit targets; narrowing sits at bounded
 // OS/protocol boundaries.
@@ -12,12 +32,6 @@
 // Test-only: exact-float `assert_eq!`s assert parsed fixture values; an
 // epsilon compare would weaken the assertions, not fix a lint.
 #![cfg_attr(test, allow(clippy::float_cmp))]
-
-//! Session engine: tools, skills, prompts, compaction, refinement, kernel/RLM
-//! manager, subagents, session manager, settings.
-//!
-//! Public API: the tool-definition contract; subsystem internals are `pub(crate)`.
-//! `SessionEngine` (message in -> events out) is the future facade.
 
 pub(crate) mod tools;
 

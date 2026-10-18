@@ -1,3 +1,11 @@
+//! Structural code analysis for the fork: tree-sitter parsing (native grammars
+//! plus compiled `.wasm` grammars loaded through a shared `WasmStore`) and
+//! ast-grep pattern search.
+//!
+//! FORK-ONLY. Ported from oh-my-pi's `pi-ast`; the parse tree here is what the
+//! `lsp` symbol layer and the `pa-graph` indexer both read, so a change to the
+//! grammar set or the wasm loader reaches every symbol-aware tool.
+
 // FORK-ONLY: ported into the allspark fork; do not push upstream.
 // Ported verbatim from oh-my-pi's `pi-ast` (ast-grep structural search +
 // tree-sitter parsing). The workspace pedantic gate rides in via

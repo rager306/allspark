@@ -399,6 +399,15 @@ fn python_skill_functions(package_path: &Path) -> Vec<String> {
             if path.extension().and_then(|ext| ext.to_str()) != Some("py") {
                 continue;
             }
+            // A skill's own tests define functions too; they are not part of
+            // the importable surface, so counting them would demand prompt
+            // documentation for helpers the model never calls.
+            if path
+                .components()
+                .any(|component| component.as_os_str() == "tests")
+            {
+                continue;
+            }
             let Ok(source) = std::fs::read_to_string(&path) else {
                 continue;
             };

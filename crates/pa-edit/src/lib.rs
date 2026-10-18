@@ -1,3 +1,14 @@
+//! The edit engine: five modes over one session, staging, and preview machinery.
+//!
+//! FORK-ONLY. Ported from oh-my-pi's `pi-edit`; do not push upstream.
+//!
+//! [`EditMode`] selects the wire format (`replace`, `patch`, `apply_patch`,
+//! `hashline`, `sloppy`) and [`description`] returns the prompt text for a mode,
+//! so the tool description and the parser cannot drift apart. The engine
+//! guarantees a unique match or an error, preserves line endings and BOM,
+//! recovers a stale `hashline` snapshot by rebasing it, and detects a no-op
+//! edit loop. `pa-core::tools::edit_hybrid` is the tool surface.
+
 // FORK-ONLY: ported into the allspark fork; do not push upstream.
 // Ported from oh-my-pi's `pi-edit` (the edit engine: exact-match, AST/hashline,
 // apply_patch, sloppy and replace modes plus the streaming session). The

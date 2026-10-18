@@ -1,3 +1,9 @@
+//! Line and word diff primitives shared by the edit engine and the terminal UI.
+//!
+//! One implementation serves both: the edit engine renders a preview with it
+//! and the TUI renders the same edit to the user, so a diff that disagrees with
+//! itself would show one change in the preview and a different one on screen.
+
 // FORK-ONLY: ported into the allspark fork; do not push upstream.
 //! jsdiff-compatible diff primitives without an FFI dependency.
 //!
