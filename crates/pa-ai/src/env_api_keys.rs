@@ -36,6 +36,7 @@ pub fn get_api_key_env_vars(provider: &str) -> Option<Vec<&'static str>> {
                 "xiaomi" => "XIAOMI_API_KEY",
                 "muse" => "MUSE_API_KEY",
                 "subquadratic" => "SUBQ_API_KEY",
+                "ninerouter" => "NINEROUTER_API_KEY",
                 "codebuddy" => "CODEBUDDY_API_KEY",
                 "xiaomi-token-plan-cn" => "XIAOMI_TOKEN_PLAN_CN_API_KEY",
                 "xiaomi-token-plan-ams" => "XIAOMI_TOKEN_PLAN_AMS_API_KEY",

@@ -176,6 +176,63 @@ static FORK_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
 });
 
 static FORK_RAW_MODELS: &[ForkModel] = &[
+    // --- 9router (free LLM gateway) --------------------------------------------
+    // An OpenAI-compatible proxy (Node.js) that routes to free tiers:
+    // OpenCode free (`oc/` models), OpenRouter `:free` models, and
+    // provider free tiers (Kiro, Vertex). The TLS/client fingerprint that
+    // OpenCode requires is handled by the 9router process — allspark only
+    // speaks standard OpenAI chat completions to it.
+    // Env: NINEROUTER_URL (default http://localhost:20128/v1),
+    //      NINEROUTER_API_KEY (the 9router dashboard key).
+    // Model ids carry the 9router routing prefix (`oc/`, `openrouter/`, ...).
+    ForkModel {
+        provider: "ninerouter",
+        id: "oc/deepseek-v4.1-flash-free",
+        name: "DeepSeek v4.1 Flash (free, via 9router)",
+        api: "openai-completions",
+        base_url: "http://localhost:20128/v1",
+        reasoning: true,
+        thinking_levels: EFFORT_NO_OFF,
+        input: &[ModelInput::Text],
+        cost: (0.0, 0.0, 0.0, 0.0),
+        context_window: 128_000,
+        max_tokens: 8_192,
+        headers: &[],
+        supports_developer_role: None,
+        max_tokens_field: None,
+    },
+    ForkModel {
+        provider: "ninerouter",
+        id: "oc/glm-5.3-flash-free",
+        name: "GLM 5.3 Flash (free, via 9router)",
+        api: "openai-completions",
+        base_url: "http://localhost:20128/v1",
+        reasoning: true,
+        thinking_levels: EFFORT_NO_OFF,
+        input: &[ModelInput::Text, ModelInput::Image],
+        cost: (0.0, 0.0, 0.0, 0.0),
+        context_window: 128_000,
+        max_tokens: 8_192,
+        headers: &[],
+        supports_developer_role: None,
+        max_tokens_field: None,
+    },
+    ForkModel {
+        provider: "ninerouter",
+        id: "oc/muse-spark-1.3-contributor-free",
+        name: "Muse Spark 1.3 Contributor (free, via 9router)",
+        api: "openai-completions",
+        base_url: "http://localhost:20128/v1",
+        reasoning: true,
+        thinking_levels: EFFORT_NO_OFF,
+        input: &[ModelInput::Text],
+        cost: (0.0, 0.0, 0.0, 0.0),
+        context_window: 128_000,
+        max_tokens: 8_192,
+        headers: &[],
+        supports_developer_role: None,
+        max_tokens_field: None,
+    },
     // --- Subquadratic (SubQ Snap) ----------------------------------------------
     // A decision model speaking the TypeSafe System One wire byte-for-byte
     // (`POST {base}/v1/systemone`, same {model, state, questions} request and
@@ -799,7 +856,13 @@ pub fn fork_provider_models() -> Vec<Model> {
 /// with this list).
 #[must_use]
 pub fn fork_providers() -> &'static [&'static str] {
-    &["muse", "codebuddy", "genspark", "subquadratic"]
+    &[
+        "muse",
+        "codebuddy",
+        "genspark",
+        "subquadratic",
+        "ninerouter",
+    ]
 }
 
 #[cfg(test)]

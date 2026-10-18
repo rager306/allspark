@@ -212,6 +212,30 @@ the session's own cost breakdown (no external pricing data needed).
 - See `docs/fork-identity.md` for the isolation model contract and the
   known deviations (Unix runtime dir, shared Windows pipe).
 
+## 7c-pre. Quick start with a free LLM (9router)
+
+The zero-cost path: run [9router](https://github.com/decolua/9router)
+(a Node.js proxy that routes to OpenCode's free tier, OpenRouter `:free`
+models, and other free providers), point allspark at it, and every
+`oc/`-prefixed model is free:
+
+```bash
+# 1. Run 9router (docker or npm); set an API key in its dashboard
+# 2. Point allspark at it:
+export NINEROUTER_URL=http://localhost:20128/v1
+export NINEROUTER_API_KEY=<your-9router-key>
+
+# 3. Use a free model:
+allspark -m ninerouter/oc/deepseek-v4.1-flash-free
+```
+
+The 9router process handles the client fingerprint OpenCode requires
+(free tier blocks non-Node.js HTTP stacks); allspark speaks standard
+OpenAI chat completions to it. The catalog carries three free models
+(`oc/deepseek-v4.1-flash-free`, `oc/glm-5.3-flash-free`,
+`oc/muse-spark-1.3-contributor-free`); fetch the full live list from
+`GET $NINEROUTER_URL/models` and add them to `models.json` as needed.
+
 ## 7c. Diagnostic profiling (`--features profiling`, fork)
 
 The supervisor's admission plane carries opt-in hotpath instrumentation:
