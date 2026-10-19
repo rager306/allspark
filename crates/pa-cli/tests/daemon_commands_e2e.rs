@@ -92,14 +92,9 @@ fn ts_binary() -> Option<PathBuf> {
         let path = PathBuf::from(path);
         return path.exists().then_some(path);
     }
-    let probe = Command::new("prime-agent")
-        .arg("--version")
-        .output()
-        .ok()?
-        .status
-        .success()
-        .then(|| PathBuf::from("prime-agent"));
-    probe
+    // Fork: the PATH fallback resolved the co-installed Rust launcher and ran it as
+    // the TS reference. Without PA_TS_BINARY there is no TS reference -> SKIPPED.
+    None
 }
 
 struct Daemon {

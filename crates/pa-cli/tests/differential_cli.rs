@@ -312,13 +312,9 @@ fn ts_binary() -> Option<PathBuf> {
         let path = PathBuf::from(path);
         return path.exists().then_some(path);
     }
-    let found = Command::new("which")
-        .arg("prime-agent")
-        .output()
-        .ok()
-        .filter(|out| out.status.success())?;
-    let path = String::from_utf8_lossy(&found.stdout).trim().to_string();
-    (!path.is_empty()).then(|| PathBuf::from(path))
+    // Fork: the PATH fallback resolved the co-installed Rust launcher and ran it as
+    // the TS reference. Without PA_TS_BINARY there is no TS reference -> SKIPPED.
+    None
 }
 
 struct InvocationOutput {
