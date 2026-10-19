@@ -1,0 +1,297 @@
+{
+  "comparisons": {
+    "e-120": true,
+    "e-40": true,
+    "e-80": true,
+    "f-120": true,
+    "f-40": true,
+    "f-80": true,
+    "h-120": true,
+    "h-40": true,
+    "h-80": true,
+    "u-120": true,
+    "u-40": true,
+    "u-80": true,
+    "w-120": true,
+    "w-40": true,
+    "w-80": true,
+    "x-120": true,
+    "x-40": true,
+    "x-80": true
+  },
+  "metadata_note": "Historical verifier source_commit denotes pinned TypeScript reference source, not Rust overlay. Renamed to ts_reference_source_commit; Rust base and overlay source hashes recorded separately. Captured results unchanged; no re-execution.",
+  "results": {
+    "rust": {
+      "binary_sha256": "1886d65ec2b192c615502373cc81ad161cba28f5275eafa2e9edc687d0f40a87",
+      "cases": {
+        "e-120": {
+          "cell_count": 17,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "bb5f6973d74d82b6213b25bb3e213b2b3d39becc0e2694a3abc5f08d2aa4ccc1"
+        },
+        "e-40": {
+          "cell_count": 17,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "bb5f6973d74d82b6213b25bb3e213b2b3d39becc0e2694a3abc5f08d2aa4ccc1"
+        },
+        "e-80": {
+          "cell_count": 17,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "bb5f6973d74d82b6213b25bb3e213b2b3d39becc0e2694a3abc5f08d2aa4ccc1"
+        },
+        "f-120": {
+          "cell_count": 17,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "b621dfea57d9957b611f3b8cc28482d5955c40a84d71d1aaafb374716c58397e"
+        },
+        "f-40": {
+          "cell_count": 17,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "b621dfea57d9957b611f3b8cc28482d5955c40a84d71d1aaafb374716c58397e"
+        },
+        "f-80": {
+          "cell_count": 17,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "b621dfea57d9957b611f3b8cc28482d5955c40a84d71d1aaafb374716c58397e"
+        },
+        "h-120": {
+          "cell_count": 19,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "6c02316a1bdb8503685ecb2fc025a104889f314f96d380b6c601d45aa42fc599"
+        },
+        "h-40": {
+          "cell_count": 19,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "6c02316a1bdb8503685ecb2fc025a104889f314f96d380b6c601d45aa42fc599"
+        },
+        "h-80": {
+          "cell_count": 19,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "6c02316a1bdb8503685ecb2fc025a104889f314f96d380b6c601d45aa42fc599"
+        },
+        "u-120": {
+          "cell_count": 35,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "2bdea2b6d19859637d268f34949d3908ae3839aa9586f90fb22ffc67051a49bb"
+        },
+        "u-40": {
+          "cell_count": 35,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "2bdea2b6d19859637d268f34949d3908ae3839aa9586f90fb22ffc67051a49bb"
+        },
+        "u-80": {
+          "cell_count": 35,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "2bdea2b6d19859637d268f34949d3908ae3839aa9586f90fb22ffc67051a49bb"
+        },
+        "w-120": {
+          "cell_count": 40,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "3f2b012497d885d516c1de82c94f582ce35c23ffff53279867b9793f8b4d3c23"
+        },
+        "w-40": {
+          "cell_count": 39,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 2,
+          "styled_region_sha256": "7317ea0a5d50e15c9dfadf256e2355b9efe200677fe0c2bd418c1bdd9eaac401"
+        },
+        "w-80": {
+          "cell_count": 40,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "3f2b012497d885d516c1de82c94f582ce35c23ffff53279867b9793f8b4d3c23"
+        },
+        "x-120": {
+          "cell_count": 19,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "5f68012c14472ff1290790446a2d4c8364aea0013b874c21856beda1ffc4b504"
+        },
+        "x-40": {
+          "cell_count": 19,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "5f68012c14472ff1290790446a2d4c8364aea0013b874c21856beda1ffc4b504"
+        },
+        "x-80": {
+          "cell_count": 19,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "5f68012c14472ff1290790446a2d4c8364aea0013b874c21856beda1ffc4b504"
+        }
+      }
+    },
+    "ts": {
+      "binary_sha256": "94e90d59b5853036371c6e6a5eb7f5ef3f49d72aa66998be0b41b9d925b1a1c0",
+      "cases": {
+        "e-120": {
+          "cell_count": 17,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "bb5f6973d74d82b6213b25bb3e213b2b3d39becc0e2694a3abc5f08d2aa4ccc1"
+        },
+        "e-40": {
+          "cell_count": 17,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "bb5f6973d74d82b6213b25bb3e213b2b3d39becc0e2694a3abc5f08d2aa4ccc1"
+        },
+        "e-80": {
+          "cell_count": 17,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "bb5f6973d74d82b6213b25bb3e213b2b3d39becc0e2694a3abc5f08d2aa4ccc1"
+        },
+        "f-120": {
+          "cell_count": 17,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "b621dfea57d9957b611f3b8cc28482d5955c40a84d71d1aaafb374716c58397e"
+        },
+        "f-40": {
+          "cell_count": 17,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "b621dfea57d9957b611f3b8cc28482d5955c40a84d71d1aaafb374716c58397e"
+        },
+        "f-80": {
+          "cell_count": 17,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "b621dfea57d9957b611f3b8cc28482d5955c40a84d71d1aaafb374716c58397e"
+        },
+        "h-120": {
+          "cell_count": 19,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "6c02316a1bdb8503685ecb2fc025a104889f314f96d380b6c601d45aa42fc599"
+        },
+        "h-40": {
+          "cell_count": 19,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "6c02316a1bdb8503685ecb2fc025a104889f314f96d380b6c601d45aa42fc599"
+        },
+        "h-80": {
+          "cell_count": 19,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "6c02316a1bdb8503685ecb2fc025a104889f314f96d380b6c601d45aa42fc599"
+        },
+        "u-120": {
+          "cell_count": 35,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "2bdea2b6d19859637d268f34949d3908ae3839aa9586f90fb22ffc67051a49bb"
+        },
+        "u-40": {
+          "cell_count": 35,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "2bdea2b6d19859637d268f34949d3908ae3839aa9586f90fb22ffc67051a49bb"
+        },
+        "u-80": {
+          "cell_count": 35,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "2bdea2b6d19859637d268f34949d3908ae3839aa9586f90fb22ffc67051a49bb"
+        },
+        "w-120": {
+          "cell_count": 40,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "3f2b012497d885d516c1de82c94f582ce35c23ffff53279867b9793f8b4d3c23"
+        },
+        "w-40": {
+          "cell_count": 39,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 2,
+          "styled_region_sha256": "7317ea0a5d50e15c9dfadf256e2355b9efe200677fe0c2bd418c1bdd9eaac401"
+        },
+        "w-80": {
+          "cell_count": 40,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "3f2b012497d885d516c1de82c94f582ce35c23ffff53279867b9793f8b4d3c23"
+        },
+        "x-120": {
+          "cell_count": 19,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "5f68012c14472ff1290790446a2d4c8364aea0013b874c21856beda1ffc4b504"
+        },
+        "x-40": {
+          "cell_count": 19,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "5f68012c14472ff1290790446a2d4c8364aea0013b874c21856beda1ffc4b504"
+        },
+        "x-80": {
+          "cell_count": 19,
+          "executed": true,
+          "osc8_observed": true,
+          "row_count": 1,
+          "styled_region_sha256": "5f68012c14472ff1290790446a2d4c8364aea0013b874c21856beda1ffc4b504"
+        }
+      }
+    }
+  },
+  "rust_base_commit": "8f64f3138",
+  "rust_source_sha256": {
+    "crates/pa-tui/src/view/lazy.rs": "843732533e98fe32b6e4d3d51c04fc357c96216edcd6968f542aee05307fbdf9",
+    "crates/pa-tui/src/view/lazy_tests.rs": "c7b8f850b2f904d2a0c7f5c4ac8a8eb6aeadeaabf5bb278a17cccaf1d60a8e97"
+  },
+  "scope": "Actual assistant-history transcript region cells, foreground/background, modifiers and OSC8 at widths40/80/120; excludes chrome, streaming, scrolling and mouse actions.",
+  "ts_archive_sha256": "83fb09129bf78e3e60268212cd70932166591b15188caa70c1b0efbcc76235e2",
+  "ts_reference_source_commit": "7d442aafa985f9342134fac16c2ef41f03fb45c1",
+  "verified": true,
+  "wrapper_scope": "Existing real-binary Markdown frame verifier; selected six autolink/Unicode/explicit-link inputs at unchanged40/80/120 widths. No verifier source edits. Sanitized styled-region hashes and geometry only; excludes raw frames, commands, prompts, environment, runtime artifacts."
+}

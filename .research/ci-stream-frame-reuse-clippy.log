@@ -1,0 +1,127 @@
+    Checking zerofrom v0.1.8
+    Checking smallvec v1.16.1
+    Checking yoke v0.8.3
+    Checking mio v1.2.3
+    Checking zerovec v0.11.8
+    Checking zerotrie v0.2.5
+    Checking tinystr v0.8.4
+    Checking potential_utf v0.1.6
+    Checking icu_locale_core v2.3.0
+    Checking parking_lot_core v0.9.12
+    Checking icu_collections v2.3.0
+    Checking parking_lot v0.12.5
+    Checking icu_provider v2.3.1
+    Checking getrandom v0.3.4
+    Checking icu_normalizer v2.3.0
+    Checking icu_properties v2.3.0
+    Checking serde_core v1.0.229
+    Checking signal-hook v0.3.18
+    Checking tokio v1.53.1
+    Checking indexmap v2.14.2
+    Checking rustix v0.38.44
+    Checking signal-hook-mio v0.2.5
+    Checking idna_adapter v1.2.2
+    Checking rand_core v0.9.5
+    Checking inotify-sys v0.1.8
+    Checking slab v0.4.12
+    Checking percent-encoding v2.3.2
+    Checking form_urlencoded v1.2.2
+    Checking futures-util v0.3.34
+    Checking bit-set v0.8.0
+    Checking thiserror v2.0.20
+    Checking serde v1.0.229
+    Checking globset v0.4.20
+    Checking serde_json v1.0.151
+    Checking inotify v0.11.5
+    Checking idna v1.1.0
+    Checking crossterm v0.28.1 (/root/prime-agent/vendor/crossterm)
+    Checking strum v0.26.3
+    Checking tokio-util v0.7.19
+    Checking notify v8.2.0
+    Checking pa-types v0.10.1-beta.35 (/root/prime-agent/crates/pa-types)
+warning: unexpected `cfg` condition name: `winapi`
+   --> vendor/crossterm/src/lib.rs:256:11
+    |
+256 | #[cfg(all(winapi, not(feature = "winapi")))]
+    |           ^^^^^^
+    |
+    = help: expected names are: `docsrs`, `feature`, and `test` and 32 more
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(winapi)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(winapi)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+    = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unexpected `cfg` condition value: `winapi`
+   --> vendor/crossterm/src/lib.rs:256:23
+    |
+256 | #[cfg(all(winapi, not(feature = "winapi")))]
+    |                       ^^^^^^^^^^^^^^^^^^
+    |
+    = note: expected values for `feature` are: `bracketed-paste`, `default`, `event-stream`, `events`, `filedescriptor`, `libc`, `serde`, `use-dev-tty`, and `windows`
+    = help: consider adding `winapi` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `crossterm_winapi`
+   --> vendor/crossterm/src/lib.rs:259:11
+    |
+259 | #[cfg(all(crossterm_winapi, not(feature = "crossterm_winapi")))]
+    |           ^^^^^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(crossterm_winapi)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(crossterm_winapi)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition value: `crossterm_winapi`
+   --> vendor/crossterm/src/lib.rs:259:33
+    |
+259 | #[cfg(all(crossterm_winapi, not(feature = "crossterm_winapi")))]
+    |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: expected values for `feature` are: `bracketed-paste`, `default`, `event-stream`, `events`, `filedescriptor`, `libc`, `serde`, `use-dev-tty`, and `windows`
+    = help: consider adding `crossterm_winapi` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unnecessary parentheses around closure body
+  --> vendor/crossterm/src/terminal/sys/unix.rs:85:50
+   |
+85 |     let file = File::open("/dev/tty").map(|file| (FileDesc::Owned(file.into())));
+   |                                                  ^                            ^
+   |
+   = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+   |
+85 -     let file = File::open("/dev/tty").map(|file| (FileDesc::Owned(file.into())));
+85 +     let file = File::open("/dev/tty").map(|file| FileDesc::Owned(file.into()));
+   |
+
+warning: struct `InternalEventFilter` is never constructed
+  --> vendor/crossterm/src/event/filter.rs:65:19
+   |
+65 | pub(crate) struct InternalEventFilter;
+   |                   ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `crossterm` (lib) generated 6 warnings (run `cargo clippy --fix --lib -p crossterm -- -D warnings` to apply 1 suggestion)
+    Checking ratatui v0.29.0
+    Checking clap v4.6.7
+    Checking ppv-lite86 v0.2.21
+    Checking url v2.5.8
+    Checking ignore v0.4.33
+    Checking fancy-regex v0.14.0
+    Checking uuid v1.26.1
+    Checking num-traits v0.2.19
+    Checking rand_chacha v0.9.0
+    Checking rand v0.9.5
+    Checking rand_xorshift v0.4.0
+    Checking once_cell v1.21.4
+    Checking tempfile v3.27.0
+    Checking proptest v1.11.0
+    Checking pa-tui v0.10.1-beta.35 (/root/prime-agent/crates/pa-tui)
+    Finished `dev` profile [unoptimized] target(s) in 1m 34s

@@ -93,3 +93,41 @@ fn frames_render_an_end_section_only_when_the_window_reaches_it() {
     let rows = text_of(&tail);
     assert!(rows.iter().any(|row| row.contains("Thinking")));
 }
+
+#[test]
+fn streaming_entry_renders_once_per_frame_without_reusing_stale_rows() {
+    use crate::chat::{AssistantMessage, MessageBlock};
+    use crate::view::layout::ENTRY_RENDERS;
+
+    let mut sparse = view();
+    let mut dense = view();
+    for view in [&mut sparse, &mut dense] {
+        view.push_entry(ChatEntry::Assistant(Box::new(AssistantMessage {
+            blocks: vec![MessageBlock::Text("history ".repeat(300))],
+            has_tool_calls: false,
+            streaming: true,
+            error: None,
+            aborted: false,
+        })));
+        view.render_frame(40, 20);
+    }
+    for suffix in ["", "\n\n**a new bold tail**", "\n\nUnicode café 界 tail"] {
+        for view in [&mut sparse, &mut dense] {
+            view.prepare_entry_mutation(0);
+            let ChatEntry::Assistant(message) = &mut view.chat[0] else {
+                panic!("streaming assistant fixture");
+            };
+            let MessageBlock::Text(text) = &mut message.blocks[0] else {
+                panic!("streaming text fixture");
+            };
+            text.push_str(suffix);
+            view.mark_entry_stale(0);
+        }
+        ENTRY_RENDERS.with(|count| count.set(0));
+        let frame = sparse.render_frame(40, 20);
+        assert_eq!(ENTRY_RENDERS.with(std::cell::Cell::get), 1);
+        dense.sparse_enabled = false;
+        dense.sparse_window = None;
+        assert_eq!(frame, dense.render_frame(40, 20));
+    }
+}

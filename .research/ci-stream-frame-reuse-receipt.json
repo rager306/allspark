@@ -1,0 +1,55 @@
+{
+  "scope": "Private pa-tui sparse visible window row reuse during one synchronous frame only. Not full-suite/concurrency proof.",
+  "source_sha256": {
+    "crates/pa-tui/src/view/lazy.rs": "843732533e98fe32b6e4d3d51c04fc357c96216edcd6968f542aee05307fbdf9",
+    "crates/pa-tui/src/view/lazy_tests.rs": "c7b8f850b2f904d2a0c7f5c4ac8a8eb6aeadeaabf5bb278a17cccaf1d60a8e97"
+  },
+  "rust": "1.98.1",
+  "unit_red": {
+    "exit": 101,
+    "assertion": "actual ENTRY_RENDERS2 expected1",
+    "passed": 0,
+    "failed": 1,
+    "log_sha256": "836f0cc66ecb5c17748b09a6480b8be00530361ecab75335840c631ddfdbd605"
+  },
+  "lib_green": {
+    "exit": 0,
+    "passed": 1492,
+    "failed": 0,
+    "seconds": 31.61
+  },
+  "unchanged_stream_e2e": {
+    "exit": 0,
+    "passed": 1,
+    "failed": 0,
+    "seconds": 23.93,
+    "barrier_ms": 45000,
+    "cadence_changed": false
+  },
+  "benchmark": {
+    "profile_fingerprint": 10086937697581374337,
+    "rlib": "libpa_tui-ffc43597b2c157af.rlib",
+    "before": {
+      "mutation_s": 2.821400142,
+      "frame_s": 3.802361146
+    },
+    "after": {
+      "mutation_s": 3.165293457,
+      "frame_s": 2.162405974
+    },
+    "count": 100,
+    "last_prefix_bytes": 48000
+  },
+  "fmt_exit": 0,
+  "clippy": {
+    "exit": 0,
+    "command": "cargo +1.98.1 clippy -p pa-tui --all-targets -- -D warnings"
+  },
+  "parity": {
+    "exit": 0,
+    "matched": 18,
+    "total": 18,
+    "scope": "settled assistant-history styled cells and OSC8; not dynamic streaming/paused TS selection",
+    "receipt": "ci-stream-frame-reuse-parity.json"
+  }
+}

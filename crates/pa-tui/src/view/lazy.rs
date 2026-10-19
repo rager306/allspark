@@ -424,7 +424,7 @@ impl AgentView {
         let detail_transition = window.detail != self.detail;
         window.detail = self.detail;
         window.width = width;
-        let mut touched = Vec::new();
+        let mut entries = std::collections::HashMap::new();
         let mut splash: Option<std::sync::Arc<Vec<Line>>> = None;
         let mut tail: Option<std::sync::Arc<Vec<Line>>> = None;
         let last = self.chat.len() + 1;
@@ -473,8 +473,10 @@ impl AgentView {
                 });
                 return EntryRows::Fresh(tail.clone());
             }
-            touched.push(section - 1);
-            view.sparse_entry_rows(section - 1, width)
+            entries
+                .entry(section - 1)
+                .or_insert_with(|| view.sparse_entry_rows(section - 1, width))
+                .clone()
         };
         while movement < 0 {
             let step = row.min(movement.unsigned_abs());
