@@ -1,0 +1,85 @@
+{
+  "profile": {
+    "rust": "1.98.1",
+    "dev_debug": 0,
+    "test_debug": 0,
+    "jobs": 2,
+    "PA_TS_BINARY": "/nonexistent/ts"
+  },
+  "unknown_terminal_negotiation_resolved": false,
+  "source_scope": "watchdog known-direct TERM_PROGRAM=kitty fixture only; strict push and original teardown assertions preserved",
+  "checks": {
+    "focused": {
+      "sha256": "dea0e9db64170c884b5c6ef0a319c59db438980dd7c3c75304164dc541cb2a98",
+      "bytes": 4195,
+      "final_summary": [
+        "1",
+        "0",
+        "0",
+        "0",
+        "29",
+        "2.08"
+      ]
+    },
+    "terminal": {
+      "sha256": "33ce22528037ef9dfcc96a2f6bc366e7f41ff1231761a418fa4a4fff2964c44d",
+      "bytes": 5899,
+      "final_summary": [
+        "30",
+        "0",
+        "0",
+        "0",
+        "0",
+        "13.26"
+      ]
+    },
+    "verdict": {
+      "sha256": "a3314f0dcc86a50f5ada0e83bdbaa72c26b0e6b70f05d7ca50a68052cc5c8528",
+      "bytes": 4593,
+      "final_summary": [
+        "8",
+        "0",
+        "0",
+        "0",
+        "0",
+        "2.73"
+      ]
+    },
+    "early": {
+      "sha256": "c7b6c90797a153fa0f719bb457f66ce0d449ca0ef6efc0b833037ed4c1b80ef4",
+      "bytes": 4306,
+      "final_summary": [
+        "3",
+        "0",
+        "0",
+        "0",
+        "0",
+        "1.32"
+      ]
+    },
+    "exit": {
+      "sha256": "cfbcfcd8f4a7d05c63fdf0960690a5192ff310d63824529a21d34cc2c8435d2c",
+      "bytes": 4207,
+      "final_summary": [
+        "2",
+        "0",
+        "0",
+        "0",
+        "0",
+        "20.55"
+      ]
+    },
+    "clippy": {
+      "exit_code": 0,
+      "sha256": "1cbd4e67317f8403176e631b2b811b916ac798e219a04853a314cfe46f3bb10f",
+      "bytes": 3998
+    },
+    "fmt": {
+      "exit_code": 0
+    }
+  },
+  "source_sha256": {
+    "crates/pa-cli/tests/terminal_state_differential_e2e/harness.rs": "330e14ff795bb4d8289e5c0e6491074a246aeae42ce37213db7d8e643fbe3436",
+    "crates/pa-cli/tests/terminal_state_differential_e2e/main.rs": "b81e1e2b8876a9249cfa8efa993d77bed8d972d6582f7a88fc114b9eb0c2e252"
+  }
+}

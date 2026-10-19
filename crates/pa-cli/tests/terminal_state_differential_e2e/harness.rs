@@ -579,9 +579,6 @@ pub(crate) fn spawn_child(spec: &ChildSpec, socket: &Path, slave: &OwnedFd) -> C
         .arg(child_mode_test_name(spec.mode))
         .env(CHILD_MODE_ENV, spec.mode)
         .env(CHILD_SOCKET_ENV, socket);
-    for (key, value) in &spec.env {
-        command.env(key, value);
-    }
     command
         .env("TERM", CHILD_TERM)
         .env_remove("TMUX")
@@ -592,7 +589,11 @@ pub(crate) fn spawn_child(spec: &ChildSpec, socket: &Path, slave: &OwnedFd) -> C
         .env_remove("KITTY_WINDOW_ID")
         .env_remove("GHOSTTY_RESOURCES_DIR")
         .env_remove("WEZTERM_PANE")
-        .env_remove("TERM_PROGRAM")
+        .env_remove("TERM_PROGRAM");
+    for (key, value) in &spec.env {
+        command.env(key, value);
+    }
+    command
         .stdin(slave_as_stdio(slave))
         .stdout(slave_as_stdio(slave))
         .stderr(slave_as_stdio(slave));

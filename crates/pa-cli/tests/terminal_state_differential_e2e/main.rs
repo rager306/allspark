@@ -291,8 +291,13 @@ fn the_detach_handoff_then_the_view_exit_restores_every_mode() {
 #[test]
 fn the_force_quit_watchdog_restores_every_mode() {
     let _lock = harness_lock();
-    let mut harness = DifferentialHarness::start(&ChildSpec::new("chat").stall(&["list"]));
-    harness.answer_kitty_query();
+    // This route audits armed-mode teardown, not terminal capability discovery.
+    let mut harness = DifferentialHarness::start(
+        &ChildSpec::new("chat")
+            .stall(&["list"])
+            .env("TERM_PROGRAM", "kitty"),
+    );
+    harness.wait_from_start(KITTY_FLAGS_PUSH, "the kitty flags push");
     harness.wait_from_start(b"row 0", "the attach snapshot rendered");
 
     harness.write(b"/list\r");

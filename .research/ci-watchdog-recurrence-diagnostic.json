@@ -1,0 +1,15 @@
+{
+  "historical_log_sha256": "9ba78072866cb8414096a5d65b51e046d6f472c5258420c82d57acebe06001f1",
+  "diagnostic_exit_code": 0,
+  "test": "the_force_quit_watchdog_restores_every_mode",
+  "tests_passed": 1,
+  "filtered": 29,
+  "test_seconds": 2.13,
+  "parent_wait_to_query_observation_us": 32834,
+  "parent_query_observation_to_answer_completed_us": 454,
+  "parent_query_observation_to_push_observed_us": 8481,
+  "child_exited_at_query": false,
+  "probe_emission_time_measured": false,
+  "historical_cause_proven": false,
+  "instrumentation_restored": true
+}

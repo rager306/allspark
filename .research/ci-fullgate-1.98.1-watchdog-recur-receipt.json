@@ -1,0 +1,30 @@
+{
+  "entrypoint": "make check",
+  "toolchain": "1.98.1",
+  "source_commit": "55e05223d",
+  "exit_code": 2,
+  "fmt": "passed",
+  "workspace_clippy": "passed",
+  "workspace_tests": "failed",
+  "release_build": "not_run",
+  "failed_binary": "terminal_state_differential_e2e",
+  "passed": 29,
+  "failed": 1,
+  "duration_s": 41.26,
+  "failure": {
+    "test": "the_force_quit_watchdog_restores_every_mode",
+    "assertion": "timeout waiting for Kitty flags push before watchdog exercise",
+    "location": "terminal_state_differential_e2e/harness.rs:264",
+    "terminal_trace_facts": {
+      "kitty_query_count": 1,
+      "kitty_push_count": 0,
+      "alt_enter_count": 1,
+      "contains_attach_row0": true,
+      "trace_bytes": 2939
+    },
+    "scope": "Child painted and emitted query, not stuck before launch; no exact timing failure branch inferred"
+  },
+  "raw_log_local_only": ".research/ci-fullgate-1.98.1-watchdog-recur-red.log",
+  "raw_log_sha256": "9ba78072866cb8414096a5d65b51e046d6f472c5258420c82d57acebe06001f1",
+  "prior_buffer_fix_scope": "Synthetic128KiB prelude mechanism valid but not sufficient repeated fullgate proof"
+}
