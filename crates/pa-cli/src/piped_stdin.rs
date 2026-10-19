@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn a_live_producer_resets_the_window() {
-        let mut chunks = [b'0', b'1', b'2', b'3'].into_iter();
+        let mut chunks = (*b"0123").into_iter();
         let mut calls = 0;
         let (data, idle_expired) = collect_from(
             |window| {

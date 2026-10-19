@@ -1,0 +1,26 @@
+{
+  "entrypoint": "make check",
+  "toolchain": "1.98.1",
+  "source_commit": "86b520895",
+  "exit_code": 2,
+  "fmt": "passed",
+  "workspace_clippy": "failed",
+  "workspace_tests": "not_run",
+  "release_build": "not_run",
+  "failure": {
+    "lint": "clippy::byte_char_slices",
+    "path": "crates/pa-cli/src/piped_stdin.rs:125",
+    "fix": "Replace four-byte array literal with equivalent (*b\"0123\").into_iter()",
+    "scope": "test syntax only; no runtime/policy/constant change"
+  },
+  "cause_of_preflight_gap": "Previous focused cargo clippy -p pa-cli --lib excluded lib test code; final workspace --all-targets correctly caught it",
+  "safe_log": ".research/ci-fullgate-1.98.1-piped-byte-lint-red.log",
+  "safe_log_sha256": "d725835df7c0d8fd4ec8047dbc97184a41bbe61d7fe2997eaf7d08e4e44e6d52",
+  "verification": {
+    "root_all_target_clippy_exit_code": 0,
+    "duration_s": 45.71,
+    "path": ".research/ci-piped-stdin-all-target-clippy.log",
+    "source_sha256": "e5e25ba42e796ea72684d8831499558a4f70797049dabbe689c6c3c8b6f70982",
+    "full_gate": "next, not yet run"
+  }
+}
