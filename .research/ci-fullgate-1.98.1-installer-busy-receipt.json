@@ -1,0 +1,20 @@
+{
+  "toolchain": "1.98.1",
+  "entrypoint": "make check",
+  "profile": "approved DEBUG0 JOBS2",
+  "exit_code": 2,
+  "fmt": "passed",
+  "workspace_clippy": "passed",
+  "workspace_tests": "failed",
+  "release_build": "not_run",
+  "failed_binary": "pa-cli installer_update_e2e",
+  "failed_test": "update_rollback_reads_the_unsuffixed_installer_slot",
+  "passed": 8,
+  "failed": 1,
+  "duration_s": 3.75,
+  "failure": "OS26 ExecutableFileBusy Text file busy during Command.output spawn",
+  "location": "crates/pa-cli/tests/installer_update_e2e.rs:573",
+  "local_raw_log_sha256": "b939bd86e16e5bdb2035171a90f724a01cbe85d419b20a853cd0b0a7d60168c2",
+  "local_raw_log": ".research/ci-fullgate-1.98.1-installer-busy-red.log",
+  "scope": "Partial workspace attempt; release not reached; raw preceding frames not copied."
+}

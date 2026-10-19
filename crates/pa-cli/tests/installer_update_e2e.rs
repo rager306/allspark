@@ -308,6 +308,17 @@ fn installer_env(command: &mut Command, sandbox: &Sandbox) {
         .current_dir(&sandbox.root);
 }
 
+/// Keep the executable's writable fd out of the multithreaded test runner:
+/// a sibling fork can inherit that fd until exec and make the image ETXTBSY.
+fn copy_installed_build(destination: &Path) {
+    let status = Command::new("cp")
+        .arg(env!("CARGO_BIN_EXE_prime-agent"))
+        .arg(destination)
+        .status()
+        .expect("copy this build in an isolated process");
+    assert!(status.success(), "copy the installed fixture build");
+}
+
 /// A release archive whose payload is a script answering `version`.
 fn fake_release(sandbox: &Sandbox, version: &str) -> PathBuf {
     let payload = sandbox.root.join(format!("payload-{version}"));
@@ -369,7 +380,7 @@ fn update_archive_and_rollback_swap_installer_payloads() {
     let live = sandbox.prefix.join("share/prime-agent");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
-    std::fs::copy(env!("CARGO_BIN_EXE_prime-agent"), &binary).expect("copy this build");
+    copy_installed_build(&binary);
     std::fs::write(
         live.join(".prime-agent-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",
@@ -428,7 +439,7 @@ fn rollback_check_answers_synchronously_without_touching_the_payload() {
     let live = sandbox.prefix.join("share/prime-agent");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
-    std::fs::copy(env!("CARGO_BIN_EXE_prime-agent"), &binary).expect("copy this build");
+    copy_installed_build(&binary);
     std::fs::write(
         live.join(".prime-agent-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",
@@ -497,7 +508,7 @@ fn update_archive_refuses_a_misnamed_payload_version() {
     let live = sandbox.prefix.join("share/prime-agent");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
-    std::fs::copy(env!("CARGO_BIN_EXE_prime-agent"), &binary).expect("copy this build");
+    copy_installed_build(&binary);
     std::fs::write(
         live.join(".prime-agent-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",
@@ -549,7 +560,7 @@ fn update_rollback_reads_the_unsuffixed_installer_slot() {
     let live = sandbox.prefix.join("share/prime-agent");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
-    std::fs::copy(env!("CARGO_BIN_EXE_prime-agent"), &binary).expect("copy this build");
+    copy_installed_build(&binary);
     std::fs::write(
         live.join(".prime-agent-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",
@@ -599,7 +610,7 @@ fn update_rollback_without_a_kept_version_changes_nothing() {
     let live = sandbox.prefix.join("share/prime-agent");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
-    std::fs::copy(env!("CARGO_BIN_EXE_prime-agent"), &binary).expect("copy this build");
+    copy_installed_build(&binary);
     std::fs::write(
         live.join(".prime-agent-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",
@@ -650,7 +661,7 @@ fn archive_check_answers_synchronously_without_publishing() {
     let live = sandbox.prefix.join("share/prime-agent");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
-    std::fs::copy(env!("CARGO_BIN_EXE_prime-agent"), &binary).expect("copy this build");
+    copy_installed_build(&binary);
     std::fs::write(
         live.join(".prime-agent-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",

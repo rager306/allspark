@@ -1,0 +1,31 @@
+{
+  "scope": "only six existing fixture copies plus waited cp helper",
+  "all_original_assertions_byte_identical": true,
+  "production_changed": false,
+  "no_exec_retry": true,
+  "focused": {
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "duration_s": 1.75,
+    "profile": "approved Rust1.98.1 DEBUG0/JOBS2"
+  },
+  "binary": {
+    "passed": 9,
+    "failed": 0,
+    "ignored": 0,
+    "duration_s": 3.76,
+    "profile": "approved Rust1.98.1 DEBUG0/JOBS2"
+  },
+  "fd_proof": {
+    "inherited_writer_errno": 26,
+    "parent_writer_closed": true,
+    "isolated_copy_exec": true,
+    "after_child_release_exec": true
+  },
+  "limits": [
+    "Deterministic proof establishes OS mechanism, not exact historical fork interleaving.",
+    "Focused test success is not a full workspace or release pass."
+  ],
+  "source_sha256": "19d4f42065a84e59664cf4d34d0f9fbaab9993c336933b68c231a0a058be21c5"
+}
