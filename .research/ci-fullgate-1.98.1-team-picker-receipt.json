@@ -1,0 +1,28 @@
+{
+  "entrypoint": "make check",
+  "toolchain": "1.98.1",
+  "approved_profile": {
+    "dev_debug": 0,
+    "test_debug": 0,
+    "build_jobs": 2
+  },
+  "exit_code": 2,
+  "fmt": "passed",
+  "workspace_clippy": "passed",
+  "workspace_tests": "failed",
+  "release_build": "not_run",
+  "failed_test": "tui_prime_login_renders_the_inline_team_picker",
+  "location": "crates/pa-cli/tests/clipboard_auth_commands_e2e.rs:915",
+  "assertion": "team pick settles TS status",
+  "binary_result": {
+    "passed": 12,
+    "failed": 1,
+    "ignored": 0,
+    "duration_s": 7.24
+  },
+  "observed_fixture_status": "Saved API key for Prime Inference. Using personal account.",
+  "expected_fixture_status": "Saved API key for Prime Inference. Using team \"Acme Corp\".",
+  "local_raw_log": ".research/ci-fullgate-1.98.1-team-picker-red.log",
+  "local_raw_log_sha256": "296b8d13dcb6d060f9af58b16cd805ce8444cea40a03c378901a5ff4be8f1780",
+  "scope": "Full gate stopped at first failed test binary. Earlier terminal/interactive focused passes do not imply this full attempt reached them. Raw frames omitted."
+}
