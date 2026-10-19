@@ -69,9 +69,6 @@ tokio = { workspace = true, features = ["test-util"] }
 # clippy rows mirror the workspace table, and the pedantic class rides
 # here so CI's -D warnings bar enforces it on this crate too.
 pedantic = "warn"
-# test-side intent asserts: `assert!(x.is_empty())` reads clearer than the
-# `assert_eq!(x, [] as [_; 0])` rewrite; priority outranks the pedantic group.
-assert_is_empty = { level = "allow", priority = 1 }
 redundant_clone = "warn"
 clone_on_copy = "warn"
 assigning_clones = "warn"

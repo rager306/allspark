@@ -688,7 +688,11 @@ fn find_context_line_parity() {
         false,
     );
     assert_eq!(exact.index, Some(0), "finds exact context line");
-    assert_eq!(exact.confidence, 1.0, "finds exact context line");
+    assert_eq!(
+        exact.confidence.to_bits(),
+        1.0_f64.to_bits(),
+        "finds exact context line"
+    );
     let whitespace = find_context_line(
         &["  function foo()  {", "  return 1;", "}"],
         "function foo() {",

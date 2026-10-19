@@ -1,5 +1,3 @@
-// Ported test: `assert!(x.is_empty())` states the intended shape.
-#![allow(clippy::assert_is_empty)]
 use std::{collections::HashMap, path::Path};
 
 use pa_edit::{

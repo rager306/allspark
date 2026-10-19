@@ -174,7 +174,7 @@ mod tests {
         assert!((a.score_prefix(&b, 4) - expected).abs() < 1e-6);
         // k beyond dim clamps to the full width.
         assert!((a.score_prefix(&b, 99) - expected).abs() < 1e-6);
-        assert_eq!(a.score_prefix(&b, 0), 0.0);
+        assert_eq!(a.score_prefix(&b, 0).to_bits(), 0.0_f32.to_bits());
     }
 
     #[test]
@@ -221,7 +221,7 @@ mod tests {
         assert_eq!(v.as_slice(), &[1.0, 2.0, 3.0]);
         // A zero-length prefix scores 0 for every candidate.
         let others = vec![MatryoshkaVector::new(&[1.0, 0.0, 0.0])];
-        assert_eq!(v.rank_stable(&others, 0)[0].1, 0.0);
+        assert_eq!(v.rank_stable(&others, 0)[0].1.to_bits(), 0.0_f32.to_bits());
     }
 
     #[test]

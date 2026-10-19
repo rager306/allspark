@@ -1,5 +1,3 @@
-// Ported test: `assert!(x.is_empty())` states the intended shape.
-#![allow(clippy::assert_is_empty)]
 use pa_edit::modes::sloppy::{
     parse::{
         extract_inline_sloppy_regions, ir_to_payload, normalize_input, parse_operations,

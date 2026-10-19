@@ -1,5 +1,3 @@
-// Ported test: `assert!(x.is_empty())` states the intended shape.
-#![allow(clippy::assert_is_empty)]
 mod common;
 
 use std::{

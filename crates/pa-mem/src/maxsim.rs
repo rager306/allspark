@@ -174,8 +174,11 @@ mod tests {
     #[test]
     fn empty_inputs_score_zero() {
         let q = vec![vec![1.0_f32, 0.0]];
-        assert_eq!(maxsim(&[], &q), 0.0);
-        assert_eq!(maxsim(&q, &[]), 0.0);
-        assert_eq!(cosine(&[0.0, 0.0], &[1.0, 0.0]), 0.0);
+        assert_eq!(maxsim(&[], &q).to_bits(), 0.0_f32.to_bits());
+        assert_eq!(maxsim(&q, &[]).to_bits(), 0.0_f32.to_bits());
+        assert_eq!(
+            cosine(&[0.0, 0.0], &[1.0, 0.0]).to_bits(),
+            0.0_f32.to_bits()
+        );
     }
 }

@@ -1,0 +1,4 @@
+    Blocking waiting for file lock on build directory
+    Checking pa-edit v0.10.1-beta.35 (/root/prime-agent/crates/pa-edit)
+    Checking pa-mem v0.10.1-beta.35 (/root/prime-agent/crates/pa-mem)
+    Finished `dev` profile [unoptimized] target(s) in 6m 38s

@@ -257,7 +257,7 @@ mod tests {
         // Range [0, 16] with 4 bits -> step 1, level j at j + 0.5.
         let v = vec![0.0_f32, 16.0];
         let q = MultiBitQuantizer::new(4).quantize(&v);
-        assert_eq!(q.min(), 0.0);
+        assert_eq!(q.min().to_bits(), 0.0_f32.to_bits());
         assert!((q.step() - 1.0).abs() < 1e-6);
         // The minimum reconstructs to the first midpoint, 0.5; the maximum to
         // the last, 15.5.

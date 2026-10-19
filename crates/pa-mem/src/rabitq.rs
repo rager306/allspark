@@ -179,8 +179,8 @@ mod tests {
         let r = RabitqVector::encode(&[]);
         assert_eq!(r.dim(), 0);
         assert_eq!(r.words().len(), 0);
-        assert_eq!(r.scale(), 0.0);
-        assert_eq!(r.error_bound(), 0.0);
+        assert_eq!(r.scale().to_bits(), 0.0_f32.to_bits());
+        assert_eq!(r.error_bound().to_bits(), 0.0_f32.to_bits());
     }
 
     #[test]

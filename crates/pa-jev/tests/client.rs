@@ -252,7 +252,7 @@ async fn single_request_round_trips_the_wire_contract() {
     assert_eq!(result.model, "jev-1.13.0", "the responding model wins");
     assert_eq!(result.answers.len(), 1);
     match &result.answers["urgent"] {
-        pa_jev::Answer::Noul { noul } => assert_eq!(*noul, 0.5),
+        pa_jev::Answer::Noul { noul } => assert_eq!(noul.to_bits(), 0.5_f64.to_bits()),
         other => panic!("expected a noul answer, got {other:?}"),
     }
     let requests = server.requests();
@@ -353,7 +353,11 @@ async fn first_failing_chunk_aborts_siblings_and_stops_dispatch() {
     match &error {
         JevError::ChunkFailed {
             partial_cost_usd, ..
-        } => assert_eq!(*partial_cost_usd, 0.0, "no survivor was billed"),
+        } => assert_eq!(
+            partial_cost_usd.to_bits(),
+            0.0_f64.to_bits(),
+            "no survivor was billed"
+        ),
         other => panic!("expected ChunkFailed, got {other:?}"),
     }
     assert_eq!(

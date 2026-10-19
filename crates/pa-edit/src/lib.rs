@@ -29,9 +29,7 @@
 //   - match_same_arms / similar_names / struct_excessive_bools: mode dispatch
 //     tables and option structs are intentionally explicit for readability.
 //   - needless_pass_by_value: by-value args mirror the JS signatures.
-//   - assert_is_empty: test-side `assert!(x.is_empty())` states intent.
 #![allow(
-    clippy::assert_is_empty,
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::cast_precision_loss,
