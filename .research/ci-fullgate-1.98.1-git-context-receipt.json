@@ -1,0 +1,20 @@
+{
+  "toolchain": "1.98.1",
+  "entrypoint": "make check",
+  "profile": "approved DEBUG0 JOBS2",
+  "exit_code": 2,
+  "fmt": "passed",
+  "workspace_clippy": "passed",
+  "workspace_tests": "failed",
+  "release_build": "not_run",
+  "failed_binary": "pa-core tests/git_context.rs",
+  "failed_test": "keeps_ssh_remote_url_verbatim_when_unnormalizable",
+  "passed": 12,
+  "failed": 1,
+  "duration_s": 0.16,
+  "expected": "git@github.com:acme/widgets.git",
+  "actual": "https://github.com/acme/widgets.git",
+  "local_log_sha256": "2e07e40ab8cf2d85b8745f1d75488c9655f799c6f191ae7a234fa6dbb72695fa",
+  "local_raw_log": ".research/ci-fullgate-1.98.1-git-context-red.log",
+  "scope": "Raw earlier PTY frames not reproduced. Partial workspace attempt only."
+}

@@ -1,0 +1,26 @@
+    Finished `test` profile [unoptimized] target(s) in 0.52s
+     Running tests/git_context.rs (target/debug/deps/git_context-0fe46d6a242a4dd0)
+
+running 13 tests
+
+running 1 test
+test returns_none_outside_a_git_repo ... ok
+test ts_binary_session_header_round_trips ... ok
+test fresh_repo_without_commits_still_reports_branch ... ok
+test keeps_ssh_remote_url_verbatim_when_unnormalizable ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.08s
+
+test keeps_ssh_remote_url_verbatim_when_unnormalizable ... ok
+test reads_branch_commit_and_normalized_repo_url ... ok
+test omits_repo_url_without_origin ... ok
+test no_git_state_entry_when_nothing_changed ... ok
+test dirty_tree_does_not_change_capture ... ok
+test session_header_captures_git_context ... ok
+test detached_head_reports_commit_without_branch ... ok
+test git_state_entries_stay_out_of_llm_context ... ok
+test re_records_git_state_on_branch_without_it_on_active_path ... ok
+test records_git_state_when_commit_changes ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+

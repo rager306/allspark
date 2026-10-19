@@ -102,6 +102,30 @@ fn omits_repo_url_without_origin() {
 
 #[test]
 fn keeps_ssh_remote_url_verbatim_when_unnormalizable() {
+    // `remote get-url` applies user URL rewrites. This bare-SSH fixture
+    // needs its own process so those rules cannot change its premise.
+    const ISOLATED_TEST: &str = "PA_TEST_GIT_CONTEXT_BARE_SSH";
+    if std::env::var_os(ISOLATED_TEST).is_none() {
+        let home = tempfile::tempdir().unwrap();
+        let global_config = home.path().join("gitconfig");
+        std::fs::write(&global_config, "").unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "keeps_ssh_remote_url_verbatim_when_unnormalizable",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env("HOME", home.path())
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", &global_config)
+            .env(ISOLATED_TEST, "1")
+            .status()
+            .expect("isolated bare-SSH test");
+        assert!(status.success(), "isolated bare-SSH test failed");
+        return;
+    }
     let repo = tempfile::tempdir().unwrap();
     init_repo(repo.path());
     git(
