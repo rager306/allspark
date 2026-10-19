@@ -1,0 +1,4 @@
+"- Rule Confidence: 0.9" extract= null  parseLearning= {"text":"Rule","confidence":0.9}
+"- rule. confidence: 0.9" extract= null  parseLearning= {"text":"rule","confidence":0.9}
+"- Rule: Confidence: 0.9" extract= null  parseLearning= {"text":"Rule","confidence":0.9}
+"- Rule, confidence: 0.9" extract= null  parseLearning= {"text":"Rule","confidence":0.9}

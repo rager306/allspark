@@ -1,0 +1,18 @@
+--- normal
+   name= "mcp" slug= "mcp" n= 1
+   name= "cli" slug= "cli" n= 1
+--- no header, starts with bullet
+   (no categories)
+--- heading with slash
+   name= "css/styling" slug= "css-styling" n= 1
+--- heading with apostrophe
+   name= "user's workflow" slug= "user's-workflow" n= 1
+--- heading with backtick+parens
+   name= "prefers built-in hooks (`onStop` with {continue:true})" slug= "prefers-built-in-hooks-(`onstop`-with-{continue-true})" n= 1
+--- duplicate slug collision
+   name= "Workflow A" slug= "workflow-a" n= 1
+   name= "workflow-a" slug= "workflow-a" n= 1
+--- see-reference category
+   (no categories)
+--- slug length for long heading
+   len= 291

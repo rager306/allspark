@@ -1,0 +1,11 @@
+A: THROWS ENAMETOOLONG ENAMETOOLONG: name too long, mkdir '/tmp/cc_verify/proj/.commandcode/taste/preference-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+   root intact? true
+   dirs: [ 'taste.md' ]
+B: notices= [ 'taste: moved css/styling → css-styling/taste.md' ]
+   dirs: [ 'css-styling', 'taste.md' ]
+C: notices= [
+  'taste: moved Workflow A → workflow-a/taste.md',
+  'taste: moved workflow-a → workflow-a/taste.md'
+]
+   workflow-a/taste.md has B rules? true | has A rules? false
+   root: "# Workflow A\nSee [workflow-a/taste.md](workflow-a/taste.md)\n# workflow-a\nSee [workflow-a/taste.md](workflow-a/taste.md)\n"

@@ -1,0 +1,7 @@
+*** Begin Patch
+*** Update File: fz.txt
+@@
+ def foo():
+-  return 1
++  return 2
+*** End Patch

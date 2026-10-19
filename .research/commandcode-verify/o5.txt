@@ -1,0 +1,37 @@
+--- task_stop with id (runtime reads id, alias table has NO task_stop) 
+  in : {"id":"s0abc"} 
+  out: {} 
+  rules: dropUnknownKey 
+  REJECT Invalid input for tool "task_stop". Please correct and retry:
+--- kill_shell with id (alias table HAS kill_shell) 
+  in : {"id":"s0abc"} 
+  out: {"taskId":"s0abc"} 
+  rules: renameAliasedField 
+--- grep with include (runtime reads e.include, schema+aliases have none) 
+  in : {"pattern":"x","include":["*.ts"]} 
+  out: {"pattern":"x"} 
+  rules: dropUnknownKey 
+--- shell_output blocking->block (alias points at DEPRECATED field) 
+  in : {"id":"s1","blocking":true} 
+  out: {"id":"s1","block":true} 
+  rules: renameAliasedField 
+--- shell_output block:null (schema allows null!) 
+  in : {"id":"s1","block":null} 
+  out: {"id":"s1"} 
+  rules: dropNullOrUndefinedField 
+--- shell_output timeout->timeout_ms 
+  in : {"id":"s1","timeout":5000} 
+  out: {"id":"s1","timeout_ms":5000} 
+  rules: renameAliasedField 
+--- vision image(path string)->image_index 
+  in : {"question":"q","image":"./shot.png"} 
+  out: {"question":"q","image_index":"./shot.png"} 
+  rules: renameAliasedField 
+--- agent subagent->? (no alias) 
+  in : {"messages":[{"content":"x"}],"description":"d","subagent":"explore"} 
+  out: {"messages":[{"content":"x"}],"description":"d"} 
+  rules: dropUnknownKey 
+--- write_file content as ARRAY (string expected) 
+  in : {"file_path":"/a","content":["line1","line2"]} 
+  out: {"file_path":"/a","content":["line1","line2"]} 
+  rules: - 

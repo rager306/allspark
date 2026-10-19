@@ -1,0 +1,19 @@
+edit -> edited taste.md
+ notices: [ 'taste upgraded: Old rule (50% → 90%) → taste.md' ]
+
+delete -> edited taste.md
+ notices: [] (empty = no removal signal)
+
+read "../evil.md" -> "error: path must be inside the taste directory"
+read "../../etc/passwd" -> "error: path must be inside the taste directory"
+read "sub/../taste.md" -> "error: path must be inside the taste directory"
+read "sub/deep/taste.md" -> "(file does not exist)"
+read "./taste.md" -> "# workflow\n"
+read "taste.md" -> "# workflow\n"
+
+missing old_text -> error: old_text not found
+write cat -> wrote cli/taste.md
+files: [
+  '/proj/.commandcode/taste/taste.md',
+  '/proj/.commandcode/taste/cli/taste.md'
+]

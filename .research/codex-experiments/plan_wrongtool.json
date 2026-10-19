@@ -1,0 +1,1 @@
+[{"items": [{"type": "function_call", "name": "nonexistent_tool", "call_id": "f1", "arguments": "{}"}]}]

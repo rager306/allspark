@@ -1,0 +1,1 @@
+[{"items": [{"type": "custom_tool_call", "name": "exec", "call_id": "c1", "input": "const p = \"*** Begin Patch\\n*** Update File: /tmp/cx/f.txt\\n@@\\n-alpha\\n+ALPHA\\n*** Update File: /tmp/cx/f.txt\\n@@\\n-omega\\n+OMEGA\\n*** End Patch\"; try { const r = await tools.apply_patch(p); text(\"OK:\"+JSON.stringify(r)); } catch(e){ text(\"ERR:\"+String(e)); }"}]}]

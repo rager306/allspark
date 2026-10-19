@@ -1,0 +1,716 @@
+{
+ "list_repos": {
+  "name": "list_repos",
+  "description": "List indexed repositories available to GitNexus (paginated).\n\nReturns a page of repositories \u2014 each with name, path, indexed date, last commit, and stats \u2014 plus a \"pagination\" object: { total, limit, offset, returned, hasMore, nextOffset }.\n\nPAGINATION: Results are paginated so a large registry is not truncated by MCP/LLM token limits. \"limit\" sets the page size (default 50, max 200; values above the max are rejected, not capped). \"offset\" selects the start. To enumerate EVERY repository: when pagination.hasMore is true, call list_repos again with offset set to pagination.nextOffset, and repeat until hasMore is false. Repositories are returned in a stable order, so paging never skips or duplicates an entry while the registry is unchanged.\n\nWHEN TO USE: First step when multiple repos are indexed, or to discover available repos.\nAFTER THIS: READ gitnexus://repo/{name}/context for the repo you want to work with.\n\nWhen multiple repos are indexed, repo-scoped read-only tools use the configured\nMCP default or the registered path containing the GitNexus process cwd, unless\ncwd has crossed into an unindexed nested Git checkout. If neither applies,\nspecify the \"repo\" parameter explicitly.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "limit": {
+     "type": "integer",
+     "description": "Max repositories to return in this page (default: 50, min: 1, max: 200). Values outside [1, 200] are rejected.",
+     "default": 50,
+     "minimum": 1,
+     "maximum": 200
+    },
+    "offset": {
+     "type": "integer",
+     "description": "Number of repositories to skip before this page (default: 0). Pass pagination.nextOffset from the previous response to fetch the next page.",
+     "default": 0,
+     "minimum": 0
+    }
+   },
+   "required": [],
+   "additionalProperties": false
+  }
+ },
+ "query": {
+  "name": "query",
+  "description": "Query the code knowledge graph for execution flows related to a concept.\nReturns processes (call chains) ranked by relevance, each with its symbols and file locations.\n\nWHEN TO USE: Understanding how code works together. Use this when you need execution flows and relationships, not just file matches. Complements grep/IDE search.\nAFTER THIS: Use context() on a specific symbol for 360-degree view (callers, callees, categorized refs).\n\nReturns results grouped by process (execution flow):\n- processes: ranked execution flows with relevance priority\n- process_symbols: all symbols in those flows with file locations and module (functional area)\n- definitions: standalone types/interfaces not in any process\n\nHybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank Fusion.\n\nGROUP MODE: set \"repo\" to \"@<groupName>\" to search all member repos in that group (merged via RRF), or \"@<groupName>/<groupRepoPath>\" to run against a single member (same path keys as in group.yaml). If you use \"@<groupName>\" only, the member repo defaults to the lexicographically first key in group.yaml \"repos\". Prefer resources for contracts/status (see migration from legacy group_* tools).\n\nSERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). When \"repo\" starts with \"@\", only processes whose symbols fall under that prefix are included. For a normal indexed repo name (no leading @), this field is currently ignored by the server.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "search_query": {
+     "type": "string",
+     "description": "Natural language or keyword search query."
+    },
+    "task_context": {
+     "type": "string",
+     "description": "What you are working on (e.g., \"adding OAuth support\"). Helps ranking."
+    },
+    "goal": {
+     "type": "string",
+     "description": "What you want to find (e.g., \"existing auth validation logic\"). Helps ranking."
+    },
+    "limit": {
+     "type": "number",
+     "description": "Max processes to return (default: 5)",
+     "default": 5,
+     "minimum": 1,
+     "maximum": 100
+    },
+    "max_symbols": {
+     "type": "number",
+     "description": "Max symbols per process (default: 10)",
+     "default": 10,
+     "minimum": 1,
+     "maximum": 200
+    },
+    "include_content": {
+     "type": "boolean",
+     "description": "Include source text retained for matching symbols (default: false). The response reports contentAvailability; indexes built with content retention \"none\" explicitly report unavailable content.",
+     "default": false
+    },
+    "maxTokens": {
+     "type": "integer",
+     "minimum": 1,
+     "description": "Maximum estimated tokens in the complete formatted MCP response. Explicit request overrides GITNEXUS_MCP_DEFAULT_MAX_TOKENS."
+    },
+    "repo": {
+     "type": "string",
+     "description": "Indexed repository name or path, or group mode \"@<groupName>\" / \"@<groupName>/<memberPath>\" (member path keys from group.yaml). Omit when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing an unindexed nested Git checkout; otherwise specify it explicitly."
+    },
+    "service": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Optional monorepo service root (relative path, \"/\" separators). In group mode (@repo), prefix-matches symbol file paths; ignored for a normal repo name. Empty string is rejected server-side."
+    },
+    "branch": {
+     "type": "string",
+     "description": "Optional: scope to a pinned branch index (multi-branch repos, #2106). Omit for the workspace index, which follows the checked-out working tree. Ignored in group mode."
+    }
+   },
+   "required": [
+    "search_query"
+   ],
+   "additionalProperties": false
+  }
+ },
+ "cypher": {
+  "name": "cypher",
+  "description": "Execute Cypher query against the code knowledge graph.\n\nWHEN TO USE: Complex structural queries that search/explore can't answer. READ gitnexus://repo/{name}/schema first for the full schema.\nAFTER THIS: Use context() on result symbols for deeper context.\n\nSCHEMA:\n- Nodes: File, Folder, Function, Class, Interface, Method, CodeElement, Community, Process, Route, Tool, Destination\n- Multi-language nodes (use backticks): `Struct`, `Enum`, `Trait`, `Impl`, etc.\n- All edges via single CodeRelation table with 'type' property\n- Edge types: CONTAINS, DEFINES, IMPORTS, CALLS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, ACCESSES, METHOD_OVERRIDES, OVERRIDES, METHOD_IMPLEMENTS, MEMBER_OF, STEP_IN_PROCESS, HANDLES_ROUTE, PUBLISHES_TO, CONSUMES_FROM, FETCHES, HANDLES_TOOL, ENTRY_POINT_OF, WRAPS, QUERIES, INJECTS, CONDITIONAL_ON, DECLARES, ADVISED_BY, CFG, REACHING_DEF, TAINTED, SANITIZES, TAINT_PATH, CDG, POST_DOMINATE \u2014 CFG, REACHING_DEF, TAINTED, SANITIZES, TAINT_PATH, CDG, POST_DOMINATE are populated ONLY on indexes built with `gitnexus analyze --pdg` (zero rows on a default index); OVERRIDES is a legacy alias \u2014 rows are written as METHOD_OVERRIDES\n- Edge properties: type (STRING), confidence (DOUBLE), reason (STRING), step (INT32)\n\nEXAMPLES:\n\u2022 Find callers of a function:\n  MATCH (a)-[:CodeRelation {type: 'CALLS'}]->(b:Function {name: \"validateUser\"}) RETURN a.name, a.filePath\n\n\u2022 Find community members:\n  MATCH (f)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community) WHERE c.heuristicLabel = \"Auth\" RETURN f.name\n\n\u2022 Trace a process:\n  MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process) WHERE p.heuristicLabel = \"UserLogin\" RETURN s.name, r.step ORDER BY r.step\n\n\u2022 Find all methods of a class:\n  MATCH (c:Class {name: \"UserService\"})-[r:CodeRelation {type: 'HAS_METHOD'}]->(m:Method) RETURN m.name, m.parameterCount, m.returnType\n\n\u2022 Find all properties of a class:\n  MATCH (c:Class {name: \"User\"})-[r:CodeRelation {type: 'HAS_PROPERTY'}]->(p:Property) RETURN p.name, p.declaredType\n\n\u2022 Find all writers of a field:\n  MATCH (f:Function)-[r:CodeRelation {type: 'ACCESSES', reason: 'write'}]->(p:Property) WHERE p.name = \"address\" RETURN f.name, f.filePath\n\n\u2022 Find method overrides (MRO resolution):\n  MATCH (winner:Method)-[r:CodeRelation {type: 'METHOD_OVERRIDES'}]->(loser:Method) RETURN winner.name, winner.filePath, loser.filePath, r.reason\n\n\u2022 Find DI-injected providers (provider Classes or synthetic factory declarations):\n  MATCH (c:Class {name: 'OrderService'})-[r:CodeRelation]->(provider) WHERE r.type = 'INJECTS' RETURN provider.name, r.reason\n\n\u2022 Detect diamond inheritance:\n  MATCH (d:Class)-[:CodeRelation {type: 'EXTENDS'}]->(b1), (d)-[:CodeRelation {type: 'EXTENDS'}]->(b2), (b1)-[:CodeRelation {type: 'EXTENDS'}]->(a), (b2)-[:CodeRelation {type: 'EXTENDS'}]->(a) WHERE b1 <> b2 RETURN d.name, b1.name, b2.name, a.name\n\nOUTPUT: Returns { markdown, row_count } \u2014 results formatted as a Markdown table for easy reading.\n\nTIPS:\n- All relationships use single CodeRelation table \u2014 filter with {type: 'CALLS'} etc.\n- Community = auto-detected functional area (Leiden algorithm). Properties: heuristicLabel, cohesion, symbolCount, keywords, description, enrichedBy\n- Process = execution flow trace from entry point to terminal. Properties: heuristicLabel, processType, stepCount, communities, entryPointId, terminalId\n- Use heuristicLabel (not label) for human-readable community/process names\n- PDG layers (only when indexed with `--pdg`): BasicBlock nodes + CFG / CDG (control dependence, branch sense 'T'|'F' in reason) / REACHING_DEF (def\u2192use, variable in reason) edges, all BasicBlock\u2192BasicBlock. Prefer the `pdg_query` tool \u2014 it anchors + bounds these for you (raw `[:CDG*]`/`[:REACHING_DEF*]` path scans are unindexed and unbounded).",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "statement": {
+     "type": "string",
+     "description": "Cypher statement to execute."
+    },
+    "params": {
+     "type": "object",
+     "description": "Optional query parameters for placeholders (e.g. $name) to execute via prepared statement binding."
+    },
+    "repo": {
+     "type": "string",
+     "description": "Repository name or path. Omit when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing an unindexed nested Git checkout; otherwise specify it explicitly."
+    },
+    "branch": {
+     "type": "string",
+     "description": "Optional: scope to a pinned branch index (multi-branch repos, #2106). Omit for the workspace index, which follows the checked-out working tree. Ignored in group mode."
+    }
+   },
+   "required": [
+    "statement"
+   ],
+   "additionalProperties": false
+  }
+ },
+ "context": {
+  "name": "context",
+  "description": "360-degree view of a single code symbol.\nShows categorized incoming/outgoing references (calls, imports, extends, implements, methods, properties, overrides), process participation, and file location.\n\nWHEN TO USE: After query() to understand a specific symbol in depth. When you need to know all callers, callees, and what execution flows a symbol participates in.\nAFTER THIS: Use impact() if planning changes, or READ gitnexus://repo/{name}/process/{processName} for full execution trace.\n\nHandles disambiguation: if multiple symbols share the same name, returns ranked candidates (each with a relevance score) for you to pick from. Use uid for zero-ambiguity lookup, or narrow the search with file_path and/or kind hints. The ambiguous response carries totalCandidates \u2014 the TRUE match count, not candidates[].length \u2014 plus candidatesTruncated:true and a \"(showing M)\" suffix on message when candidates[] is the shorter window.\n\nNOTE: ACCESSES edges (field read/write tracking) are included in context results with reason 'read' or 'write'. CALLS edges resolve through field access chains and method-call chains (e.g., user.address.getCity().save() produces CALLS edges at each step).\n\nCOMPLETENESS OF incoming: alongside symbol/incoming/outgoing the result carries the same epistemic envelope impact() returns:\n- epistemic: 'exact' | 'lower-bound' \u2014 'lower-bound' means incoming is a FLOOR: either the walk provably missed callers, or a probe that would have established completeness could not run. Do not read it as proof that an omitted caller exists \u2014 read boundaries for which of the two it is.\n- boundaries: string[] \u2014 one plain-language sentence per reason. Prose for humans; branch on causes instead.\n- causes: { scopeExtractionFiles, receiverTyping, dispatchBoundary, externalBoundary, undecidedSatisfaction, callableValueReferences } \u2014 machine-readable WHY. Every field counts MISSING THINGS, never sentences:\n  - causes.scopeExtractionFiles (unit: files) > 0 \u2014 scope extraction still failed after the fallback pass, so scope-resolution edges from those files are absent. A value of 0 does not prove completeness when epistemic is 'lower-bound' because an older or unverified index has no measured file count. Re-run `gitnexus analyze --force`; if the reason persists, inspect the extraction warnings.\n  - causes.receiverTyping (unit: call sites) > 0 \u2014 RESOLVER GAP: the analyzer dropped that many call sites on this name because it could not type the receiver, so they are missing from incoming. Do not read an absent caller as proof none exists.\n  - causes.externalBoundary (unit: call sites) > 0 \u2014 the calls left the indexed program (System.out.println, fetch(...)). NOT a defect: no in-graph node could have been reached. An epistemic:'exact' result can carry this.\n  - causes.dispatchBoundary (unit: symbols) > 0 \u2014 DI or interface dispatch: that many symbols sit on or beyond a boundary static analysis cannot cross. Irreducible. A symbol count, not a site count \u2014 per-site multiplicity is not retained for these edges \u2014 so compare its magnitude with receiverTyping, not its exact value. A framework runtime-proxy boundary can make epistemic lower-bound while this value remains 0 because endpoint metadata proves the gap but cannot count omitted symbols.\n  - causes.undecidedSatisfaction (unit: unjudged interface/type pairs) > 0 \u2014 the analyzer could not decide whether a type satisfies an interface, so no IMPLEMENTS edge exists and no dispatch boundary was left for the walk to notice. Usually fixable by making the missing dependency available to analysis.\n  - causes.callableValueReferences (unit: symbols) > 0 \u2014 that many symbols name this callable as a VALUE instead of calling it (a Zig registration table or const initialiser, a JS/TS object-literal property value). A bare callback argument in JS/TS is not captured today and is not counted, so a 0 does not rule that shape out; nor does it, on an index built before the language emitted these captures \u2014 re-analyze first. The reference is in the graph as a USES edge; the call made THROUGH the value is not, because it is dispatched later from wherever the value was stored. incoming.calls is therefore a floor. Follow the USES edges to find the registration, then the code that reads it. It is 0 when the analyzer DID synthesize the dispatch through a registered property key. That exclusion is per SYMBOL, not per registration: a target with BOTH a followed registration and an unfollowed escape reads 0 here, so a 0 means 'no unfollowed registration was proven', not 'this symbol escapes nowhere'. A 0 alongside epistemic 'lower-bound' can also mean the probe itself could not run \u2014 read boundaries for which.\n\nREQUIRES RE-INDEX: causes.scopeExtractionFiles, causes.receiverTyping, causes.externalBoundary, causes.undecidedSatisfaction, and framework runtime-proxy boundary detection depend on index-time metadata that only a current analyzer writes. Against an older index the metadata can be absent, which is indistinguishable from \"nothing was dropped\" unless the schema probe detects the stale index \u2014 re-run `gitnexus analyze` before trusting a zero or an apparently exact result.\n\nGROUP MODE: set \"repo\" to \"@<groupName>\" to run context in each member repo (aggregated list), or \"@<groupName>/<groupRepoPath>\" for one member. If you use \"@<groupName>\" only, the member defaults to the lexicographically first key in group.yaml \"repos\".\n\nSERVICE: optional monorepo path prefix (case-sensitive path segments). When \"repo\" starts with \"@\", prefix-matches resolved symbol file paths; when a hit is outside the prefix, that member returns an empty payload for the symbol. Ignored for a normal indexed repo name.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string",
+     "description": "Symbol name (e.g., \"validateUser\", \"AuthService\")"
+    },
+    "uid": {
+     "type": "string",
+     "description": "Direct symbol UID from prior tool results (zero-ambiguity lookup)"
+    },
+    "file_path": {
+     "type": "string",
+     "description": "File path to disambiguate common names"
+    },
+    "file": {
+     "type": "string",
+     "description": "Compatibility alias for file_path; values must agree when both are present"
+    },
+    "kind": {
+     "type": "string",
+     "description": "Kind filter to disambiguate common names (e.g. 'Function', 'Class', 'Method', 'Interface', 'Constructor')"
+    },
+    "include_content": {
+     "type": "boolean",
+     "description": "Include source text retained for this symbol (default: false). The response reports contentAvailability; indexes built with content retention \"none\" explicitly report unavailable content.",
+     "default": false
+    },
+    "maxTokens": {
+     "type": "integer",
+     "minimum": 1,
+     "description": "Maximum estimated tokens in the complete formatted MCP response. Explicit request overrides GITNEXUS_MCP_DEFAULT_MAX_TOKENS."
+    },
+    "repo": {
+     "type": "string",
+     "description": "Indexed repository name or path, or group mode \"@<groupName>\" / \"@<groupName>/<memberPath>\". Omit when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing an unindexed nested Git checkout; otherwise specify it explicitly."
+    },
+    "service": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Optional monorepo service root (relative path). Applies in group mode (@repo) only; ignored for a normal repo name. Empty string is rejected server-side."
+    },
+    "branch": {
+     "type": "string",
+     "description": "Optional: scope to a pinned branch index (multi-branch repos, #2106). Omit for the workspace index, which follows the checked-out working tree. Ignored in group mode."
+    }
+   },
+   "required": [],
+   "additionalProperties": false
+  }
+ },
+ "detect_changes": {
+  "name": "detect_changes",
+  "description": "Analyze uncommitted git changes and find affected execution flows.\nMaps git diff hunks to indexed symbols, then traces which processes are impacted.\n\nWHEN TO USE: Before committing \u2014 to understand what your changes affect. Pre-commit review, PR preparation.\nAFTER THIS: Review affected processes. Use context() on high-risk symbols. READ gitnexus://repo/{name}/process/{name} for full traces.\n\nGIT WORKTREE SUPPORT: GitNexus automatically detects when the MCP server was launched from inside a linked git worktree and runs git diff against that worktree \u2014 no extra parameters needed in the common case. Pass \"worktree\" explicitly only when the server was started from a different directory than the worktree you are editing (e.g., the server runs from the canonical root but your changes are in a linked worktree at a different path).\n\nReturns: changed symbols, affected processes, and a risk summary.\n- partial: true \u2014 a step failed and was swallowed, so the result is incomplete and risk_level is \"unknown\" instead of a ranked level. Two causes, with different blast radii: the symbol query (or an unparseable diff) degrades everything \u2014 changed_symbols, both counts, and the processes derived from them \u2014 while a failed process lookup degrades only affected_processes and the risk read off it, leaving the changed-symbol counts sound. changed_count:0 with partial:true is NOT a clean pre-commit check; re-run before treating the diff as safe.\n- truncated: true \u2014 the changed_symbols LISTING was capped for this response. summary.changed_count counts every symbol the run observed: the true total normally, a LOWER BOUND when partial:true. Compare it with the array length rather than trusting the array.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "scope": {
+     "type": "string",
+     "description": "What to analyze: \"unstaged\" (default), \"staged\", \"all\", or \"compare\"",
+     "enum": [
+      "unstaged",
+      "staged",
+      "all",
+      "compare"
+     ],
+     "default": "unstaged"
+    },
+    "base_ref": {
+     "type": "string",
+     "description": "Branch/commit for \"compare\" scope (e.g., \"main\")"
+    },
+    "worktree": {
+     "type": "string",
+     "description": "Absolute path to a linked git worktree. Pass this when your changes are in a worktree (the .git entry at that path is a file, not a directory). GitNexus will run git diff from that worktree so staged/unstaged changes are correctly detected."
+    },
+    "repo": {
+     "type": "string",
+     "description": "Repository name or path. Omit when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing an unindexed nested Git checkout; otherwise specify it explicitly."
+    },
+    "branch": {
+     "type": "string",
+     "description": "Optional: scope to a pinned branch index (multi-branch repos, #2106). Omit for the workspace index, which follows the checked-out working tree. Ignored in group mode."
+    }
+   },
+   "required": [],
+   "additionalProperties": false
+  }
+ },
+ "check": {
+  "name": "check",
+  "description": "Run read-only structural checks against the indexed graph.\n\nCurrently detects directed cycles between File nodes connected by IMPORTS edges, counting only\nedges that force a module-initialization order \u2014 a deferred import (`import()`, or one written\ninside a function body) and a TypeScript `import type` are excluded, because neither can make the\nmodules impossible to initialize.\n\nREAD `enumeration` BEFORE `cycleCount`:\n- `enumeration: 'complete'` \u2014 every elementary cycle is listed; `cycleCount` is their number.\n- `enumeration: 'component-representatives'` \u2014 the full enumeration exceeded a safety limit, so\n  `cycles` holds ONE representative per circular component, `truncated` is true, and\n  `cycleCount` is **null**. Do not compare `cycleCount` numerically here: `null > 0` is false,\n  so a caller keying on it alone concludes \"clean\" on exactly the most tangled repositories. Use\n  `status === 'cycles_found'`.\n\n`componentCount` (independent circular components) is present in both modes and is the number to\nact on and to trend: cutting one import can remove thousands of elementary cycles at once, so\n`cycleCount` swings wildly for small changes while `componentCount` stays stable.\n\nA graph too large to analyze at all returns `{ error, truncated: true }` with no `status`.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "cycles": {
+     "type": "boolean",
+     "description": "Detect circular file imports (default: true).",
+     "default": true
+    },
+    "repo": {
+     "type": "string",
+     "description": "Repository name or path. Omit when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing an unindexed nested Git checkout; otherwise specify it explicitly."
+    },
+    "branch": {
+     "type": "string",
+     "description": "Optional: scope to a pinned branch index (multi-branch repos, #2106). Omit for the workspace index, which follows the checked-out working tree. Ignored in group mode."
+    }
+   },
+   "required": [],
+   "additionalProperties": false
+  }
+ },
+ "rename": {
+  "name": "rename",
+  "description": "Multi-file coordinated rename using the knowledge graph + text search.\nFinds all references via graph (high confidence) and regex text search (lower confidence). Preview by default.\n\nWHEN TO USE: Renaming a function, class, method, or variable across the codebase. Safer than find-and-replace.\nAFTER THIS: Run detect_changes() to verify no unexpected side effects.\n\nEach edit is tagged with confidence:\n- \"graph\": found via knowledge graph relationships (high confidence, safe to accept)\n- \"text_search\": found via regex text search (lower confidence, review carefully)\n\nHandles disambiguation via context()'s payload verbatim: an ambiguous symbol_name returns status \"ambiguous\" with ranked candidates and totalCandidates \u2014 the TRUE match count, not candidates[].length \u2014 plus candidatesTruncated:true and a \"(showing M)\" suffix on message when candidates[] is the shorter window. Re-call with symbol_uid.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "symbol_name": {
+     "type": "string",
+     "description": "Current symbol name to rename"
+    },
+    "symbol_uid": {
+     "type": "string",
+     "description": "Direct symbol UID from prior tool results (zero-ambiguity)"
+    },
+    "new_name": {
+     "type": "string",
+     "description": "The new name for the symbol"
+    },
+    "file_path": {
+     "type": "string",
+     "description": "File path to disambiguate common names"
+    },
+    "dry_run": {
+     "type": "boolean",
+     "description": "Preview edits without modifying files (default: true)",
+     "default": true
+    },
+    "repo": {
+     "type": "string",
+     "description": "Repository name or path. Omit only when one repo is indexed or an MCP default is configured; otherwise mutating tools require an explicit repo."
+    },
+    "branch": {
+     "type": "string",
+     "description": "Optional: scope to a pinned branch index (multi-branch repos, #2106). Omit for the workspace index, which follows the checked-out working tree. Ignored in group mode."
+    }
+   },
+   "required": [
+    "new_name",
+    "repo"
+   ],
+   "additionalProperties": false
+  }
+ },
+ "impact": {
+  "name": "impact",
+  "description": "Analyze the blast radius of changing a code symbol.\nReturns affected symbols grouped by depth, plus risk assessment, affected execution flows, and affected modules.\n\nMODE (opt-in): \"callgraph\" (default) walks symbol\u2192symbol edges (CALLS/IMPORTS/EXTENDS/IMPLEMENTS) \u2014 inter-procedural, the established comparator/default behavior. \"pdg\" requires an index built with `gitnexus analyze --pdg` and returns one unified PDG-facing result: statement-level control/data dependence from the persisted PDG plus inter-procedural symbol reach. The explicit interprocedural surface is interproceduralByDepth/pdgInterprocedural; byDepth remains the compatibility symbol bucket. pdg remains incompatible with crossDepth and @group targets; relationTypes/minConfidence filter the inter-symbol reach.\n\nSTATEMENT-ANCHORED PDG SLICE: with mode:'pdg', pass \"line\" (1-based source line within the target symbol) to seed the dependence slice on the statement at that line and return what depends on it in affectedStatements (line + text). Inter-procedural symbols are still reported through interproceduralByDepth/pdgInterprocedural and the compatibility byDepth bucket. Without \"line\", pdg returns whole-symbol inter-procedural reach plus local whole-symbol PDG diagnostics.\n\nPDG OUTPUT CONTRACT: every mode:'pdg' result (success, empty, degraded, or error) carries pdgResultVersion:3 \u2014 a stable discriminator for external consumers that bumps on any breaking change to the PDG result shape (distinct from the DB schema version). Successful PDG results include mode:'pdg', a full target envelope (id/name/type/filePath), affectedStatements, affectedStatementCount, interproceduralByDepth/pdgInterprocedural for cross-function reach, compatibility byDepth/byDepthCounts, risk:'UNKNOWN', and a note describing the unified contract. Degraded PDG results (no-layer, sub-layer-missing, unknown) keep mode:'pdg', pdgResultVersion:3, target metadata when the target resolves, risk:'UNKNOWN', note/remediation, and empty byDepth parity fields \u2014 never a false-safe zero. If depth and limit both bound the slice, truncatedByReasons reports both causes while truncatedBy remains scalar. Return-value-ascent coverage is published structurally at pdgEvidence.ascent \u2014 present iff the inter-procedural descent ran, including on an empty slice \u2014 with referencesScanned (DISTINCT callees scanned for a CALL_SUMMARY: a distinct-id tally, not a call-site count \u2014 two call sites to the same callee count once), returnFlowFound (whether the ascent fired anywhere in the slice), undecodableSummaryCount, examinedComplete (whether that scan covered every callee the index recorded a resolved id for on the visited blocks), incompleteReasons ('traversal-truncated' | 'callee-list-capped' | 'callee-ids-unrecorded'), and callSummaryLayerPresent. Read callSummaryLayerPresent FIRST: false \u21d2 a pre-CALL_SUMMARY index, so {referencesScanned:N>0, returnFlowFound:false} is self-consistent and says nothing about the callees \u2014 the scan ran, but no layer existed in which a return-flow could be recorded (remedy: re-run gitnexus analyze --pdg). Branch on those fields; the note narrates the same facts in prose for humans and is not a stable contract.\n\nWHEN TO USE: Before making code changes \u2014 especially refactoring, renaming, or modifying shared code. Shows what would break.\nAFTER THIS: Review d=1 items (WILL BREAK). Use context() on high-risk symbols.\n\nOutput includes:\n- risk: LOW / MEDIUM / HIGH / CRITICAL / UNKNOWN. This is the HIGH/CRITICAL edit-gate field. File targets lack process/community membership, so their risk is not directly comparable with symbol risk; use riskSharedAxes to compare the direct/total axes common to both. Group-mode (`repo: \"@\u2026\"`) results lift the same fields to the top-level envelope. The web Graph-RAG impact tool expands File targets to in-file symbols before enrichment, so process/cluster axes remain comparable there. An upstream walk that resolved ZERO callers reports UNKNOWN, never LOW, and carries riskNote: \"safe to change\" is a claim about callers and there were none to reason about, so the symbol is either genuinely unused OR reached only through a reference class the index does not record (plain-object property access, a bare-identifier read of a module-scope const). Confirm with a text search before acting on it. Downstream walks are unaffected \u2014 an empty downstream result reports resolved callees, not safety.\n- riskSharedAxes: single-repo risk computed only from direct and total impact. Group mode then applies the cross-repo crossing overlay to that local value. Suitable for comparing File and symbol targets within the same mode. Never substitute it for `risk` when deciding whether to warn before edits.\n- riskScale: { comparableAcrossKinds, unusedAxes } \u2014 names process/module axes that were structurally unavailable, skipped, budget-exhausted (`IMPACT_MAX_CHUNKS=0`), truncated (sampled a subset of impacted symbols), or failed at query time. Failed-query and truncated-sample counts are lower bounds: known HIGH/CRITICAL warnings survive, otherwise risk is UNKNOWN. Group impact copies this metadata from the local leg.\n- riskNote: string \u2014 present only when risk is UNKNOWN; states why the verdict is withheld.\n- summary: direct callers, processes affected, modules affected\n- affected_processes: which execution flows break and at which step\n- affected_modules: which functional areas are hit (direct vs indirect; classification-unavailable when that secondary query fails)\n- byDepth: affected symbols grouped by traversal depth (paginated by limit/offset; omitted when summaryOnly:true \u2014 use byDepthCounts for totals per depth, pagination object when truncated). Each item includes a processes:[{id,label,processType,step}] field listing the execution flows that symbol participates in. Empty when the symbol has no process membership. Can ALSO be empty when partial:true is set \u2014 either the process-aggregation pass hit its cap before detecting affected processes, or per-symbol enrichment was capped on a very large page. When partial:true, do NOT treat processes:[] as proof of no participation; cross-check the top-level affected_processes list. An item carries staticGated:true only when the edge that reached it is provably unreachable at compile time from the indexed source (today: Zig calls inside an 'if (CONST_FALSE)' body or the else of 'if (CONST_TRUE)'); the field is absent when the edge is live or the language does not model it. Traversal and risk do NOT filter or rank on it: it is metadata for the caller to weigh.\n- epistemic: 'exact' | 'lower-bound' \u2014 whether impactedCount is the whole story. 'lower-bound' means the count is a FLOOR: either the walk provably missed callers, or a probe that would have established completeness could not run (a failed callable-value-reference query says so in boundaries). It is not itself proof that an omitted caller exists \u2014 branch on causes and read boundaries. Absent only on skipped probes (ambiguous-candidate lists, group fan-out).\n- boundaries: string[] \u2014 one plain-language sentence per reason the count is short. Prose for humans; branch on causes instead.\n- causes: { scopeExtractionFiles, receiverTyping, dispatchBoundary, externalBoundary, undecidedSatisfaction, callableValueReferences } \u2014 the machine-readable split of WHY, so an agent gating its own edits can tell a fixable analyzer gap from an irreducible one. Every field counts MISSING THINGS, never sentences:\n  - causes.scopeExtractionFiles (unit: files) > 0 \u2014 scope extraction still failed after the fallback pass, so scope-resolution edges from those files are absent. A value of 0 does not prove completeness when epistemic is 'lower-bound' because an older or unverified index has no measured file count. Re-run `gitnexus analyze --force`; if the reason persists, inspect the extraction warnings.\n  - causes.receiverTyping (unit: call sites) > 0 \u2014 the RESOLVER GAP signal: the analyzer dropped that many call sites because it could not establish the receiver's type (unresolved constructor, factory, chained expression). Those callers are absent from byDepth. Treat the result as incomplete: grep the symbol name before deleting or renaming.\n  - causes.externalBoundary (unit: call sites) > 0 \u2014 those calls left the indexed program (System.out.println, fetch(...), os.environ.*). NOT a defect and NOT a reason the count is short: there is no in-graph node any edge could have reached. An epistemic:'exact' result can carry this.\n  - causes.dispatchBoundary (unit: symbols) > 0 \u2014 DI or interface dispatch: that many symbols sit on or beyond a boundary a static walk cannot cross. Irreducible. A symbol count, not a site count \u2014 per-site multiplicity is not retained for these edges \u2014 so compare its magnitude with receiverTyping, not its exact value. A framework runtime-proxy boundary can make epistemic lower-bound while this value remains 0 because endpoint metadata proves the gap but cannot count omitted symbols.\n\n  - causes.undecidedSatisfaction (unit: unjudged interface/type pairs) > 0 \u2014 the analyzer could not DECIDE whether a type satisfies an interface (a type in a required signature named a package it could not resolve), so no IMPLEMENTS edge exists and no dispatch boundary was left for the walk to notice. Distinct from every cause above, which count decided facts that could not be attributed; this one counts questions never answered. It is the only cause that shortens a result WITHOUT leaving a trace in the graph, so an unhedged zero on a symbol reached only through such an interface would otherwise read as 'nobody calls this'. Usually fixable: it most often means a dependency is missing from the analyzed tree.\n  - causes.callableValueReferences (unit: symbols) > 0 \u2014 that many symbols name this callable as a VALUE rather than calling it: 'bridge.accessor(Element.getNamespaceUri, ...)' and 'pub const h = onReset;' in Zig, '{ onClick: handler }' in JS/TS. Those are the shapes actually captured today \u2014 a bare callback argument in JS/TS ('qsort'-style, 'setTimeout(tick)') is NOT one of them and is not counted, so a 0 here does not rule that shape out. The registration IS modelled (a USES edge); the invocation through the stored value is NOT, because it happens later via a struct field, a registry lookup or comptime reflection. So impactedCount is a floor and a LOW risk verdict on such a symbol is a floor too. Unlike dispatchBoundary this is often reducible \u2014 it usually means the language provider does not yet follow that store/load \u2014 but until it is, do NOT read an empty or small caller set as 'safe to change'. It is an exact count, not a capped sample. It is 0 when the analyzer DID synthesize the dispatch through a registered property key, and epistemic stays 'exact' on that account. That exclusion is symbol-level, not edge-level \u2014 the graph does not record which registration produced which synthesized call \u2014 so a symbol with a mix of followed and unfollowed registrations also reads 0: treat a 0 as 'no unfollowed registration was proven', not as proof the value escapes nowhere. A 0 alongside epistemic 'lower-bound' can instead mean the probe could not run at all, so read boundaries to tell those apart. Read from the graph, so it needs no index-time metadata BEYOND the edges being there: an index built by an analyzer that did not yet emit this language's value-ref captures has none, and reports 0. Re-analyze before reading a 0 as measured.\n\nREQUIRES RE-INDEX: causes.scopeExtractionFiles, causes.receiverTyping, causes.externalBoundary, causes.undecidedSatisfaction, and framework runtime-proxy boundary detection depend on index-time metadata that only a current analyzer writes. Against an older index the metadata can be absent, which is indistinguishable from \"nothing was dropped\" unless the schema probe detects the stale index \u2014 re-run `gitnexus analyze` before trusting a zero or an apparently exact result.\n\nDepth groups:\n- d=1: WILL BREAK (direct callers/importers)\n- d=2: LIKELY AFFECTED (indirect)\n- d=3: MAY NEED TESTING (transitive)\n\nTIP: For hub symbols (base error classes, shared utilities) with many direct callers, use summaryOnly: true first to see counts and risk, then drill into specific depths with limit/offset. maxDepth alone does not bound output size when most dependents are at depth 1. limit and offset apply independently to each depth level, not to the total result set \u2014 use byDepthCounts to see totals per depth.\n\nTIP: Default traversal uses CALLS/IMPORTS/EXTENDS/IMPLEMENTS. For class members, include HAS_METHOD and HAS_PROPERTY in relationTypes. For field access analysis, include ACCESSES in relationTypes.\n\nHandles disambiguation: when multiple symbols share the target name, returns ranked candidates (each with a relevance score) instead of silently picking one. Use target_uid for zero-ambiguity lookup, or narrow with file_path and/or kind hints. totalCandidates is the TRUE match count \u2014 it reported the capped resolver window before #2787, so it can now exceed candidates.length; candidatesTruncated:true and a \"(showing M of N)\" suffix on message mark the shorter window.\n\nEdgeType: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, METHOD_OVERRIDES, METHOD_IMPLEMENTS, ACCESSES\nConfidence: 1.0 = certain, <0.8 = fuzzy match\n\nGROUP MODE: set \"repo\" to \"@<groupName>\" for cross-repo impact anchored at the default member (lexicographically first key in group.yaml \"repos\"), or \"@<groupName>/<groupRepoPath>\" to choose the member (same path keys as in group.yaml). Phase-1 walk runs in that member; cross-boundary fan-out uses the group bridge. A cross entry with fanout_status:\"not_attempted\" proves the declared repository boundary, but its far endpoint has no graph symbol; do not interpret empty by_depth or affected_processes on that entry as a completed zero-impact walk. The fan-out attempts at most 50 neighbour crossings, strongest-confidence first. Any short answer carries truncated:true, truncatedRepos, riskEpistemic:\"lower-bound\" AND a truncationReason \u2014 dropping a crossing can only move risk DOWN, so treat that risk as a floor, never as a verdict. truncated:true does NOT always mean the fan-out ran out of room, so branch on truncationReason: the remedy differs. 'timeout' (the fan-out's wall-clock budget expired) and 'partial' (a neighbour crossing, or the local walk, was cut short) are runtime limits \u2014 the same query can return more on a retry or with a larger timeoutMs. 'incomplete-sync' is structural: the group bridge was built by a sync that could not say which repos it read, or that could not read an in-scope repo, so those repos' contracts are absent from EVERY query against this bridge, and truncatedRepos names them even when ZERO crossings to them were attempted. Retrying returns the same floor \u2014 run group_sync (`gitnexus group sync`) and query again. 'suppressed-stage' is also structural but has a DIFFERENT remedy: the sync was asked to skip a matching stage (`--exact-only` / exactOnly), so cross-links that stage would have found are absent BY REQUEST. Re-running the sync unchanged returns the same floor \u2014 re-run it WITHOUT that flag. Do not report a repo as broken for this reason; nothing failed to read.\n\nSERVICE: optional monorepo path prefix (case-sensitive path segments). When \"repo\" starts with \"@\", scopes the local impact walk and cross-repo symbol paths to files under that prefix; ignored for a normal indexed repo name.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "target": {
+     "type": "string",
+     "description": "Name of function, class, or file to analyze"
+    },
+    "name": {
+     "type": "string",
+     "description": "Compatibility alias for target; all supplied target aliases must agree"
+    },
+    "symbol": {
+     "type": "string",
+     "description": "Compatibility alias for target; all supplied target aliases must agree"
+    },
+    "target_uid": {
+     "type": "string",
+     "description": "Direct symbol UID from prior tool results (zero-ambiguity lookup, skips target resolution)"
+    },
+    "direction": {
+     "type": "string",
+     "description": "upstream (what depends on this) or downstream (what this depends on)"
+    },
+    "mode": {
+     "type": "string",
+     "enum": [
+      "callgraph",
+      "pdg"
+     ],
+     "default": "callgraph",
+     "description": "Blast-radius engine. 'callgraph' (default) = inter-procedural symbol\u2192symbol traversal (established comparator). 'pdg' = unified PDG-facing impact: intra-procedural statement-level affectedStatements from the persisted control/data dependence layer plus inter-procedural symbols in interproceduralByDepth/pdgInterprocedural and the compatibility byDepth bucket; requires `gitnexus analyze --pdg`. PDG symbol reach is labeled as a PDG evidence bridge, not pure statement-level dependence, and successful PDG results are UNKNOWN-risk. PDG is incompatible with crossDepth and @group targets; relationTypes/minConfidence filter the inter-symbol reach."
+    },
+    "line": {
+     "type": "integer",
+     "minimum": 0,
+     "description": "1-based source line \u2014 PDG statement anchor (mode:'pdg'). Seeds affectedStatements on the statement at this line; inter-procedural symbols are still returned in interproceduralByDepth/pdgInterprocedural and the compatibility byDepth bucket. Omit line for whole-symbol pdg (whole-symbol reach + diagnostics); a positive line anchors a statement slice. Literal 0 is tolerated only as an omitted-line compatibility sentinel on the callgraph path and is rejected for mode:'pdg'."
+    },
+    "file_path": {
+     "type": "string",
+     "description": "File path hint to disambiguate common names"
+    },
+    "kind": {
+     "type": "string",
+     "description": "Kind filter to disambiguate common names (e.g. 'Function', 'Class', 'Method', 'Interface', 'Constructor')"
+    },
+    "maxDepth": {
+     "type": "number",
+     "description": "Max relationship depth (default: 3, server clamps to 1\u201332)",
+     "default": 3,
+     "minimum": 1,
+     "maximum": 32
+    },
+    "depth": {
+     "type": "number",
+     "description": "Compatibility alias for maxDepth (CLI --depth). Values must agree when both are present. Literal 0 is an omitted-value compatibility sentinel.",
+     "minimum": 0,
+     "maximum": 32
+    },
+    "crossDepth": {
+     "type": "number",
+     "description": "Cross-repository hop depth via contract bridge (default: 1; values above server maximum are clamped)",
+     "default": 1,
+     "minimum": 1,
+     "maximum": 32
+    },
+    "relationTypes": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "description": "Filter: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, METHOD_OVERRIDES, METHOD_IMPLEMENTS, ACCESSES (default: usage-based, ACCESSES excluded by default). DI edges require INJECTS; Spring proxy/advice edges require ADVISED_BY."
+    },
+    "includeTests": {
+     "type": "boolean",
+     "description": "Include test files (default: false)"
+    },
+    "minConfidence": {
+     "type": "number",
+     "description": "Minimum edge confidence 0\u20131 (default: 0 when omitted; server clamps to 0\u20131)",
+     "default": 0,
+     "minimum": 0,
+     "maximum": 1
+    },
+    "repo": {
+     "type": "string",
+     "description": "Indexed repository name or path, or group mode \"@<groupName>\" / \"@<groupName>/<memberPath>\". Omit when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing an unindexed nested Git checkout; otherwise specify it explicitly."
+    },
+    "service": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Optional monorepo service root (relative path). Applies when \"repo\" is group mode (@\u2026); ignored for a normal repo name. Empty string is rejected server-side."
+    },
+    "subgroup": {
+     "type": "string",
+     "description": "Optional group subgroup prefix (member repo paths) limiting which repos participate in cross fan-out."
+    },
+    "limit": {
+     "type": "integer",
+     "description": "Max symbols returned in byDepth per depth level (default: 100). Single-repo only; ignored in group mode (@groupName). Use small values for hub symbols to avoid output truncation.",
+     "default": 100,
+     "minimum": 1,
+     "maximum": 10000
+    },
+    "offset": {
+     "type": "integer",
+     "description": "Skip this many symbols per depth level before applying limit. Single-repo only; ignored in group mode (@groupName). Use with limit for pagination.",
+     "default": 0,
+     "minimum": 0
+    },
+    "summaryOnly": {
+     "type": "boolean",
+     "description": "When true, returns target, summary, risk, byDepthCounts, affected_processes, and affected_modules \u2014 omits byDepth. Single-repo only; ignored in group mode (@groupName). Use for hub symbols to get actionable signal without output explosion.",
+     "default": false
+    },
+    "maxTokens": {
+     "type": "integer",
+     "minimum": 1,
+     "description": "Maximum estimated tokens in the complete formatted MCP response. Explicit request overrides GITNEXUS_MCP_DEFAULT_MAX_TOKENS."
+    },
+    "timeoutMs": {
+     "type": "number",
+     "description": "Wall-clock budget in milliseconds for the Phase-1 local impact leg (default 30000)",
+     "minimum": 1,
+     "maximum": 3600000
+    },
+    "timeout": {
+     "type": "number",
+     "description": "Alias of timeoutMs (milliseconds) when timeoutMs is omitted",
+     "minimum": 1,
+     "maximum": 3600000
+    },
+    "branch": {
+     "type": "string",
+     "description": "Optional: scope to a pinned branch index (multi-branch repos, #2106). Omit for the workspace index, which follows the checked-out working tree. Ignored in group mode."
+    }
+   },
+   "required": [
+    "direction"
+   ],
+   "additionalProperties": false
+  }
+ },
+ "explain": {
+  "name": "explain",
+  "description": "Explain persisted taint findings recorded by `gitnexus analyze --pdg`: intra-procedural source\u2192sink data flows (TAINTED edges, statement-level hops) AND cross-function flows (TAINT_PATH edges, function-level hops, marked `interprocedural: true`).\n\nEach finding carries the sink category (command-injection, code-injection, path-traversal, sql-injection, xss) and the ordered hop path. Intra-procedural findings carry source/sink lines and the variable on each hop; interprocedural findings carry the source and sink FUNCTION names and the chain of functions the taint crossed (decoded from the persisted path encoding).\n\nWHEN TO USE: Security review \u2014 \"what taint findings exist in this repo / file / function?\". Requires the repo to be indexed with `gitnexus analyze --pdg`; without that layer the tool returns a clear \"no taint layer\" note, not an error.\n\nANCHORLESS (no \"target\"): enumerates all persisted findings for the repo \u2014 bounded (\"limit\", deterministic order), with \"totalFindings\" and a \"truncated\" flag.\nANCHORED (\"target\" = file path or symbol/function name): full hop detail for that anchor. A file-ish target (contains \"/\" or an extension) filters by file; a symbol name resolves like context() \u2014 ambiguous names return ranked candidates plus totalCandidates (the TRUE match count, not candidates[].length), candidatesTruncated:true and a \"(showing M)\" suffix on message when candidates[] is the shorter window; unknown names return not-found. Symbol anchoring is line-range granular for intra-procedural findings; cross-function findings match when the symbol is the source OR sink function.\n\nCONTRACT CAVEATS (absent flows are NOT proof of safety):\n- Cross-function flows ARE modeled (#2084 M4): a source flowing through helper functions into a sink is found, via summary composition over the call graph (context-insensitive \u2014 return/call-site merging is accepted).\n- Cross-function matching is by callee NAME (context-insensitive): when one caller invokes two distinct same-named callees, a flow into one over-attributes to both \u2014 a cross-function finding does not prove the taint reached every same-named function (sound over-report, never a missed flow).\n- Closure/callback flows are invisible in both directions (e.g. arr.forEach(() => sink(y))) \u2014 the largest false-negative class.\n- Property/field flows are not tracked (obj.x = taint; sink(obj.y) has no chain).\n- Guard-style sanitizers (if (isValid(x))) and implicit/control-dependence flows are not modeled.\n- CommonJS aliasing is partially modeled (require('<literal>') joins resolve; dynamic requires do not).\n- Exception-path over-approximation can produce false-positive noise.\n\nFindings are deliberately NOT part of impact()'s traversal or the web schema \u2014 explain is the dedicated taint consumer. SANITIZES (kill) edges are queryable via cypher.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "target": {
+     "type": "string",
+     "description": "Optional anchor: a file path (e.g. \"src/handlers/run.ts\" \u2014 suffix match accepted) or a symbol/function name (resolved like context()). Omit to enumerate all findings for the repo."
+    },
+    "limit": {
+     "type": "integer",
+     "description": "Max findings returned (default: 50, max: 200). \"totalFindings\" reports the full matched count; \"truncated\" is set when the page is smaller.",
+     "default": 50,
+     "minimum": 1,
+     "maximum": 200
+    },
+    "repo": {
+     "type": "string",
+     "description": "Repository name or path. Omit when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing an unindexed nested Git checkout; otherwise specify it explicitly."
+    },
+    "branch": {
+     "type": "string",
+     "description": "Optional: scope to a pinned branch index (multi-branch repos, #2106). Omit for the workspace index, which follows the checked-out working tree. Ignored in group mode."
+    }
+   },
+   "required": [],
+   "additionalProperties": false
+  }
+ },
+ "pdg_query": {
+  "name": "pdg_query",
+  "description": "Query the persisted Program Dependence Graph recorded by `gitnexus analyze --pdg` \u2014 control dependence (CDG) and data dependence (REACHING_DEF) at basic-block granularity. The control/data analog of `explain` (which is the taint consumer).\n\nMODES:\n- `controls` \u2014 \"under what condition does X run?\". Returns, for the anchored function, each control-dependence edge: the controlling predicate block, the dependent block, and the branch sense ('T' = the predicate's true/taken arm, 'F' = its false/fall-through arm). An edge into an early return/throw block is flagged `guard: true` (subsumes the #559 guard heuristic); the branch sense of a guard depends on its predicate \u2014 `if (!ok) return;` rides the 'T' arm \u2014 so don't filter guards by a fixed label.\n- `flows` \u2014 \"where does variable Y flow?\". Returns REACHING_DEF def\u2192use edges for the anchored function; pass `variable` to filter to one binding.\n\nWHEN TO USE: comprehension (\"what guards this statement?\"), data-flow tracing within a function, guard-clause discovery. Requires `gitnexus analyze --pdg`; without that layer the tool returns a clear \"no PDG layer\" note, not an error.\n\nANCHORING (required): `target` is a file path or a symbol/function name (resolved like context()). PDG queries are ALWAYS anchored \u2014 there is no whole-repo enumeration (an unanchored basic-block path scan is unbounded; LadybugDB has no rel-property index). A symbol target is line-range granular; an ambiguous name returns ranked candidates plus totalCandidates (the TRUE match count, not candidates[].length), candidatesTruncated:true and a \"(showing M)\" suffix on message when candidates[] is the shorter window; unknown returns not-found.\n\nCONTRACT CAVEATS:\n- CDG labels are binary 'T'/'F' in M5/M6; per-case `switch` arm conditions are not yet distinguished (every case dispatch is 'T').\n- Granularity is basic-block, reconstructed to the function via the BasicBlock id + line span (no Function\u2192BasicBlock edge); deeply same-line-packed functions may anchor coarsely.\n- Control/data dependence is intra-procedural (per function). Cross-function flow is taint's domain (`explain`).\n- These edges are deliberately NOT part of impact()'s traversal \u2014 `pdg_query` is the dedicated consumer; raw edges are also queryable via `cypher`.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "mode": {
+     "type": "string",
+     "enum": [
+      "controls",
+      "flows"
+     ],
+     "description": "'controls' = control dependence (CDG: what condition gates X); 'flows' = data dependence (REACHING_DEF: where variable Y flows)."
+    },
+    "target": {
+     "type": "string",
+     "description": "Required anchor: a file path (e.g. \"src/handlers/run.ts\" \u2014 suffix match accepted) or a symbol/function name (resolved like context())."
+    },
+    "variable": {
+     "type": "string",
+     "description": "Optional (flows mode only): restrict REACHING_DEF results to this source-level variable name."
+    },
+    "limit": {
+     "type": "integer",
+     "description": "Max edges returned (default: 50, max: 200). \"total\" reports the full matched count; \"truncated\" is set when the page is smaller.",
+     "default": 50,
+     "minimum": 1,
+     "maximum": 200
+    },
+    "repo": {
+     "type": "string",
+     "description": "Repository name or path. Omit when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing an unindexed nested Git checkout; otherwise specify it explicitly."
+    },
+    "branch": {
+     "type": "string",
+     "description": "Optional: scope to a pinned branch index (multi-branch repos, #2106). Omit for the workspace index, which follows the checked-out working tree. Ignored in group mode."
+    }
+   },
+   "required": [
+    "mode",
+    "target"
+   ],
+   "additionalProperties": false
+  }
+ },
+ "route_map": {
+  "name": "route_map",
+  "description": "Show API route mappings: which components/hooks fetch which API endpoints, and which handler files serve them.\n\nWHEN TO USE: Understanding API consumption patterns, finding orphaned routes. For pre-change analysis, prefer `api_impact` which combines this data with mismatch detection and risk assessment.\nAFTER THIS: Use impact() on specific route handlers to see full blast radius.\n\nReturns: route nodes with their handlers, middleware wrapper chains (e.g., withAuth, withRateLimit), and consumers. Each route object includes its \"method\" (the HTTP verb, \"*\" for method-agnostic routes, or null for method-less routes) and \"runtimeEvidence\". Runtime evidence is authoritative only when runtimeEvidence.confirmed is true; source records provenance, including conflicts.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "route": {
+     "type": "string",
+     "description": "Filter by route path (e.g., \"/api/grants\"). Omit for all routes."
+    },
+    "repo": {
+     "type": "string",
+     "description": "Repository name or path. Omit when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing an unindexed nested Git checkout; otherwise specify it explicitly."
+    },
+    "branch": {
+     "type": "string",
+     "description": "Optional: scope to a pinned branch index (multi-branch repos, #2106). Omit for the workspace index, which follows the checked-out working tree. Ignored in group mode."
+    }
+   },
+   "required": [],
+   "additionalProperties": false
+  }
+ },
+ "tool_map": {
+  "name": "tool_map",
+  "description": "Show MCP/RPC tool definitions: which tools are defined, where they're handled, and their descriptions.\n\nWHEN TO USE: Understanding tool APIs, finding tool implementations, impact analysis for tool changes.\n\nReturns: tool nodes with their handler files and descriptions.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "tool": {
+     "type": "string",
+     "description": "Filter by tool name. Omit for all tools."
+    },
+    "repo": {
+     "type": "string",
+     "description": "Repository name or path. Omit when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing an unindexed nested Git checkout; otherwise specify it explicitly."
+    },
+    "branch": {
+     "type": "string",
+     "description": "Optional: scope to a pinned branch index (multi-branch repos, #2106). Omit for the workspace index, which follows the checked-out working tree. Ignored in group mode."
+    }
+   },
+   "required": [],
+   "additionalProperties": false
+  }
+ },
+ "shape_check": {
+  "name": "shape_check",
+  "description": "Check response shapes for API routes against their consumers' property accesses.\n\nWHEN TO USE: Detecting mismatches between what an API route returns and what consumers expect. Finding shape drift. For pre-change analysis, prefer `api_impact` which combines this data with mismatch detection and risk assessment.\nREQUIRES: Route nodes with responseKeys (extracted from .json({...}) calls during indexing).\n\nReturns routes that have both detected response keys AND consumers. Shows top-level keys each endpoint returns (e.g., data, pagination, error) and what keys each consumer accesses. Reports MISMATCH status when a consumer accesses keys not present in the route's response shape. Each route object includes its \"method\" (the HTTP verb, \"*\" for method-agnostic routes, or null for method-less routes) and \"runtimeEvidence\". Runtime evidence is authoritative only when runtimeEvidence.confirmed is true.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "route": {
+     "type": "string",
+     "description": "Check a specific route (e.g., \"/api/grants\"). Omit to check all routes."
+    },
+    "repo": {
+     "type": "string",
+     "description": "Repository name or path. Omit when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing an unindexed nested Git checkout; otherwise specify it explicitly."
+    },
+    "branch": {
+     "type": "string",
+     "description": "Optional: scope to a pinned branch index (multi-branch repos, #2106). Omit for the workspace index, which follows the checked-out working tree. Ignored in group mode."
+    }
+   },
+   "required": [],
+   "additionalProperties": false
+  }
+ },
+ "api_impact": {
+  "name": "api_impact",
+  "description": "Pre-change impact report for an API route handler.\n\nWHEN TO USE: BEFORE modifying any API route handler. Shows what consumers depend on, what response fields they access, what middleware protects the route, and what execution flows it triggers. Requires at least \"route\" or \"file\" parameter.\n\nRisk levels: LOW (0-3 consumers), MEDIUM (4-9 or any mismatches), HIGH (10+ consumers or mismatches with 4+ consumers). Mismatches with confidence \"low\" indicate the consumer file fetches multiple routes \u2014 property attribution is approximate.\n\nResponse shape is keyed on how many routes match, not on the data: exactly one match returns a single route object; two or more return { routes: [...], total: N }. The same URL can expose multiple HTTP verbs (e.g. GET and POST /api/orders are distinct routes that share the URL), so a bare-URL lookup may return the wrapped form \u2014 every route object carries its own \"method\" so verbs are distinguishable. Pass \"method\" to narrow to one verb; the single-object shape is returned only when exactly one route remains after filtering \u2014 a substring route/file match spanning several URLs can still return the wrapped form. A URL/file that exists but has no route for the given verb returns an error. Each route's \"method\" is the literal \"*\" for method-agnostic routes (e.g. Django function views), which match any \"method\" selector, or null for method-less routes (filesystem, Laravel resource), which never match a selector. Every route also carries \"runtimeEvidence\"; treat it as authoritative only when runtimeEvidence.confirmed is true. Combines route_map, shape_check, and impact data.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "route": {
+     "type": "string",
+     "description": "Route path (e.g., \"/api/grants\")"
+    },
+    "file": {
+     "type": "string",
+     "description": "Handler file path (alternative to route)"
+    },
+    "method": {
+     "type": "string",
+     "description": "Optional HTTP verb \u2014 GET, POST, PUT, PATCH, DELETE, etc. \u2014 to narrow a multi-verb route or file lookup to a single method. Returns an error if no matched route uses that verb."
+    },
+    "repo": {
+     "type": "string",
+     "description": "Repository name or path. Omit when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing an unindexed nested Git checkout; otherwise specify it explicitly."
+    },
+    "branch": {
+     "type": "string",
+     "description": "Optional: scope to a pinned branch index (multi-branch repos, #2106). Omit for the workspace index, which follows the checked-out working tree. Ignored in group mode."
+    }
+   },
+   "required": [],
+   "additionalProperties": false
+  }
+ },
+ "group_list": {
+  "name": "group_list",
+  "description": "List all configured repository groups, or return details for one group (repos, manifest links).\n\nWHEN TO USE: Discover groups before group_sync. Optional \"name\" returns a single group's config.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string",
+     "description": "Group name. Omit to list all groups."
+    }
+   },
+   "required": [],
+   "additionalProperties": false
+  }
+ },
+ "group_sync": {
+  "name": "group_sync",
+  "description": "Rebuild the Contract Registry (contracts.json) for a group: extract contracts (HTTP, gRPC, Thrift, topics, includes), apply manifest links, then cross-link by exact contract-id match followed by wildcard service match.\n\nWHEN TO USE: After changing group.yaml or re-indexing member repos.\n\nREAD THE RESULT: `missingRepos` are configured repos with no entry in the registry (index them, or drop them from group.yaml); `unreadableRepos` ARE registered but this sync could not extract from them \u2014 the index would not open (version skew, lock, corruption), or an extractor failed partway \u2014 so NONE of their contracts are in this sync and a following group_impact / group_contracts is a lower bound, not a verdict. `degradedLinks` is the count of persisted cross-links whose provider endpoint has no resolved graph symbol (`degraded: true`); re-analyze the provider so handlers resolve. `failedRepos` is `{ repo, reason }[]` for per-repo extraction throws \u2014 each also appears in `unreadableRepos`; `repo` is that group path (e.g. app/backend), not the registry display name. `warnings` are operator-facing run notes (e.g. bridge.lbug write failed after contracts.json was written); `[]` means none this run. `registryOutcome` says what happened to the file, and the three values a call here can return each need a different response: 'written' \u2014 this run's contracts replaced contracts.json; 'preserved' \u2014 nothing could be read, so contracts.json was rewritten keeping the previous sync's contracts and cross-links verbatim and refreshing only `missingRepos`/`unreadableRepos` to describe THIS run (the file changed, the contracts in it did not, and they are as old as the last sync that succeeded); 'superseded' \u2014 nothing could be read, and another sync replaced contracts.json while this one waited for the group lock; that file was left untouched and this run's lists were NOT recorded, because they describe an older group state than what is on disk (so the registry is fresher than this response's diagnostics, not staler); 'no-prior-registry' \u2014 nothing could be read AND there was no previous contracts.json to carry forward, so none was written and this group has no contract registry on disk. Only 'no-prior-registry' means there is nothing to read: after it, group_contracts / group_impact have no registry at all rather than a stale one, so fix the repos above and re-run before trusting either. `suppressedMatchStages` names matching stages this sync was ASKED to skip, with the same three states as the repo lists: ABSENT means a registry written before the field existed, `[]` means this sync suppressed nothing, and a populated list means the cross-link set is a lower bound BY REQUEST \u2014 a later group_impact / group_contracts on it reports truncationReason 'suppressed-stage'.\n\nPARAMETERS ARE VALIDATED: `exactOnly` must be a real boolean \u2014 the string \"false\" is rejected, not coerced to true. The retired `skipEmbeddings` and `allowStale` parameters are refused by name; drop them from the call.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string",
+     "description": "Group name"
+    },
+    "exactOnly": {
+     "type": "boolean",
+     "description": "Skip the wildcard service-match stage; cross-link only on exact contract-id match. Manifest links still apply."
+    }
+   },
+   "required": [
+    "name"
+   ],
+   "additionalProperties": false
+  }
+ },
+ "trace": {
+  "name": "trace",
+  "description": "Find the shortest directed path between two symbols over call and class-member edges.\n\nWHEN TO USE: Debugging \"how does A reach B?\" \u2014 answers in one call what would take 3-8 manual context/impact hops. Shows the exact chain with file:line positions plus a per-hop edge type and confidence.\n\nTraverses CALLS edges plus HAS_METHOD (class \u2192 member) edges, so a trace can descend from a class into its methods. Each hop's edge type is reported in edges[], so call hops and containment hops remain distinguishable.\n\nReturns: ordered hops with file:line, and an aligned edges[] of edge type + confidence. When no path exists, reports the furthest reachable node so you know where the chain breaks (and truncated: true if a traversal cap was hit first).\n\nHandles disambiguation: an ambiguous from/to name returns status \"ambiguous\" with role (\"from\" or \"to\"), ranked candidates and totalCandidates \u2014 the TRUE match count, not candidates[].length \u2014 plus candidatesTruncated:true and a \"(showing M)\" suffix on message when candidates[] is the shorter window. Re-call with from_uid/to_uid.\n\nCROSS-REPO (experimental): pass repo as \"@groupName\" to trace across repositories in a group. When from/to live in different member repos, the trace stitches the two repo-local segments across a single ContractLink boundary (e.g. an HTTP consumer\u2192provider link), clamped to one crossing. The result adds crossings[] (the bridged contract with matchType/confidence), tags each hop with its member repo, and a notes[] channel for degraded states. The boundary hop is reported with edge type CONTRACT_LINK. Pass pdg:true to also attach the intra-procedural data-flow (REACHING_DEF) for boundary-adjacent segments when those repos were indexed with --pdg; absent a PDG layer it degrades to call-level hops with a note.\n\nDESTINATION TRACE (cross-repo): for an \"@groupName\" trace, OMIT to/to_uid/to_file to trace 'from' to wherever its outgoing HTTP call lands. The result ends at the provider endpoint (reported by route + file even when the handler is an anonymous function with no nameable symbol). This is the way to follow a client call to a backend handler you cannot name.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "from": {
+     "type": "string",
+     "description": "Source symbol name"
+    },
+    "from_uid": {
+     "type": "string",
+     "description": "Source symbol UID (zero-ambiguity)"
+    },
+    "file": {
+     "type": "string",
+     "description": "Source file path hint for disambiguation (alias for from_file)"
+    },
+    "from_file": {
+     "type": "string",
+     "description": "Source file path hint for disambiguation"
+    },
+    "to": {
+     "type": "string",
+     "description": "Target symbol name. Omit (with to_uid/to_file) on an @group trace to trace 'from' to its HTTP destination."
+    },
+    "to_uid": {
+     "type": "string",
+     "description": "Target symbol UID (zero-ambiguity)"
+    },
+    "to_file": {
+     "type": "string",
+     "description": "Target file path hint for disambiguation"
+    },
+    "maxDepth": {
+     "type": "number",
+     "description": "Maximum path length in hops (default: 10)",
+     "default": 10,
+     "minimum": 1,
+     "maximum": 30
+    },
+    "depth": {
+     "type": "number",
+     "description": "Compatibility alias for maxDepth (CLI --depth). Values must agree when both are present. Literal 0 is an omitted-value compatibility sentinel.",
+     "minimum": 0,
+     "maximum": 30
+    },
+    "includeTests": {
+     "type": "boolean",
+     "description": "Include test-file symbols in traversal (default: false)",
+     "default": false
+    },
+    "pdg": {
+     "type": "boolean",
+     "description": "Cross-repo only (experimental): attach intra-procedural REACHING_DEF data-flow for boundary-adjacent segments when the repo has a --pdg layer. Default false.",
+     "default": false
+    },
+    "crossDepth": {
+     "type": "number",
+     "description": "Cross-repo only: number of ContractLink boundaries to cross. Only 1 is supported today (multi-hop deferred); a direct caller that passes a higher value gets it clamped to 1 with a notes[] entry.",
+     "default": 1,
+     "minimum": 1,
+     "maximum": 1
+    },
+    "limit": {
+     "type": "number",
+     "description": "Cross-repo + pdg:true only: max REACHING_DEF data-flow hops attached per boundary-adjacent segment (default 50, max 200). When a segment dataFlow is truncated, re-issue with a higher limit.",
+     "default": 50,
+     "minimum": 1,
+     "maximum": 200
+    },
+    "repo": {
+     "type": "string",
+     "description": "Repository name or path, or \"@groupName\" / \"@groupName/memberPath\" for a cross-repo trace over a group. Omit when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing an unindexed nested Git checkout; otherwise specify it explicitly."
+    },
+    "branch": {
+     "type": "string",
+     "description": "Optional: scope to a pinned branch index (multi-branch repos, #2106). Omit for the workspace index, which follows the checked-out working tree. Ignored in group mode."
+    }
+   },
+   "required": [],
+   "additionalProperties": false
+  }
+ }
+}

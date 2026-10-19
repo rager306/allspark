@@ -1,0 +1,14 @@
+file:///tmp/cc_eval.mjs:17
+let Yb=__name(e=>`<instructions>\nBegin implementation directly without asking for clarification unless requirements are genuinely ambiguous or incomplete.\n${e.hasTool("todo_write")?"\nREMINDER: Use the todo_write tool for complex tasks that benefit from tracking and planning. This ensures proper progress tracking and transparency with the user. Always use todo_write (not TodoWrite) as the correct tool name.\n":""}${qb(e)}\n</instructions>\n`,"buildInstructionsSection");
+                                                                                                                                                                 ^
+
+ReferenceError: qb is not defined
+    at file:///tmp/cc_eval.mjs:17:162
+    at file:///tmp/cc_eval.mjs:21:13453
+    at buildDefaultBasePrompt (file:///tmp/cc_eval.mjs:32:167)
+    at file:///tmp/cc_eval.mjs:33:11
+    at ModuleJob.run (node:internal/modules/esm/module_job:561:25)
+    at async node:internal/modules/esm/loader:647:26
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
+
+Node.js v24.22.0

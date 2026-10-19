@@ -1,0 +1,1 @@
+[{"items": [{"type": "custom_tool_call", "name": "exec", "call_id": "c1", "input": "try { const r = await tools.write_stdin({session_id: 999999999, chars:\"\", yield_time_ms:250}); text(\"OK:\"+JSON.stringify(r)); } catch(e){ text(\"ERR:\"+String(e)); }"}]}]

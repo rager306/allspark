@@ -1,0 +1,200 @@
+55093|OPEN|2026-10-18T15:59:18Z|[macOS][Meetings 0.8.92] 24–27 MCP workers and repeated multi-MB background downloads without using Meetings
+55092|OPEN|2026-10-18T15:46:51Z|[Windows] Codex Desktop 0.163.0-alpha.10.2 rejects Auth0 OAuth callback with issuer mismatch despite matching discovery metadata
+55091|OPEN|2026-10-18T15:43:13Z|Voice mode consumed credits while muted / no messages sent
+55090|OPEN|2026-10-18T15:41:02Z|[macOS][26.1013.40934] PDF preview zoom is locked to min(100%, fit-to-window scale), ignoring manual zoom selections
+55089|OPEN|2026-10-18T15:36:15Z|[Windows Desktop] Changes/review summary cannot spawn Git when tracked-file path arguments exceed the command-line limit (error 206)
+55088|OPEN|2026-10-18T15:23:43Z|[Windows desktop] Main (browser) process fatal crashes 6x in 20h on 26.1013 (3656 & 4894): cascade kill, no WER, Crashpad sidecars without minidumps
+55087|OPEN|2026-10-18T15:17:22Z|Reset applied via Settings do not update the session limit.
+55085|OPEN|2026-10-18T15:11:44Z|[macOS desktop] Auto-review rejects an explicitly authorized delegated read before process creation; no clear review recovery path
+55084|OPEN|2026-10-18T15:07:06Z|[macOS][ChatGPT/Codex app][Sparkle] Dynamic update feed HTTP 520 over IPv6, succeeds over IPv4
+55083|OPEN|2026-10-18T15:06:56Z|Codex desktop may repeatedly upload historical images in long image-generation tasks, exceeding 1 GB of upload traffic per round
+55081|OPEN|2026-10-18T14:52:26Z|[Windows Desktop] Grey Composer Predictions blocks pasting images or error logs until a character is typed
+55080|OPEN|2026-10-18T14:51:14Z|[macOS][Dots] Dot-created cloud task completes but stays on “Loading model…” and cannot be continued
+55079|OPEN|2026-10-18T14:50:24Z|Windows desktop lag coincides with slow failing interactive fs/getMetadata requests
+55078|OPEN|2026-10-18T14:48:16Z|[Windows Desktop] Read Aloud skips/stutters over optical output while YouTube plays normally
+55077|OPEN|2026-10-18T14:47:08Z|Computer Use screenshots fail with FrameArrived timeout on Windows 10 / Boot Camp
+55076|OPEN|2026-10-18T14:45:34Z|macOS desktop: image-heavy chat stuck in remote compaction retries / HTTP 400; 74 MB request and same-chat recovery evidence
+55075|OPEN|2026-10-18T14:45:28Z|Kannada speech transcribed as Tamil during voice chat on Windows
+55074|OPEN|2026-10-18T14:44:28Z|[iOS remote Voice / Mac] Saved transcript_tail_flush speech is absent from normal chat history
+55073|OPEN|2026-10-18T14:43:47Z|[Desktop/macOS] Auto-review authorization-context rejection has no clear recovery path; suggested feedback entry absent
+55072|OPEN|2026-10-18T14:35:28Z|Windows in-app browser unexpectedly requests camera permission; Codex video-capture utility initializes device
+55071|OPEN|2026-10-18T14:34:45Z|macOS managed workspace runtime: supported integrity verification and recovery procedure
+55070|OPEN|2026-10-18T14:26:10Z|Enable gzip response decoding for large model catalogs
+55069|OPEN|2026-10-18T14:12:36Z|ChatGPT gpt-6 long Chinese replies silently end mid-sentence; backend records max_tokens, but the UI gives no clear indication
+55068|OPEN|2026-10-18T14:09:11Z|Plugin refresh error leaves orphaned marketplace-plugin-source clones and .tmp/git-* dirs (second unawaited refresh wave)
+55067|OPEN|2026-10-18T14:01:03Z|Codex macOS: active voice session goes silent while text chat remains usable
+55066|OPEN|2026-10-18T13:59:21Z|Support WASI symlink creation in codex-git-utils on stable Rust
+55065|OPEN|2026-10-18T13:49:19Z|Esc/Ctrl-C while a PermissionRequest hook runs leaves the turn stuck in "Working" (and a later hook `allow` still runs the command)
+55064|OPEN|2026-10-18T13:47:37Z|Windows desktop: Cloudflare plugin OAuth callback returns HTTP 403 issuer mismatch; install times out and rolls back
+55063|OPEN|2026-10-18T13:44:49Z|false information failure to validate info
+55062|OPEN|2026-10-18T13:44:30Z|Desktop Browser Use: vk.ru site-safety denial before page observation; review path unclear
+55061|OPEN|2026-10-18T13:41:37Z|[Codex App] Repeated apparent stalls and poor goal convergence during Daybreak investigation
+55060|OPEN|2026-10-18T13:38:11Z|Codex desktop imports claude-mem observer compression transcripts as user chats
+55059|OPEN|2026-10-18T13:30:36Z|Agent-created task session not discoverable in sidebar/search, model information unavailable, and inconsistent usage-limit messaging
+55058|OPEN|2026-10-18T13:22:43Z|[ChatGPT Work] Private personal plugin is installed but absent from picker; backend returns conflicting states
+55057|OPEN|2026-10-18T13:16:48Z|Windows desktop: Ask for approval selected, but write_stdin is rejected because sandbox_approval is false
+55056|OPEN|2026-10-18T13:14:23Z|Windows: CreateProcessAsUserW error 5 after an initial successful command
+55055|OPEN|2026-10-18T13:06:26Z|Codex Cloud web: toolbar buttons overlap when the sidebar is opened
+55054|OPEN|2026-10-18T12:43:43Z|Windows Codex Desktop Causes Massive Sustained Upload Traffic (10–40 Mbps), Consuming Over 30 GB of Cellular Mobile Data
+55053|OPEN|2026-10-18T12:29:10Z|Add Go to Definition in the Codex desktop file viewer
+55052|OPEN|2026-10-18T12:17:51Z|[Windows desktop] Gmail source icon is clipped to a red vertical strip after opening a side chat
+55051|OPEN|2026-10-18T12:13:27Z|[Windows desktop] Resuming chat spawns hundreds of binary git diff processes, escalating handles and PC crashes
+55050|OPEN|2026-10-18T12:12:59Z|[Bug] ChatGPT iOS Voice identity unexpectedly changes mid-conversation and persists
+55049|OPEN|2026-10-18T11:53:36Z|Dissapearing Limits, Resets, and Credits
+55048|OPEN|2026-10-18T11:52:10Z|[Desktop][Windows] DONT_NOTIFY heartbeat results remain visible as no-change chat messages
+55047|OPEN|2026-10-18T11:40:04Z|(Windows) Vercel authorization fails in Windows Codex desktop but works on ChatGPT web
+55046|OPEN|2026-10-18T11:28:29Z|Windows MXC sandbox leaves AppContainer named-object directories behind (`\Sessions\1\AppContainerNamedObjects\S-1-15-2-…`), growing until reboot
+55045|OPEN|2026-10-18T11:21:57Z|Copying does not work through SSH.
+55044|OPEN|2026-10-18T11:19:58Z|Pro thinking doesn't work
+55043|OPEN|2026-10-18T11:03:11Z|[macOS][Computer Use] CapCut coordinate input fails with noWindowsAvailable despite working screenshots/AX; Calculator recovers after reacquire + Raise
+55042|OPEN|2026-10-18T10:40:48Z|[Library][macOS] Transfer helper fails at startup on Python 3.9.6 (str | None)
+55041|OPEN|2026-10-18T10:40:08Z|Throws errors and runs extremely slowly
+55040|OPEN|2026-10-18T10:37:08Z|Windows local command startup takes about 3 minutes in ChatGPT Work
+55039|OPEN|2026-10-18T10:34:13Z|Windows Computer Use rejects DingTalk window with identical expected and current app identifiers
+55038|OPEN|2026-10-18T10:32:46Z|[Dots] Full cloud filesystem prevents sandbox startup and blocks cleanup commands
+55037|OPEN|2026-10-18T10:13:04Z|[Windows desktop] Renderer crashes and whole Codex window reloads every 1–2 minutes
+55036|OPEN|2026-10-18T10:03:37Z|[Windows] Intermittent automatic approval review timeout for require_escalated; default sandbox commands work
+55035|OPEN|2026-10-18T09:50:19Z|[Linux] ChatGPT Desktop keeps a suspend inhibitor active while Codex is idle
+55034|OPEN|2026-10-18T09:38:36Z|Windows/MSYS2 mintty: Shift+Enter and Ctrl+J do not insert a newline
+55033|OPEN|2026-10-18T09:27:20Z|Suspected cyberPolicy false positive blocks an EV charger development Goal
+55032|OPEN|2026-10-18T09:24:22Z|Windows MXC: Git cannot enter explicitly read-granted checkout (Codex 0.162.0)
+55031|CLOSED|2026-10-18T09:24:04Z|Windows MXC: Git cannot enter explicitly read-granted checkout (Codex 0.162.0)
+55030|OPEN|2026-10-18T09:16:18Z|Windows app: Chrome control tools unavailable although cua_repl reports ready
+55029|OPEN|2026-10-18T09:11:09Z|[Windows Codex Desktop] Remote SSH projects disappear after power interruption; re-adding does not restore Projects sidebar
+55028|OPEN|2026-10-18T09:07:59Z|[Windows][Plus][CLI] GPT-6.1 Sol missing from both catalogs and HTTP 400 via built-in OpenAI provider; official-auth custom path behaves differently
+55027|OPEN|2026-10-18T08:52:20Z|One Unified Project Across ChatGPT and Codex – Cloud, Local and Web
+55026|OPEN|2026-10-18T08:38:04Z|[macOS][Dots] “Connect your computer” setup repeatedly fails; current MacBook remains Offline
+55025|OPEN|2026-10-18T08:32:31Z|[Windows 26.1013.4894.0] Chat updates and task completion jump viewport to top or far upward
+55024|OPEN|2026-10-18T08:32:19Z|CLI: pressing Shift+Left twice replaces the retrieved queued prompt
+55023|OPEN|2026-10-18T08:30:28Z|send_message_to_thread fails with "'sendRequest.bind' is not a function." from an ephemeral side chat, while the identical call succeeds from a regular chat
+55022|OPEN|2026-10-18T08:28:25Z|Windows: exec_command blocked before CreateProcess while creating three JSON files
+55021|OPEN|2026-10-18T08:16:47Z|Windows desktop to iPhone pairing fails with both QR and manual pairing codes
+55020|OPEN|2026-10-18T08:16:32Z|[Windows] Daybreak selected but access check reports not_granted and hides security output
+55019|OPEN|2026-10-18T08:05:49Z|WhatsApp-Style Reply to Individual Messages
+55018|OPEN|2026-10-18T08:04:34Z|Windows: Chrome unavailable to browser tools despite installed and enabled extension
+55017|OPEN|2026-10-18T08:01:54Z|macOS desktop: contextual approval rejected during coordinated coding; scripted consent and no approval button
+55016|OPEN|2026-10-18T07:54:02Z|[macOS][MCP Apps] Intermittent CDP deadline before command dispatch; metadata remains available
+55015|OPEN|2026-10-18T07:46:28Z|[macOS] Concurrent chats show synchronized HTTPS/SSE and WebSocket failures with local router stopped
+55014|OPEN|2026-10-18T07:36:13Z|Windows desktop: all local projects disappear and list_projects returns empty after update
+55012|OPEN|2026-10-18T07:31:03Z|Windows 10 Computer Use: blank Notepad capture times out at independently verified Medium and High integrity
+55011|OPEN|2026-10-18T07:30:03Z|Windows desktop: existing cloud project lacks a discoverable local-folder linking flow; legacy identity reconciliation needed
+55010|OPEN|2026-10-18T07:14:28Z|Codex browser control is extremely slow on macOS — page reading takes approximately 30 seconds
+55009|OPEN|2026-10-18T07:10:58Z|Cross-conversation coordination fails despite explicit user approval
+55008|OPEN|2026-10-18T07:09:57Z|[Windows desktop] GPT-6.1 Sol sometimes auto-compacts at ~200k usage despite a displayed 475k context window
+55007|OPEN|2026-10-18T07:09:53Z|[Windows desktop] GPT-6.1 Sol context indicator drops from 475k in main chat to ~200k in side chat
+55006|OPEN|2026-10-18T07:09:49Z|[Desktop feature request] Add a per-tool Stop button inside expanded long-running tool cards
+55005|OPEN|2026-10-18T07:06:25Z|Remote (Android) open times out on large threads while the host replies instantly
+55004|OPEN|2026-10-18T07:03:19Z|Windows PowerShell InitializeDefaultDrives error: supported tracing procedure when $Error is empty?
+55003|CLOSED|2026-10-18T07:02:56Z|[macOS][In-app browser] blob: iframes stay about:blank while HTTP and srcdoc frames load
+55002|OPEN|2026-10-18T07:01:41Z|Cloud task creation fails: “invalid thread config: resolve cloud session with Codex Core”
+55001|OPEN|2026-10-18T07:01:16Z|[Windows desktop] Collapsed terminal tool card shows “Running” after expanded command entry shows “Ran”
+55000|OPEN|2026-10-18T06:52:49Z|0.163.0: omitted provider auth.cwd panics on account/read after server cwd deletion, even for an unused provider
+54999|OPEN|2026-10-18T06:43:33Z|Codex Remote: paired PCs missing after iPhone Quick Start migration
+54998|OPEN|2026-10-18T06:31:35Z|Safety check blocks authorized bug bounty work with Daybreak enabled
+54997|OPEN|2026-10-18T06:04:03Z|ChatGPT Chrome extension 1.26.1005.11759: kernel fetch proxy throws "Response with null body status cannot have body" on 204/205/304
+54996|OPEN|2026-10-18T05:53:06Z|[Android][Dots] Pasting an image from the keyboard clipboard is rejected
+54995|OPEN|2026-10-18T05:52:37Z|Usage quota regression since Oct 16: simple Codex prompt consumes ~10% allowance
+54994|OPEN|2026-10-18T05:45:00Z|Windows desktop app: Mouse wheel does not scroll the chat page when the pointer is inside an embedded interactive table
+54993|OPEN|2026-10-18T05:44:32Z|Blocking the initial UserPromptSubmit event causes an endless “Blocked by hook” loop
+54992|OPEN|2026-10-18T05:41:03Z|Chrome side panel resets to GPT-6.1 Sol Light; web model preference persists but is not inherited
+54991|OPEN|2026-10-18T05:36:10Z|codex queue / hooks: wake an idle session with a non-user, attributed message
+54990|OPEN|2026-10-18T05:26:12Z|Supported whole-command timing and process-tree memory measurement
+54989|OPEN|2026-10-18T05:17:01Z|Windows: browser reports disabled in Work settings while Browser toggle is enabled; restarting app restores access
+54988|OPEN|2026-10-18T05:09:28Z|Archiving a thread does not shut down its title-generation thread and prediction fork; each keeps a full stdio MCP set for ~30 min
+54987|OPEN|2026-10-18T04:52:58Z|Windows Computer Use: owned folder dialog targeting/input failures and windows left open after repeated failed actions
+54986|OPEN|2026-10-18T04:46:34Z|Windows: same local file previews in a user-created Local task but fails in a Dot-delegated task
+54985|OPEN|2026-10-18T04:39:23Z|Suspected false-positive cyber_policy blocks on history-only requests — Codex CLI 0.163.0
+54984|OPEN|2026-10-18T04:27:51Z|[Windows Desktop] Composer completely missing across all Codex chats after opening project thread (100% scaling; re-login ineffective)
+54983|OPEN|2026-10-18T04:22:56Z|Feature request: multi-account support / account switcher for Codex (desktop mode, CLI, IDE extension)
+54982|OPEN|2026-10-18T04:17:40Z|macOS: plugin loading times out, local connection unavailable, and feedback command does nothing
+54981|OPEN|2026-10-18T04:10:35Z|Feature request: explain per-run usage and suggest improvements directly in the Usage box
+54980|OPEN|2026-10-18T04:08:23Z|Windows taskbar badge stays at 1 after clearing Priority; unavailable unread chats message
+54979|OPEN|2026-10-18T03:56:03Z|TUI panics with "index outside of buffer" when the terminal shrinks before SIGWINCH is handled
+54978|OPEN|2026-10-18T03:41:52Z|Computer Use: guarded auto-unlock attempts with Locked use OFF; intermittent password lock after turn completion
+54977|OPEN|2026-10-18T03:40:08Z|Full Access Parity on Connected Computer Remote Agent Dispatches (Linux / Debian)
+54975|OPEN|2026-10-18T03:35:16Z|[Windows][ChatGPT Work][Voice] Selected Spruce voice is ignored; fallback voice plays
+54974|OPEN|2026-10-18T03:32:15Z|[ChatGPT Web][GPT-6] Silent no-answer after thinking; activity labels rotate on reload
+54973|OPEN|2026-10-18T03:24:02Z|macOS: stale project mappings prevent all project edits when backend records are missing; startup reports migration success
+54972|OPEN|2026-10-18T03:20:00Z|Desktop: existing chat loses browser tools despite cua_repl ready; new chat restores Edge control
+54971|OPEN|2026-10-18T03:13:55Z|Desktop CHATGPT isnt loading the chats from online version
+54970|OPEN|2026-10-18T03:09:41Z|codex error
+54969|OPEN|2026-10-18T03:09:26Z|Windows Desktop global Send stalls with a full client scheduler; need supported request lifecycle diagnostics
+54968|OPEN|2026-10-18T03:07:35Z|[Windows desktop] CUA discovers only MCP Apps; Chrome and in-app Browser missing in existing and fresh chats
+54967|OPEN|2026-10-18T02:38:17Z|[Windows] Chrome extension discovers no tabs after startup until an HTTPS page opens
+54966|OPEN|2026-10-18T02:33:27Z|Repeated "regurg plugin blocked the output stream" errors interrupt normal coding tasks
+54965|OPEN|2026-10-18T02:32:00Z|[Codex Mobile] Persistent expandable plugin panels missing from Codex threads (ChatGPT parity)
+54964|OPEN|2026-10-18T02:21:09Z|macOS desktop 26.1013.31256: queued messages intermittently stall across existing chats
+54963|CLOSED|2026-10-18T02:19:26Z|Auto-review appears to apply Guardian's own read-only restrictions to authorized parent actions (0.156.1, custom reviewer)
+54962|OPEN|2026-10-18T02:07:06Z|Windows desktop auto-review rejects direct human authorization for cross-chat reports; prior same-project calls succeeded
+54960|OPEN|2026-10-18T01:55:12Z|Support direct executable hook commands with an args array
+54959|OPEN|2026-10-18T01:54:01Z|[Windows][Local] Agent boot time/USB enumeration conflicts with local PC after reported reboot; update remains restart_required
+54958|OPEN|2026-10-18T01:44:02Z|Locked Use can expose the authenticated desktop after turn completion with French AZERTY input
+54957|OPEN|2026-10-18T01:23:20Z|Codex Professional Quality Mode: Root-Cause Fixes, Verified Solutions, Regression Protection and Intelligent Retry Prevention
+54956|OPEN|2026-10-18T01:08:23Z|Improve Codex Plus Usage Efficiency Across All Models and Enable Affordable Model Experimentation
+54955|OPEN|2026-10-18T00:51:23Z|[macOS Desktop 26.1013] Turn-diff capture filled disk with 263.7 GB of tmp_pack garbage; disable control unavailable and config not effective live
+54954|OPEN|2026-10-18T00:48:53Z|Windows browser execution: supported same-principal GET/PATCH response and complete binary asset retrieval
+54953|OPEN|2026-10-18T00:19:37Z|Running subagents incorrectly appear as Done
+54952|OPEN|2026-10-18T00:19:20Z|Ultrafast OAuth requests report service_tier=default: no authoritative per-response tier confirmation
+54951|OPEN|2026-10-18T00:13:51Z|Windows Codex app-server exits with code 0 before turn/start response
+54950|OPEN|2026-10-17T23:50:22Z|[Windows][IAB] Taobao rejected by site-safety gate before approval on app 26.1013.4894.0
+54948|OPEN|2026-10-17T23:27:43Z|[dot / Windows] Existing local Codex chat read fails with unsupported placement format version 1 despite computer shown as allowed
+54947|OPEN|2026-10-17T23:25:43Z|Windows: apply_patch fails inside an explicitly writable local project, but works in the visualizations directory
+54944|OPEN|2026-10-17T22:47:04Z|Windows Computer Use: owned-modal set_value times out without completion/cancellation acknowledgement
+54943|OPEN|2026-10-17T22:47:03Z|[CLI] GPT-6 Astra intermittently returns completed final JSON missing terminal ]}
+54942|OPEN|2026-10-17T22:45:31Z|Windows: native application acceptance blocked before execution with no actionable approval path
+54941|OPEN|2026-10-17T22:38:23Z|Windowsデスクトップ／Cloud Work：予定実行時の権限情報の欠落、Computer Useの起動失敗、「常に許可」の保存・再利用の不具合
+54940|OPEN|2026-10-17T22:24:38Z|[Windows][dot] Cannot inspect and maintain an existing desktop automation end to end
+54939|OPEN|2026-10-17T22:15:35Z|Codex repeatedly switches between saying work is complete, incomplete, and requires no further action
+54938|OPEN|2026-10-17T22:00:48Z|Max reasoning effort unavailable in Codex App despite working in ChatGPT view and mobile
+54937|OPEN|2026-10-17T21:49:31Z|Bug
+54936|OPEN|2026-10-17T21:23:14Z|Desktop Browser Use: native /approve acknowledged, origin access then refused as an unproven retry
+54935|OPEN|2026-10-17T21:13:26Z|issue bad
+54934|OPEN|2026-10-17T21:06:55Z|Desktop: processed-media limit stops a tool-image turn below token compaction threshold.
+54933|OPEN|2026-10-17T21:03:15Z|Enable zstd compression for OpenAI API-key HTTP Responses requests
+54932|OPEN|2026-10-17T20:57:00Z|Windows desktop: custom Obsidian handler appears in Open with but cannot be made preferred editor
+54931|OPEN|2026-10-17T20:55:07Z|[iOS][Visualize] Preview reserves ~10,000 points for one-screen content; scrolling back reloads oversized blank region
+54929|OPEN|2026-10-17T20:20:29Z|ChatGPT Plugins Dropdown — Enable for This Chat or All Chats
+54928|OPEN|2026-10-17T20:18:05Z|ChatGPT Workspace Tabs — Multitasking, Work Mode Indicators & Chat Organization
+54927|OPEN|2026-10-17T20:15:34Z|no-active-thread-01a14b73-b1af-7dd2-9253-ce1bb95f5eff
+54926|OPEN|2026-10-17T20:12:59Z|I don't get any of the resets (Business plan, paid monthly)
+54925|OPEN|2026-10-17T20:10:01Z|One-Click MCP Connection — Connect with ChatGPT
+54924|OPEN|2026-10-17T20:04:03Z|OpenAI Developers installation fails: “OAuth state not found”
+54923|OPEN|2026-10-17T20:02:19Z|[macOS][26.1013.40934] Your dot missing and workspace settings blocked; DeviceCheck fails with UCRT unavailable
+54922|OPEN|2026-10-17T19:46:55Z|Windows VS Code: integrated browser undiscoverable by CUA despite Enable Chat Tools; Edge extension works
+54921|OPEN|2026-10-17T19:37:03Z|Let Dots continue existing user-created ChatGPT Work conversations
+54920|OPEN|2026-10-17T19:25:35Z|Windows app 26.1013.40934 build 20770: repeated renderer crashes while paging an existing local chat
+54919|OPEN|2026-10-17T19:14:34Z|[Windows desktop] Shared ChatGPT project missing from Projects while its chats appear in Recents; web project works
+54918|OPEN|2026-10-17T19:11:49Z|Codex desktop: queued messages stay loading, block edit/delete/steer, and duplicate after one submission
+54917|OPEN|2026-10-17T18:59:14Z|Approve command missing after automatic approval-review denial
+54916|OPEN|2026-10-17T18:57:12Z|macOS: Open terminal shortcut works in Codex mode but not ChatGPT mode, while clicking the terminal entry works
+54915|OPEN|2026-10-17T18:49:21Z|Windows Appshots: DoubleAlt setup returns a native deadline error and removes Settings in 26.1013.40934
+54914|OPEN|2026-10-17T18:43:34Z|[Dots] Excessive approval blocks prevent using Dots as a pass-through / central router for Codex sessions
+54913|OPEN|2026-10-17T18:36:12Z|[Windows Desktop] Agent-generated UI tests leave 315 headless Edge processes running; closing 27 stale instances reduces RAM use from ~95% to ~60%
+54912|OPEN|2026-10-17T18:34:19Z|[Windows][26.1013.40934 build 20770] Renderer reload loop every 1–2 minutes; feedback upload remains unconfirmed
+54911|OPEN|2026-10-17T18:29:01Z|[macOS][SSH remote] Voice is disabled in a new chat but becomes available after the first text message
+54910|OPEN|2026-10-17T18:21:21Z|Abrupt weekly allowance depletion: usage-accounting investigation and human triage requested
+54909|CLOSED|2026-10-17T18:20:59Z|[macOS][SSH remote] Voice is disabled in a new chat but becomes available after the first text message
+54908|OPEN|2026-10-17T18:20:10Z|Python SDK: CodexClient.close() leaves the app-server's stdout/stderr pipes open (and never waits after kill)
+54907|OPEN|2026-10-17T18:17:56Z|Codex Remote iOS — Persistent Local Projects and Desktop Project Sync
+54906|OPEN|2026-10-17T18:13:53Z|Agent ignores explicit priority/dispatch rules in long-running autonomous sessions
+54905|OPEN|2026-10-17T18:12:58Z|Plus account: 5-hour usage limit missing in both desktop app and CLI
+54904|OPEN|2026-10-17T18:06:20Z|[Windows Desktop] list_threads repeatedly returns projectId:null despite persisted membership; 10 chats across 7 projects, restart does not fix
+54903|OPEN|2026-10-17T18:04:47Z|Codex fails to understand its own product ecosystem and wastes user quota on irrelevant operations
+54902|OPEN|2026-10-17T17:55:36Z|Schedule tasks can not send Emails via Outlook or Gmail connector
+54901|OPEN|2026-10-17T17:48:37Z|Windows Desktop: Aloud ignores selected voice
+54900|OPEN|2026-10-17T17:38:26Z|Codex often stops working after compacting the context
+54899|OPEN|2026-10-17T17:35:56Z|[bug] [Performance] Codex App Desktop Pet causes excessive write-amplification resulting in physical NVMe SSD failure
+54898|OPEN|2026-10-17T17:26:57Z|[Windows desktop] Built-in browser denies allowed sites despite empty Chromium policies
+54897|OPEN|2026-10-17T17:11:04Z|Async compaction panic leaves the turn stuck inProgress until interrupted
+54896|OPEN|2026-10-17T16:44:10Z|Injected subagent instructions incorrectly claim full-history forks always inherit the parent model and effort
+54895|OPEN|2026-10-17T16:37:40Z|Codex app: disable implicit skill use per chat or through an explicitly invoked skill
+54893|OPEN|2026-10-17T16:28:48Z|app-server control socket lives in /tmp while a symlink to it stays in CODEX_HOME: dangling after a reboot
+54892|OPEN|2026-10-17T16:28:47Z|No non-interactive way to enumerate sessions (`agents`/`resume` are TTY-only), and session subcommands report unhelpful errors
+54891|OPEN|2026-10-17T16:28:46Z|Worktrees under ~/.codex/worktrees are never reclaimed: no list/prune command, stale registrations, uncommitted work at risk
+54890|OPEN|2026-10-17T16:24:54Z|ChatGPT Work / Sites — Preview stopped due to missing control-browser skill
+54889|OPEN|2026-10-17T16:08:28Z|Linux Desktop: entire window and tray freeze; main thread waits on zygote holding Crashpad-traced zombie
+54888|OPEN|2026-10-17T16:06:33Z|CLI status line hides processing tier for Bedrock/API accounts and can label Ultrafast as “Fast off”
+54887|OPEN|2026-10-17T15:57:02Z|Codex App: read_thread cannot select metadata-only or fail-closed existing-transport reads
+54886|OPEN|2026-10-17T15:47:44Z|Windows Browser Use blocks m.blog.naver.com without an actionable review path; agent selects iab despite requested Aside CLI
+54885|OPEN|2026-10-17T15:41:09Z|error
+54884|OPEN|2026-10-17T15:38:37Z|Hooks: a turn that ends on an API error fires no Stop or any other hook

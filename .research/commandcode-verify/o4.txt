@@ -1,0 +1,27 @@
+--- edit_file raw= [{"file_path":"/a","old_string":"x","new_string":"y"}]
+  -> {"file_path":"/a","old_string":"x","new_string":"y"} {"toolName":"edit_file","rawType":"array","recovered":true,"arrayLength":1}
+--- edit_file raw= []
+  -> {} {"toolName":"edit_file","rawType":"array","recovered":false,"arrayLength":0}
+--- edit_file raw= null
+  -> {} {"toolName":"edit_file","rawType":"null","recovered":false}
+--- edit_file raw= "{\"file_path\":\"/a\",\"old_string\":\"x\",\"new_string\":\"y\"}"
+  -> {"file_path":"/a","old_string":"x","new_string":"y"} 
+--- grep raw= "not json at all"
+  -> {"pattern":"not json at all"} 
+--- edit_file raw= "not json at all"
+  -> {} 
+--- grep raw= "\"just a string\""
+  -> {"pattern":"just a string"} 
+--- grep raw= 42
+  -> {} 
+--- alias table
+  bash -> shell_command {"block":false} (note)
+  Bash -> shell_command {"block":false} (note)
+  bash_output -> shell_output {"block":false} (note)
+  task_output -> shell_output {"block":false} (note)
+  tool_search -> search_tools {"block":false} (note)
+  read_multiple_files -> read_file {"block":false} (note)
+  grep -> grep {"block":false} 
+  Edit -> Edit {"block":false} 
+--- alias arg carry-over on task_output with explicit wait
+  {"toolName":"shell_output","input":{"wait":"output"},"note":"Repair note: the tool `task_output` is now `shell_output`; this call ran as shell_output with your arguments carried over. Call `shell_output` directly next time."}

@@ -1,0 +1,83 @@
+--- read_file include->paths WITH requiredAlternatives at schema level
+  in : {"include":["a.ts","b.ts"]}
+  out: {"paths":["a.ts","b.ts"]}
+  rules: renameAliasedField
+
+--- markdown link in path
+  in : {"file_path":"[x](/a.ts)"}
+  out: {"file_path":"/a.ts"}
+  rules: stripMarkdownLinkFromPath
+
+--- string numbers
+  in : {"file_path":"/a.ts","limit":"50","offset":"0"}
+  out: {"file_path":"/a.ts","limit":50,"offset":0}
+  rules: coerceStringToNumber,coerceStringToNumber
+
+--- null fields
+  in : {"file_path":"/a.ts","limit":null,"exclude":null}
+  out: {"file_path":"/a.ts"}
+  rules: dropNullOrUndefinedField,dropNullOrUndefinedField
+
+--- empty array kept?
+  in : {"file_path":"/a.ts","exclude":[]}
+  out: {"file_path":"/a.ts","exclude":[]}
+  rules: -
+
+--- empty paths
+  in : {"file_path":"/a.ts","paths":[]}
+  out: {"file_path":"/a.ts","paths":[]}
+  rules: -
+
+--- non-numeric string for number -> reject
+  in : {"pattern":"x","-A":"three"}
+  out: {"pattern":"x","-A":"three"}
+  rules: -
+
+--- optional marker stripped
+  in : {"pattern?":"x"}
+  out: {"pattern":"x"}
+  rules: stripOptionalMarkerFromKey
+
+--- array for string field -> NOT wrapped (type mismatch)
+  in : {"pattern":"x","glob":["*.ts","*.tsx"]}
+  out: {"pattern":"x","glob":["*.ts","*.tsx"]}
+  rules: -
+
+--- string boolean
+  in : {"pattern":"x","multiline":"true"}
+  out: {"pattern":"x","multiline":true}
+  rules: coerceStringToBoolean
+
+--- bad boolean string
+  in : {"pattern":"x","multiline":"yes"}
+  out: {"pattern":"x","multiline":"yes"}
+  rules: -
+
+--- exactlyOneOf both provided
+  in : {"seconds":"5","until":"2026-01-01"}
+  out: {"seconds":5,"until":"2026-01-01"}
+  rules: coerceStringToNumber
+  REJECT: Invalid input for tool "sleep". Please correct and retry:
+            • seconds / until: provide exactly one of these, but seconds and until were both sent
+          Received fields: seconds, until
+          Field-name corrections already recognized — apply them when you retry:
+            • Coerced string `seconds` to a number.
+
+--- exactlyOneOf none
+  in : {}
+  out: {}
+  rules: -
+  REJECT: Invalid input for tool "sleep". Please correct and retry:
+            • seconds / until: provide exactly one of these, none was sent
+          No arguments were received at all ({}) — the tool-call arguments were likely truncated or failed to parse in transit. Resend the COMPLETE call with every required field populated.
+
+--- empty content string kept (minLength absent)
+  in : {"file_path":"/a.txt","content":""}
+  out: {"file_path":"/a.txt","content":""}
+  rules: -
+
+--- task aliases
+  in : {"title":"do","body":"x","active_form":"doing"}
+  out: {"subject":"do","description":"x","activeForm":"doing"}
+  rules: renameAliasedField,renameAliasedField,renameAliasedField
+

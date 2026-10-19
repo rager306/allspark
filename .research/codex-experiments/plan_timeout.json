@@ -1,0 +1,1 @@
+[{"items": [{"type": "custom_tool_call", "name": "exec", "call_id": "c1", "input": "const r = await tools.exec_command({cmd:\"sleep 20\", timeout_ms: 1500}); text(JSON.stringify(r));"}]}]

@@ -1,0 +1,16 @@
+--- MCP free-form schema (additionalProperties:true, no props) 
+  in : {"foo":1,"bar":"baz"} 
+  out: {} 
+  rules: dropUnknownKey,dropUnknownKey 
+--- MCP schema with extra passthrough 
+  in : {"a":"1","b":2} 
+  out: {"a":"1"} 
+  rules: dropUnknownKey 
+--- nested object: not swept (one-level only) 
+  in : {"opt":{"depth":"3","nope":1}} 
+  out: {"opt":{"depth":"3","nope":1}} 
+  rules: - 
+--- array-of-objects: swept 
+  in : {"items":[{"depth":"3","nope":1}]} 
+  out: {"items":[{"depth":3}]} 
+  rules: coerceStringToNumber,dropUnknownKey 

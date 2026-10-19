@@ -1,0 +1,6 @@
+notices: [
+  'taste: moved Taste (Continuously Learned by [CommandCode][cmd]) → taste-(continuously-learned-by-[commandcode][cmd])/taste.md'
+]
+dirs: [ 'taste-(continuously-learned-by-[commandcode][cmd])', 'taste.md' ]
+root now: "# Taste (Continuously Learned by [CommandCode][cmd])\nSee [taste-(continuously-learned-by-[commandcode][cmd])/taste.md](taste-(continuously-learned-by-[commandcode][cmd])/taste.md)\n"
+taste-(continuously-learned-by-[commandcode][cmd])/taste.md: "# Taste (Continuously Learned by [CommandCode][cmd])\n- Rule 0. Confidence: 0.9\n- Rule 1. Confidence: 0.9\n- Rule 2. Confidence: 0.9\n- Rule 3. Confidence: 0.9\n- Rule 4. Confidence: 0.9\n- Rule 5. Confidence: 0.9\n"

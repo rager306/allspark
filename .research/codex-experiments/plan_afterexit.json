@@ -1,0 +1,1 @@
+[{"items": [{"type": "custom_tool_call", "name": "exec", "call_id": "c1", "input": "const a = await tools.exec_command({cmd:\"echo done\", yield_time_ms:200}); const b = await tools.write_stdin({session_id: a.session_id ?? 1, chars:\"\", yield_time_ms:200}); text(JSON.stringify({a,b}));"}]}]

@@ -1,0 +1,8 @@
+--- schema with NO properties key 
+  THROWS: TypeError Cannot convert undefined or null to object
+--- schema with properties but NO required 
+  THROWS: TypeError Cannot read properties of undefined (reading 'flatMap')
+--- schema with empty required 
+  out: {"a":"1"}  rules: - 
+--- free-form MCP schema 
+  out: {}  rules: dropUnknownKey 

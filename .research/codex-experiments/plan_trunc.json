@@ -1,0 +1,1 @@
+[{"items": [{"type": "custom_tool_call", "name": "exec", "call_id": "c1", "input": "const r = await tools.exec_command({cmd: \"seq 1 20000\"}); text(\"len=\" + r.output.length + \" tok=\" + r.original_token_count + \" head=\" + r.output.slice(0,50).replace(/\\n/g,\"|\") + \" tail=\" + r.output.slice(-50).replace(/\\n/g,\"|\"));"}]}]

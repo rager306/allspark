@@ -1,0 +1,11 @@
+
+model = "mock-model"
+model_provider = "mock"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[model_providers.mock]
+name = "Mock"
+base_url = "http://127.0.0.1:8799/v1"
+env_key = "MOCK_API_KEY"
+wire_api = "responses"

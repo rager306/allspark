@@ -1,0 +1,12 @@
+--- read_file include->paths + requiredAlternatives honoured? 
+  in : {"include":["a","b"]} 
+  out: {"paths":["a","b"]} 
+  rules: renameAliasedField 
+--- read_file paths only 
+  in : {"paths":["a","b"]} 
+  out: {"paths":["a","b"]} 
+  rules: - 
+--- read_file BOTH file_path and paths 
+  in : {"file_path":"/a","paths":["b"]} 
+  out: {"file_path":"/a","paths":["b"]} 
+  rules: - 

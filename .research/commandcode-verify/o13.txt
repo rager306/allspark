@@ -1,0 +1,8 @@
+{}
+Invalid input for tool "agent". Please correct and retry:
+  • description: required field is missing
+  • subagent_type: required field is missing
+  • prompt: required field is missing
+Received fields: messages
+Field-name corrections already recognized — apply them when you retry:
+  • Dropped unknown field `messages`.

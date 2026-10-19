@@ -1,0 +1,13 @@
+"- Prefers tabs. Confidence: 0.9" => {"text":"Prefers tabs","confidence":0.9}
+"- Prefers tabs Confidence: 0.9" => null
+"- prefers tabs. Confidence: 0.9" => {"text":"prefers tabs","confidence":0.9}
+"- Use `a.b` then c. Confidence: 0.9" => {"text":"Use `a.b` then c","confidence":0.9}
+"- Rule.  Confidence:   0.90" => {"text":"Rule","confidence":0.9}
+"  - Indented rule. Confidence: 0.8" => {"text":"Indented rule","confidence":0.8}
+"- Rule with no confidence at all" => null
+"- Rule. Confidence: 1.5" => {"text":"Rule","confidence":1.5}
+"- Rule. Confidence: .5" => {"text":"Rule","confidence":0.5}
+--- compare: reworded rule
+{"added":[{"text":"Use pnpm for installs","confidence":0.7}],"upgraded":[],"downgraded":[]}
+--- compare: rule DELETED (no removal signal?)
+{"added":[],"upgraded":[],"downgraded":[]}

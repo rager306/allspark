@@ -1,0 +1,1 @@
+[{"items": [{"type": "custom_tool_call", "name": "exec", "call_id": "call_1", "input": "const r = await tools.exec_command({cmd: \"echo hello && exit 3\"});\ntext(JSON.stringify(r));"}]}]

@@ -1,0 +1,59 @@
+--- aliases path/oldValue/newValue
+  in : {"path":"/a.ts","oldValue":"x","newValue":"y"}
+  out: {"file_path":"/a.ts","old_string":"x","new_string":"y"}
+  rules: renameAliasedField,renameAliasedField,renameAliasedField
+
+--- empty path alias -> reject w/ hint
+  in : {"path":"","oldValue":"x","newValue":"y"}
+  out: {"old_string":"x","new_string":"y"}
+  rules: dropUnknownKey,renameAliasedField,renameAliasedField
+  REJECT: Invalid input for tool "edit_file". Please correct and retry:
+            • file_path: required field is missing
+          Received fields: path, oldValue, newValue
+          Likely cause:
+            • `path` was received but its value was an EMPTY string, so it was not mapped onto `file_path`. If you intended an empty value, send `file_path: ""` explicitly; otherwise retry with the complete value — an unexpectedly empty field usually means the arguments were truncated in transit.
+          Field-name corrections already recognized — apply them when you retry:
+            • Dropped unknown field `path`.
+            • Renamed `oldValue` to `old_string` for tool "edit_file". Use `old_string` next time — `oldValue` is not a valid field for this tool.
+            • Renamed `newValue` to `new_string` for tool "edit_file". Use `new_string` next time — `newValue` is not a valid field for this tool.
+
+--- canonical + alias conflict (which wins?)
+  in : {"file_path":"/a.ts","path":"/b.ts","old_string":"x","new_string":"y"}
+  out: {"file_path":"/a.ts","old_string":"x","new_string":"y"}
+  rules: dropUnknownKey
+
+--- two aliases for old_string
+  in : {"path":"/a.ts","old":"AAA","oldValue":"BBB","new":"y"}
+  out: {"file_path":"/a.ts","old_string":"AAA","new_string":"y"}
+  rules: renameAliasedField,renameAliasedField,dropUnknownKey,renameAliasedField
+
+--- grep query->pattern, directory->path
+  in : {"query":"fn main","directory":"src"}
+  out: {"pattern":"fn main","path":"src"}
+  rules: renameAliasedField,renameAliasedField
+
+--- grep numeric string -A
+  in : {"pattern":"x","-A":"3"}
+  out: {"pattern":"x","-A":3}
+  rules: coerceStringToNumber
+
+--- read_file include->paths, file_path satisfied?
+  in : {"include":["a.ts","b.ts"]}
+  out: {"paths":["a.ts","b.ts"]}
+  rules: renameAliasedField
+  REJECT: Invalid input for tool "read_file". Please correct and retry:
+            • file_path: required field is missing
+          Received fields: include
+          Field-name corrections already recognized — apply them when you retry:
+            • Renamed `include` to `paths` for tool "read_file". Use `paths` next time — `include` is not a valid field for this tool.
+
+--- shell_output action:kill redirect hint
+  in : {"id":"s1","action":"kill"}
+  out: {"id":"s1"}
+  rules: rejectUnsupportedAction
+
+--- todo_write items->todos, nested aliases
+  in : {"items":[{"task":"do x","state":"done","active_form":"doing x"}]}
+  out: {"todos":[{"content":"do x","status":"done","activeForm":"doing x"}]}
+  rules: renameAliasedField,renameAliasedField,renameAliasedField,renameAliasedField
+

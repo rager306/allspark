@@ -1,0 +1,55 @@
+ahmadawais
+@saqibameen 
+
+=====
+
+dthyresson
+FYI still happening in v1.26.0:
+
+
+```
+◼ taste learning failed: ENAMETOOLONG: name too long, mkdir '/XXXXX/command-code-mods/.commandcode/taste/--prefers-using-
+command-code's-built-in-hook-system-(`onstop`-with-`{continue:-true}`,-`preparenextturn`-for-model-switching)-over-shelling-out-to-external-api-calls-(e
+.g.,-`curl`).-when-the-framework-provides-a-seam,-use-it-instead-of-reaching-for-raw-http.-confidence:-0.9'
+```
+
+cc @saqibameen 
+
+
+=====
+
+Coding-Dev-Tools
+I found a deterministic **1.54.0 reorganization trigger** that does not require repeated learning sessions. This is a component reproduction using the unchanged `parseCategories` and `reorganizeIfNeeded` functions from the published CLI bundle, with real filesystem operations.
+
+Seed `taste.md` with a category heading followed by entries such as `- Preference 0. Confidence: 0.90`. Using the same overlong heading:
+
+| Fixture | Windows / Node 24.15.0 | Linux tmpfs / Node 22.23.2 |
+| --- | --- | --- |
+| Long category, five learnings | Root unchanged; no reorganization | Same |
+| Long category, six learnings | `mkdir` fails with `ENOENT` | `mkdir` fails with `ENAMETOOLONG` |
+| Short category, six learnings | Category file and root link written | Same |
+| Retry after the failure | Same error; root content retained | Same |
+| Shorten the heading, then retry | All six learnings move successfully | Same |
+
+The long heading was `preference-` followed by 280 `a` characters. An ASCII name of 255 characters succeeded; 256 failed. A 130-character `é` heading, 260 UTF-8 bytes, succeeded on Windows but failed on Linux. A repair therefore needs an explicit filesystem-safe naming policy, including byte length where relevant.
+
+There is also a concrete explanation to investigate for the leading `--` in your path: **the parser accepts text before the first `# ` heading as a category**. When a seeded file starts with a long `- preference... Confidence: 0.90` line and has five more learning lines, it counts six learnings and uses that first bullet as the directory name. Lowercasing and replacing whitespace with hyphens produces the leading `--`. This reproduces that parser behavior; it does not establish that your original `taste.md` had this exact malformed content.
+
+In the directory-creation failure cases, the existing root `taste.md` stayed byte-for-byte intact. That narrows the persistence finding: reorganization failed, but these fixtures did not lose the existing root learnings.
+
+One useful fix regression: `Workflow A` and `workflow-a`, each with six distinct learnings, both map to `workflow-a/taste.md`. The second category overwrote the first in the fixture, while both root sections became links to that same file. Shortening names alone should not introduce or preserve such collisions.
+
+The companion [issue-639-fixture-1.54.0.zip](https://github.com/Coding-Dev-Tools/command-code-issue-evidence/raw/c402e782a7ad64e44a809bae35a13a14e5c84e67/issues/639/issue-639-fixture-1.54.0.zip) covers 15 persistence/recovery cases per platform, including malformed headings, collisions and a valid category followed by a failing one. Extract it, then acquire the pinned bundle and run:
+
+```sh
+npm pack command-code@1.54.0
+tar -xf command-code-1.54.0.tgz
+node repro.mjs package/dist/cli.mjs runs
+node verify.mjs
+```
+
+The reproduction writes fresh results and asserts the observed behavior. `verify.mjs` checks the bundled captures and deliberately corrupted controls; passing these checks means the reported failures reproduced, not that they are fixed.
+
+**Limits:** Linux ran in a network-disabled container on tmpfs, not on macOS. No CLI learning session or model-generated category was tested. The original heading-generation cause remains unverified.
+
+I suggest validating category structure before reorganization, deriving bounded collision-resistant directory names, and preserving all source learnings until destination writes succeed. The retained fixtures can check those changes directly, without asking you to recreate a long conversation.

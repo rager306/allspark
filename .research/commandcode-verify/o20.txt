@@ -1,0 +1,10 @@
+--- JSON-string array under an ALIAS key (2-pass rescue) 
+  out: {"paths":["a.ts","b.ts"]}  rules: renameAliasedField,parseJsonStringifiedArray  REJECT
+--- bare string under alias for an array field 
+  out: {"paths":["a.ts"]}  rules: renameAliasedField,wrapBareScalarAsArray  REJECT
+--- array given for a string field (no coercion exists) 
+  out: {"pattern":"x","glob":["a","b"]}  rules: - 
+--- undefined value (JSON cannot carry it, but null) 
+  out: {"a":"x"}  rules: dropNullOrUndefinedField 
+--- empty object placeholder for an unknown key 
+  out: {"a":"x"}  rules: dropEmptyObjectPlaceholder 

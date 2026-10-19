@@ -1,0 +1,1 @@
+[{"items": [{"type": "custom_tool_call", "name": "exec", "call_id": "c1", "input": "const out=[]; for (let i=0;i<14;i++){ try{ const r = await tools.exec_command({cmd:\"sleep 30\", yield_time_ms:250}); out.push(r.session_id ?? (\"exit:\"+r.exit_code)); }catch(e){ out.push(\"ERR:\"+String(e).slice(0,160)); } } text(JSON.stringify(out));"}]}]

@@ -1,0 +1,12 @@
+--- alias + string number: two-pass sweep rescues it? 
+  out: {"command":"npm i","timeout":60000} 
+  rules: coerceStringToNumber 
+  hints: ["Coerced string `timeout` to a number."] 
+--- grep include (runtime reads it, schema drops it) -> SILENT LOSS 
+  out: {"pattern":"x"} 
+  rules: dropUnknownKey 
+  hints: ["Dropped unknown field `include`."] 
+--- vision.image(path)->image_index(number): type confusion 
+  out: {"question":"q","image_index":"/tmp/shot.png"} 
+  rules: renameAliasedField 
+  hints: ["Renamed `image` to `image_index` for tool \"vision\". Use `image_index` next time — `image` is not a valid field for this tool."] 
