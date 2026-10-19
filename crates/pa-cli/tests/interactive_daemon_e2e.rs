@@ -5003,9 +5003,20 @@ async fn tui_idle_session_event_repaints_without_input() {
     let mut options = base_options(&supervisor, dir.path(), &session_dir);
     options.session = pa_tui::interactive::SessionSelection::Attach(session.clone());
     let socket = supervisor.socket.clone();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
     let run = tokio::spawn(async move {
         let plan = pa_tui::interactive::HeadlessPlan {
-            steps: vec![pa_tui::interactive::HeadlessStep::WaitMs(4_000)],
+            steps: vec![
+                pa_tui::interactive::HeadlessStep::WaitRender {
+                    needle: "idle rename fixture reply".to_string(),
+                    timeout_ms: 30_000,
+                },
+                pa_tui::interactive::HeadlessStep::Timestamp(ready_tx),
+                pa_tui::interactive::HeadlessStep::WaitRender {
+                    needle: "renamed-while-attached".to_string(),
+                    timeout_ms: 30_000,
+                },
+            ],
             width: 100,
             height: 30,
         };
@@ -5013,9 +5024,12 @@ async fn tui_idle_session_event_repaints_without_input() {
             .await
             .expect("interactive run")
     });
-    // The attach settles first; the rename arrives as a pure daemon event
-    // (the second client never touches the TUI's input).
-    tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+    // Timestamp observes the attached first frame without dirtying the UI.
+    // The second client then renames it without touching the TUI's input.
+    tokio::task::spawn_blocking(move || ready_rx.recv_timeout(Duration::from_secs(30)))
+        .await
+        .expect("read attach readiness")
+        .expect("the attached first frame must render before the rename");
     let (renamer, _events) = pa_tui::daemon_client::DaemonClient::connect(&socket)
         .await
         .expect("connect supervisor for the rename");
@@ -5033,6 +5047,10 @@ async fn tui_idle_session_event_repaints_without_input() {
 
     let outcome = run.await.expect("interactive run");
     let rendered = outcome.frames.join("\n");
+    assert!(
+        !rendered.contains("timed out waiting for the headless render condition"),
+        "the idle repaint must arrive before a timeout note can dirty the UI:\n{rendered}"
+    );
     assert!(
         rendered.contains("renamed-while-attached"),
         "the session_info_changed rename repainted the idle pane without any input:\n{rendered}"

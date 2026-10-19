@@ -1,0 +1,31 @@
+{
+  "toolchain": "1.98.1",
+  "entrypoint": "make check",
+  "profile": "approved DEBUG0 JOBS2",
+  "exit_code": 2,
+  "fmt": "passed",
+  "workspace_clippy": "passed",
+  "workspace_tests": "failed",
+  "release_build": "not_run",
+  "failed_binary": "pa-cli interactive_daemon_e2e",
+  "passed": 40,
+  "failed": 2,
+  "ignored": 0,
+  "duration_s": 71.51,
+  "failures": [
+    {
+      "test": "tui_big_streamed_turns_render_at_the_producer_rate",
+      "assertion": "WaitIdle barrier expired; render starved behind stream",
+      "location": "interactive_daemon_e2e.rs:2364",
+      "barrier_ms": 45000
+    },
+    {
+      "test": "tui_idle_session_event_repaints_without_input",
+      "assertion": "session_info_changed rename did not appear in headless frames",
+      "location": "interactive_daemon_e2e.rs:5036"
+    }
+  ],
+  "local_raw_log": ".research/ci-fullgate-1.98.1-interactive-recur-red.log",
+  "local_raw_log_sha256": "386bf4bdf731d0992cdda778990607e770c8a56ce7f745a127d295fa31d3872c",
+  "scope": "Autolink first-char guard is useful but not enough concurrency headroom; fullgate success not claimed. Raw frame transcript omitted."
+}
