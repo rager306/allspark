@@ -1,0 +1,25 @@
+{
+  "toolchain": "1.98.1",
+  "entrypoint": "make check",
+  "source_commit": "986baffda",
+  "exit_code": 2,
+  "fmt": "passed",
+  "workspace_clippy": "passed",
+  "workspace_tests": "failed",
+  "release_build": "not_run",
+  "failed_binary": "pa-cli lib",
+  "passed": 310,
+  "failed": 1,
+  "ignored": 0,
+  "duration_s": 40.92,
+  "failure": {
+    "test": "piped_stdin::tests::a_live_producer_resets_the_window",
+    "location": "crates/pa-cli/src/piped_stdin.rs:132",
+    "assertion": "!idle_expired",
+    "fixture_behavior": "4producer sleeps20ms vs receiver60ms perreceive budget; scheduler deadline assumption",
+    "production_bug": "not_established"
+  },
+  "raw_local_log": ".research/ci-fullgate-1.98.1-piped-stdin-red.log",
+  "raw_log_sha256": "f34c7c48e5b6aaa2a66477ce22ed5aaa58c676530329d307873527b44ca7228c",
+  "scope": "Prior concurrent interactive42/42 remains valid focused binary result; full make now failed earlier in CLI library. No retry-to-green or timeout increase."
+}

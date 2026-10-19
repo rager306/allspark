@@ -6,7 +6,7 @@
 
 use std::io::IsTerminal as _;
 use std::io::Read as _;
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 
 /// Env override for the no-input window, in milliseconds: `0` skips the read
@@ -52,7 +52,8 @@ pub fn read_piped_stdin(idle_timeout_ms: u64) -> Option<String> {
             }
         }
     });
-    let (data, idle_expired) = collect_from(&receiver, idle_timeout_ms);
+    let (data, idle_expired) =
+        collect_from(|window| receiver.recv_timeout(window), idle_timeout_ms);
     if idle_expired {
         eprintln!(
             "stdin did not close within {idle_timeout_ms}ms; continuing without waiting for more piped input"
@@ -67,11 +68,14 @@ pub fn read_piped_stdin(idle_timeout_ms: u64) -> Option<String> {
 
 /// Drain chunks until EOF or the idle window lapses, returning whether the window
 /// (not EOF) ended the read: a live producer resets it, only silence expires it.
-fn collect_from(receiver: &Receiver<Vec<u8>>, idle_timeout_ms: u64) -> (Vec<u8>, bool) {
+fn collect_from(
+    mut receive: impl FnMut(Duration) -> Result<Vec<u8>, RecvTimeoutError>,
+    idle_timeout_ms: u64,
+) -> (Vec<u8>, bool) {
     let idle_window = Duration::from_millis(idle_timeout_ms);
     let mut data = Vec::new();
     loop {
-        match receiver.recv_timeout(idle_window) {
+        match receive(idle_window) {
             Ok(chunk) => data.extend_from_slice(&chunk),
             Err(RecvTimeoutError::Timeout) => return (data, true),
             Err(RecvTimeoutError::Disconnected) => return (data, false),
@@ -101,7 +105,7 @@ mod tests {
             sender.send(chunk).expect("send");
         }
         drop(sender);
-        let (data, idle_expired) = collect_from(&receiver, 5000);
+        let (data, idle_expired) = collect_from(|window| receiver.recv_timeout(window), 5000);
         assert_eq!(data, b"one two");
         assert!(!idle_expired);
     }
@@ -111,26 +115,32 @@ mod tests {
         let (sender, receiver) = std::sync::mpsc::channel();
         sender.send(b"first".to_vec()).expect("send");
         // The producer stays open but silent: the window expires.
-        let (data, idle_expired) = collect_from(&receiver, 30);
+        let (data, idle_expired) = collect_from(|window| receiver.recv_timeout(window), 30);
         assert_eq!(data, b"first");
         assert!(idle_expired);
     }
 
     #[test]
     fn a_live_producer_resets_the_window() {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let producer = std::thread::spawn(move || {
-            for tick in 0..4 {
-                std::thread::sleep(Duration::from_millis(20));
-                if sender.send(vec![b'0' + tick as u8]).is_err() {
-                    return;
-                }
-            }
-        });
-        // Chunks every 20ms keep the 60ms window alive across the run.
-        let (data, idle_expired) = collect_from(&receiver, 60);
+        let mut chunks = [b'0', b'1', b'2', b'3'].into_iter();
+        let mut calls = 0;
+        let (data, idle_expired) = collect_from(
+            |window| {
+                assert_eq!(
+                    window,
+                    Duration::from_millis(60),
+                    "every receive gets a fresh idle window"
+                );
+                calls += 1;
+                chunks
+                    .next()
+                    .map(|byte| vec![byte])
+                    .ok_or(RecvTimeoutError::Disconnected)
+            },
+            60,
+        );
         assert!(!idle_expired);
         assert_eq!(data, b"0123");
-        producer.join().expect("producer finished");
+        assert_eq!(calls, 5);
     }
 }
