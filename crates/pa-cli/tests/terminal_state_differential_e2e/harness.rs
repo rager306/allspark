@@ -15,13 +15,14 @@
 //! re-executed under the pty as the product under test).
 
 use std::io::{BufRead, Read, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use nix::fcntl::{fcntl, FcntlArg::F_SETFL, OFlag};
+use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use nix::pty::{openpty, Winsize};
 use serde_json::{json, Value};
 
@@ -257,19 +258,26 @@ impl PtyReader {
             if find_subsequence(&self.output[mark..], needle).is_some() {
                 return;
             }
-            let mut buffer = [0u8; 8192];
-            match self.file.read(&mut buffer) {
-                Ok(0) | Err(_) => {}
-                Ok(n) => self.output.extend_from_slice(&buffer[..n]),
-            }
-            if Instant::now() > deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
                 let text = String::from_utf8_lossy(&self.output[mark..]);
                 panic!(
                     "timeout waiting for {what} (needle {needle:?}); pty tail \
                      since mark:\n{text}"
                 );
             }
-            std::thread::sleep(Duration::from_millis(20));
+            let mut ready = [PollFd::new(self.file.as_fd(), PollFlags::POLLIN)];
+            let timeout = PollTimeout::try_from(remaining).expect("the 30s readiness bound fits");
+            match poll(&mut ready, timeout) {
+                Ok(0) | Err(nix::errno::Errno::EINTR) => continue,
+                Ok(_) => {}
+                Err(error) => panic!("polling the pty while waiting for {what}: {error}"),
+            }
+            let mut buffer = [0u8; 8192];
+            match self.file.read(&mut buffer) {
+                Ok(0) | Err(_) => {}
+                Ok(n) => self.output.extend_from_slice(&buffer[..n]),
+            }
         }
     }
 }
@@ -281,6 +289,35 @@ pub(crate) fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> 
     haystack
         .windows(needle.len())
         .position(|window| window == needle)
+}
+
+/// A mock terminal must not spend the real probe window sleeping through
+/// bytes that are already readable ahead of the capability query.
+#[test]
+fn a_buffered_terminal_query_is_answered_within_the_probe_window() {
+    use std::os::unix::net::UnixStream;
+
+    let (terminal, mut application) = UnixStream::pair().expect("terminal socket pair");
+    let responder = std::thread::spawn(move || {
+        application
+            .write_all(&vec![b'x'; 128 * 1024])
+            .expect("buffer the first paint");
+        application.write_all(KITTY_QUERY).expect("write the query");
+        application
+            .set_read_timeout(Some(Duration::from_millis(250)))
+            .expect("the real probe's answer deadline");
+        let mut answer = vec![0; KITTY_ANSWER.len()];
+        let answered = application.read_exact(&mut answer).is_ok() && answer == KITTY_ANSWER;
+        (answered, application)
+    });
+    let mut terminal = PtyReader::new(terminal.into());
+    terminal.wait_from(0, KITTY_QUERY, "the buffered kitty capability query");
+    terminal.write(KITTY_ANSWER);
+    let (answered, _application) = responder.join().expect("application probe thread");
+    assert!(
+        answered,
+        "the mock terminal missed the real 250ms probe window"
+    );
 }
 
 // The termios differential.

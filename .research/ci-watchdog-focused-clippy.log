@@ -1,0 +1,395 @@
+    Checking cfg-if v1.0.4
+    Checking memchr v2.8.3
+    Checking log v0.4.34
+    Checking equivalent v1.0.2
+    Checking foldhash v0.2.0
+    Checking serde_core v1.0.229
+    Checking libc v0.2.189
+    Checking once_cell v1.21.4
+    Checking pin-project-lite v0.2.17
+    Checking bitflags v2.13.2
+    Checking itoa v1.0.18
+    Checking zerocopy v0.8.57
+    Checking scopeguard v1.2.0
+    Checking bytes v1.12.1
+    Checking futures-core v0.3.34
+    Checking hashbrown v0.17.1
+    Checking zerofrom v0.1.8
+    Checking tree-sitter-language v0.1.9
+    Checking lock_api v0.4.14
+    Checking stable_deref_trait v1.2.1
+    Checking thiserror v2.0.20
+    Checking zeroize v1.9.0
+    Checking allocator-api2 v0.2.21
+    Checking crc32fast v1.5.2
+    Checking yoke v0.8.3
+    Checking tracing-core v0.1.36
+    Checking foldhash v0.1.5
+    Checking futures-sink v0.3.34
+    Checking futures-io v0.3.34
+    Checking futures-task v0.3.34
+    Checking slab v0.4.12
+    Checking anyhow v1.0.104
+    Checking zerovec v0.11.8
+    Checking futures-channel v0.3.34
+    Checking subtle v2.6.1
+    Checking hashbrown v0.15.5
+    Checking aho-corasick v1.1.5
+    Checking regex-syntax v0.8.11
+    Checking litemap v0.8.3
+    Checking writeable v0.6.4
+    Checking tracing v0.1.44
+    Checking libm v0.2.16
+    Checking futures-util v0.3.34
+    Checking zerotrie v0.2.5
+    Checking const-oid v0.9.6
+    Checking utf8_iter v1.0.4
+    Checking either v1.18.0
+    Checking tinystr v0.8.4
+    Checking potential_utf v0.1.6
+    Checking errno v0.3.14
+    Checking mio v1.2.3
+    Checking socket2 v0.6.5
+    Checking getrandom v0.2.17
+    Checking icu_locale_core v2.3.0
+    Checking signal-hook-registry v1.4.8
+    Checking icu_collections v2.3.0
+    Checking percent-encoding v2.3.2
+    Checking serde v1.0.229
+    Checking indexmap v2.14.2
+   Compiling cranelift-codegen-shared v0.116.1
+    Checking typenum v1.20.1
+    Checking icu_properties_data v2.3.0
+    Checking icu_normalizer_data v2.3.0
+    Checking http v1.5.0
+   Compiling cranelift-codegen-meta v0.116.1
+    Checking rustls-pki-types v1.15.1
+    Checking zmij v1.0.23
+    Checking linux-raw-sys v0.12.1
+    Checking smallvec v1.16.1
+    Checking regex-automata v0.4.18
+    Checking cranelift-bitset v0.116.1
+    Checking target-lexicon v0.13.5
+    Checking gimli v0.31.1
+    Checking icu_provider v2.3.1
+    Checking parking_lot_core v0.9.12
+    Checking cranelift-entity v0.116.1
+    Checking serde_json v1.0.151
+    Checking bumpalo v3.20.3
+    Checking generic-array v0.14.7
+    Checking rustix v1.1.4
+    Checking icu_normalizer v2.3.0
+    Checking parking_lot v0.12.5
+    Checking icu_properties v2.3.0
+    Checking rustc-hash v2.1.3
+    Checking tokio v1.53.1
+    Checking arbitrary v1.5.0
+    Checking regalloc2 v0.11.2
+    Checking ahash v0.8.12
+    Checking crypto-common v0.1.7
+    Checking block-buffer v0.10.4
+    Checking hashbrown v0.14.5
+    Checking cranelift-bforest v0.116.1
+    Checking form_urlencoded v1.2.2
+    Checking untrusted v0.9.0
+    Checking cranelift-control v0.116.1
+    Checking semver v1.0.28
+    Checking linux-raw-sys v0.4.15
+    Checking ring v0.17.14
+    Checking digest v0.10.7
+    Checking idna_adapter v1.2.2
+    Checking cobs v0.3.0
+    Checking wasmparser v0.221.3
+    Checking idna v1.1.0
+    Checking rustix v0.38.44
+    Checking termcolor v1.4.1
+    Checking leb128 v0.2.7
+    Checking tower-service v0.3.3
+    Checking postcard v1.1.3
+    Checking url v2.5.8
+    Checking wasm-encoder v0.221.3
+    Checking crossbeam-utils v0.8.23
+    Checking regex v1.13.1
+    Checking object v0.36.7
+    Checking httparse v1.10.1
+   Compiling cranelift-codegen v0.116.1
+    Checking ppv-lite86 v0.2.21
+    Checking http-body v1.1.0
+    Checking simd-adler32 v0.3.10
+    Checking adler2 v2.0.1
+    Checking ryu v1.0.23
+    Checking thiserror v1.0.69
+    Checking rustls-webpki v0.103.15
+    Checking crossbeam-epoch v0.9.21
+    Checking miniz_oxide v0.9.1
+    Checking itertools v0.12.1
+    Checking fnv v1.0.7
+    Checking tower-layer v0.3.3
+    Checking cpufeatures v0.2.17
+    Checking try-lock v0.2.5
+    Checking atomic-waker v1.1.2
+    Checking flate2 v1.1.10
+    Checking rustls v0.23.45
+    Checking crossbeam-deque v0.8.8
+    Checking want v0.3.1
+    Checking memfd v0.6.6
+    Checking webpki-roots v1.0.9
+    Checking wasmtime-math v29.0.1
+    Checking wasmtime-jit-icache-coherence v29.0.1
+    Checking wasmtime-asm-macros v29.0.1
+    Checking base64 v0.22.1
+    Checking base64ct v1.8.3
+    Checking compression-core v0.4.33
+    Checking same-file v1.0.6
+    Checking sptr v0.3.2
+   Compiling siphasher v1.0.4
+    Checking bit-vec v0.8.0
+    Checking wasmtime-slab v29.0.1
+    Checking openssl-probe v0.2.1
+    Checking pem-rfc7468 v0.7.0
+   Compiling phf_shared v0.14.0
+    Checking walkdir v2.5.0
+    Checking rustls-native-certs v0.8.4
+    Checking compression-codecs v0.4.42
+    Checking bit-set v0.8.0
+    Checking getrandom v0.3.4
+    Checking rand_core v0.6.4
+    Checking bstr v1.13.1
+    Checking sync_wrapper v1.0.2
+    Checking ipnet v2.12.2
+    Checking spin v0.9.9
+    Checking rand_core v0.9.5
+   Compiling phf_generator v0.14.0
+    Checking num-traits v0.2.19
+    Checking tokio-util v0.7.19
+    Checking lazy_static v1.5.0
+    Checking tower v0.5.3
+   Compiling tree-sitter v0.25.10
+    Checking async-compression v0.4.47
+    Checking der v0.7.10
+    Checking http-body-util v0.1.5
+    Checking globset v0.4.20
+    Checking futures-executor v0.3.34
+    Checking streaming-iterator v0.1.9
+    Checking ignore v0.4.33
+    Checking num-integer v0.1.47
+    Checking futures v0.3.34
+    Checking h2 v0.4.19
+    Checking tower-http v0.6.11
+   Compiling phf_macros v0.14.0
+    Checking rand_chacha v0.9.0
+    Checking rand_chacha v0.3.1
+    Checking sha2 v0.10.9
+    Checking serde_urlencoded v0.7.1
+    Checking rand v0.9.5
+    Checking num-iter v0.1.46
+    Checking spki v0.7.3
+    Checking tree-sitter-regex v0.25.0
+    Checking rand v0.8.8
+    Checking tokio-rustls v0.26.5
+    Checking tree-sitter-md v0.5.3
+    Checking pkcs8 v0.10.2
+    Checking tree-sitter-cpp v0.23.4
+    Checking tree-sitter-bash v0.25.1
+    Checking tree-sitter-rust v0.24.2
+    Checking tree-sitter-css v0.25.0
+    Checking tree-sitter-java v0.23.5
+    Checking tree-sitter-html v0.23.2
+    Checking tree-sitter-toml-ng v0.7.0
+    Checking tree-sitter-json v0.24.8
+    Checking tree-sitter-javascript v0.25.0
+    Checking tree-sitter-yaml v0.7.2
+    Checking tree-sitter-go v0.25.0 (/root/prime-agent/vendor/tree-sitter-go)
+    Checking tree-sitter-typescript v0.23.2
+    Checking tree-sitter-diff v0.1.0
+    Checking tree-sitter-python v0.25.0
+    Checking tree-sitter-c v0.24.2
+    Checking inotify-sys v0.1.8
+    Checking getrandom v0.4.3
+    Checking wasmprinter v0.221.3
+    Checking phf v0.14.0
+    Checking pa-types v0.10.1-beta.35 (/root/prime-agent/crates/pa-types)
+    Checking sha1 v0.10.7
+    Checking xxhash-rust v0.8.19
+    Checking unicode-segmentation v1.13.3
+    Checking data-encoding v2.11.1
+    Checking utf-8 v0.7.6
+   Compiling strsim v0.11.1
+    Checking inotify v0.11.5
+    Checking num-bigint-dig v0.8.6
+    Checking pkcs1 v0.7.5
+    Checking signature v2.2.0
+    Checking webpki-roots v0.26.11
+   Compiling darling_core v0.24.1
+    Checking notify-types v2.1.0
+    Checking tungstenite v0.28.0
+    Checking bitflags v1.3.2
+    Checking utf8parse v0.2.2
+    Checking libsqlite3-sys v0.38.2
+    Checking signal-hook v0.3.18
+    Checking lsp-types v0.95.1
+    Checking anstyle-parse v1.0.0
+    Checking notify v8.2.0
+    Checking rayon-core v1.13.0
+    Checking uuid v1.26.1
+    Checking hmac v0.12.1
+    Checking hashlink v0.12.2
+    Checking wasmtime-environ v29.0.1
+    Checking tokio-tungstenite v0.28.0
+    Checking hyper v1.11.1
+    Checking arrayvec v0.7.8
+    Checking anstyle-query v1.1.5
+    Checking rsa v0.9.10
+    Checking is_terminal_polyfill v1.70.2
+    Checking fallible-streaming-iterator v0.1.9
+    Checking winnow v1.0.4
+    Checking fixedbitset v0.5.7
+    Checking fallible-iterator v0.3.0
+    Checking constant_time_eq v0.4.2
+    Checking tinyvec v1.13.3
+    Checking colorchoice v1.0.5
+    Checking anstyle v1.0.14
+    Checking cpufeatures v0.3.1
+    Checking hex v0.4.3
+    Checking toml_parser v1.1.4+spec-1.1.0
+    Checking rusqlite v0.40.2
+    Checking blake3 v1.8.7
+    Checking unicode-normalization v0.1.25
+    Checking anstream v1.0.0
+    Checking petgraph v0.8.3
+    Checking hyper-util v0.1.20
+    Checking rayon v1.12.0
+    Checking signal-hook-mio v0.2.5
+    Checking castaway v0.2.4
+    Checking pa-agent v0.10.1-beta.35 (/root/prime-agent/crates/pa-agent)
+    Checking fancy-regex v0.14.0
+    Checking xattr v1.6.1
+    Checking serde_spanned v1.1.2
+    Checking toml_datetime v0.7.5+spec-1.1.0
+    Checking itertools v0.13.0
+    Checking filetime v0.2.29
+    Checking libyaml-rs v0.3.0
+    Checking pa-diff v0.10.1-beta.35 (/root/prime-agent/crates/pa-diff)
+    Checking toml_writer v1.1.3+spec-1.1.0
+    Checking hyper-rustls v0.27.9
+    Checking winnow v0.7.15
+    Checking unicode-width v0.1.14
+    Checking static_assertions v1.1.0
+    Checking reqwest v0.12.28
+    Checking clap_lex v1.1.1
+    Checking compact_str v0.8.2
+   Compiling darling_macro v0.24.1
+    Checking yaml_serde v0.10.7
+    Checking clap_builder v4.6.7
+    Checking tar v0.4.46
+    Checking unicode-truncate v1.1.0
+    Checking crossterm v0.28.1 (/root/prime-agent/vendor/crossterm)
+    Checking strum v0.26.3
+    Checking pa-jev v0.10.1-beta.35 (/root/prime-agent/crates/pa-jev)
+   Compiling darling v0.24.1
+    Checking pa-telemetry v0.10.1-beta.35 (/root/prime-agent/crates/pa-telemetry)
+    Checking nix v0.29.0
+   Compiling instability v0.3.13
+    Checking sharded-slab v0.1.7
+    Checking matchers v0.2.0
+    Checking lru v0.12.5
+    Checking toml v0.9.12+spec-1.1.0
+    Checking tracing-log v0.2.0
+    Checking thread_local v1.1.10
+    Checking nu-ansi-term v0.50.3
+warning: unexpected `cfg` condition name: `winapi`
+   --> vendor/crossterm/src/lib.rs:256:11
+    |
+256 | #[cfg(all(winapi, not(feature = "winapi")))]
+    |           ^^^^^^
+    |
+    = help: expected names are: `docsrs`, `feature`, and `test` and 32 more
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(winapi)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(winapi)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+    = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unexpected `cfg` condition value: `winapi`
+   --> vendor/crossterm/src/lib.rs:256:23
+    |
+256 | #[cfg(all(winapi, not(feature = "winapi")))]
+    |                       ^^^^^^^^^^^^^^^^^^
+    |
+    = note: expected values for `feature` are: `bracketed-paste`, `default`, `event-stream`, `events`, `filedescriptor`, `libc`, `serde`, `use-dev-tty`, and `windows`
+    = help: consider adding `winapi` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `crossterm_winapi`
+   --> vendor/crossterm/src/lib.rs:259:11
+    |
+259 | #[cfg(all(crossterm_winapi, not(feature = "crossterm_winapi")))]
+    |           ^^^^^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(crossterm_winapi)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(crossterm_winapi)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition value: `crossterm_winapi`
+   --> vendor/crossterm/src/lib.rs:259:33
+    |
+259 | #[cfg(all(crossterm_winapi, not(feature = "crossterm_winapi")))]
+    |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: expected values for `feature` are: `bracketed-paste`, `default`, `event-stream`, `events`, `filedescriptor`, `libc`, `serde`, `use-dev-tty`, and `windows`
+    = help: consider adding `crossterm_winapi` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unnecessary parentheses around closure body
+  --> vendor/crossterm/src/terminal/sys/unix.rs:85:50
+   |
+85 |     let file = File::open("/dev/tty").map(|file| (FileDesc::Owned(file.into())));
+   |                                                  ^                            ^
+   |
+   = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+   |
+85 -     let file = File::open("/dev/tty").map(|file| (FileDesc::Owned(file.into())));
+85 +     let file = File::open("/dev/tty").map(|file| FileDesc::Owned(file.into()));
+   |
+
+warning: struct `InternalEventFilter` is never constructed
+  --> vendor/crossterm/src/event/filter.rs:65:19
+   |
+65 | pub(crate) struct InternalEventFilter;
+   |                   ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `crossterm` (lib) generated 6 warnings (run `cargo clippy --fix --lib -p crossterm -- -D warnings` to apply 1 suggestion)
+    Checking unicode-width v0.2.0
+    Checking cassowary v0.3.0
+    Checking unicode-properties v0.1.4
+    Checking fastrand v2.5.0
+    Checking tracing-subscriber v0.3.23
+    Checking tempfile v3.27.0
+    Checking ratatui v0.29.0
+    Checking clap v4.6.7
+    Checking async-lsp v0.2.4
+    Checking pa-ai v0.10.1-beta.35 (/root/prime-agent/crates/pa-ai)
+    Checking pa-tui v0.10.1-beta.35 (/root/prime-agent/crates/pa-tui)
+    Checking cranelift-native v0.116.1
+    Checking cranelift-frontend v0.116.1
+    Checking wasmtime-cranelift v29.0.1
+    Checking wasmtime v29.0.1
+    Checking pa-models v0.10.1-beta.35 (/root/prime-agent/crates/pa-models)
+    Checking wasmtime-c-api-impl v29.0.1
+    Checking ast-grep-core v0.39.9
+    Checking pa-ast v0.10.1-beta.35 (/root/prime-agent/crates/pa-ast)
+    Checking pa-edit v0.10.1-beta.35 (/root/prime-agent/crates/pa-edit)
+    Checking pa-graph v0.10.1-beta.35 (/root/prime-agent/crates/pa-graph)
+    Checking pa-lsp v0.10.1-beta.35 (/root/prime-agent/crates/pa-lsp)
+    Checking pa-core v0.10.1-beta.35 (/root/prime-agent/crates/pa-core)
+    Checking pa-daemon v0.10.1-beta.35 (/root/prime-agent/crates/pa-daemon)
+    Checking pa-cli v0.10.1-beta.35 (/root/prime-agent/crates/pa-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 09s

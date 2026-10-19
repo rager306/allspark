@@ -1,0 +1,47 @@
+{
+  "toolchain": "1.98.1",
+  "scope": "Test harness readiness only; no production or Kitty deadline change",
+  "changed_paths": [
+    "crates/pa-cli/Cargo.toml",
+    "crates/pa-cli/tests/terminal_state_differential_e2e/harness.rs"
+  ],
+  "new_unsafe": false,
+  "new_crate": false,
+  "dev_feature": "nix0.29 poll",
+  "cargo_lock_sha256": "e5b10843183226e49a04fffe4c037083ae40232a8f482856fde1666adab3b7fc",
+  "cargo_lock_byte_identical": true,
+  "red": {
+    "log": ".research/ci-watchdog-buffered-query-red.log",
+    "sha256": "e4fe6e8740240f07665ee1b600ba322fb1fcf609c43aa42337dba117741ab1c8",
+    "exit_code": 101,
+    "passed": 0,
+    "failed": 1,
+    "duration_s": 0.41,
+    "assertion": "the mock terminal missed the real250ms probe window"
+  },
+  "green": {
+    "log": ".research/ci-watchdog-buffered-query-green.log",
+    "sha256": "45c2832f9b8d2150ac15ee9b6216cdb5a093d8207c254952e511a7bfa5a335a6",
+    "passed": 1,
+    "failed": 0,
+    "duration_s": 0.06,
+    "profile_note": "unoptimized+debuginfo in native Cargo log; final root gate uses approved DEBUG=0"
+  },
+  "terminal_binary": {
+    "local_log": ".research/ci-watchdog-terminal-all-green.log",
+    "sha256": "9039a7d1dbb5fcccaa9588a25ddd01575a1cfde1d149e6a9381923503432bf24",
+    "summaries": [
+      "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.77s",
+      "test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.30s"
+    ],
+    "passed": 30,
+    "failed": 0,
+    "ignored": 0,
+    "duration_s": 13.3,
+    "watchdog_route_explicit_ok": true
+  },
+  "limitations": [
+    "128KiB synthetic prelude proves the reader wait defect; historical frame is2171chars and untimestamped, so same historical cause is not proven.",
+    "No interactive protocol or terminal settings changed. No full workspace/release success claimed from this focused binary."
+  ]
+}
