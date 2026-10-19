@@ -1,0 +1,29 @@
+.....................  secret-fixture trial-1: FAIL (secret: a planted secret value appears in the transcript)
+  secret-fixture judge[scripted]: not_achieved (score=0)
+.
+=== suite: {'tasks': 1, 'pass': 0, 'fail': 1, 'skip': 0} ===
+  secret-fixture                               fail  0%   :: secret: a planted secret value appears in the transcript
+manifest: /tmp/tmp0hrsw4de/out/20261019-151626/manifest.json
+  secret-fixture trial-1: FAIL (secret: a planted secret value appears in the transcript)
+  secret-fixture judge[unscored]: None (score=None)
+
+=== suite: {'tasks': 1, 'pass': 0, 'fail': 1, 'skip': 0} ===
+  secret-fixture                               fail  0%   :: secret: a planted secret value appears in the transcript
+manifest: /tmp/tmp1h6tlnb2/out/20261019-151626/manifest.json
+  secret-fixture trial-1: FAIL (secret: a planted secret value appears in stdout/stderr)
+  secret-fixture judge[unscored]: None (score=None)
+
+=== suite: {'tasks': 1, 'pass': 0, 'fail': 1, 'skip': 0} ===
+  secret-fixture                               fail  0%   :: secret: a planted secret value appears in stdout/stderr
+manifest: /tmp/tmpzqzis3ui/out/20261019-151626/manifest.json
+  secret-fixture trial-1: FAIL (earlier check; earlier check)
+  secret-fixture judge[unscored]: None (score=None)
+.
+----------------------------------------------------------------------
+Ran 23 tests in 4.725s
+
+OK
+
+=== suite: {'tasks': 1, 'pass': 0, 'fail': 1, 'skip': 0} ===
+  secret-fixture                               fail  0%   :: earlier check; oracle detail: synthetic-planted-secret-for-offline-test
+manifest: /tmp/tmp1c9eosxg/out/20261019-151626/manifest.json

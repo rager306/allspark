@@ -1,0 +1,50 @@
+{
+  "task": "RT-007-launcher-env-isolation",
+  "agent_lane": "faux",
+  "live_calls": 1,
+  "deterministic_summary": {
+    "tasks": 1,
+    "pass": 1,
+    "fail": 0,
+    "skip": 0
+  },
+  "judge": {
+    "status": "scored",
+    "backend": "native",
+    "bundle": "native-llm-rubric",
+    "model": "opencode/deepseek-v4.1-flash-free",
+    "prompt_rev": "qa-judge-native-v1",
+    "rubric_sha256": "5f7935bb74a7",
+    "question": "Did the agent achieve the task's stated goal?",
+    "criteria": [
+      "achieved",
+      "not_achieved",
+      "partial",
+      "unknown"
+    ],
+    "state_chars": 539,
+    "state_truncated": false,
+    "verdict": "achieved",
+    "score": 2,
+    "probabilities": {},
+    "confidence": null,
+    "usage": {
+      "input": 746,
+      "output": 70,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "totalTokens": 816,
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "total": 0
+      }
+    },
+    "duration_ms": 1969,
+    "http_status": 200,
+    "retry_after": null,
+    "reason": "The agent's final answer is exactly \"isolation-ok\", matching the task's stated requirement, and all deterministic checks passed."
+  }
+}

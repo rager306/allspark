@@ -1,0 +1,192 @@
+test_each_provenance_mismatch_is_excluded (test_qa_judge.JudgeComparisonTests.test_each_provenance_mismatch_is_excluded) ... 
+  test_each_provenance_mismatch_is_excluded (test_qa_judge.JudgeComparisonTests.test_each_provenance_mismatch_is_excluded) (field='backend') ... FAIL
+  test_each_provenance_mismatch_is_excluded (test_qa_judge.JudgeComparisonTests.test_each_provenance_mismatch_is_excluded) (field='bundle') ... FAIL
+  test_each_provenance_mismatch_is_excluded (test_qa_judge.JudgeComparisonTests.test_each_provenance_mismatch_is_excluded) (field='model') ... FAIL
+  test_each_provenance_mismatch_is_excluded (test_qa_judge.JudgeComparisonTests.test_each_provenance_mismatch_is_excluded) (field='prompt_rev') ... FAIL
+  test_each_provenance_mismatch_is_excluded (test_qa_judge.JudgeComparisonTests.test_each_provenance_mismatch_is_excluded) (field='rubric_sha256') ... FAIL
+test_error_status_cannot_supply_a_rankable_verdict (test_qa_judge.JudgeComparisonTests.test_error_status_cannot_supply_a_rankable_verdict) ... FAIL
+test_matching_provenance_compares_zero_against_positive (test_qa_judge.JudgeComparisonTests.test_matching_provenance_compares_zero_against_positive) ... ok
+test_missing_provenance_is_excluded (test_qa_judge.JudgeComparisonTests.test_missing_provenance_is_excluded) ... 
+  test_missing_provenance_is_excluded (test_qa_judge.JudgeComparisonTests.test_missing_provenance_is_excluded) (field='backend') ... FAIL
+  test_missing_provenance_is_excluded (test_qa_judge.JudgeComparisonTests.test_missing_provenance_is_excluded) (field='bundle') ... FAIL
+  test_missing_provenance_is_excluded (test_qa_judge.JudgeComparisonTests.test_missing_provenance_is_excluded) (field='model') ... FAIL
+  test_missing_provenance_is_excluded (test_qa_judge.JudgeComparisonTests.test_missing_provenance_is_excluded) (field='prompt_rev') ... FAIL
+  test_missing_provenance_is_excluded (test_qa_judge.JudgeComparisonTests.test_missing_provenance_is_excluded) (field='rubric_sha256') ... FAIL
+test_numeric_summary_excludes_none_and_scripted_but_includes_zero (test_qa_judge.JudgeComparisonTests.test_numeric_summary_excludes_none_and_scripted_but_includes_zero) ... ok
+test_numeric_summary_with_no_scores_is_not_zero (test_qa_judge.JudgeComparisonTests.test_numeric_summary_with_no_scores_is_not_zero) ... ok
+test_unknown_is_not_zero (test_qa_judge.JudgeComparisonTests.test_unknown_is_not_zero) ... ok
+test_http_429_is_unscored_not_scripted (test_qa_judge.JudgeRegressionTests.test_http_429_is_unscored_not_scripted) ... ok
+test_large_evidence_is_capped_and_reports_truncation (test_qa_judge.JudgeRegressionTests.test_large_evidence_is_capped_and_reports_truncation) ... ok
+test_live_without_key_is_unscored_not_scripted (test_qa_judge.JudgeRegressionTests.test_live_without_key_is_unscored_not_scripted) ... ok
+test_malformed_choices_are_unscored (test_qa_judge.JudgeRegressionTests.test_malformed_choices_are_unscored) ... ok
+test_scored_zero_preserves_native_measurement_and_usage (test_qa_judge.JudgeRegressionTests.test_scored_zero_preserves_native_measurement_and_usage) ... ok
+test_scripted_mode_is_explicitly_labelled (test_qa_judge.JudgeRegressionTests.test_scripted_mode_is_explicitly_labelled) ... ok
+test_transport_failures_are_unscored_without_retry (test_qa_judge.JudgeRegressionTests.test_transport_failures_are_unscored_without_retry) ... ok
+test_unknown_choice_is_unscored_not_zero (test_qa_judge.JudgeRegressionTests.test_unknown_choice_is_unscored_not_zero) ... ok
+test_wrong_response_model_is_unscored (test_qa_judge.JudgeRegressionTests.test_wrong_response_model_is_unscored) ... ok
+test_request_auth_uses_stdin_not_arguments (test_qa_judge.NativeJudgeRequestTests.test_request_auth_uses_stdin_not_arguments) ... ok
+
+======================================================================
+FAIL: test_each_provenance_mismatch_is_excluded (test_qa_judge.JudgeComparisonTests.test_each_provenance_mismatch_is_excluded) (field='backend')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/root/prime-agent/.research/b1-mutation/test_qa_judge.py", line 139, in test_each_provenance_mismatch_is_excluded
+    self.assertEqual(
+AssertionError: {'better': 1, 'worse': 0, 'same': 0, 'excluded': 0} != {'better': 0, 'worse': 0, 'same': 0, 'excluded': 1}
+- {'better': 1, 'excluded': 0, 'same': 0, 'worse': 0}
+?            ^              ^
+
++ {'better': 0, 'excluded': 1, 'same': 0, 'worse': 0}
+?            ^              ^
+
+
+======================================================================
+FAIL: test_each_provenance_mismatch_is_excluded (test_qa_judge.JudgeComparisonTests.test_each_provenance_mismatch_is_excluded) (field='bundle')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/root/prime-agent/.research/b1-mutation/test_qa_judge.py", line 139, in test_each_provenance_mismatch_is_excluded
+    self.assertEqual(
+AssertionError: {'better': 1, 'worse': 0, 'same': 0, 'excluded': 0} != {'better': 0, 'worse': 0, 'same': 0, 'excluded': 1}
+- {'better': 1, 'excluded': 0, 'same': 0, 'worse': 0}
+?            ^              ^
+
++ {'better': 0, 'excluded': 1, 'same': 0, 'worse': 0}
+?            ^              ^
+
+
+======================================================================
+FAIL: test_each_provenance_mismatch_is_excluded (test_qa_judge.JudgeComparisonTests.test_each_provenance_mismatch_is_excluded) (field='model')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/root/prime-agent/.research/b1-mutation/test_qa_judge.py", line 139, in test_each_provenance_mismatch_is_excluded
+    self.assertEqual(
+AssertionError: {'better': 1, 'worse': 0, 'same': 0, 'excluded': 0} != {'better': 0, 'worse': 0, 'same': 0, 'excluded': 1}
+- {'better': 1, 'excluded': 0, 'same': 0, 'worse': 0}
+?            ^              ^
+
++ {'better': 0, 'excluded': 1, 'same': 0, 'worse': 0}
+?            ^              ^
+
+
+======================================================================
+FAIL: test_each_provenance_mismatch_is_excluded (test_qa_judge.JudgeComparisonTests.test_each_provenance_mismatch_is_excluded) (field='prompt_rev')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/root/prime-agent/.research/b1-mutation/test_qa_judge.py", line 139, in test_each_provenance_mismatch_is_excluded
+    self.assertEqual(
+AssertionError: {'better': 1, 'worse': 0, 'same': 0, 'excluded': 0} != {'better': 0, 'worse': 0, 'same': 0, 'excluded': 1}
+- {'better': 1, 'excluded': 0, 'same': 0, 'worse': 0}
+?            ^              ^
+
++ {'better': 0, 'excluded': 1, 'same': 0, 'worse': 0}
+?            ^              ^
+
+
+======================================================================
+FAIL: test_each_provenance_mismatch_is_excluded (test_qa_judge.JudgeComparisonTests.test_each_provenance_mismatch_is_excluded) (field='rubric_sha256')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/root/prime-agent/.research/b1-mutation/test_qa_judge.py", line 139, in test_each_provenance_mismatch_is_excluded
+    self.assertEqual(
+AssertionError: {'better': 1, 'worse': 0, 'same': 0, 'excluded': 0} != {'better': 0, 'worse': 0, 'same': 0, 'excluded': 1}
+- {'better': 1, 'excluded': 0, 'same': 0, 'worse': 0}
+?            ^              ^
+
++ {'better': 0, 'excluded': 1, 'same': 0, 'worse': 0}
+?            ^              ^
+
+
+======================================================================
+FAIL: test_error_status_cannot_supply_a_rankable_verdict (test_qa_judge.JudgeComparisonTests.test_error_status_cannot_supply_a_rankable_verdict)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/root/prime-agent/.research/b1-mutation/test_qa_judge.py", line 154, in test_error_status_cannot_supply_a_rankable_verdict
+    self.assertEqual((delta["excluded"], delta["worse"]), (1, 0))
+AssertionError: Tuples differ: (0, 1) != (1, 0)
+
+First differing element 0:
+0
+1
+
+- (0, 1)
++ (1, 0)
+
+======================================================================
+FAIL: test_missing_provenance_is_excluded (test_qa_judge.JudgeComparisonTests.test_missing_provenance_is_excluded) (field='backend')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/root/prime-agent/.research/b1-mutation/test_qa_judge.py", line 162, in test_missing_provenance_is_excluded
+    self.assertEqual((delta["excluded"], delta["better"]), (1, 0))
+AssertionError: Tuples differ: (0, 1) != (1, 0)
+
+First differing element 0:
+0
+1
+
+- (0, 1)
++ (1, 0)
+
+======================================================================
+FAIL: test_missing_provenance_is_excluded (test_qa_judge.JudgeComparisonTests.test_missing_provenance_is_excluded) (field='bundle')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/root/prime-agent/.research/b1-mutation/test_qa_judge.py", line 162, in test_missing_provenance_is_excluded
+    self.assertEqual((delta["excluded"], delta["better"]), (1, 0))
+AssertionError: Tuples differ: (0, 1) != (1, 0)
+
+First differing element 0:
+0
+1
+
+- (0, 1)
++ (1, 0)
+
+======================================================================
+FAIL: test_missing_provenance_is_excluded (test_qa_judge.JudgeComparisonTests.test_missing_provenance_is_excluded) (field='model')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/root/prime-agent/.research/b1-mutation/test_qa_judge.py", line 162, in test_missing_provenance_is_excluded
+    self.assertEqual((delta["excluded"], delta["better"]), (1, 0))
+AssertionError: Tuples differ: (0, 1) != (1, 0)
+
+First differing element 0:
+0
+1
+
+- (0, 1)
++ (1, 0)
+
+======================================================================
+FAIL: test_missing_provenance_is_excluded (test_qa_judge.JudgeComparisonTests.test_missing_provenance_is_excluded) (field='prompt_rev')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/root/prime-agent/.research/b1-mutation/test_qa_judge.py", line 162, in test_missing_provenance_is_excluded
+    self.assertEqual((delta["excluded"], delta["better"]), (1, 0))
+AssertionError: Tuples differ: (0, 1) != (1, 0)
+
+First differing element 0:
+0
+1
+
+- (0, 1)
++ (1, 0)
+
+======================================================================
+FAIL: test_missing_provenance_is_excluded (test_qa_judge.JudgeComparisonTests.test_missing_provenance_is_excluded) (field='rubric_sha256')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/root/prime-agent/.research/b1-mutation/test_qa_judge.py", line 162, in test_missing_provenance_is_excluded
+    self.assertEqual((delta["excluded"], delta["better"]), (1, 0))
+AssertionError: Tuples differ: (0, 1) != (1, 0)
+
+First differing element 0:
+0
+1
+
+- (0, 1)
++ (1, 0)
+
+----------------------------------------------------------------------
+Ran 17 tests in 0.036s
+
+FAILED (failures=11)

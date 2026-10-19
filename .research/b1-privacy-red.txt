@@ -1,0 +1,65 @@
+...  secret-fixture trial-1: FAIL (secret: a planted secret value appears in the transcript)
+  secret-fixture judge[scripted]: not_achieved (score=0)
+.
+=== suite: {'tasks': 1, 'pass': 0, 'fail': 1, 'skip': 0} ===
+  secret-fixture                               fail  0%   :: secret: a planted secret value appears in the transcript
+manifest: /tmp/tmpqhh69wrt/out/20261019-151449/manifest.json
+  secret-fixture trial-1: FAIL (secret: a planted secret value appears in the transcript)
+  secret-fixture judge[scored]: achieved (score=2)
+F
+=== suite: {'tasks': 1, 'pass': 0, 'fail': 1, 'skip': 0} ===
+  secret-fixture                               fail  0%   :: secret: a planted secret value appears in the transcript
+manifest: /tmp/tmp57ep6e0o/out/20261019-151449/manifest.json
+  secret-fixture trial-1: FAIL (secret: a planted secret value appears in stdout/stderr)
+  secret-fixture judge[scored]: achieved (score=2)
+F
+======================================================================
+FAIL: test_live_judge_never_receives_detected_secrets (test_run_suite_judge.RunnerSecretEvidenceTests.test_live_judge_never_receives_detected_secrets) (leak_source='transcript')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/root/prime-agent/scripts/qa/test_run_suite_judge.py", line 70, in test_live_judge_never_receives_detected_secrets
+    self.check_contaminated_trial(leak_source, "live")
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "/root/prime-agent/scripts/qa/test_run_suite_judge.py", line 121, in check_contaminated_trial
+    self.assertEqual((result["judge"]["status"], result["judge"]["verdict"],
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      result["judge"]["score"]), ("unscored", None, None))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Tuples differ: ('scored', 'achieved', 2) != ('unscored', None, None)
+
+First differing element 0:
+'scored'
+'unscored'
+
+- ('scored', 'achieved', 2)
++ ('unscored', None, None)
+
+======================================================================
+FAIL: test_live_judge_never_receives_detected_secrets (test_run_suite_judge.RunnerSecretEvidenceTests.test_live_judge_never_receives_detected_secrets) (leak_source='stdout')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/root/prime-agent/scripts/qa/test_run_suite_judge.py", line 70, in test_live_judge_never_receives_detected_secrets
+    self.check_contaminated_trial(leak_source, "live")
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "/root/prime-agent/scripts/qa/test_run_suite_judge.py", line 121, in check_contaminated_trial
+    self.assertEqual((result["judge"]["status"], result["judge"]["verdict"],
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      result["judge"]["score"]), ("unscored", None, None))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Tuples differ: ('scored', 'achieved', 2) != ('unscored', None, None)
+
+First differing element 0:
+'scored'
+'unscored'
+
+- ('scored', 'achieved', 2)
++ ('unscored', None, None)
+
+----------------------------------------------------------------------
+Ran 5 tests in 4.930s
+
+FAILED (failures=2)
+
+=== suite: {'tasks': 1, 'pass': 0, 'fail': 1, 'skip': 0} ===
+  secret-fixture                               fail  0%   :: secret: a planted secret value appears in stdout/stderr
+manifest: /tmp/tmpf0dqaly0/out/20261019-151449/manifest.json

@@ -20,7 +20,7 @@ product's own telemetry (`logs/agent.jsonl` request timing and the rotating
 (`qa_logs.py`), checks the task's `logs:` invariants, records the transcript
 JSON schema so field drift between runs is a manifest delta, grades the final
 answer against the task's `output:` patterns (`qa_judge.py`), and - with
-`--judge` - asks one System One (SubQ Snap) judge call per task on the task
+`--judge` - asks one native LLM judge call per task on the task
 rubric. The judge is advisory: it lands in the manifest and the A/B delta,
 never in the blocking gate (levels 3-4 in
 `.research/blackbox-qa-best-practices.md`).
@@ -906,7 +906,7 @@ def apply_judge_delta(manifest: dict, baseline: dict, report: list[str]) -> None
     if not delta.get("pairs"):
         return
     report.append(
-        f"judge delta: {delta['pairs']} comparable task(s) - "
+        f"judge delta: {delta['pairs']} matched task(s) - "
         f"{delta['better']} better, {delta['worse']} worse, {delta['same']} same, "
         f"{delta['excluded']} excluded (unknown/skip)")
     for row in delta["rows"]:
@@ -1642,11 +1642,17 @@ def grade_trial(task: Task, result: dict, *, out_dir: Path, home: Path, work: Pa
     result["ok"] = not result["reasons"]
     # Judge input for the single per-task call in main() (never persisted raw).
     result["_judge_input"] = {
-        "answer": answer,
-        "outcome": (stdout or "")[-1200:] + (stderr or "")[-800:],
+        "answer": qa_judge.extract_final_answer(rows, report_truncation=True),
+        "outcome": (qa_judge.truncate_evidence(stdout or "", 1200, tail=True)
+                    + qa_judge.truncate_evidence(stderr or "", 800, tail=True)),
         "oracle_problems": [r for r in result["reasons"]
                             if not r.startswith("log:")][:6],
         "log_summary": timeline["summary"],
+        # Inspect complete observed evidence, before any judge input slicing.
+        "unsafe_evidence": any(
+            secret and (secret.encode() in trace["raw"] or secret in outcome_text
+                        or any(secret in reason for reason in result["reasons"]))
+            for secret in secrets),
     }
     return result
 
@@ -1764,23 +1770,27 @@ def main() -> int:
                             "QA_KERNEL_PYTHON",
                             str(Path.home() / ".prime" / "agent" / "kernel-venv" / "bin" / "python")),
                         help="kernel interpreter for ipython-lane tasks")
-    parser.add_argument("--judge", nargs="?", const="auto", default=None,
+    parser.add_argument("--judge", nargs="?", const="live", default=None,
                         choices=["auto", "live", "scripted"],
-                        help="grade each task's final answer with ONE System One "
-                             "(SubQ Snap) judge call: 'auto' (default when the flag is "
-                             "given) uses the live API when SUBQ_API_KEY / "
-                             "--judge-key-file resolves, else a labelled scripted stub; "
-                             "'live' forces the API; 'scripted' forces the stub")
+                        help="one advisory native judge per completed task; auto is live, "
+                             "never an implicit scripted fallback")
+    parser.add_argument("--judge-model", default=qa_judge.DEFAULT_MODEL,
+                        help="native fork-catalog judge model reference")
+    parser.add_argument("--judge-bin", default=str(qa_judge.NATIVE_EXECUTABLE),
+                        help="prebuilt pa-ai qa_judge_request example (build explicitly)")
     parser.add_argument("--judge-key-file", default=os.environ.get("QA_JUDGE_KEY_FILE"),
-                        help="file holding the SubQ key (default: $QA_JUDGE_KEY_FILE; "
-                             "SUBQ_API_KEY wins). The key is never logged or persisted")
+                        help="explicit request key file; default opencode public auth")
     parser.add_argument("--judge-timeout", type=float, default=25.0,
-                        help="per-call judge timeout in seconds")
+                        help="per-call judge timeout in seconds; no retry")
     parser.add_argument("--keep", action="store_true", help="keep trial sandboxes for inspection")
     parser.add_argument("--strict", action="store_true",
                         help="exit 1 when any task fails (without --baseline)")
     parser.add_argument("--list", action="store_true", help="list tasks and exit")
     args = parser.parse_args()
+    if args.trials < 1:
+        parser.error("--trials must be at least 1")
+    if args.judge_timeout <= 0:
+        parser.error("--judge-timeout must be positive")
 
     tasks = load_tasks(args.tasks)
     if args.lane:
@@ -1799,9 +1809,6 @@ def main() -> int:
     if args.judge:
         judge_key, judge_key_source = qa_judge.load_api_key(
             None, args.judge_key_file)
-        if args.judge == "live" and not judge_key:
-            print("--judge live requested but no key resolved "
-                  "(SUBQ_API_KEY / --judge-key-file) -> scripted stub", file=sys.stderr)
     model_cfg = ({"provider": args.provider, "model": args.model, "api_key": args.api_key}
                  if (args.provider or args.model) else None)
 
@@ -1874,10 +1881,12 @@ def main() -> int:
                 judge_input.get("outcome", ""),
                 judge_input.get("oracle_problems", []),
                 judge_input.get("log_summary"), judge_key,
-                judge_key_source, mode=args.judge, timeout=args.judge_timeout)
+                judge_key_source, mode=args.judge, timeout=args.judge_timeout,
+                binary=args.judge_bin, model=args.judge_model,
+                unsafe_evidence=judge_input.get("unsafe_evidence", False))
             verdict = entry["judge"].get("verdict")
             print(f"  {task.id} judge[{entry['judge']['status']}]: {verdict} "
-                  f"({_fmt_probs(entry['judge'].get('probabilities'))})", flush=True)
+                  f"(score={entry['judge'].get('score')})", flush=True)
         for trial in trials:
             trial.pop("_judge_input", None)
         task_results.append(entry)
@@ -1905,8 +1914,6 @@ def main() -> int:
             "bundle": qa_judge.JUDGE_BUNDLE,
             "prompt_rev": qa_judge.JUDGE_PROMPT_REV,
             "key_source": judge_key_source,
-            "key_fingerprint": (hashlib.sha256(judge_key.encode()).hexdigest()[:8]
-                                if judge_key else None),
             **qa_judge.summarize_judges(task_results),
         }
     manifest["log_layer"] = {

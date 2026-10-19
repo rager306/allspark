@@ -1,0 +1,25 @@
+test_each_provenance_mismatch_is_excluded (test_qa_judge.JudgeComparisonTests.test_each_provenance_mismatch_is_excluded) ... ok
+test_error_status_cannot_supply_a_rankable_verdict (test_qa_judge.JudgeComparisonTests.test_error_status_cannot_supply_a_rankable_verdict) ... ok
+test_matching_provenance_compares_zero_against_positive (test_qa_judge.JudgeComparisonTests.test_matching_provenance_compares_zero_against_positive) ... ok
+test_missing_provenance_is_excluded (test_qa_judge.JudgeComparisonTests.test_missing_provenance_is_excluded) ... ok
+test_numeric_summary_excludes_none_and_scripted_but_includes_zero (test_qa_judge.JudgeComparisonTests.test_numeric_summary_excludes_none_and_scripted_but_includes_zero) ... ok
+test_numeric_summary_with_no_scores_is_not_zero (test_qa_judge.JudgeComparisonTests.test_numeric_summary_with_no_scores_is_not_zero) ... ok
+test_unknown_is_not_zero (test_qa_judge.JudgeComparisonTests.test_unknown_is_not_zero) ... ok
+test_http_429_is_unscored_not_scripted (test_qa_judge.JudgeRegressionTests.test_http_429_is_unscored_not_scripted) ... ok
+test_large_evidence_is_capped_and_reports_truncation (test_qa_judge.JudgeRegressionTests.test_large_evidence_is_capped_and_reports_truncation) ... ok
+test_live_without_key_is_unscored_not_scripted (test_qa_judge.JudgeRegressionTests.test_live_without_key_is_unscored_not_scripted) ... ok
+test_malformed_choices_are_unscored (test_qa_judge.JudgeRegressionTests.test_malformed_choices_are_unscored) ... ok
+test_scored_zero_preserves_native_measurement_and_usage (test_qa_judge.JudgeRegressionTests.test_scored_zero_preserves_native_measurement_and_usage) ... ok
+test_scripted_mode_is_explicitly_labelled (test_qa_judge.JudgeRegressionTests.test_scripted_mode_is_explicitly_labelled) ... ok
+test_transport_failures_are_unscored_without_retry (test_qa_judge.JudgeRegressionTests.test_transport_failures_are_unscored_without_retry) ... ok
+test_unknown_choice_is_unscored_not_zero (test_qa_judge.JudgeRegressionTests.test_unknown_choice_is_unscored_not_zero) ... ok
+test_wrong_response_model_is_unscored (test_qa_judge.JudgeRegressionTests.test_wrong_response_model_is_unscored) ... ok
+test_request_auth_uses_stdin_not_arguments (test_qa_judge.NativeJudgeRequestTests.test_request_auth_uses_stdin_not_arguments) ... ok
+test_429_leaves_deterministic_exit_gate_unchanged (test_run_suite_judge.RunnerJudgeIntegrationTests.test_429_leaves_deterministic_exit_gate_unchanged) ... ok
+test_invalid_leaves_deterministic_exit_gate_unchanged (test_run_suite_judge.RunnerJudgeIntegrationTests.test_invalid_leaves_deterministic_exit_gate_unchanged) ... ok
+test_timeout_leaves_deterministic_exit_gate_unchanged (test_run_suite_judge.RunnerJudgeIntegrationTests.test_timeout_leaves_deterministic_exit_gate_unchanged) ... ok
+
+----------------------------------------------------------------------
+Ran 20 tests in 5.127s
+
+OK

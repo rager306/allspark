@@ -1,0 +1,3 @@
+    Blocking waiting for file lock on build directory
+    Checking pa-ai v0.10.1-beta.35 (/root/prime-agent/crates/pa-ai)
+    Finished `dev` profile [unoptimized] target(s) in 10m 13s
