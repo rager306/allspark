@@ -376,7 +376,11 @@ mod tests {
         let entry = brain.get(&id).expect("entry");
         assert_eq!(entry.scope, "team");
         assert_eq!(entry.content, "the parser rejects tabs");
-        assert_eq!(entry.quality(), 0.5, "unvoted memory is neutral");
+        assert_eq!(
+            entry.quality().to_bits(),
+            0.5_f64.to_bits(),
+            "unvoted memory is neutral"
+        );
     }
 
     #[test]

@@ -122,7 +122,7 @@ mod tests {
     #[test]
     fn normalize_maps_to_unit_range() {
         let n = min_max_normalize(&[1.0, 3.0, 5.0]);
-        assert_eq!(n[0], 0.0);
+        assert_eq!(n[0].to_bits(), 0.0_f32.to_bits());
         assert!((n[2] - 1.0).abs() < 1e-6);
         assert!((n[1] - 0.5).abs() < 1e-6);
     }

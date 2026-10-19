@@ -1,0 +1,34 @@
+{
+  "source_files": {
+    "crates/pa-graph/src/bm25.rs": "c22139feb573f3ef23336b46a035769687f0286176ec6fcd570709d6cfd59321",
+    "crates/pa-graph/src/condenser.rs": "388d787f7e4106d0017934ab27aa8be2e3ebdaa2bc30124b90dc4e4ed1d39fb5",
+    "crates/pa-graph/src/delta_index.rs": "4fe9d03e54dbef028a40eb4337e5d3542de51895bdf26fade795264b3c8ac503",
+    "crates/pa-graph/src/hybrid.rs": "7e439e58518bee0ac9e7a76ee39f4799e27e5ea25df0a16d06d2b98012b60ea7",
+    "crates/pa-graph/src/minhash.rs": "63622332cc9f327e6cbc21f1687e3d8c6eb1e1c3b491c520e942cb9b6446241f",
+    "crates/pa-graph/src/coherence.rs": "02fcb46ca0e20ae26f20edbf91310d9256cd2756b2b28d82a8ea31b130e8361e",
+    "crates/pa-graph/src/pdx.rs": "32aa2661ee971b4b3cb1186897690c43e5b569bab0f55f8140a6f02f54f6490b",
+    "crates/pa-graph/src/mcp_brain.rs": "8bc8b11adf336a96233270924c7cf2514ce540e75d68d1cc38de1418c5c1be14",
+    "crates/pa-graph/src/prometheus_metrics.rs": "ed39e13d8f85c6a352ddec16fd76ee2a51836f7a5969b81c2c89a366672461b4",
+    "crates/pa-graph/src/homology.rs": "eaab9f69edf4e47dc5c2b6a447e54a2566f0a4667b1006be401b6590db44d547",
+    "crates/pa-graph/src/voi.rs": "4fd5cee1b682b3a7b7724c70744ca8960c7d1ed623e63ef7bef64e6c74cc4386",
+    "crates/pa-graph/src/drifting.rs": "86afd703f333383caf065043b7325bcc42ce93cdbbb375c4b55f7398f8b1afff",
+    "crates/pa-jev/src/wire.rs": "5c1dbbd01f0a3a08eedcadc260094c3c116a18b5ff7e5a0417981c34dd317eff"
+  },
+  "production_prefixes_byte_identical": true,
+  "assertion_changes": 43,
+  "comparison": "exact typed f32/f64 bit equality, no epsilon or lint allowance",
+  "workspace_fmt": "passed",
+  "workspace_clippy": "passed on1.98.1 before latest unrelated terminal harness change",
+  "focused_crate_unit_tests": {
+    "exit_code": 0,
+    "summaries": [
+      "     Running unittests src/lib.rs (target/debug/deps/pa_graph-7668c2c17eb50714)",
+      "test result: ok. 439 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s",
+      "     Running unittests src/lib.rs (target/debug/deps/pa_jev-4db05b91c11f7da8)",
+      "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    ],
+    "log": ".research/ci-graph-jev-followup-green.log"
+  },
+  "full_workspace_tests": "failed before graph/Jev tests at terminal watchdog; not complete",
+  "release_build": "not_run"
+}

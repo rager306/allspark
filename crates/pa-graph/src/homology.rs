@@ -279,7 +279,7 @@ mod tests {
     #[test]
     fn bottleneck_of_a_diagram_with_itself_is_zero() {
         let d = h0_persistence(&two_clusters(), 0);
-        assert_eq!(bottleneck(&d, &d), 0.0);
+        assert_eq!(bottleneck(&d, &d).to_bits(), 0.0_f32.to_bits());
     }
 
     #[test]
@@ -288,14 +288,14 @@ mod tests {
         let d2 = vec![(0.0, 1.5), (0.0, 5.0), (0.0, f32::INFINITY)];
         let ab = bottleneck(&d1, &d2);
         let ba = bottleneck(&d2, &d1);
-        assert_eq!(ab, ba, "symmetric");
+        assert_eq!(ab.to_bits(), ba.to_bits(), "symmetric");
         assert!((ab - 0.5).abs() < 1e-6, "only the 1.0→1.5 bar moved");
 
         // Two infinite bars match at zero cost; a lone infinite bar would be
         // infinitely far from a finite diagram.
         assert_eq!(
-            bottleneck(&[(0.0, f32::INFINITY)], &[(0.0, f32::INFINITY)]),
-            0.0
+            bottleneck(&[(0.0, f32::INFINITY)], &[(0.0, f32::INFINITY)]).to_bits(),
+            0.0_f32.to_bits()
         );
         assert!(bottleneck(&[(0.0, f32::INFINITY)], &[(0.0, 2.0)]).is_infinite());
     }

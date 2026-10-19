@@ -547,10 +547,10 @@ mod tests {
         let counter = metrics.counter("requests_total", "Requests served");
         counter.inc();
         counter.inc_by(4.0);
-        assert_eq!(counter.get(), 5.0);
+        assert_eq!(counter.get().to_bits(), 5.0_f64.to_bits());
         // Negative increments are ignored: a counter never goes down.
         counter.inc_by(-3.0);
-        assert_eq!(counter.get(), 5.0);
+        assert_eq!(counter.get().to_bits(), 5.0_f64.to_bits());
     }
 
     #[test]
@@ -560,7 +560,7 @@ mod tests {
         gauge.set(3.0);
         gauge.inc_by(2.0);
         gauge.dec_by(1.0);
-        assert_eq!(gauge.get(), 4.0);
+        assert_eq!(gauge.get().to_bits(), 4.0_f64.to_bits());
     }
 
     #[test]
@@ -650,7 +650,7 @@ mod tests {
         let a = metrics.counter("c", "help");
         let b = metrics.counter("c", "help");
         a.inc();
-        assert_eq!(b.get(), 1.0);
+        assert_eq!(b.get().to_bits(), 1.0_f64.to_bits());
         assert_eq!(metrics.len(), 1);
         assert_eq!(metrics.kind("c"), Some(MetricKind::Counter));
     }

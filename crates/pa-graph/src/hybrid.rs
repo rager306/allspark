@@ -175,8 +175,8 @@ mod tests {
     fn cosine_identity_and_orthogonal() {
         assert!((cosine(&[1.0, 0.0], &[1.0, 0.0]) - 1.0).abs() < 1e-6);
         assert!(cosine(&[1.0, 0.0], &[0.0, 1.0]).abs() < 1e-6);
-        assert_eq!(cosine(&[], &[]), 0.0);
-        assert_eq!(cosine(&[1.0], &[1.0, 2.0]), 0.0);
+        assert_eq!(cosine(&[], &[]).to_bits(), 0.0_f32.to_bits());
+        assert_eq!(cosine(&[1.0], &[1.0, 2.0]).to_bits(), 0.0_f32.to_bits());
     }
 
     #[test]

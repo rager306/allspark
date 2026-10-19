@@ -179,10 +179,14 @@ mod tests {
             let o = PDX_HEADER_LEN + i * 4;
             f32::from_le_bytes([blob[o], blob[o + 1], blob[o + 2], blob[o + 3]])
         };
-        assert_eq!(read(0), 1.0);
-        assert_eq!(read(1), 4.0);
-        assert_eq!(read(2), 7.0);
-        assert_eq!(read(3), 2.0, "second column starts after the first");
+        assert_eq!(read(0).to_bits(), 1.0_f32.to_bits());
+        assert_eq!(read(1).to_bits(), 4.0_f32.to_bits());
+        assert_eq!(read(2).to_bits(), 7.0_f32.to_bits());
+        assert_eq!(
+            read(3).to_bits(),
+            2.0_f32.to_bits(),
+            "second column starts after the first"
+        );
     }
 
     #[test]

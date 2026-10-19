@@ -230,8 +230,16 @@ mod tests {
         assert_eq!(out.len(), 2, "a and b merge; c stays separate");
         let merged = out.iter().find(|e| e.id == "a").expect("a present");
         assert_eq!(merged.provenance, vec!["src-a", "src-b"]);
-        assert_eq!(merged.frequency, 3.0, "frequencies sum on merge");
-        assert_eq!(merged.recency, 0.9, "max recency wins");
+        assert_eq!(
+            merged.frequency.to_bits(),
+            3.0_f64.to_bits(),
+            "frequencies sum on merge"
+        );
+        assert_eq!(
+            merged.recency.to_bits(),
+            0.9_f64.to_bits(),
+            "max recency wins"
+        );
     }
 
     #[test]

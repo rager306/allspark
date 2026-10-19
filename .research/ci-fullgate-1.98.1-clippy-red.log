@@ -1,0 +1,434 @@
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+warning: unexpected `cfg` condition name: `winapi`
+   --> vendor/crossterm/src/lib.rs:256:11
+    |
+256 | #[cfg(all(winapi, not(feature = "winapi")))]
+    |           ^^^^^^
+    |
+    = help: expected names are: `docsrs`, `feature`, and `test` and 32 more
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(winapi)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(winapi)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+    = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unexpected `cfg` condition value: `winapi`
+   --> vendor/crossterm/src/lib.rs:256:23
+    |
+256 | #[cfg(all(winapi, not(feature = "winapi")))]
+    |                       ^^^^^^^^^^^^^^^^^^
+    |
+    = note: expected values for `feature` are: `bracketed-paste`, `default`, `event-stream`, `events`, `filedescriptor`, `libc`, `serde`, `use-dev-tty`, and `windows`
+    = help: consider adding `winapi` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `crossterm_winapi`
+   --> vendor/crossterm/src/lib.rs:259:11
+    |
+259 | #[cfg(all(crossterm_winapi, not(feature = "crossterm_winapi")))]
+    |           ^^^^^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(crossterm_winapi)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(crossterm_winapi)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition value: `crossterm_winapi`
+   --> vendor/crossterm/src/lib.rs:259:33
+    |
+259 | #[cfg(all(crossterm_winapi, not(feature = "crossterm_winapi")))]
+    |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: expected values for `feature` are: `bracketed-paste`, `default`, `event-stream`, `events`, `filedescriptor`, `libc`, `serde`, `use-dev-tty`, and `windows`
+    = help: consider adding `crossterm_winapi` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unnecessary parentheses around closure body
+  --> vendor/crossterm/src/terminal/sys/unix.rs:85:50
+   |
+85 |     let file = File::open("/dev/tty").map(|file| (FileDesc::Owned(file.into())));
+   |                                                  ^                            ^
+   |
+   = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+   |
+85 -     let file = File::open("/dev/tty").map(|file| (FileDesc::Owned(file.into())));
+85 +     let file = File::open("/dev/tty").map(|file| FileDesc::Owned(file.into()));
+   |
+
+warning: struct `InternalEventFilter` is never constructed
+  --> vendor/crossterm/src/event/filter.rs:65:19
+   |
+65 | pub(crate) struct InternalEventFilter;
+   |                   ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `crossterm` (lib) generated 6 warnings (run `cargo clippy --fix --lib -p crossterm -- -D warnings` to apply 1 suggestion)
+    Checking pa-tui v0.10.1-beta.35 (/root/prime-agent/crates/pa-tui)
+    Checking pa-core v0.10.1-beta.35 (/root/prime-agent/crates/pa-core)
+    Checking pa-cli v0.10.1-beta.35 (/root/prime-agent/crates/pa-cli)
+    Checking pa-jev v0.10.1-beta.35 (/root/prime-agent/crates/pa-jev)
+    Checking pa-graph v0.10.1-beta.35 (/root/prime-agent/crates/pa-graph)
+    Checking pa-lsp v0.10.1-beta.35 (/root/prime-agent/crates/pa-lsp)
+    Checking pa-agent v0.10.1-beta.35 (/root/prime-agent/crates/pa-agent)
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/bm25.rs:125:9
+    |
+125 |         assert_eq!(n[0], 0.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+    = note: `-D clippy::float-cmp` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::float_cmp)]`
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/condenser.rs:258:9
+    |
+258 |         assert_eq!(cond.sum, 12.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/condenser.rs:259:9
+    |
+259 |         assert_eq!(cond.mean, 4.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/condenser.rs:260:9
+    |
+260 |         assert_eq!(cond.min, 2.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/condenser.rs:261:9
+    |
+261 |         assert_eq!(cond.max, 6.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/delta_index.rs:449:9
+    |
+449 |         assert_eq!(m.recall_proxy(), 1.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/delta_index.rs:450:9
+    |
+450 |         assert_eq!(m.live_link_ratio(), 1.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/hybrid.rs:178:9
+    |
+178 |         assert_eq!(cosine(&[], &[]), 0.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/hybrid.rs:179:9
+    |
+179 |         assert_eq!(cosine(&[1.0], &[1.0, 2.0]), 0.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/minhash.rs:305:9
+    |
+305 |         assert_eq!(dups[0].similarity, 1.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/coherence.rs:233:9
+    |
+233 |         assert_eq!(merged.frequency, 3.0, "frequencies sum on merge");
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/coherence.rs:234:9
+    |
+234 |         assert_eq!(merged.recency, 0.9, "max recency wins");
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/pdx.rs:182:9
+    |
+182 |         assert_eq!(read(0), 1.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/pdx.rs:183:9
+    |
+183 |         assert_eq!(read(1), 4.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/pdx.rs:184:9
+    |
+184 |         assert_eq!(read(2), 7.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/pdx.rs:185:9
+    |
+185 |         assert_eq!(read(3), 2.0, "second column starts after the first");
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/mcp_brain.rs:379:9
+    |
+379 |         assert_eq!(entry.quality(), 0.5, "unvoted memory is neutral");
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/prometheus_metrics.rs:550:9
+    |
+550 |         assert_eq!(counter.get(), 5.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/prometheus_metrics.rs:553:9
+    |
+553 |         assert_eq!(counter.get(), 5.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/prometheus_metrics.rs:563:9
+    |
+563 |         assert_eq!(gauge.get(), 4.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/prometheus_metrics.rs:653:9
+    |
+653 |         assert_eq!(b.get(), 1.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/homology.rs:282:9
+    |
+282 |         assert_eq!(bottleneck(&d, &d), 0.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/homology.rs:291:9
+    |
+291 |         assert_eq!(ab, ba, "symmetric");
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/homology.rs:296:9
+    |
+296 | /         assert_eq!(
+297 | |             bottleneck(&[(0.0, f32::INFINITY)], &[(0.0, f32::INFINITY)]),
+298 | |             0.0
+299 | |         );
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/voi.rs:255:9
+    |
+255 |         assert_eq!(incident.expected_loss(), 1.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/voi.rs:297:9
+    |
+297 |         assert_eq!(outcome.expected_loss, 0.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/voi.rs:302:9
+    |
+302 |         assert_eq!(Incident::new(1.5, 10.0).p, 1.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/voi.rs:303:9
+    |
+303 |         assert_eq!(Incident::new(-1.0, 10.0).p, 0.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/voi.rs:304:9
+    |
+304 |         assert_eq!(Costs::default().of(Stage::Investigator), 50.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/drifting.rs:303:9
+    |
+303 |         assert_eq!(monitor.drift_of(1, &[1, 2, 3]), 0.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/drifting.rs:309:9
+    |
+309 |         assert_eq!(monitor.drift_of(42, &[1, 2, 3]), 0.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/drifting.rs:369:9
+    |
+369 |         assert_eq!(jaccard_distance(&[], &[]), 0.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/drifting.rs:370:9
+    |
+370 |         assert_eq!(jaccard_distance(&[1, 2], &[1, 2]), 0.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-graph/src/drifting.rs:371:9
+    |
+371 |         assert_eq!(jaccard_distance(&[1, 2], &[3, 4]), 1.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: could not compile `pa-graph` (lib test) due to 34 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-jev/src/wire.rs:241:9
+    |
+241 |         assert_eq!(probabilities["billing"], 0.99);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+    = note: `-D clippy::float-cmp` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::float_cmp)]`
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-jev/src/wire.rs:242:9
+    |
+242 |         assert_eq!(*confidence, 0.99);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-jev/src/wire.rs:251:9
+    |
+251 |         assert_eq!(*score, 2.68);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-jev/src/wire.rs:254:9
+    |
+254 |         assert_eq!(*confidence, 0.68);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-jev/src/wire.rs:258:9
+    |
+258 |         assert_eq!(noul, 0.95);
+    |         ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-jev/src/wire.rs:276:9
+    |
+276 |         assert_eq!(decoded.usage.cost_usd, 0.05, "a billed amount wins");
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-jev/src/wire.rs:302:9
+    |
+302 |         assert_eq!(*score, 1.0);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-jev/src/wire.rs:303:9
+    |
+303 |         assert_eq!(probabilities["1"], 0.7, "array probabilities key by index");
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: strict comparison of `f32` or `f64`
+   --> crates/pa-jev/src/wire.rs:307:9
+    |
+307 |         assert_eq!(noul, 0.91);
+    |         ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#float_cmp
+
+error: could not compile `pa-jev` (lib test) due to 9 previous errors
+make: *** [Makefile:4: check] Error 101

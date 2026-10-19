@@ -255,10 +255,10 @@ mod tests {
         c.extend([2.0, 4.0, 6.0]);
         let cond = c.condense().clone();
         assert_eq!(cond.count, 3);
-        assert_eq!(cond.sum, 12.0);
-        assert_eq!(cond.mean, 4.0);
-        assert_eq!(cond.min, 2.0);
-        assert_eq!(cond.max, 6.0);
+        assert_eq!(cond.sum.to_bits(), 12.0_f64.to_bits());
+        assert_eq!(cond.mean.to_bits(), 4.0_f64.to_bits());
+        assert_eq!(cond.min.to_bits(), 2.0_f64.to_bits());
+        assert_eq!(cond.max.to_bits(), 6.0_f64.to_bits());
         let hist_total: u32 = cond.histogram.iter().sum();
         assert_eq!(hist_total, 3);
     }

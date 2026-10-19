@@ -252,7 +252,7 @@ mod tests {
     fn low_loss_stops_at_the_floor() {
         // loss = 1.0; investigator costs 50 → no escalation past Verifier.
         let incident = Incident::new(0.1, 10.0);
-        assert_eq!(incident.expected_loss(), 1.0);
+        assert_eq!(incident.expected_loss().to_bits(), 1.0_f32.to_bits());
         let outcome = Ladder::run(incident, Policy::with_floor(Stage::Verifier));
         assert_eq!(outcome.final_stage, Stage::Verifier);
         assert_eq!(
@@ -294,13 +294,16 @@ mod tests {
         assert!(outcome.ran(Stage::Risk));
         assert!(!outcome.ran(Stage::Verifier));
         assert!(!outcome.escalated_past_floor);
-        assert_eq!(outcome.expected_loss, 0.0);
+        assert_eq!(outcome.expected_loss.to_bits(), 0.0_f32.to_bits());
     }
 
     #[test]
     fn incident_clamps_probability() {
-        assert_eq!(Incident::new(1.5, 10.0).p, 1.0);
-        assert_eq!(Incident::new(-1.0, 10.0).p, 0.0);
-        assert_eq!(Costs::default().of(Stage::Investigator), 50.0);
+        assert_eq!(Incident::new(1.5, 10.0).p.to_bits(), 1.0_f32.to_bits());
+        assert_eq!(Incident::new(-1.0, 10.0).p.to_bits(), 0.0_f32.to_bits());
+        assert_eq!(
+            Costs::default().of(Stage::Investigator).to_bits(),
+            50.0_f32.to_bits()
+        );
     }
 }

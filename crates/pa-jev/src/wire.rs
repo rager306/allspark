@@ -238,8 +238,8 @@ mod tests {
             panic!("choice answer");
         };
         assert_eq!(choice, "billing");
-        assert_eq!(probabilities["billing"], 0.99);
-        assert_eq!(*confidence, 0.99);
+        assert_eq!(probabilities["billing"].to_bits(), 0.99_f64.to_bits());
+        assert_eq!(confidence.to_bits(), 0.99_f64.to_bits());
         let Answer::Score {
             score,
             probabilities,
@@ -248,14 +248,14 @@ mod tests {
         else {
             panic!("score answer");
         };
-        assert_eq!(*score, 2.68);
+        assert_eq!(score.to_bits(), 2.68_f64.to_bits());
         // Score probabilities stay keyed by level index; noul carries no confidence.
         assert_eq!(probabilities.keys().collect::<Vec<_>>(), ["0", "1", "2"]);
-        assert_eq!(*confidence, 0.68);
+        assert_eq!(confidence.to_bits(), 0.68_f64.to_bits());
         let Answer::Noul { noul } = decoded.answers["urgent"] else {
             panic!("noul answer");
         };
-        assert_eq!(noul, 0.95);
+        assert_eq!(noul.to_bits(), 0.95_f64.to_bits());
         assert_eq!(decoded.usage.input_tokens, 296);
         assert_eq!(decoded.usage.output_tokens, 20);
     }
@@ -273,7 +273,11 @@ mod tests {
             "usage": {"input_tokens": 1_000_000, "cost": 0.05}
         });
         let decoded = decode_response(&billed).expect("decodes");
-        assert_eq!(decoded.usage.cost_usd, 0.05, "a billed amount wins");
+        assert_eq!(
+            decoded.usage.cost_usd.to_bits(),
+            0.05_f64.to_bits(),
+            "a billed amount wins"
+        );
     }
 
     #[test]
@@ -299,12 +303,16 @@ mod tests {
         else {
             panic!("score answer");
         };
-        assert_eq!(*score, 1.0);
-        assert_eq!(probabilities["1"], 0.7, "array probabilities key by index");
+        assert_eq!(score.to_bits(), 1.0_f64.to_bits());
+        assert_eq!(
+            probabilities["1"].to_bits(),
+            0.7_f64.to_bits(),
+            "array probabilities key by index"
+        );
         let Answer::Noul { noul } = decoded.answers["urgent"] else {
             panic!("noul answer");
         };
-        assert_eq!(noul, 0.91);
+        assert_eq!(noul.to_bits(), 0.91_f64.to_bits());
         assert_eq!(
             decoded.answers["dept"].kind(),
             crate::types::QuestionKind::Choice

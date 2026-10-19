@@ -1,0 +1,44 @@
+cargo fmt --all --check
+Diff in /root/prime-agent/crates/pa-graph/src/coherence.rs:235:
+             3.0_f64.to_bits(),
+             "frequencies sum on merge"
+         );
+-        assert_eq!(merged.recency.to_bits(), 0.9_f64.to_bits(), "max recency wins");
++        assert_eq!(
++            merged.recency.to_bits(),
++            0.9_f64.to_bits(),
++            "max recency wins"
++        );
+     }
+ 
+     #[test]
+Diff in /root/prime-agent/crates/pa-graph/src/drifting.rs:306:
+     #[test]
+     fn unknown_node_has_zero_drift() {
+         let monitor = DriftMonitor::new();
+-        assert_eq!(monitor.drift_of(42, &[1, 2, 3]).to_bits(), 0.0_f32.to_bits());
++        assert_eq!(
++            monitor.drift_of(42, &[1, 2, 3]).to_bits(),
++            0.0_f32.to_bits()
++        );
+         assert_eq!(monitor.version(42), 0);
+     }
+ 
+Diff in /root/prime-agent/crates/pa-graph/src/drifting.rs:367:
+     #[test]
+     fn jaccard_distance_endpoints() {
+         assert_eq!(jaccard_distance(&[], &[]).to_bits(), 0.0_f32.to_bits());
+-        assert_eq!(jaccard_distance(&[1, 2], &[1, 2]).to_bits(), 0.0_f32.to_bits());
+-        assert_eq!(jaccard_distance(&[1, 2], &[3, 4]).to_bits(), 1.0_f32.to_bits());
++        assert_eq!(
++            jaccard_distance(&[1, 2], &[1, 2]).to_bits(),
++            0.0_f32.to_bits()
++        );
++        assert_eq!(
++            jaccard_distance(&[1, 2], &[3, 4]).to_bits(),
++            1.0_f32.to_bits()
++        );
+         assert!((jaccard_distance(&[1, 2, 3], &[1, 2, 4]) - 0.5).abs() < 1e-6);
+     }
+ 
+make: *** [Makefile:3: check] Error 1

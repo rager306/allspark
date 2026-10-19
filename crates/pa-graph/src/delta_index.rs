@@ -446,8 +446,8 @@ mod tests {
     #[test]
     fn monitor_drift_and_recall_proxy() {
         let mut m = QualityMonitor::new();
-        assert_eq!(m.recall_proxy(), 1.0);
-        assert_eq!(m.live_link_ratio(), 1.0);
+        assert_eq!(m.recall_proxy().to_bits(), 1.0_f32.to_bits());
+        assert_eq!(m.live_link_ratio().to_bits(), 1.0_f32.to_bits());
         m.observe_links(3, 4);
         m.observe_probe(5, 10);
         assert!((m.live_link_ratio() - 0.75).abs() < 1e-6);

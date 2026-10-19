@@ -300,13 +300,16 @@ mod tests {
         monitor.snapshot(1, &[1, 2, 3]);
         assert!(!monitor.check(1, &[1, 2, 3]), "no change → no drift");
         assert_eq!(monitor.repair_queue(), Vec::<i64>::new());
-        assert_eq!(monitor.drift_of(1, &[1, 2, 3]), 0.0);
+        assert_eq!(monitor.drift_of(1, &[1, 2, 3]).to_bits(), 0.0_f32.to_bits());
     }
 
     #[test]
     fn unknown_node_has_zero_drift() {
         let monitor = DriftMonitor::new();
-        assert_eq!(monitor.drift_of(42, &[1, 2, 3]), 0.0);
+        assert_eq!(
+            monitor.drift_of(42, &[1, 2, 3]).to_bits(),
+            0.0_f32.to_bits()
+        );
         assert_eq!(monitor.version(42), 0);
     }
 
@@ -366,9 +369,15 @@ mod tests {
 
     #[test]
     fn jaccard_distance_endpoints() {
-        assert_eq!(jaccard_distance(&[], &[]), 0.0);
-        assert_eq!(jaccard_distance(&[1, 2], &[1, 2]), 0.0);
-        assert_eq!(jaccard_distance(&[1, 2], &[3, 4]), 1.0);
+        assert_eq!(jaccard_distance(&[], &[]).to_bits(), 0.0_f32.to_bits());
+        assert_eq!(
+            jaccard_distance(&[1, 2], &[1, 2]).to_bits(),
+            0.0_f32.to_bits()
+        );
+        assert_eq!(
+            jaccard_distance(&[1, 2], &[3, 4]).to_bits(),
+            1.0_f32.to_bits()
+        );
         assert!((jaccard_distance(&[1, 2, 3], &[1, 2, 4]) - 0.5).abs() < 1e-6);
     }
 

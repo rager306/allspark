@@ -302,7 +302,7 @@ pub fn calculate(x: u32, y: u32) -> u32 {
         ];
         let dups = find_near_duplicates(&items, CLONE_JACCARD);
         assert_eq!(dups.len(), 1, "{dups:?}");
-        assert_eq!(dups[0].similarity, 1.0);
+        assert_eq!(dups[0].similarity.to_bits(), 1.0_f64.to_bits());
     }
 
     #[test]
