@@ -186,8 +186,10 @@ by-design. Мы строже.
 | Их «direct improvement harms» (73.4→63.2) | принцип: только контрастный цикл с прогонами |
 | Грейдер-файрвол нужен | в бэклоге трек A.3 |
 
-### В бэклоге (4 куска + ставка)
-- F1: LLM-judge с контрактом None≠0 и измерением после выбора (1-2 нед)
+### Подтверждённое обновление F1/B.1
+- Advisory native LLM-judge реализован в `53c760290`: None≠0, измерение после выбора, fail-closed privacy guard, 23 Python-теста и один native OpenCode smoke. Это не оценка качества judge; расширенная multi-model матрица не запускалась. См. `b1-llm-judge-report.md`.
+
+### В бэклоге (3 куска + ставка)
 - F2: parallel eval runner, exact-ledger R=4k/P=3k, resume по fingerprint (1 нед)
 - F4: рендер session JSONL в [ACTION]/[OBSERVATION]/[ERROR] (3-5 дней)
 - F5: evidence-as-files для субагентного fan-in (дёшево, совместимо с PTC)

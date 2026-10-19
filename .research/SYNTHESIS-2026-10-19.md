@@ -2,7 +2,22 @@
 
 Дата: 2026-10-19. Источники: 12 исследований (Serena, oh-my-pi, Codex, Command Code,
 Grok Build, codebase-memory-mcp, gitnexus, harness2, LayerFS, Mayoi, provider-caching docs,
-black-box QA практики). Полные отчёты: /tmp/roadmap_audit/learn_*.md; дайджесты — в arsumbris.
+black-box QA практики). Полные отчёты сохранены в `.research/learn_*.md`;
+исходные материалы — в `.research/sources/`, дайджесты — в arsumbris.
+
+## Подтверждённое обновление B.1
+
+В локальном коммите `53c760290` завершён bounded advisory native LLM judge:
+существующий `scripts/qa/run_suite.py` вызывает dev-only пример pa-ai один раз
+после последней пробы задачи. Native OpenCode, без 9router. Ошибки/abstain
+остаются `None`, не нулём и не scripted fallback. Известно загрязнённые секретом
+данные не уходят в native bridge; strict deterministic gate не менялся.
+
+Проверки: 23 Python-теста, red→green privacy/provenance, один живой smoke
+HTTP200/816 токенов. Это не доказательство качества judge и не реализация PPC,
+parallel eval runner или multi-model сравнения; последние остаются в бэклоге.
+Подробно: `b1-llm-judge-report.md`, `b1-independent-review.md`.
+
 
 ## 1. Что уже перенесено (14 позиций, в коде, запушено)
 
