@@ -1,0 +1,21 @@
+    Finished `test` profile [unoptimized] target(s) in 0.77s
+     Running unittests src/lib.rs (target/debug/deps/pa_daemon-79b520564baacf93)
+
+running 1 test
+test supervisor::tests::adoption_settles_then_seeds_the_roster_once ... FAILED
+
+failures:
+
+---- supervisor::tests::adoption_settles_then_seeds_the_roster_once stdout ----
+
+thread 'supervisor::tests::adoption_settles_then_seeds_the_roster_once' (2380228) panicked at crates/pa-daemon/src/supervisor/tests.rs:1064:10:
+the boot seed hydrated the family
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    supervisor::tests::adoption_settles_then_seeds_the_roster_once
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1169 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p pa-daemon --lib`

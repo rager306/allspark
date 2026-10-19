@@ -3,6 +3,33 @@ use super::*;
 use proptest::prelude::*;
 use proptest::test_runner::RngSeed;
 
+/// A temp supervisor home: agent dir, sessions dir, a root
+/// transcript, and a child transcript carrying the durable display rows.
+pub(crate) async fn roster_fixture() -> (PathBuf, Arc<Supervisor>, PathBuf, PathBuf) {
+    let dir = std::env::temp_dir().join(format!("pa-roster-{}", uuid::Uuid::new_v4()));
+    let agent_dir = dir.join("agent");
+    let sessions_dir = agent_dir.join("sessions");
+    std::fs::create_dir_all(&sessions_dir).unwrap();
+    let root_file = sessions_dir.join("root-1.jsonl");
+    let child_file = sessions_dir.join("sub-9.jsonl");
+    crate::supervisor_roster_seed::tests::write_display_file(&root_file, "/the/root/cwd");
+    crate::supervisor_roster_seed::tests::write_display_file(&child_file, "/the/real/cwd");
+    let supervisor = Arc::new(
+        Supervisor::new(crate::supervisor::SupervisorOptions {
+            socket_path: dir.join("daemon.sock"),
+            agent_dir: agent_dir.clone(),
+        })
+        .expect("supervisor"),
+    );
+    // This fixture owns its sessions dir, regardless of the process's session-dir override.
+    *supervisor.rlm_ledger.lock().await = Some(Arc::new(crate::rlm_ledger::RlmSpawnLedger::new(
+        &agent_dir,
+        &sessions_dir,
+        |_| {},
+    )));
+    (dir, supervisor, root_file, child_file)
+}
+
 /// The cargo test config sets `DO_NOT_TRACK=1`; the daemon's live
 /// recording gate reads it (env before settings). Tests that exercise
 /// gated daemon-event paths hold this guard while the three override
@@ -997,7 +1024,13 @@ async fn adoption_settles_then_seeds_the_roster_once() {
         })
         .unwrap(),
     );
-    let ledger = crate::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {});
+    let ledger = Arc::new(crate::rlm_ledger::RlmSpawnLedger::new(
+        &agent_dir,
+        &sessions_dir,
+        |_| {},
+    ));
+    // The adoption fixture must read the same owned ledger it appends to.
+    *supervisor.rlm_ledger.lock().await = Some(Arc::clone(&ledger));
     ledger
         .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
             child_id: "sub-9".to_string(),

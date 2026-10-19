@@ -485,6 +485,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::registry::ResidentWorker;
     use crate::rlm_ledger::RlmLedgerEdge;
+    use crate::supervisor::tests::roster_fixture;
     use crate::supervisor::ClientRouting;
     use pa_types::daemon::agent_roster::AgentRosterStatus;
     use serde_json::Map;
@@ -619,27 +620,6 @@ pub(crate) mod tests {
         assert_eq!(missing.summary["sessionId"], "sub-x");
         assert!(missing.summary.get("model").is_none());
         assert!(missing.summary.get("thinkingLevel").is_none());
-    }
-
-    /// A temp supervisor home: agent dir, sessions dir, a root
-    /// transcript, and a child transcript carrying the durable display rows.
-    pub(crate) async fn roster_fixture() -> (PathBuf, Arc<Supervisor>, PathBuf, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("pa-roster-{}", uuid::Uuid::new_v4()));
-        let agent_dir = dir.join("agent");
-        let sessions_dir = agent_dir.join("sessions");
-        std::fs::create_dir_all(&sessions_dir).unwrap();
-        let root_file = sessions_dir.join("root-1.jsonl");
-        let child_file = sessions_dir.join("sub-9.jsonl");
-        write_display_file(&root_file, "/the/root/cwd");
-        write_display_file(&child_file, "/the/real/cwd");
-        let supervisor = Arc::new(
-            Supervisor::new(crate::supervisor::SupervisorOptions {
-                socket_path: dir.join("daemon.sock"),
-                agent_dir,
-            })
-            .expect("supervisor"),
-        );
-        (dir, supervisor, root_file, child_file)
     }
 
     /// A session transcript with the durable display rows.

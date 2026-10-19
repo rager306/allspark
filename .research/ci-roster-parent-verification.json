@@ -1,0 +1,91 @@
+{
+  "scope": "test-only roster ledger fixture isolation; final native focused/adoption/full daemon library/fmt/all-target Clippy all passed",
+  "production_override_changed": false,
+  "global_env_changed": false,
+  "controlled_env_scope": "command-only own empty sessions override; no actual ambient value printed/accessed",
+  "controlled_original_reds": {
+    "seed": {
+      "exit_code": 101,
+      "publish_actual": 0,
+      "publish_expected": 1,
+      "duration_s": 0.02
+    },
+    "adoption": {
+      "exit_code": 101,
+      "assertion": "missing hydrated family",
+      "duration_s": 0.01
+    }
+  },
+  "first_fixed_compile": {
+    "exit_code": 101,
+    "error": "E0616 private Supervisor.rlm_ledger access from sibling seed test module",
+    "tests_executed": false
+  },
+  "final_correction": "Move existing shared fixture to Supervisor defining test module; direct imports; test-only module visibility, no production field/API widening",
+  "source_sha256": {
+    "crates/pa-daemon/src/supervisor.rs": "e3728ec8badadc71c3f79ccdbdba9cd22bbf980d514ba26f03ea972ee6239f5d",
+    "crates/pa-daemon/src/supervisor/tests.rs": "5c914a6ec53a8c4a6956458b5799883544c9e1803bf9ecb8ba50d2c3483f24ae",
+    "crates/pa-daemon/src/supervisor_roster_seed.rs": "e46ff752f5ca93e48060b497c5d2318b6ec166b9f3c75f8109c5ddc6e7c13785",
+    "crates/pa-daemon/src/supervisor_roster/passivation.rs": "9d4846e17134467030e25ae5d2f00731632bd6f343c7f7c2d47377272cc26b9f"
+  },
+  "runtime_source_checks": {
+    "seed_production_prefix_identical": true,
+    "supervisor_changed_only_cfg_test_module_visibility": true
+  },
+  "current_final_queue": "ci-recovery-sol; no parallel Cargo",
+  "release_build": "not run",
+  "relocation_compile": {
+    "compiled": true,
+    "focused_passed": 24,
+    "failed": 1,
+    "ignored": 1,
+    "seconds": 5.97,
+    "failure": "saved-delete independent writer ledger mismatch"
+  },
+  "saved_delete_child_isolation": {
+    "exact_reexec": true,
+    "env_removed_in_child_only": "PRIME_AGENT_SESSION_DIR",
+    "original_body_byte_identical": true,
+    "other_configuration_unchanged": true,
+    "retry_added": false
+  },
+  "corrected_focused": {
+    "passed": 25,
+    "failed": 0,
+    "ignored": 1,
+    "duration_s": 4.31,
+    "nested_saved_delete_child_passed": 1,
+    "log": ".research/ci-roster-isolated-filter-green.log"
+  },
+  "corrected_adoption": {
+    "passed": 1,
+    "failed": 0,
+    "duration_s": 0.02,
+    "log": ".research/ci-roster-isolated-adoption-green.log"
+  },
+  "final_queue_remaining": [],
+  "full_daemon_library": {
+    "passed": 1162,
+    "failed": 0,
+    "ignored": 8,
+    "duration_s": 173.27,
+    "last_outer_summary_used": true,
+    "raw_log_local_only": ".research/ci-roster-isolated-daemon-lib-green.log",
+    "profile": "Rust1.98.1; dev/test debug0; jobs2; PA_TS_BINARY=/nonexistent/ts; command-owned sessions override"
+  },
+  "format_exit_code": 0,
+  "all_target_clippy": {
+    "exit_code": 0,
+    "duration": "2m50s",
+    "log": ".research/ci-roster-isolated-clippy.log"
+  },
+  "independent_review": "source CLEAN, same four frozen hashes; all assertions and saved-delete original body preserved",
+  "full_workspace_gate": "not yet rerun",
+  "evidence_whitespace": {
+    "classification": "Only two terminal blank-line warnings from exact native test logs; source diff-check clean. Evidence bytes retained.",
+    "warnings": [
+      ".research/ci-roster-isolated-adoption-green.log:8: new blank line at EOF.",
+      ".research/ci-roster-isolated-filter-green.log:40: new blank line at EOF."
+    ]
+  }
+}

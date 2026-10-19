@@ -1,0 +1,9 @@
+   Compiling pa-daemon v0.10.1-beta.35 (/root/prime-agent/crates/pa-daemon)
+error[E0616]: field `rlm_ledger` of struct `supervisor::Supervisor` is private
+   --> crates/pa-daemon/src/supervisor_roster_seed.rs:643:21
+    |
+643 |         *supervisor.rlm_ledger.lock().await = Some(Arc::new(
+    |                     ^^^^^^^^^^ private field
+
+For more information about this error, try `rustc --explain E0616`.
+error: could not compile `pa-daemon` (lib test) due to 1 previous error

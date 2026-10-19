@@ -1,0 +1,23 @@
+    Checking hashbrown v0.15.5
+    Checking pa-ai v0.10.1-beta.35 (/root/prime-agent/crates/pa-ai)
+    Checking regalloc2 v0.11.2
+    Checking cranelift-codegen v0.116.1
+    Checking object v0.36.7
+    Checking wasmtime-environ v29.0.1
+    Checking cranelift-native v0.116.1
+    Checking cranelift-frontend v0.116.1
+    Checking petgraph v0.8.3
+    Checking wasmtime-cranelift v29.0.1
+    Checking nix v0.29.0
+    Checking wasmtime v29.0.1
+    Checking pa-models v0.10.1-beta.35 (/root/prime-agent/crates/pa-models)
+    Checking wasmtime-c-api-impl v29.0.1
+    Checking tree-sitter v0.25.10
+    Checking ast-grep-core v0.39.9
+    Checking pa-ast v0.10.1-beta.35 (/root/prime-agent/crates/pa-ast)
+    Checking pa-graph v0.10.1-beta.35 (/root/prime-agent/crates/pa-graph)
+    Checking pa-lsp v0.10.1-beta.35 (/root/prime-agent/crates/pa-lsp)
+    Checking pa-edit v0.10.1-beta.35 (/root/prime-agent/crates/pa-edit)
+    Checking pa-core v0.10.1-beta.35 (/root/prime-agent/crates/pa-core)
+    Checking pa-daemon v0.10.1-beta.35 (/root/prime-agent/crates/pa-daemon)
+    Finished `dev` profile [unoptimized] target(s) in 2m 50s

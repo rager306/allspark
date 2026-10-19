@@ -1,0 +1,94 @@
+{
+  "toolchain": "1.98.1",
+  "environment": {
+    "PA_TS_BINARY": "/nonexistent/ts",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_BUILD_JOBS": "2",
+    "PRIME_AGENT_SESSION_DIR": "/root/prime-agent/.research/ci-roster-override-fixture (owned empty override; command scope only)"
+  },
+  "queue_exit_code": 0,
+  "source_sha256": {
+    "crates/pa-daemon/src/supervisor.rs": "e3728ec8badadc71c3f79ccdbdba9cd22bbf980d514ba26f03ea972ee6239f5d",
+    "crates/pa-daemon/src/supervisor/tests.rs": "5c914a6ec53a8c4a6956458b5799883544c9e1803bf9ecb8ba50d2c3483f24ae",
+    "crates/pa-daemon/src/supervisor_roster_seed.rs": "e46ff752f5ca93e48060b497c5d2318b6ec166b9f3c75f8109c5ddc6e7c13785",
+    "crates/pa-daemon/src/supervisor_roster/passivation.rs": "9d4846e17134467030e25ae5d2f00731632bd6f343c7f7c2d47377272cc26b9f"
+  },
+  "checks": [
+    {
+      "command": "cargo +1.98.1 test -p pa-daemon --lib supervisor_roster_seed::tests::boot_seed_hydrates_once_and_publishes_one_update -- --exact",
+      "phase": "controlled original inverse",
+      "exit_code": 101,
+      "passed": 0,
+      "failed": 1,
+      "seconds": 0.02,
+      "oracle": "publish count 0 vs 1",
+      "log": ".research/ci-roster-seed-controlled-red.log"
+    },
+    {
+      "command": "cargo +1.98.1 test -p pa-daemon --lib supervisor::tests::adoption_settles_then_seeds_the_roster_once -- --exact",
+      "phase": "controlled original inverse",
+      "exit_code": 101,
+      "passed": 0,
+      "failed": 1,
+      "seconds": 0.01,
+      "oracle": "missing hydrated family",
+      "log": ".research/ci-roster-adoption-controlled-red.log"
+    },
+    {
+      "command": "cargo +1.98.1 test -p pa-daemon --lib supervisor_roster",
+      "phase": "final",
+      "exit_code": 0,
+      "passed": 25,
+      "failed": 0,
+      "ignored": 1,
+      "seconds": 4.31,
+      "nested_child_passed": 1,
+      "log": ".research/ci-roster-isolated-filter-green.log"
+    },
+    {
+      "command": "cargo +1.98.1 test -p pa-daemon --lib supervisor::tests::adoption_settles_then_seeds_the_roster_once -- --exact",
+      "phase": "final",
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "seconds": 0.02,
+      "log": ".research/ci-roster-isolated-adoption-green.log"
+    },
+    {
+      "command": "cargo +1.98.1 test -p pa-daemon --lib",
+      "phase": "final",
+      "exit_code": 0,
+      "passed": 1162,
+      "failed": 0,
+      "ignored": 8,
+      "seconds": 173.27,
+      "nested_child_passed": 1,
+      "raw_log_local_only": true,
+      "log": ".research/ci-roster-isolated-daemon-lib-green.log",
+      "log_sha256": "c1c529d78c9c89972765102a1176ec441b5f81dcb2a659ff55668298334888e4"
+    },
+    {
+      "command": "cargo +1.98.1 fmt --all --check",
+      "phase": "final",
+      "exit_code": 0,
+      "log": ".research/ci-roster-isolated-fmt.log"
+    },
+    {
+      "command": "cargo +1.98.1 clippy -p pa-daemon --all-targets -- -D warnings",
+      "phase": "final",
+      "exit_code": 0,
+      "finished": [
+        "    Finished `dev` profile [unoptimized] target(s) in 2m 50s"
+      ],
+      "log": ".research/ci-roster-isolated-clippy.log"
+    }
+  ],
+  "limitations": [
+    "No full-workspace green claim; parent owns final make check",
+    "No TS parity claim",
+    "Runtime override fixture and raw full-daemon logs stay local only",
+    "Prior E0616 was failed compilation; no tests executed",
+    "Intermediate 24 passed/1 failed was real saved-delete writer/reader mismatch; not green"
+  ]
+}

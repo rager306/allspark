@@ -3,9 +3,10 @@
 //! stripping, the family pruning), the rewrite/diff-baseline snapshots, and
 //! the registration-mark + re-registration rules.
 use super::*;
+use crate::supervisor::tests::roster_fixture;
 use crate::supervisor_roster_seed::tests::{
     append_family_edge, drain_pending_seeds_for_tests, live_child_summary, register_root_worker,
-    roster_fixture, roster_row_for_child, write_display_file,
+    roster_row_for_child, write_display_file,
 };
 use pa_types::daemon::agent_roster::AgentRosterStatus;
 
@@ -345,6 +346,23 @@ async fn stop_carries_the_deleted_childs_spend_to_its_parent() {
 /// captured spend in the delete's own push.
 #[tokio::test]
 async fn a_saved_delete_without_a_roster_row_bills_the_parent() {
+    const ISOLATED_TEST: &str = "PA_ROSTER_SAVED_DELETE_ISOLATED_TEST";
+    if std::env::var_os(ISOLATED_TEST).is_none() {
+        let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "supervisor_roster::passivation::a_saved_delete_without_a_roster_row_bills_the_parent",
+            ])
+            .env_remove(crate::paths::SESSION_DIR_ENV)
+            .env(ISOLATED_TEST, "1")
+            .status()
+            .expect("run saved-delete fixture without the sessions-dir override");
+        assert!(
+            status.success(),
+            "isolated saved-delete fixture failed: {status}"
+        );
+        return;
+    }
     let (dir, supervisor, root_file, child_file) = roster_fixture().await;
     let agent_dir = dir.join("agent");
     let sessions_dir = agent_dir.join("sessions");

@@ -1,0 +1,41 @@
+   Compiling regalloc2 v0.11.2
+   Compiling wasmtime-environ v29.0.1
+   Compiling cranelift-codegen v0.116.1
+   Compiling pa-ai v0.10.1-beta.35 (/root/prime-agent/crates/pa-ai)
+   Compiling cranelift-native v0.116.1
+   Compiling cranelift-frontend v0.116.1
+   Compiling wasmtime-cranelift v29.0.1
+   Compiling wasmtime v29.0.1
+   Compiling pa-models v0.10.1-beta.35 (/root/prime-agent/crates/pa-models)
+   Compiling wasmtime-c-api-impl v29.0.1
+   Compiling tree-sitter v0.25.10
+   Compiling ast-grep-core v0.39.9
+   Compiling pa-ast v0.10.1-beta.35 (/root/prime-agent/crates/pa-ast)
+   Compiling pa-edit v0.10.1-beta.35 (/root/prime-agent/crates/pa-edit)
+   Compiling pa-lsp v0.10.1-beta.35 (/root/prime-agent/crates/pa-lsp)
+   Compiling pa-graph v0.10.1-beta.35 (/root/prime-agent/crates/pa-graph)
+   Compiling pa-core v0.10.1-beta.35 (/root/prime-agent/crates/pa-core)
+   Compiling pa-daemon v0.10.1-beta.35 (/root/prime-agent/crates/pa-daemon)
+    Finished `test` profile [unoptimized] target(s) in 4m 08s
+     Running unittests src/lib.rs (target/debug/deps/pa_daemon-79b520564baacf93)
+
+running 1 test
+test supervisor_roster_seed::tests::boot_seed_hydrates_once_and_publishes_one_update ... FAILED
+
+failures:
+
+---- supervisor_roster_seed::tests::boot_seed_hydrates_once_and_publishes_one_update stdout ----
+
+thread 'supervisor_roster_seed::tests::boot_seed_hydrates_once_and_publishes_one_update' (2380050) panicked at crates/pa-daemon/src/supervisor_roster_seed.rs:811:9:
+assertion `left == right` failed: one publish: []
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    supervisor_roster_seed::tests::boot_seed_hydrates_once_and_publishes_one_update
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1169 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p pa-daemon --lib`

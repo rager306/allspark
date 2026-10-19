@@ -1,0 +1,49 @@
+   Compiling pa-daemon v0.10.1-beta.35 (/root/prime-agent/crates/pa-daemon)
+    Finished `test` profile [unoptimized] target(s) in 2m 14s
+     Running unittests src/lib.rs (target/debug/deps/pa_daemon-79b520564baacf93)
+
+running 26 tests
+test supervisor_roster::delta_push::roster_delta_push_benchmark ... ignored, manual roster delta push benchmark
+test supervisor_roster::passivation::passivation_keeps_registration_marks_and_strips_live_fields ... ok
+test agent_messaging::controller_tests::family_reads_siblings_from_the_supervisor_roster ... ok
+test supervisor_roster::delta_push::worker_roster_delta_drops_stale_sequences ... ok
+test supervisor_roster::delta_push::worker_roster_delta_batches_removals_into_the_same_push ... ok
+test supervisor_roster::passivation::an_identical_rewrite_does_not_broadcast ... ok
+test supervisor_roster::passivation::a_changed_rewrite_broadcasts_and_resets_the_diff_baseline ... ok
+test supervisor_roster::delta_push::worker_roster_delta_pushes_one_update_per_flip ... ok
+test supervisor_roster::passivation::a_reregistration_replaces_the_passive_row ... ok
+test supervisor_roster_seed::tests::descent_matches_at_any_parent_walk_step ... ok
+test supervisor_roster::passivation::stop_passivates_an_anchored_child_preserving_display_fields ... ok
+test supervisor_roster::passivation::passivation_normalizes_the_live_model_descriptor_to_the_durable_pair ... ok
+test supervisor_roster::passivation::a_saved_delete_without_a_roster_row_bills_the_parent ... FAILED
+test supervisor_roster::passivation::subscribe_is_a_pure_in_memory_snapshot ... ok
+test supervisor_roster::passivation::stop_carries_the_deleted_childs_spend_to_its_parent ... ok
+test supervisor_roster_seed::tests::seeded_rows_shape_matches_the_ts_entry ... ok
+test supervisor_roster::passivation::stop_prunes_seeded_rows_of_a_family_that_lost_its_root ... ok
+test supervisor_roster_seed::tests::boot_seed_hydrates_once_and_publishes_one_update ... ok
+test supervisor_roster_seed::tests::boot_seed_skips_rows_the_roster_already_holds ... ok
+test supervisor_roster_seed::tests::an_unhydrated_seeded_row_retries_on_the_next_family_walk ... ok
+test supervisor_roster_seed::tests::family_seed_renders_edges_then_hydrates_in_the_background ... ok
+test supervisor_roster_seed::tests::hydration_loses_to_a_newer_worker_write ... ok
+test supervisor_roster_seed::tests::stale_seeded_snapshots_never_publish ... ok
+test supervisor_roster_seed::tests::the_registration_seed_publishes_a_late_worker_family ... ok
+test supervisor_roster::passivation::stop_removes_unanchored_children_and_passivates_the_top_level_row ... ok
+test supervisor_roster::passivation::stop_leaves_the_first_roster_snapshot_clean_behind_hundreds_of_seeded_rows ... ok
+
+failures:
+
+---- supervisor_roster::passivation::a_saved_delete_without_a_roster_row_bills_the_parent stdout ----
+
+thread 'supervisor_roster::passivation::a_saved_delete_without_a_roster_row_bills_the_parent' (2386692) panicked at crates/pa-daemon/src/supervisor_roster/passivation.rs:441:5:
+assertion `left == right` failed: one refresh push: []
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    supervisor_roster::passivation::a_saved_delete_without_a_roster_row_bills_the_parent
+
+test result: FAILED. 24 passed; 1 failed; 1 ignored; 0 measured; 1144 filtered out; finished in 5.97s
+
+error: test failed, to rerun pass `-p pa-daemon --lib`

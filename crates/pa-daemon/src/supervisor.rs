@@ -32,7 +32,7 @@ mod handshake_tests;
 #[cfg(test)]
 mod spawn_record_tests;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 // Read only by this facade's in-file tests; the lib-target import is flagged unused.
 #[allow(unused_imports)]
