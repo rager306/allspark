@@ -21,7 +21,8 @@ The harness often sends messages to the agent. These are user messages starting 
     - `.output: str`
     - `.duration: float`
 - `edit.run(path: str, old_str: str, new_str: str) -> str`: the primary method for editing files. async, exact-unique-match; the `edit` module is callable with the same arguments (`await edit(path=..., old_str=..., new_str=...)`)
-- `graph.route(question: str) -> dict`: routes an architectural question to the right `graph` action (`trace` with a direction, `architecture` with a view, or `search`), returning the ready-to-issue parameters plus a `why` note; `graph.format_call(call)` renders it. The routing table — callers go `direction: in`, blast radius goes `direction: out`, shapes go `architecture` — lives in the `graph` skill.
+- `graph.route(question: str) -> dict`: routes an architectural question to the right `graph` action (`trace` with a direction, `architecture` with a view, or `search`), returning the ready-to-issue parameters plus a `why` note. The routing table — callers go `direction: in`, blast radius goes `direction: out`, shapes go `architecture` — lives in the `graph` skill.
+- `graph.format_call(call: dict) -> str`: renders a routed call as the JSON the `graph` tool expects, with the `why` detached as a comment.
 - `websearch.run(query: str, *, max_output: int = 8192, timeout: int | None, num_results: int | None) -> str`: search the web; the `websearch` module is callable with the same arguments
 - `attach_image(*paths: str) -> str`: loads images directly into context if the agent's model is vision-capable, errors otherwise
 
