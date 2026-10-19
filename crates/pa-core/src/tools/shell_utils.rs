@@ -64,7 +64,7 @@ pub fn get_shell_env() -> std::collections::HashMap<String, String> {
     }
     env.insert("GIT_EDITOR".into(), "true".into());
     env.insert("GIT_SEQUENCE_EDITOR".into(), "true".into());
-    env.insert("GIT_TERMINAL_PROMPTS".into(), "0".into());
+    env.insert("GIT_TERMINAL_PROMPT".into(), "0".into());
     env.insert("GIT_ASKPASS".into(), "true".into());
     env.insert("SSH_ASKPASS_REQUIRE".into(), "never".into());
     env.insert("EDITOR".into(), "true".into());
@@ -119,7 +119,7 @@ mod tests {
     #[test]
     fn shell_env_disables_prompts() {
         let env = get_shell_env();
-        assert_eq!(env.get("GIT_TERMINAL_PROMPTS").unwrap(), "0");
+        assert_eq!(env.get("GIT_TERMINAL_PROMPT").unwrap(), "0");
         assert_eq!(env.get("PAGER").unwrap(), "cat");
         assert!(env.get("PATH").unwrap().contains("/bin"));
     }

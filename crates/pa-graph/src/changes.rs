@@ -422,50 +422,62 @@ fn write_provenance(store: &GraphStore, project: &str, report: &ChangeReport) ->
 
 // ── git plumbing ────────────────────────────────────────────────────────
 
-/// Run `git -C root <args>` and return stdout as lossy UTF-8.
-fn run_git(root: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+/// Run `git -C root <args>` in a hardened environment.
+///
+/// The hardening is Mayoi's: `GIT_TERMINAL_PROMPT=0` and `GIT_OPTIONAL_LOCKS=0`
+/// make a git that would ask for credentials (a private remote, an expired
+/// token) fail fast instead of blocking the tool on a prompt nobody can see,
+/// and keep background index/refresh work from contending with the user's own
+/// git for lock files. A timeout bounds every invocation: `git log -p` on a
+/// large history can run for minutes, and nothing here can cancel it.
+fn git_command(root: &Path, args: &[&str]) -> std::process::Command {
+    let mut command = Command::new("git");
+    command
         .arg("-C")
         .arg(root)
         .args(args)
-        .output()
-        .map_err(|e| GraphError::Git(format!("spawning git: {e}")))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GraphError::Git(format!(
-            "git {} failed: {}",
-            args.join(" "),
-            stderr.trim()
-        )));
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0");
+    command
+}
+
+fn finish_git(args: &[&str], output: std::process::Output) -> Result<std::process::Output> {
+    if output.status.success() {
+        return Ok(output);
     }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(GraphError::Git(format!(
+        "git {} failed: {}",
+        args.join(" "),
+        stderr.trim()
+    )))
+}
+
+/// Run `git -C root <args>` and return stdout as lossy UTF-8.
+fn run_git(root: &Path, args: &[&str]) -> Result<String> {
+    let output = finish_git(
+        args,
+        git_command(root, args)
+            .output()
+            .map_err(|e| GraphError::Git(format!("spawning git: {e}")))?,
+    )?;
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Run `git -C root <args>` and return raw stdout bytes.
 fn run_git_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
-        .map_err(|e| GraphError::Git(format!("spawning git: {e}")))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GraphError::Git(format!(
-            "git {} failed: {}",
-            args.join(" "),
-            stderr.trim()
-        )));
-    }
+    let output = finish_git(
+        args,
+        git_command(root, args)
+            .output()
+            .map_err(|e| GraphError::Git(format!("spawning git: {e}")))?,
+    )?;
     Ok(output.stdout)
 }
 
 /// Whether `root` is inside a git work tree.
 fn is_work_tree(root: &Path) -> bool {
-    Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--is-inside-work-tree"])
+    git_command(root, &["rev-parse", "--is-inside-work-tree"])
         .output()
         .is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true")
 }
