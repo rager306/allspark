@@ -1,0 +1,170 @@
+   Compiling syn v3.0.5
+   Compiling libc v0.2.189
+   Compiling smallvec v1.16.1
+   Compiling log v0.4.34
+   Compiling errno v0.3.14
+   Compiling signal-hook-registry v1.4.8
+   Compiling mio v1.2.3
+   Compiling parking_lot_core v0.9.12
+   Compiling parking_lot v0.12.5
+   Compiling synstructure v0.14.0
+   Compiling getrandom v0.3.4
+   Compiling serde_core v1.0.229
+   Compiling darling_core v0.24.1
+   Compiling zerofrom-derive v0.1.8
+   Compiling zerofrom v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling yoke v0.8.3
+   Compiling zerovec-derive v0.11.6
+   Compiling displaydoc v0.2.7
+   Compiling zerotrie v0.2.5
+   Compiling zerovec v0.11.8
+   Compiling rand_core v0.9.5
+   Compiling rustix v0.38.44
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling icu_locale_core v2.3.0
+   Compiling icu_collections v2.3.0
+   Compiling num-traits v0.2.19
+   Compiling icu_provider v2.3.1
+   Compiling icu_normalizer v2.3.0
+   Compiling icu_properties v2.3.0
+   Compiling darling_macro v0.24.1
+   Compiling tokio-macros v2.7.2
+   Compiling crossbeam-utils v0.8.23
+   Compiling signal-hook v0.3.18
+   Compiling socket2 v0.6.5
+   Compiling syn v2.0.119
+   Compiling serde v1.0.229
+   Compiling tokio v1.53.1
+   Compiling strum_macros v0.26.4
+   Compiling signal-hook-mio v0.2.5
+   Compiling ppv-lite86 v0.2.21
+   Compiling crossbeam-epoch v0.9.21
+   Compiling darling v0.24.1
+   Compiling idna_adapter v1.2.2
+   Compiling inotify-sys v0.1.8
+   Compiling getrandom v0.4.3
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.20
+   Compiling futures-macro v0.3.34
+   Compiling linux-raw-sys v0.12.1
+   Compiling slab v0.4.12
+   Compiling percent-encoding v2.3.2
+   Compiling form_urlencoded v1.2.2
+   Compiling futures-util v0.3.34
+   Compiling bit-set v0.8.0
+   Compiling instability v0.3.13
+   Compiling rustix v1.1.4
+   Compiling globset v0.4.20
+   Compiling thiserror v2.0.20
+   Compiling serde_json v1.0.151
+   Compiling inotify v0.11.5
+   Compiling idna v1.1.0
+   Compiling crossbeam-deque v0.8.8
+   Compiling rand_chacha v0.9.0
+   Compiling crossterm v0.28.1 (/root/prime-agent/vendor/crossterm)
+   Compiling strum v0.26.3
+   Compiling rand v0.9.5
+   Compiling rand_xorshift v0.4.0
+   Compiling clap_derive v4.6.7
+warning: unexpected `cfg` condition name: `winapi`
+   --> vendor/crossterm/src/lib.rs:256:11
+    |
+256 | #[cfg(all(winapi, not(feature = "winapi")))]
+    |           ^^^^^^
+    |
+    = help: expected names are: `docsrs`, `feature`, and `test` and 32 more
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(winapi)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(winapi)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+    = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unexpected `cfg` condition value: `winapi`
+   --> vendor/crossterm/src/lib.rs:256:23
+    |
+256 | #[cfg(all(winapi, not(feature = "winapi")))]
+    |                       ^^^^^^^^^^^^^^^^^^
+    |
+    = note: expected values for `feature` are: `bracketed-paste`, `default`, `event-stream`, `events`, `filedescriptor`, `libc`, `serde`, `use-dev-tty`, and `windows`
+    = help: consider adding `winapi` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `crossterm_winapi`
+   --> vendor/crossterm/src/lib.rs:259:11
+    |
+259 | #[cfg(all(crossterm_winapi, not(feature = "crossterm_winapi")))]
+    |           ^^^^^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(crossterm_winapi)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(crossterm_winapi)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition value: `crossterm_winapi`
+   --> vendor/crossterm/src/lib.rs:259:33
+    |
+259 | #[cfg(all(crossterm_winapi, not(feature = "crossterm_winapi")))]
+    |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: expected values for `feature` are: `bracketed-paste`, `default`, `event-stream`, `events`, `filedescriptor`, `libc`, `serde`, `use-dev-tty`, and `windows`
+    = help: consider adding `crossterm_winapi` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unnecessary parentheses around closure body
+  --> vendor/crossterm/src/terminal/sys/unix.rs:85:50
+   |
+85 |     let file = File::open("/dev/tty").map(|file| (FileDesc::Owned(file.into())));
+   |                                                  ^                            ^
+   |
+   = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+   |
+85 -     let file = File::open("/dev/tty").map(|file| (FileDesc::Owned(file.into())));
+85 +     let file = File::open("/dev/tty").map(|file| FileDesc::Owned(file.into()));
+   |
+
+warning: struct `InternalEventFilter` is never constructed
+  --> vendor/crossterm/src/event/filter.rs:65:19
+   |
+65 | pub(crate) struct InternalEventFilter;
+   |                   ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `crossterm` (lib) generated 6 warnings (run `cargo fix --lib -p crossterm` to apply 1 suggestion)
+   Compiling unarray v0.1.4
+   Compiling once_cell v1.21.4
+   Compiling tempfile v3.27.0
+   Compiling proptest v1.11.0
+   Compiling clap v4.6.7
+   Compiling ratatui v0.29.0
+   Compiling tokio-util v0.7.19
+   Compiling notify v8.2.0
+   Compiling pa-types v0.10.1-beta.35 (/root/prime-agent/crates/pa-types)
+   Compiling ignore v0.4.33
+   Compiling url v2.5.8
+   Compiling fancy-regex v0.14.0
+   Compiling uuid v1.26.1
+   Compiling pa-tui v0.10.1-beta.35 (/root/prime-agent/crates/pa-tui)
+    Finished `test` profile [unoptimized] target(s) in 2m 23s
+     Running unittests src/lib.rs (target/debug/deps/pa_tui-e84b02148aa403c3)
+
+running 9 tests
+test autolink::tests::candidates_preserve_scheme_case_and_email_run_boundaries ... ok
+test markdown::tests::bare_url_is_not_autolinked_inside_a_link_label ... ok
+test markdown::tests::email_autolinks_with_mailto_href ... ok
+test markdown::tests::angle_autolink_inside_link_label_yields_the_terminal_ranges ... ok
+test markdown::tests::angle_autolinks_become_links ... ok
+test markdown::tests::www_autolink_gains_scheme_and_shows_the_url_in_both_forms ... ok
+test markdown::tests::bare_url_autolinks_osc8 ... ok
+test markdown::tests::bare_url_autolink_forms ... ok
+test markdown::tests::bare_url_autolink_trims_trailing_punctuation ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 1482 filtered out; finished in 0.04s
+
