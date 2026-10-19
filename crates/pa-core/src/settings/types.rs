@@ -266,6 +266,28 @@ pub struct LspSettings {
 pub struct GraphSettings {
     pub enabled: Option<bool>,
     pub db_path: Option<String>,
+    /// Build (and refresh) the graph in the background at session start.
+    ///
+    /// Unset reads as `auto`: the first `search`/`trace`/`architecture` query
+    /// builds the graph on demand (see `GraphTool::ensure_indexed`) and a
+    /// background task refreshes it while the session works. `"watch"` also
+    /// keeps a filesystem watcher on the tree, so edits re-index incrementally
+    /// instead of waiting for the next query. `"off"` disables both, leaving
+    /// the explicit `index` action as the only build path.
+    pub auto: Option<GraphAuto>,
+}
+
+/// When the graph builds and refreshes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GraphAuto {
+    /// Build in the background at session start; refresh on query when stale.
+    #[default]
+    Auto,
+    /// `auto`, plus a filesystem watcher that re-indexes changed files live.
+    Watch,
+    /// Never build on its own; the explicit `index` action is the only path.
+    Off,
 }
 
 /// The native `edit` tool's opt-in gate and mode policy (fork-only).

@@ -7,7 +7,7 @@
 //! whole dispatch runs on `spawn_blocking` (SQLite, the directory walk, and
 //! the git subprocess are all blocking work).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 // FORK-ONLY (jev Phase 2): the optional judge re-rank of `search` results.
@@ -16,7 +16,8 @@ use crate::jev::graph_rerank::{GraphReranker, RerankCandidate, VERIFIED_MARKER};
 use pa_agent::abort::AbortSignal;
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
 use pa_graph::{
-    ArchitectureView, Direction, EdgeType, GraphStore, IndexOptions, SearchOptions, TraceOptions,
+    ArchitectureView, Direction, EdgeType, GraphStore, IndexOptions, IndexReport, SearchOptions,
+    TraceOptions,
 };
 
 /// Project name a store rooted at `root` indexes under (its final path
@@ -59,6 +60,8 @@ pub struct GraphTool {
     db_path: PathBuf,
     cwd: PathBuf,
     store: Mutex<Option<GraphStore>>,
+    /// single-flight flag for the cold-start build (see `ensure_indexed`).
+    in_flight: std::sync::Arc<std::sync::atomic::AtomicBool>,
     schema: serde_json::Value,
     /// FORK-ONLY (jev Phase 2): when set, `search` results are re-ranked by
     /// the judge (`[jev] graphRerank = auto` behind a native judge). `None`
@@ -74,6 +77,7 @@ impl GraphTool {
             db_path,
             cwd,
             store: Mutex::new(None),
+            in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             schema: params_schema(),
             reranker: None,
         }
@@ -107,6 +111,52 @@ impl GraphTool {
             }
             None => self.cwd.clone(),
         }
+    }
+
+    /// Index the project when the graph has never seen it.
+    ///
+    /// `search`/`trace`/`architecture` on a cold graph answered "0 hits" and
+    /// looked like a completed query, which is how the agent concluded the
+    /// graph had nothing to say and fell back to reading files one by one. The
+    /// first call is the only one that pays the build cost; later calls hit the
+    /// on-disk store, and a `force` index from the model still overrides this.
+    /// Returns the report when a build happened, so the reply can name it.
+    fn ensure_indexed(&self, root: &Path, project: &str) -> anyhow::Result<Option<IndexReport>> {
+        let indexed = self.with_store(|store| {
+            Ok::<_, anyhow::Error>(
+                store
+                    .file_count(project)
+                    .map_err(|err| anyhow::anyhow!("status failed: {err}"))?
+                    > 0,
+            )
+        })?;
+        if indexed {
+            return Ok(None);
+        }
+        // single-flight: one cold-start build at a time. A caller that arrives
+        // while another build is running proceeds against the current store —
+        // `compare_exchange` returning false means a build is already under
+        // way — rather than starting a second walk over the same files.
+        if self
+            .in_flight
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return Ok(None);
+        }
+        let _guard = crate::tools::graph_in_flight::InFlightGuard(self.in_flight.clone());
+        let opts = IndexOptions::new(project);
+        let report = self.with_store(|store| {
+            store
+                .index_project(root, &opts)
+                .map_err(|err| anyhow::anyhow!("index failed: {err}"))
+        })?;
+        Ok(Some(report))
     }
 
     /// Open (once) and return a lock on the store, creating the DB on demand.
@@ -225,6 +275,9 @@ impl GraphTool {
             .ok_or_else(|| anyhow::anyhow!("search requires a non-empty `query`"))?;
         let root = self.resolve_root(params);
         let project = project_name(&root);
+        // A cold graph answers "0 hits" for everything; building it here turns
+        // the first query into a real answer instead of a false negative.
+        let indexed_now = self.ensure_indexed(&root, &project)?;
         let mut opts = SearchOptions::new(&project);
         if let Some(limit) = params.get("limit").and_then(serde_json::Value::as_u64) {
             opts = opts.with_limit(limit as usize);
@@ -234,7 +287,16 @@ impl GraphTool {
                 .search(query, &opts)
                 .map_err(|err| anyhow::anyhow!("search failed: {err}"))
         })?;
-        let mut lines = vec![format!("{} hit(s) for {query:?}:", hits.len())];
+        let mut lines = Vec::new();
+        if let Some(report) = &indexed_now {
+            lines.push(format!(
+                "The graph was empty, so this query indexed the project first: {} nodes, {} edges,                  {} files parsed.",
+                report.nodes,
+                report.edges,
+                report.parsed,
+            ));
+        }
+        lines.push(format!("{} hit(s) for {query:?}:", hits.len()));
         for hit in &hits {
             lines.push(format!(
                 "- {} ({}:{}) [{}] score={:.3}",
@@ -376,6 +438,7 @@ impl GraphTool {
             .ok_or_else(|| anyhow::anyhow!("trace requires a non-empty `symbol`"))?;
         let root = self.resolve_root(params);
         let project = project_name(&root);
+        let indexed_now = self.ensure_indexed(&root, &project)?;
         let mut opts = TraceOptions::new(&project, symbol);
         opts.direction =
             parse_direction(params.get("direction").and_then(serde_json::Value::as_str));
@@ -395,7 +458,16 @@ impl GraphTool {
                 .trace(&opts)
                 .map_err(|err| anyhow::anyhow!("trace failed: {err}"))
         })?;
-        let mut lines = vec![format!(
+        let mut lines = Vec::new();
+        if let Some(report) = &indexed_now {
+            lines.push(format!(
+                "The graph was empty, so this trace indexed the project first: {} nodes, {} edges,                  {} files parsed.",
+                report.nodes,
+                report.edges,
+                report.parsed,
+            ));
+        }
+        lines.push(format!(
             "Trace from {} ({} step(s)){}:",
             result.origin,
             result.steps.len(),
@@ -408,7 +480,7 @@ impl GraphTool {
             } else {
                 String::new()
             }
-        )];
+        ));
         for step in &result.steps {
             lines.push(format!(
                 "- [depth {}] {} ({}:{}) via {} confidence={:.2}",
@@ -454,6 +526,7 @@ impl GraphTool {
     fn action_architecture(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
         let root = self.resolve_root(params);
         let project = project_name(&root);
+        let indexed_now = self.ensure_indexed(&root, &project)?;
         let view = ArchitectureView::from_str_or_default(
             params
                 .get("view")
@@ -465,9 +538,19 @@ impl GraphTool {
                 .architecture(&project, view)
                 .map_err(|err| anyhow::anyhow!("architecture failed: {err}"))
         })?;
+        let note = indexed_now.map_or_else(String::new, |report| {
+            format!(
+                " The graph was empty, so this query indexed the project first: {} nodes, {} edges, \
+                 {} files parsed.",
+                report.nodes,
+                report.edges,
+                report.parsed,
+            )
+        });
         Ok(AgentToolResult {
             content: vec![pa_agent::types::ToolResultContent::text(format!(
-                "Architecture view `{}` for project `{project}` (see details for the full report).",
+                "Architecture view `{}` for project `{project}` (see details for the full \
+                 report).{note}",
                 view.as_str(),
             ))],
             details: serde_json::to_value(&arch).unwrap_or(serde_json::Value::Null),
@@ -1042,5 +1125,81 @@ mod tests {
         assert_eq!(tool.name(), "graph");
         assert_eq!(tool.label(), "Graph");
         assert_eq!(tool.parameters()["required"][0], "action");
+    }
+
+    /// A query on a cold graph builds the index first, so the first answer is
+    /// real and says so. This is the behavioural fix for the session where
+    /// `search`/`trace` on an unindexed project answered "0 hits" and the agent
+    /// concluded the graph had nothing to say, then read files one by one.
+    /// Run one graph action against a fresh sandbox project.
+    async fn run_action(
+        dir: &std::path::Path,
+        action: &str,
+        extra: serde_json::Value,
+    ) -> anyhow::Result<AgentToolResult> {
+        let tool = std::sync::Arc::new(tool(dir));
+        let mut params = serde_json::json!({ "action": action });
+        if let (Some(obj), Some(extra_obj)) = (params.as_object_mut(), extra.as_object()) {
+            for (k, v) in extra_obj {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+        pa_agent::types::AgentTool::execute(
+            tool,
+            "call".to_string(),
+            params,
+            pa_agent::abort::AbortController::new().signal(),
+            std::sync::Arc::new(|_| {}),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_cold_graph_indexes_itself_on_the_first_query() {
+        // A real mini-project: two files with a call edge the indexer can see.
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("a.rs"),
+            "pub fn entry() -> u32 { helper() }\npub fn helper() -> u32 { 1 }\n",
+        )
+        .unwrap();
+
+        let result = run_action(dir.path(), "search", serde_json::json!({"query": "helper"}))
+            .await
+            .expect("search on a cold graph must build and answer");
+        let text = text_of(&result);
+        assert!(
+            text.contains("indexed the project first"),
+            "the auto-index is named: {text}"
+        );
+        assert!(
+            text.contains("1 hit(s)") || text.contains("2 hit(s)"),
+            "the query answers with real hits, not 0: {text}"
+        );
+    }
+
+    /// A warm graph must NOT claim it indexed anything: the note follows the
+    /// build, not every query.
+    #[tokio::test]
+    async fn a_warm_graph_does_not_claim_an_index_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.rs"), "pub fn one() -> u32 { 1 }\n").unwrap();
+
+        // Warm the graph through the public surface, then query it.
+        run_action(dir.path(), "index", serde_json::json!({}))
+            .await
+            .expect("index");
+        let result = run_action(dir.path(), "search", serde_json::json!({"query": "one"}))
+            .await
+            .expect("search");
+        assert!(
+            !text_of(&result).contains("indexed the project first"),
+            "a warm graph must not claim a build: {}",
+            text_of(&result)
+        );
     }
 }

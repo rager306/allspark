@@ -399,9 +399,11 @@ fn native_tools_section(tools: &[&str]) -> String {
              search — describe behavior in words, not a regex), `trace` (callers/callees from a \
              symbol; `direction` in/out/both, `depth`, `edge_types`), `architecture` (`view`: \
              overview/structure/layers/clusters/cycles/hotspots/entry_points/file_tree), `coverage` \
-             (index honesty report), `changes` (git diff → affected symbols), `status`. MUST use it \
-             for architectural questions and call-chain questions instead of reading file after \
-             file: the graph already holds the relationships."
+             (index honesty report), `changes` (git diff → affected symbols), `status`. `search`, \
+             `trace`, and `architecture` index the project themselves on first use, so there is no \
+             cold-start step. MUST use it for architectural questions and call-chain questions \
+             instead of reading file after file: the graph already holds the relationships, and one \
+             query replaces opening every file on the path."
                 .to_string(),
         );
     }

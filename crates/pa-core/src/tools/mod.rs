@@ -13,6 +13,7 @@ pub(crate) mod file_mutation_queue;
 pub(crate) mod golden_replay;
 // The native code-graph tool (fork-only; gated by `graph.enabled`).
 pub(crate) mod graph;
+pub(crate) mod graph_in_flight;
 pub(crate) mod ipython;
 pub(crate) mod jsdiff;
 pub(crate) mod output_accumulator;

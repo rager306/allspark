@@ -933,6 +933,20 @@ impl SettingsManager {
             .unwrap_or(true)
     }
 
+    /// The graph's background build/refresh policy (`graph.auto`).
+    ///
+    /// Unset reads as [`GraphAuto::Auto`]: the first query builds on demand and
+    /// a background task refreshes while the session works. `watch` adds the
+    /// filesystem watcher; `off` leaves only the explicit `index` action.
+    #[must_use]
+    pub fn get_graph_auto(&self) -> super::types::GraphAuto {
+        self.merged
+            .graph
+            .as_ref()
+            .and_then(|graph| graph.auto)
+            .unwrap_or_default()
+    }
+
     /// FORK-ONLY: the typed-decision (judgment) layer's gate. Unset and
     /// unrecognized spellings read as OFF (a paid third-party endpoint;
     /// unlike `lsp`/`graph`, nothing wires by default).

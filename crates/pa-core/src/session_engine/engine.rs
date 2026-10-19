@@ -292,6 +292,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let lsp_enabled = settings.get_lsp_enabled();
     let graph_enabled = settings.get_graph_enabled();
     let graph_db_path = settings.get_graph_db_path();
+    let graph_auto = settings.get_graph_auto();
     // The native `edit` tool's gate + mode policy (`editHybrid.*`; enabled
     // defaults ON, default mode `replace`).
     let edit_hybrid_enabled = settings.get_edit_hybrid_enabled();
@@ -586,6 +587,46 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     }
     if graph_enabled {
         let db_path = graph_db_path.unwrap_or_else(|| config.agent_dir.join("graph.db"));
+        // FORK-ONLY (graph=auto): the analogue of codebase-memory-mcp's daemon
+        // — a background build so the graph is warm before the first query.
+        // The tool's own `ensure_indexed` remains as the on-demand fallback;
+        // this task makes the fallback unnecessary in the common case. It is
+        // fire-and-forget: a slow index must never delay session startup, and
+        // the on-disk store makes the result visible to every later query.
+        if graph_auto != crate::settings::types::GraphAuto::Off {
+            let index_root = cwd.clone();
+            let index_db = db_path.clone();
+            let project = std::path::Path::new(&index_root)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("project")
+                .to_string();
+            tokio::spawn(async move {
+                // The store is opened inside the blocking task: the build is
+                // CPU-bound (rayon over files) and the SQLite connection must
+                // live where it is used.
+                let result = tokio::task::spawn_blocking(move || {
+                    let mut store = match pa_graph::GraphStore::open(&index_db) {
+                        Ok(store) => store,
+                        Err(err) => return Err(format!("graph store: {err}")),
+                    };
+                    pa_graph::indexer::index_project(&mut store, &index_root, &project)
+                        .map(|report| {
+                            format!(
+                                "graph auto-index: {} nodes, {} edges, {} files parsed",
+                                report.nodes, report.edges, report.parsed
+                            )
+                        })
+                        .map_err(|err| format!("graph index: {err}"))
+                })
+                .await;
+                match result {
+                    Ok(Ok(summary)) => tracing::debug!("{summary}"),
+                    Ok(Err(err)) => tracing::warn!("{err}"),
+                    Err(err) => tracing::warn!("graph auto-index task failed: {err}"),
+                }
+            });
+        }
         // FORK-ONLY (jev Phase 2): the `search` re-rank, installed only when
         // `[jev] graphRerank = auto` resolves behind a native judge.
         let reranker = crate::jev::graph_rerank::should_run_graph_rerank(
