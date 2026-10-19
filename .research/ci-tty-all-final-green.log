@@ -1,0 +1,96 @@
+warning: unexpected `cfg` condition name: `winapi`
+   --> vendor/crossterm/src/lib.rs:256:11
+    |
+256 | #[cfg(all(winapi, not(feature = "winapi")))]
+    |           ^^^^^^
+    |
+    = help: expected names are: `docsrs`, `feature`, and `test` and 34 more
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(winapi)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(winapi)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+    = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unexpected `cfg` condition value: `winapi`
+   --> vendor/crossterm/src/lib.rs:256:23
+    |
+256 | #[cfg(all(winapi, not(feature = "winapi")))]
+    |                       ^^^^^^^^^^^^^^^^^^
+    |
+    = note: expected values for `feature` are: `bracketed-paste`, `default`, `event-stream`, `events`, `filedescriptor`, `libc`, `serde`, `use-dev-tty`, and `windows`
+    = help: consider adding `winapi` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `crossterm_winapi`
+   --> vendor/crossterm/src/lib.rs:259:11
+    |
+259 | #[cfg(all(crossterm_winapi, not(feature = "crossterm_winapi")))]
+    |           ^^^^^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(crossterm_winapi)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(crossterm_winapi)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition value: `crossterm_winapi`
+   --> vendor/crossterm/src/lib.rs:259:33
+    |
+259 | #[cfg(all(crossterm_winapi, not(feature = "crossterm_winapi")))]
+    |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: expected values for `feature` are: `bracketed-paste`, `default`, `event-stream`, `events`, `filedescriptor`, `libc`, `serde`, `use-dev-tty`, and `windows`
+    = help: consider adding `crossterm_winapi` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unnecessary parentheses around closure body
+  --> vendor/crossterm/src/terminal/sys/unix.rs:85:50
+   |
+85 |     let file = File::open("/dev/tty").map(|file| (FileDesc::Owned(file.into())));
+   |                                                  ^                            ^
+   |
+   = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+   |
+85 -     let file = File::open("/dev/tty").map(|file| (FileDesc::Owned(file.into())));
+85 +     let file = File::open("/dev/tty").map(|file| FileDesc::Owned(file.into()));
+   |
+
+warning: struct `InternalEventFilter` is never constructed
+  --> vendor/crossterm/src/event/filter.rs:65:19
+   |
+65 | pub(crate) struct InternalEventFilter;
+   |                   ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `crossterm` (lib) generated 6 warnings (run `cargo fix --lib -p crossterm` to apply 1 suggestion)
+   Compiling pa-cli v0.10.1-beta.35 (/root/prime-agent/crates/pa-cli)
+    Finished `test` profile [unoptimized] target(s) in 1.96s
+     Running tests/termios_process_exit_e2e.rs (target/debug/deps/termios_process_exit_e2e-47f8cd559354b94a)
+
+running 17 tests
+no controlling-terminal session on the runner (tcgetpgrp(fd 0) failed); skipping the suspend-cycle route — it drives a real stop/continue cycle
+test diff_chat_child_mode ... ok
+test a_suspend_cycle_with_a_ctrl_s_in_the_stopped_window_never_stops_the_shell ... ok
+test diff_view_child_mode ... ok
+test ledger::the_ledger_catches_a_dangling_hyperlink ... ok
+test ledger::the_ledger_catches_an_unknown_leaked_mode ... ok
+test ledger::the_ledger_catches_forbidden_writes ... ok
+test ledger::the_ledger_catches_a_dangling_sgr ... ok
+test ledger::the_ledger_catches_a_kitty_re_arm_after_the_pop ... ok
+test ledger::the_ledger_passes_the_balanced_restore ... ok
+test ledger::the_ledger_reads_extended_color_forms_as_one_attribute ... ok
+test ledger::the_ledger_catches_a_leaked_mouse_mode ... ok
+test ledger::the_ledger_catches_a_default_on_mode_left_off ... ok
+test ledger::the_ledger_catches_an_absolute_kitty_set_left_on ... ok
+test ledger::the_ledger_catches_modify_other_keys_left_armed ... ok
+test a_full_session_with_a_mid_session_ctrl_s_exits_whole ... ok
+test a_launch_on_a_ctrl_s_stopped_tty_flows_and_exits_whole ... ok
+test the_agents_view_exit_exits_whole ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.22s
+

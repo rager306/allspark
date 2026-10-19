@@ -243,29 +243,62 @@ fn a_launch_on_a_ctrl_s_stopped_tty_flows_and_exits_whole() {
         &PREMOUNT_MARKER[..PREMOUNT_MARKER.len().saturating_sub(2)],
         "the pre-mount gate marker",
     );
-    // Arm the stop and PROVE it armed: the cooked discipline echoes input
-    // as it arrives, and the stop holds that echo — the sentinel must NOT
-    // come back (no newline, so the gate read stays blocked).
+    // Packet mode reports the kernel's flow-control state directly: no
+    // absence-of-echo timing window is needed to prove the stop.
+    let master_fd = harness.master.file.as_raw_fd();
+    let packet_mode: libc::c_int = 1;
+    // SAFETY: the master belongs to this harness and the ioctl reads one int.
+    let rc = unsafe { libc::ioctl(master_fd, libc::TIOCPKT, &packet_mode) };
+    assert_eq!(rc, 0, "enable pty packet mode");
     harness.write(&[CTRL_S]);
-    harness.write(b"arm");
-    let arm_mark = harness.mark();
-    let deadline = Instant::now() + Duration::from_millis(300);
-    let mut armed = true;
-    while Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(30));
-        harness.drain_until_quiet(1);
-        if !harness.output()[arm_mark..].is_empty() {
-            armed = false;
-            break;
+    // TIOCPKT_STOP/START are the packet protocol's 0x04/0x08 status bits.
+    for (status, what) in [(0x04, "XOFF stop"), (0x08, "output restart")] {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "the kernel never reported {what}");
+            let mut ready = libc::pollfd {
+                fd: master_fd,
+                events: libc::POLLIN | libc::POLLPRI,
+                revents: 0,
+            };
+            // SAFETY: one valid pollfd; the deadline bounds this readiness wait.
+            let rc = unsafe {
+                libc::poll(
+                    &raw mut ready,
+                    1,
+                    remaining.as_millis().min(i32::MAX as u128) as i32,
+                )
+            };
+            assert!(
+                rc >= 0,
+                "polling for the kernel's {what}: {}",
+                std::io::Error::last_os_error()
+            );
+            assert!(rc > 0, "the kernel never reported {what}");
+            let mut packet = [0u8; 8192];
+            let size = std::io::Read::read(&mut harness.master.file, &mut packet)
+                .expect("read pty flow-control packet");
+            assert!(size > 0, "the pty closed before reporting {what}");
+            if packet[0] == 0 {
+                harness.master.output.extend_from_slice(&packet[1..size]);
+            }
+            if packet[0] & status != 0 {
+                break;
+            }
+        }
+        if status == 0x04 {
+            // One cooked newline releases the child without a second line
+            // racing its first UI input read. Mount must lift the stop.
+            harness.write(b"\n");
         }
     }
-    assert!(
-        armed,
-        "the Ctrl+S write did not arm the output stop (the cooked-tty          echo came back); the route cannot prove the lift"
-    );
-    // The release completes the sentinel line; the mount runs under the armed stop.
-    harness.write(b"\r\n");
-    harness.answer_kitty_query();
+    let packet_mode: libc::c_int = 0;
+    // SAFETY: restore ordinary stream reads before continuing UI assertions.
+    let rc = unsafe { libc::ioctl(master_fd, libc::TIOCPKT, &packet_mode) };
+    assert_eq!(rc, 0, "disable pty packet mode");
+    // Kitty capability is unrelated to XOFF; this route uses a silent
+    // terminal rather than a timed probe handshake.
     harness.wait_from_start(
         b"row 0",
         "the attach snapshot rendered despite the pre-mount stop",
