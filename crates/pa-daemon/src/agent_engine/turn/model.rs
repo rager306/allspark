@@ -36,8 +36,8 @@ impl AgentSessionEngine {
             }
         };
         // The preflight validates the model SERVING the run: a model whose
-        // provider has no configured credential fails the run before the
-        // provider request, with the login-guidance message — a routed
+        // provider has no credential or native free-tier request auth fails
+        // before the provider request, with login guidance — a routed
         // image-model episode authenticates its own image model.
         let preflight_model = self
             .armed_image_route()
@@ -49,7 +49,7 @@ impl AgentSessionEngine {
                 self.config.agent_dir.join("models.json"),
             );
             registry.load_private_authorization_from_cache();
-            if !registry.has_configured_auth(&preflight_model) {
+            if !registry.has_request_auth(&preflight_model) {
                 let uses_oauth = registry
                     .auth
                     .get_all()

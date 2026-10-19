@@ -382,6 +382,23 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
         }
     }
     command.env_remove("PRIME_TEAM_ID");
+    // ADC/bedrock ambient credentials are not key env vars, so the provider
+    // table cannot see them; remove them explicitly.
+    for var in [
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GOOGLE_CLOUD_PROJECT",
+        "GCLOUD_PROJECT",
+        "GOOGLE_CLOUD_LOCATION",
+        "AWS_PROFILE",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+    ] {
+        command.env_remove(var);
+    }
     // A supervisor killed by a failing test must not leak its session workers:
     // the supervisor-lost exit runs on this short window, not the 5-minute default.
     command.env(
@@ -2643,6 +2660,26 @@ async fn tui_prompts_queued_behind_a_turn_render_the_queue_strip() {
 /// validation with the TS login-guidance message — never "Model not found".
 #[tokio::test]
 async fn tui_flagged_model_turn_reports_the_ts_preflight_error_without_credentials() {
+    // The TUI forwards its process environment on session create, so scrubbing
+    // only the supervisor does not isolate this no-credentials fixture.
+    const ISOLATED_TEST: &str = "PA_TEST_PREFLIGHT_WITHOUT_CREDENTIALS";
+    if std::env::var_os(ISOLATED_TEST).is_none() {
+        let home = tempfile::tempdir().expect("isolated home");
+        let status = Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "tui_flagged_model_turn_reports_the_ts_preflight_error_without_credentials",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env("HOME", home.path())
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env(ISOLATED_TEST, "1")
+            .status()
+            .expect("isolated no-credentials test");
+        assert!(status.success(), "isolated no-credentials test failed");
+        return;
+    }
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");

@@ -331,13 +331,41 @@ fn restore_test_engine(
 }
 
 #[test]
+fn explicit_native_free_selection_resolves_public_request_auth_through_the_engine() {
+    let dir = tempfile::tempdir().unwrap();
+    let agent_dir = dir.path().join("agent");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(agent_dir.join("auth.json"), "{}").unwrap();
+    let expected_key = pa_core::auth::AuthStorage::create(&agent_dir)
+        .get_api_key("opencode")
+        .unwrap_or_else(|| "public".to_string());
+    let engine = restore_test_engine(
+        dir.path(),
+        Some("opencode"),
+        Some("deepseek-v4.1-flash-free"),
+    );
+
+    let model = engine.resolve_registry_model().expect("native free model");
+    assert_eq!(
+        (model.provider.as_str(), model.id.as_str()),
+        ("opencode", "deepseek-v4.1-flash-free")
+    );
+    assert_eq!(engine.resolve_request_api_key(&model), Some(expected_key));
+}
+
+#[test]
 fn the_startup_chain_refuses_models_outside_the_allowlist() {
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     write_custom_provider_models_json(&agent_dir, "http://127.0.0.1:9");
     std::fs::write(
         agent_dir.join("settings.json"),
-        serde_json::json!({ "allowedModels": ["anthropic/*"] }).to_string(),
+        serde_json::json!({
+            "allowedModels": ["anthropic/*"],
+            "defaultProvider": "battery",
+            "defaultModel": "mock-1",
+        })
+        .to_string(),
     )
     .unwrap();
     let engine = AgentSessionEngine::new(AgentEngineConfig {
@@ -373,7 +401,12 @@ fn the_startup_chain_refuses_models_outside_the_allowlist() {
 
     std::fs::write(
         engine.config.agent_dir.join("settings.json"),
-        serde_json::json!({ "allowedModels": ["battery/*"] }).to_string(),
+        serde_json::json!({
+            "allowedModels": ["battery/*"],
+            "defaultProvider": "battery",
+            "defaultModel": "mock-1",
+        })
+        .to_string(),
     )
     .unwrap();
     let model = engine.resolve_registry_model().expect("resolved model");
@@ -843,8 +876,8 @@ fn switch_model_never_poisons_the_selection_with_a_refused_candidate() {
     let engine = AgentSessionEngine::new(AgentEngineConfig {
         cwd: dir.path().to_path_buf(),
         agent_dir,
-        provider: None,
-        model: None,
+        provider: Some("battery".to_string()),
+        model: Some("mock-1".to_string()),
         api_key: None,
         thinking: None,
         session_dir: None,

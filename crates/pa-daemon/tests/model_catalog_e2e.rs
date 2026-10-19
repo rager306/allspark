@@ -27,11 +27,11 @@ impl Drop for Supervisor {
 #[allow(clippy::zombie_processes)]
 fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Supervisor {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
-    let child = Command::new(env!("CARGO_BIN_EXE_pa-daemon"))
-        .arg("supervisor")
-        .arg("--socket")
+    let mut command = Command::new(env!("CARGO_BIN_EXE_pa-daemon"));
+    command
+        .args(["supervisor", "--socket"])
         .arg(socket)
-        .arg("--agent-dir")
+        .args(["--agent-dir"])
         .arg(agent_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -40,9 +40,34 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Supervisor {
         .env_remove("PRIME_AGENT_CODING_AGENT_DIR")
         // Offline mode: the refresh stays on the bundled fallback and never writes the disk cache
         // (TS `PI_OFFLINE`).
-        .env("PI_OFFLINE", "1")
-        .spawn()
-        .expect("spawn pa-daemon supervisor");
+        .env("PI_OFFLINE", "1");
+    // Ambient provider credentials must not leak into the daemon's catalog:
+    // the test below asserts the exact configured-provider list.
+    for provider in pa_ai::models_generated::get_providers() {
+        if let Some(vars) = pa_ai::env_api_keys::get_api_key_env_vars(provider) {
+            for var in vars {
+                command.env_remove(var);
+            }
+        }
+    }
+    // ADC/bedrock ambient credentials are not key env vars, so the provider
+    // table cannot see them; remove them explicitly.
+    for var in [
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GOOGLE_CLOUD_PROJECT",
+        "GCLOUD_PROJECT",
+        "GOOGLE_CLOUD_LOCATION",
+        "AWS_PROFILE",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+    ] {
+        command.env_remove(var);
+    }
+    let child = command.spawn().expect("spawn pa-daemon supervisor");
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         if socket.exists() {

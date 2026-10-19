@@ -1031,9 +1031,18 @@ async fn select_model(
     // Explicit selectors retain the CLI resolver's provider inference and do
     // not inherit an unrelated saved provider.
     if let Some(model_name) = config.model.as_deref() {
-        let available: Vec<Model> = registry.get_available().into_iter().cloned().collect();
+        let mut candidates: Vec<Model> = registry.get_available().into_iter().cloned().collect();
+        candidates.extend(
+            registry
+                .get_all()
+                .iter()
+                .filter(|model| {
+                    !registry.has_configured_auth(model) && registry.has_request_auth(model)
+                })
+                .cloned(),
+        );
         let resolved =
-            pa_core::models::resolve_cli_model(config.provider.as_deref(), model_name, &available);
+            pa_core::models::resolve_cli_model(config.provider.as_deref(), model_name, &candidates);
         if let Some(error) = resolved.error {
             return Err(error);
         }

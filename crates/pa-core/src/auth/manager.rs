@@ -216,13 +216,6 @@ pub type FallbackResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 /// Deferred value-fingerprint resolver (command keys).
 type ValueFingerprintResolver = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
-/// Providers whose free tier authenticates with a public constant rather than a
-/// configured key, so they are always "available" and need no login.
-///
-/// `opencode`'s free tier accepts `Bearer public` from any client speaking its
-/// v2 protocol; there is no credential to configure.
-const KEYLESS_PROVIDERS: &[&str] = &["opencode"];
-
 pub struct AuthStorage {
     storage: Arc<dyn AuthStorageBackend>,
     oauth: Arc<dyn OAuthIntegration>,
@@ -558,35 +551,11 @@ impl AuthStorage {
                 self.stored_candidate(provider),
                 self.environment_candidate(provider),
                 fallback,
-                Self::keyless_candidate(provider),
             ]
         }
         .into_iter()
         .flatten()
         .collect()
-    }
-
-    /// A provider that authenticates with a public constant instead of a key.
-    ///
-    /// `opencode`'s free tier accepts `Bearer public` from any client that
-    /// speaks its v2 protocol, so there is no credential to configure. Without
-    /// this candidate the registry treats the provider as unauthenticated and
-    /// hides every one of its models from `model list` and `--provider`.
-    fn keyless_candidate(provider: &str) -> Option<AuthSourceCandidate> {
-        if !KEYLESS_PROVIDERS.contains(&provider) {
-            return None;
-        }
-        Some(AuthSourceCandidate {
-            source: AuthSource::Runtime,
-            configured: true,
-            label: Some("free tier (no key)".to_string()),
-            identity_fingerprint: fingerprint(AuthSource::Runtime, &format!("keyless:{provider}")),
-            value_fingerprint: Some(fingerprint(
-                AuthSource::Runtime,
-                &format!("keyless:{provider}"),
-            )),
-            resolve_value_fingerprint: None,
-        })
     }
 
     fn matching_stale(

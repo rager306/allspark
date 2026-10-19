@@ -1,0 +1,20 @@
+
+running 1 test
+test models::registry::tests::explicit_native_free_selection_resolves_public_request_auth_only_on_its_endpoint ... FAILED
+
+failures:
+
+---- models::registry::tests::explicit_native_free_selection_resolves_public_request_auth_only_on_its_endpoint stdout ----
+
+thread 'models::registry::tests::explicit_native_free_selection_resolves_public_request_auth_only_on_its_endpoint' (1914691) panicked at crates/pa-core/src/models/registry/tests.rs:95:5:
+assertion `left == right` failed
+  left: ResolvedRequestAuth { ok: true, api_key: None, headers: None, error: None }
+ right: ResolvedRequestAuth { ok: true, api_key: Some("public"), headers: None, error: None }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    models::registry::tests::explicit_native_free_selection_resolves_public_request_auth_only_on_its_endpoint
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1449 filtered out; finished in 0.02s
+

@@ -1,0 +1,10 @@
+    Blocking waiting for file lock on build directory
+   Compiling pa-daemon v0.10.1-beta.35 (/root/prime-agent/crates/pa-daemon)
+    Finished `test` profile [unoptimized] target(s) in 1m 00s
+     Running tests/model_catalog_e2e.rs (target/debug/deps/model_catalog_e2e-263e6368fb57d5f9)
+
+running 1 test
+test offline_daemon_serves_the_bundled_catalog_fallback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+

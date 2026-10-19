@@ -1,0 +1,25 @@
+    Blocking waiting for file lock on build directory
+   Compiling pa-ai v0.10.1-beta.35 (/root/prime-agent/crates/pa-ai)
+   Compiling pa-models v0.10.1-beta.35 (/root/prime-agent/crates/pa-models)
+   Compiling pa-core v0.10.1-beta.35 (/root/prime-agent/crates/pa-core)
+    Finished `test` profile [unoptimized] target(s) in 2m 34s
+     Running unittests src/lib.rs (target/debug/deps/pa_core-4474e33bf9917dea)
+
+running 1 test
+test models::registry::tests::native_free_models_do_not_configure_a_provider_or_enter_default_candidates ... FAILED
+
+failures:
+
+---- models::registry::tests::native_free_models_do_not_configure_a_provider_or_enter_default_candidates stdout ----
+
+thread 'models::registry::tests::native_free_models_do_not_configure_a_provider_or_enter_default_candidates' (1908934) panicked at crates/pa-core/src/models/registry/tests.rs:82:5:
+assertion failed: !registry.auth.has_auth("opencode")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    models::registry::tests::native_free_models_do_not_configure_a_provider_or_enter_default_candidates
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1449 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p pa-core --lib`

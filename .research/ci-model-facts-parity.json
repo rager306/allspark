@@ -1,0 +1,292 @@
+{
+  "verified": true,
+  "scope": "Actual daemon set_model, surviving kernel, model.info and compact.status context_window. Retryable primary failure -> backup-provider probe -> automatic primary restoration probe. Full compact.status values retained; token/percent estimator parity is not claimed.",
+  "ts_release_archive_sha256": "83fb09129bf78e3e60268212cd70932166591b15188caa70c1b0efbcc76235e2",
+  "binaries": {
+    "ts": {
+      "path": "/root/prime-agent/.research/ci-tty-ts-reference/package/prime-agent",
+      "sha256": "94e90d59b5853036371c6e6a5eb7f5ef3f49d72aa66998be0b41b9d925b1a1c0"
+    },
+    "rust": {
+      "path": "/root/prime-agent/target/debug/prime-agent",
+      "sha256": "cc57a09d810c798effe19888969035b88c184b10123363b7d44e445cfe5f1a5c"
+    }
+  },
+  "complete_compact_status_equal": [
+    true,
+    true,
+    true,
+    true,
+    true
+  ],
+  "runs": {
+    "ts": {
+      "probes": [
+        {
+          "kernel_probe_count": 1,
+          "model_info": {
+            "id": "facts-text",
+            "provider": "fixture",
+            "input": [
+              "text"
+            ]
+          },
+          "compact_status": {
+            "tokens": 11,
+            "context_window": 128000,
+            "percent": 0.008593749999999999,
+            "scheduled": false
+          }
+        },
+        {
+          "kernel_probe_count": 2,
+          "model_info": {
+            "id": "facts-vision",
+            "provider": "fixture",
+            "input": [
+              "text",
+              "image"
+            ]
+          },
+          "compact_status": {
+            "tokens": 11,
+            "context_window": 256000,
+            "percent": 0.0042968749999999995,
+            "scheduled": false
+          }
+        },
+        {
+          "kernel_probe_count": 3,
+          "model_info": {
+            "id": "facts-text",
+            "provider": "fixture",
+            "input": [
+              "text"
+            ]
+          },
+          "compact_status": {
+            "tokens": 11,
+            "context_window": 128000,
+            "percent": 0.008593749999999999,
+            "scheduled": false
+          }
+        },
+        {
+          "kernel_probe_count": 4,
+          "model_info": {
+            "id": "facts-text",
+            "provider": "fixture",
+            "input": [
+              "text"
+            ]
+          },
+          "compact_status": {
+            "tokens": 11,
+            "context_window": 128000,
+            "percent": 0.008593749999999999,
+            "scheduled": false
+          }
+        },
+        {
+          "kernel_probe_count": 5,
+          "model_info": {
+            "id": "facts-text",
+            "provider": "fixture",
+            "input": [
+              "text"
+            ]
+          },
+          "compact_status": {
+            "tokens": 11,
+            "context_window": 128000,
+            "percent": 0.008593749999999999,
+            "scheduled": false
+          }
+        }
+      ],
+      "persisted_model_changes": [
+        {
+          "provider": "fixture",
+          "modelId": "facts-text"
+        },
+        {
+          "provider": "fixture",
+          "modelId": "facts-vision"
+        },
+        {
+          "provider": "fixture",
+          "modelId": "facts-text"
+        },
+        {
+          "provider": "fixture-backup",
+          "modelId": "facts-text"
+        },
+        {
+          "provider": "fixture",
+          "modelId": "facts-text"
+        }
+      ],
+      "provider_request_count": 11,
+      "provider_routes": {
+        "/primary/v1/chat/completions": 9,
+        "/backup/v1/chat/completions": 2
+      },
+      "provider_phases": {
+        "0": 2,
+        "1": 2,
+        "2": 2,
+        "3": 3,
+        "4": 2
+      },
+      "provider_models": {
+        "facts-text": 9,
+        "facts-vision": 2
+      },
+      "frame_types": {
+        "daemon_hello": 1,
+        "response": 8
+      },
+      "command_types": {
+        "create": 1,
+        "prompt_and_wait": 5,
+        "set_model": 2
+      },
+      "daemon_log_sha256": "d2e0c595821e41c1ae65d3ebf673440f8b5b80d0efc67d892293134724f9246a",
+      "daemon_log_chars": 344
+    },
+    "rust": {
+      "probes": [
+        {
+          "kernel_probe_count": 1,
+          "model_info": {
+            "id": "facts-text",
+            "provider": "fixture",
+            "input": [
+              "text"
+            ]
+          },
+          "compact_status": {
+            "tokens": 11,
+            "context_window": 128000,
+            "percent": 0.008593749999999999,
+            "scheduled": false
+          }
+        },
+        {
+          "kernel_probe_count": 2,
+          "model_info": {
+            "id": "facts-vision",
+            "provider": "fixture",
+            "input": [
+              "text",
+              "image"
+            ]
+          },
+          "compact_status": {
+            "tokens": 11,
+            "context_window": 256000,
+            "percent": 0.0042968749999999995,
+            "scheduled": false
+          }
+        },
+        {
+          "kernel_probe_count": 3,
+          "model_info": {
+            "id": "facts-text",
+            "provider": "fixture",
+            "input": [
+              "text"
+            ]
+          },
+          "compact_status": {
+            "tokens": 11,
+            "context_window": 128000,
+            "percent": 0.008593749999999999,
+            "scheduled": false
+          }
+        },
+        {
+          "kernel_probe_count": 4,
+          "model_info": {
+            "id": "facts-text",
+            "provider": "fixture",
+            "input": [
+              "text"
+            ]
+          },
+          "compact_status": {
+            "tokens": 11,
+            "context_window": 128000,
+            "percent": 0.008593749999999999,
+            "scheduled": false
+          }
+        },
+        {
+          "kernel_probe_count": 5,
+          "model_info": {
+            "id": "facts-text",
+            "provider": "fixture",
+            "input": [
+              "text"
+            ]
+          },
+          "compact_status": {
+            "tokens": 11,
+            "context_window": 128000,
+            "percent": 0.008593749999999999,
+            "scheduled": false
+          }
+        }
+      ],
+      "persisted_model_changes": [
+        {
+          "provider": "fixture",
+          "modelId": "facts-text"
+        },
+        {
+          "provider": "fixture",
+          "modelId": "facts-vision"
+        },
+        {
+          "provider": "fixture",
+          "modelId": "facts-text"
+        },
+        {
+          "provider": "fixture-backup",
+          "modelId": "facts-text"
+        },
+        {
+          "provider": "fixture",
+          "modelId": "facts-text"
+        }
+      ],
+      "provider_request_count": 11,
+      "provider_routes": {
+        "/primary/v1/chat/completions": 9,
+        "/backup/v1/chat/completions": 2
+      },
+      "provider_phases": {
+        "0": 2,
+        "1": 2,
+        "2": 2,
+        "3": 3,
+        "4": 2
+      },
+      "provider_models": {
+        "facts-text": 9,
+        "facts-vision": 2
+      },
+      "frame_types": {
+        "daemon_hello": 1,
+        "response": 8
+      },
+      "command_types": {
+        "create": 1,
+        "prompt_and_wait": 5,
+        "set_model": 2
+      },
+      "daemon_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "daemon_log_chars": 0
+    }
+  }
+}

@@ -72,6 +72,83 @@ fn available_filters_by_configured_auth() {
 }
 
 #[test]
+fn native_free_models_do_not_configure_a_provider_or_enter_default_candidates() {
+    let registry = ModelRegistry::in_memory(auth_without_env(&serde_json::json!({})));
+    let free = registry
+        .get_all()
+        .iter()
+        .find(|model| model.provider == "opencode" && model.id == "deepseek-v4.1-flash-free")
+        .expect("native free model");
+    assert!(!registry.auth.has_auth("opencode"));
+    assert_eq!(
+        registry.get_provider_auth_status("opencode"),
+        crate::auth::types::AuthStatus::default()
+    );
+    assert!(!registry.has_configured_auth(free));
+    assert!(registry.get_available().is_empty());
+}
+
+#[test]
+fn explicit_native_free_selection_resolves_public_request_auth_only_on_its_endpoint() {
+    let mut registry = ModelRegistry::in_memory(auth_without_env(&serde_json::json!({})));
+    let free = registry
+        .resolve_set_model_selection("opencode", "deepseek-v4.1-flash-free")
+        .expect("explicit native free selection")
+        .clone();
+    assert_eq!(
+        registry.get_api_key_and_headers(&free, None),
+        ResolvedRequestAuth {
+            ok: true,
+            api_key: Some("public".into()),
+            headers: None,
+            error: None,
+        }
+    );
+    assert!(registry.has_request_auth(&free));
+    for base_url in [
+        "https://example.com/v1",
+        "https://opencode.ai.example.com/inference/v1",
+        "https://opencode.ai@evil.example/inference/v1",
+        "https://opencode.ai:444/inference/v1",
+        "https://opencode.ai/zen/v1",
+        "http://opencode.ai/inference/v1",
+    ] {
+        let mut custom_endpoint = free.clone();
+        custom_endpoint.base_url = base_url.into();
+        assert!(!registry.has_request_auth(&custom_endpoint));
+        assert_eq!(
+            registry
+                .get_api_key_and_headers(&custom_endpoint, None)
+                .api_key,
+            None
+        );
+    }
+    assert!(matches!(
+        registry.resolve_set_model_selection("opencode", "gpt-5"),
+        Err(SetModelSelectionError::ProviderUnauthenticated { .. })
+    ));
+}
+
+#[test]
+fn native_free_request_auth_preserves_configured_credentials() {
+    let auth = auth_without_env(&serde_json::json!({
+        "opencode": {"type": "api_key", "key": "explicit-test-key"}
+    }));
+    let mut registry = ModelRegistry::in_memory(auth);
+    let free = registry
+        .resolve_set_model_selection("opencode", "deepseek-v4.1-flash-free")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        registry
+            .get_api_key_and_headers(&free, None)
+            .api_key
+            .as_deref(),
+        Some("explicit-test-key")
+    );
+}
+
+#[test]
 fn rlm_searchable_models_gate_one_stale_provider_across_its_models() {
     // The per-provider status memo must answer every model of a provider
     // with the same probe result: a stale provider's whole model list stays

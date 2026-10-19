@@ -684,7 +684,19 @@ async fn rlm_max_depth_status_matches_the_ts_shape() {
 #[tokio::test]
 async fn model_catalog_and_available_models_match_the_ts_shapes() {
     let dir = tempfile::tempdir().expect("tempdir");
-    std::fs::create_dir_all(dir.path().join("agent")).expect("agent dir");
+    let agent_dir = dir.path().join("agent");
+    std::fs::create_dir_all(&agent_dir).expect("agent dir");
+    // Account for ambient auth independently of the getter, then add the
+    // models.json fixture provider. The exact sorted list must still match.
+    let auth = pa_core::auth::AuthStorage::create(&agent_dir);
+    let mut expected_providers: std::collections::BTreeSet<String> =
+        pa_core::models::catalog_for(Some(&agent_dir.join("models.json")))
+            .resolve(None)
+            .into_iter()
+            .map(|model| model.provider)
+            .filter(|provider| auth.has_auth(provider))
+            .collect();
+    expected_providers.insert("prime-inference".to_string());
     std::fs::write(
         dir.path().join("agent").join("models.json"),
         json!({
@@ -741,7 +753,7 @@ async fn model_catalog_and_available_models_match_the_ts_shapes() {
             .count(),
         1
     );
-    assert_eq!(catalog["configuredProviders"], json!(["prime-inference"]));
+    assert_eq!(catalog["configuredProviders"], json!(expected_providers));
 
     let response = worker
         .dispatch(

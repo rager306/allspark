@@ -106,6 +106,31 @@ async fn print_model_without_configured_auth_does_not_select_a_bundled_fixture()
 }
 
 #[tokio::test]
+async fn print_model_explicit_native_free_model_works_without_configuring_its_provider() {
+    for (provider, model) in [
+        (Some("opencode"), "deepseek-v4.1-flash-free"),
+        (None, "opencode/deepseek-v4.1-flash-free"),
+    ] {
+        let (_dir, mut config, mut registry) = fixture(&json!({}));
+        config.provider = provider.map(str::to_string);
+        config.model = Some(model.into());
+        let selected = select_model(&mut registry, &config, None).await.unwrap();
+        assert_eq!(
+            (selected.provider.as_str(), selected.id.as_str()),
+            ("opencode", "deepseek-v4.1-flash-free")
+        );
+        assert_eq!(
+            registry
+                .get_api_key_and_headers(&selected, None)
+                .api_key
+                .as_deref(),
+            Some("public")
+        );
+        assert!(!registry.auth.has_auth("opencode"));
+    }
+}
+
+#[tokio::test]
 async fn print_model_only_flag_preserves_catalog_resolution_without_saved_provider() {
     let (_dir, mut config, mut registry) =
         fixture(&json!({"defaultProvider":"my-gateway", "defaultModel":"my-group/my-model"}));

@@ -1,0 +1,406 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on build directory
+   Compiling pa-ast v0.10.1-beta.35 (/root/prime-agent/crates/pa-ast)
+   Compiling pa-ai v0.10.1-beta.35 (/root/prime-agent/crates/pa-ai)
+   Compiling pa-agent v0.10.1-beta.35 (/root/prime-agent/crates/pa-agent)
+   Compiling pa-edit v0.10.1-beta.35 (/root/prime-agent/crates/pa-edit)
+   Compiling pa-lsp v0.10.1-beta.35 (/root/prime-agent/crates/pa-lsp)
+   Compiling pa-models v0.10.1-beta.35 (/root/prime-agent/crates/pa-models)
+warning: unexpected `cfg` condition name: `winapi`
+   --> vendor/crossterm/src/lib.rs:256:11
+    |
+256 | #[cfg(all(winapi, not(feature = "winapi")))]
+    |           ^^^^^^
+    |
+    = help: expected names are: `docsrs`, `feature`, and `test` and 34 more
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(winapi)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(winapi)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+    = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unexpected `cfg` condition value: `winapi`
+   --> vendor/crossterm/src/lib.rs:256:23
+    |
+256 | #[cfg(all(winapi, not(feature = "winapi")))]
+    |                       ^^^^^^^^^^^^^^^^^^
+    |
+    = note: expected values for `feature` are: `bracketed-paste`, `default`, `event-stream`, `events`, `filedescriptor`, `libc`, `serde`, `use-dev-tty`, and `windows`
+    = help: consider adding `winapi` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `crossterm_winapi`
+   --> vendor/crossterm/src/lib.rs:259:11
+    |
+259 | #[cfg(all(crossterm_winapi, not(feature = "crossterm_winapi")))]
+    |           ^^^^^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(crossterm_winapi)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(crossterm_winapi)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition value: `crossterm_winapi`
+   --> vendor/crossterm/src/lib.rs:259:33
+    |
+259 | #[cfg(all(crossterm_winapi, not(feature = "crossterm_winapi")))]
+    |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: expected values for `feature` are: `bracketed-paste`, `default`, `event-stream`, `events`, `filedescriptor`, `libc`, `serde`, `use-dev-tty`, and `windows`
+    = help: consider adding `crossterm_winapi` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unnecessary parentheses around closure body
+  --> vendor/crossterm/src/terminal/sys/unix.rs:85:50
+   |
+85 |     let file = File::open("/dev/tty").map(|file| (FileDesc::Owned(file.into())));
+   |                                                  ^                            ^
+   |
+   = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+   |
+85 -     let file = File::open("/dev/tty").map(|file| (FileDesc::Owned(file.into())));
+85 +     let file = File::open("/dev/tty").map(|file| FileDesc::Owned(file.into()));
+   |
+
+warning: struct `InternalEventFilter` is never constructed
+  --> vendor/crossterm/src/event/filter.rs:65:19
+   |
+65 | pub(crate) struct InternalEventFilter;
+   |                   ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `crossterm` (lib) generated 6 warnings (run `cargo fix --lib -p crossterm` to apply 1 suggestion)
+   Compiling pa-graph v0.10.1-beta.35 (/root/prime-agent/crates/pa-graph)
+   Compiling pa-telemetry v0.10.1-beta.35 (/root/prime-agent/crates/pa-telemetry)
+   Compiling pa-jev v0.10.1-beta.35 (/root/prime-agent/crates/pa-jev)
+   Compiling pa-tui v0.10.1-beta.35 (/root/prime-agent/crates/pa-tui)
+   Compiling pa-core v0.10.1-beta.35 (/root/prime-agent/crates/pa-core)
+   Compiling pa-daemon v0.10.1-beta.35 (/root/prime-agent/crates/pa-daemon)
+   Compiling pa-cli v0.10.1-beta.35 (/root/prime-agent/crates/pa-cli)
+    Finished `test` profile [unoptimized] target(s) in 8m 23s
+     Running unittests src/lib.rs (target/debug/deps/pa_cli-3338666d044b8b6f)
+
+running 311 tests
+test args::tests::end_of_options_marker ... ok
+test args::tests::export_removed_without_internal_marker ... ok
+test args::tests::positive_int_rejects_past_the_field_range ... ok
+test args::tests::resume_accepts_selector_bare_and_equals ... ok
+test args::tests::unknown_short_option_is_an_error ... ok
+test args::tests::positive_int_rejects_zero_and_text ... ok
+test args::tests::goal_budget_requires_goal ... ok
+test args::tests::print_consumes_next_message ... ok
+test args::tests::unknown_long_flag_is_an_error ... ok
+test codex_subscription_login::tests::a_cancelled_pane_writes_no_credential ... ok
+test command_registry::tests::suggestion_thresholds ... ok
+test command_registry::tests::help_command_request ... ok
+test client_traces::tests::the_preview_maps_the_engine_result ... ok
+test config::tests::daemon_socket_resolution_prefers_flag_then_env_then_default ... ok
+test config::tests::expands_tilde ... ok
+test codex_subscription_login::tests::a_failed_flow_reports_the_ts_error_row ... ok
+test config_command::tests::selector_rows_preserve_group_hierarchy ... ok
+test daemon_command::tests::cron_job_line_matches_captured_ts_golden ... ok
+test config::tests::splash_version_carries_the_fork_build_id ... ok
+test daemon_command::tests::parse_consumes_socket_json_and_separator ... ok
+test daemon_command::tests::send_args_match_ts_usage_rules ... ok
+test daemon_command::tests::separator_passes_through_only_for_send_and_cron ... ok
+test daemon_client::tests::read_line_keeps_bytes_across_poll_timeouts ... ok
+test daemon_discovery::format::tests::table_matches_the_ts_layout ... ok
+test daemon_discovery::format::tests::uptime_matches_the_ts_buckets ... ok
+test daemon_client::tests::connect_error_matches_node_text ... ok
+test daemon_client::tests::request_matches_response_by_id ... ok
+test daemon_discovery::kill::tests::never_touch_socket_files_are_refused ... ok
+test daemon_client::tests::socket_close_reports_daemon_closing_reason ... ok
+test daemon_discovery::kill::tests::force_kill_daemon_reports_an_already_dead_pid_as_dead ... ok
+test daemon_discovery::plan::tests::confirmation_follows_the_daemon_count_flags_and_tty ... ok
+test daemon_discovery::plan::tests::reap_keeps_the_default_and_busy_daemons ... ok
+test daemon_discovery::plan::tests::reap_never_kills_a_shared_pid ... ok
+test daemon_discovery::plan::tests::reap_only_kills_unreachable_daemons_with_force ... ok
+test daemon_discovery::plan::tests::shutdown_all_keeps_unreachable_worker_hosts_without_force ... ok
+test daemon_discovery::plan::tests::shutdown_all_removes_orphans_and_shuts_down_reachable_daemons ... ok
+test daemon_discovery::scan::tests::parse_proc_net_unix_keeps_listening_rows_with_paths_only ... ok
+test daemon_discovery::scan::tests::parse_proc_net_unix_keeps_spaced_and_survives_non_utf8_paths ... ok
+test daemon_discovery::scan::tests::proc_and_ss_parsers_agree_on_one_listener ... ok
+test daemon_discovery::scan::tests::ss_parse_skips_foreign_process_names ... ok
+test daemon_discovery::stop::tests::shutdown_report_json_pins_the_failure_shape ... ok
+test codex_subscription_login::tests::the_stored_credential_round_trips_and_refreshes ... ok
+test daemon_discovery::tests::a_pinned_root_claims_only_its_pinned_socket ... ok
+test daemon_discovery::tests::a_probe_never_connects_to_a_never_touch_path ... ok
+test codex_subscription_login::tests::the_login_stores_the_credential_and_reports_the_ts_status ... ok
+test daemon_discovery::stop::tests::verified_force_kill_reports_confirmed_death_and_removes_the_socket ... ok
+test client_traces::tests::the_setting_writes_and_reads_the_agent_traces_flag ... ok
+test daemon_discovery::tests::never_touch_paths_are_excluded_even_when_the_root_points_at_them ... ok
+test daemon_discovery::tests::quiet_period_completes_after_the_threshold ... ok
+test daemon_discovery::tests::state_root_matches_own_paths_only ... ok
+test daemon_discovery::tests::the_upstream_ts_daemon_is_never_a_stop_candidate_for_a_fork_root ... ok
+test daemon_discovery::tests::worker_socket_paths_are_scoped_to_the_given_socket_dir ... ok
+test daemon_session_list::tests::age_buckets_like_ts ... ok
+test client_traces::tests::the_credential_labels_follow_the_ts_precedence ... ok
+test daemon_session_list::tests::archived_rows_sort_after_idle ... ok
+test daemon_session_list::tests::display_id_uses_last_hex_chars ... ok
+test daemon_session_list::tests::iso_parse_round_trips_known_values ... ok
+test daemon_session_list::tests::malformed_rows_do_not_validate ... ok
+test daemon_session_list::tests::suffix_matching_normalizes_both_sides ... ok
+test factory_command::tests::dispatch_results_print_errors_verbatim ... ok
+test daemon_session_list::tests::table_matches_captured_ts_golden_shape ... ok
+test factory_command::tests::dispatch_runner_contract_is_the_json_facade ... ok
+test factory_command::tests::listing_row_renders_name_source_description ... ok
+test factory_command::tests::parses_the_three_subcommands ... ok
+test factory_command::tests::rejects_missing_and_unknown_subcommands ... ok
+test factory_command::tests::payloads_carry_only_what_the_user_typed ... ok
+test factory_command::tests::render_list_exits_cleanly_with_no_machines ... ok
+test factory_command::tests::render_list_parses_the_kernel_listing ... ok
+test client_traces::tests::the_report_formats_the_engine_rows ... ok
+test file_processor::tests::a_file_exactly_at_the_cap_embeds_in_full ... ok
+test daemon_discovery::kill::tests::force_kill_daemon_confirms_the_death_of_a_killable_process ... ok
+test file_processor::tests::empty_files_are_skipped ... ok
+test file_processor::tests::images_attach_as_base64_content ... ok
+test file_processor::tests::a_single_giant_line_is_truncated_like_any_other_file ... ok
+test file_processor::tests::non_utf8_files_embed_lossily ... ok
+test daemon_discovery::kill::tests::force_kill_daemon_escalates_to_sigkill_and_waits_for_the_death ... ok
+test file_processor::tests::missing_file_fails_with_the_ts_error ... ok
+test file_processor::tests::relative_paths_resolve_against_the_cwd ... ok
+test file_processor::tests::text_files_embed_in_file_blocks ... ok
+test daemon_discovery::kill::tests::terminate_verified_listener_confirms_the_death_of_a_live_listener ... ok
+test global_flags::tests::extracts_help_path_skipping_flag_values ... ok
+test global_flags::tests::keeps_flags_for_prompt_runs ... ok
+test global_flags::tests::keeps_version_ahead_of_routing ... ok
+test file_processor::tests::the_cap_never_splits_a_multibyte_character ... ok
+test global_flags::tests::skips_consumed_flag_values ... ok
+test global_flags::tests::rotates_flags_before_command ... ok
+test file_processor::tests::oversized_text_files_embed_the_prefix_and_a_truncation_marker ... ok
+test incident::report::tests::a_clean_run_shows_no_anomalies ... ok
+test incident::report::tests::a_passivation_event_with_an_empty_name_matches_no_filter ... ok
+test client_settings::tests::seam_round_trips_through_the_settings_store ... ok
+test incident::report::tests::keeps_a_same_component_worker_restart_within_two_seconds ... ok
+test incident::report::tests::excludes_events_outside_the_window ... ok
+test incident::report::tests::filters_to_events_naming_the_session_with_prefix_matching ... ok
+test daemon_discovery::tests::discovery_reports_orphan_files_inside_the_given_root_only ... ok
+test incident::report::tests::keeps_anomalies_and_aggregation_per_daemon_socket ... ok
+test incident::report::tests::keeps_session_tokens_from_worker_command_failures ... ok
+test incident::report::tests::matches_session_names_quoted_in_log_messages ... ok
+test incident::report::tests::the_report_layout_matches_the_ts_shape ... ok
+test incident::source_tests::falls_back_to_daemon_logs_whose_socket_basename_has_no_sock_suffix ... ok
+test incident::source_tests::does_not_fall_back_when_agent_jsonl_parses_but_has_no_in_window_events ... ok
+test incident::source_tests::keeps_structured_lines_around_a_torn_multibyte_tail ... ok
+test incident::source_tests::falls_back_to_the_newest_per_daemon_log_when_agent_jsonl_is_absent ... ok
+test incident::source_tests::falls_back_when_agent_jsonl_is_empty_or_unreadable ... ok
+test incident::source_tests::reports_missing_logs_clearly ... ok
+test incident::tests::daemon_log_file_names_match_the_hash_suffix ... ok
+test incident::tests::rejects_unknown_missing_and_empty_values ... ok
+test incident::tests::parses_separated_and_equals_attached_values ... ok
+test incident::time::tests::formats_the_utc_stamp ... ok
+test incident::time::tests::accepts_fractional_seconds_pasted_from_the_log ... ok
+test incident::time::tests::rejects_garbage_and_impossible_dates_with_a_clear_usage_error ... ok
+test incident::time::tests::parses_iso_datetimes_dates_and_bare_times_as_utc ... ok
+test incident::time::tests::rejects_invalid_offset_minutes ... ok
+test initial_message::tests::empty_when_nothing_given ... ok
+test initial_message::tests::combines_parts_with_blank_lines ... ok
+test incident::tests::resolves_the_default_window_and_rejects_unordered_bounds ... ok
+test file_processor::tests::auto_resize_off_attaches_the_raw_payload ... ok
+test installer_update::tests::the_channel_resolves_flag_then_saved_then_marker_then_version ... ok
+test installer_update::tests::the_check_verdict_needs_a_build_for_this_platform ... ok
+test installer_update::tests::the_nightly_channel_runs_the_installer_on_beta ... ok
+test incident::source_tests::tolerates_malformed_lines_and_reports_them_as_skipped ... ok
+test installer_update::tests::the_check_verdict_follows_the_channel_policy ... ok
+test interactive_mode::tests::a_fork_launch_never_opens_the_agents_view ... ok
+test incident::report::tests::says_clearly_when_nothing_in_the_window_references_the_session ... ok
+test incident::report::tests::reconstructs_the_incident_narrative_in_one_report ... ok
+test interactive_mode::tests::continue_recent_defers_to_resume_and_no_session ... ok
+test interactive_mode::tests::continue_recent_view_gates_on_onboarding_and_the_flag ... ok
+test interactive_mode::tests::continue_recent_targets_the_newest_saved_session_for_the_cwd ... ok
+test interactive_mode::tests::continue_recent_without_a_candidate_opens_a_fresh_session ... ok
+test file_processor::tests::oversized_images_under_auto_resize_get_the_omitted_note ... ok
+test interactive_mode::tests::fork_startup_selection_expands_a_tilde_selector ... ok
+test interactive_mode::tests::fork_startup_selection_copies_the_source_under_a_fresh_header ... ok
+test interactive_mode::tests::fork_startup_selection_imports_a_global_session_into_this_cwd ... ok
+test interactive_mode::tests::fork_startup_selection_rejects_a_fifo_source_without_hanging ... ok
+test interactive_mode::tests::fork_startup_selection_reports_the_ts_contracts ... ok
+test interactive_mode::tests::session_flags_map_to_selections ... ok
+test interactive_mode::tests::build_tui_options_reads_code_block_indent_settings ... ok
+test interactive_mode::tests::build_tui_options_opens_a_fork_as_the_startup_session ... ok
+test interactive_mode::tests::interactive_resume_restores_saved_cwd_and_project_settings_unless_overridden ... ok
+test interactive_mode::telemetry::tests::each_tui_exit_reports_only_its_own_run ... ok
+test list_models::tests::pad_end_pads_to_width ... ok
+test list_models::tests::token_count_formats ... ok
+test mcp_command::tests::http_url_validation ... ok
+test mcp_command::tests::name_patterns ... ok
+test mcp_command::tests::settings_roundtrip ... ok
+test interactive_mode::tests::the_startup_flush_never_blocks_the_first_frame ... ok
+test daemon_discovery::tests::named_pipe_discovery_probes_the_default_endpoint_without_tracked_workers ... ok
+test interactive_mode::tests::settings_sink_completes_a_provisioned_home_without_touching_the_choice ... ok
+test mcp_login::tests::login_persists_endpoint_bound_creds_and_reports_connected ... ok
+test migration_tests::migration_is_one_shot ... ok
+test migration_tests::migration_skips_auth_json_and_copies_settings_and_models ... ok
+test mcp_login::tests::the_api_key_flow_stores_the_exact_runtime_contract ... ok
+test interactive_mode::telemetry::tests::interactions_while_off_never_count ... ok
+test interactive_mode::tests::settings_sink_persists_the_fresh_home_answer_with_the_flag ... ok
+test mcp_login::tests::logout_removes_the_credential_with_ts_wording ... ok
+test package_command::tests::a_failed_self_update_fails_the_run ... ok
+test package_command::tests::a_declined_nightly_switch_changes_nothing ... ok
+test package_command::tests::the_extensions_only_target_never_runs_the_self_target ... ok
+test package_command::tests::force_confirms_the_switch_and_the_self_target_sees_the_flags ... ok
+test package_command::tests::a_rollback_runs_the_self_target_only ... ok
+test package_command::tests::update_options_store_force_and_the_channel ... ok
+test piped_stdin::tests::collect_drains_until_eof ... ok
+test package_command::tests::the_no_change_exit_code_reaches_the_caller ... ok
+test piped_stdin::tests::idle_timeout_resolves_from_the_env_like_ts ... ok
+test interactive_mode::telemetry::tests::settings_manager_reopens_only_when_settings_change ... ok
+test interactive_mode::tests::settings_sink_reports_an_aborted_flow_once ... ok
+test piped_stdin::tests::collect_gives_up_after_the_idle_window ... ok
+test mode::tests::telemetry_defaults_on ... ok
+test mode::tests::telemetry_env_overrides_apply_in_precedence ... ok
+test interactive_mode::tests::onboarding_gate_follows_settings_and_auth ... ok
+test mode::tests::telemetry_opt_out_resolves_disabled ... ok
+test piped_stdin::tests::a_live_producer_resets_the_window ... ok
+test daemon_discovery::tests::a_scan_rooted_on_a_never_touch_dir_surfaces_no_listeners ... ok
+test daemon_discovery::kill::tests::residual_sweep_over_an_empty_fixture_root_reports_nothing ... ok
+test prime_inference_login::tests::the_prime_cli_candidate_short_circuits_when_it_has_access ... ok
+test print_boundary::tests::auto_refine_disabled_settings_drop_the_trigger ... ok
+test print_boundary::tests::auto_refine_review_decline_surfaces_nothing ... ok
+test daemon_discovery::kill::tests::residual_sweep_never_touches_a_never_touch_dir ... ok
+test print_boundary::tests::autonomous_continuation_turns_cross_the_boundary_arms ... ok
+test prime_inference_login::tests::a_failed_browser_falls_back_to_the_paste_prompt ... ok
+test print_boundary::tests::compact_trigger_auto_refine_streams_at_the_next_boundary ... ok
+test print_boundary::tests::compact_trigger_drains_at_disposal_off_the_stream ... ok
+test prime_inference_login::tests::a_pasted_key_validates_persists_and_selects_the_team ... ok
+test print_boundary::tests::multi_compaction_run_counts_every_arm ... ok
+test prime_inference_login::tests::cancelling_the_team_selection_keeps_the_stored_team ... ok
+test prime_inference_login::tests::a_denied_cli_candidate_falls_through_to_the_paste_prompt ... ok
+test print_boundary::tests::non_overflow_error_never_triggers_the_arm ... ok
+test print_boundary::tests::overflow_compacts_retries_once_then_reports_the_failure ... ok
+test print_boundary::tests::overflow_error_with_compaction_disabled_ends_without_recovery ... ok
+test print_boundary::tests::overflow_recovery_skip_surfaces_the_warning_row ... ok
+test print_boundary::tests::overflow_retry_compact_trigger_streams_the_ts_surface ... ok
+test print_boundary::tests::overflow_retry_succeeds_on_the_compacted_context ... ok
+test prime_inference_login::tests::a_denied_key_reports_the_ts_error ... ok
+test print_boundary::tests::pre_turn_abort_arm_drops_pending_requests_and_continues ... ok
+test print_boundary::tests::pre_turn_check_consumes_a_pending_request_before_the_prompt ... ok
+test print_boundary::tests::pre_turn_threshold_arm_compacts_a_resumed_session_before_the_prompt ... ok
+test print_boundary::tests::requested_compaction_counts_into_the_run_telemetry ... ok
+test print_boundary::tests::requested_compaction_skip_streams_the_warning_row_and_end_event ... ok
+test prime_inference_login::tests::a_failed_team_fetch_keeps_the_stored_selection ... ok
+test prime_inference_login::tests::selecting_personal_account_overrides_the_stored_team ... ok
+test print_boundary::tests::requested_compaction_streams_the_ts_event_pair ... ok
+test print_goal::tests::backoff_wake_runs_the_marker_turn_and_recovers_the_reply ... ok
+test print_boundary::tests::requested_refinement_failure_emits_the_refine_failed_event ... ok
+test print_goal::tests::budget_steer_drains_as_its_own_run ... ok
+test print_boundary::tests::requested_refinement_streams_rows_and_refine_complete ... ok
+test prime_inference_login::tests::the_pinned_team_env_skips_the_team_list ... ok
+test print_rlm::tests::delivery_to_a_disposed_session_rejects_without_queuing ... ok
+test print_rlm::tests::spawn_waiting_for_admission_rejects_a_disposed_parent ... ok
+test print_runtime::print_model_tests::print_model_explicit_and_partial_flags_override_defaults ... ok
+test print_runtime::print_model_tests::print_model_explicit_flag_wins_over_the_session_model ... ok
+test print_runtime::print_model_tests::print_model_explicit_native_free_model_works_without_configuring_its_provider ... ok
+test print_goal::tests::natural_loop_mints_continuations_inside_one_run ... ok
+test print_runtime::print_model_tests::print_model_only_flag_preserves_catalog_resolution_without_saved_provider ... ok
+test print_runtime::print_model_tests::print_model_provider_only_settings_default_does_not_scope ... ok
+test print_runtime::print_model_tests::print_model_invalid_saved_or_explicit_selection_fails_locally ... ok
+test print_runtime::print_model_tests::print_model_resumes_the_session_model_over_a_stale_saved_default ... ok
+test print_runtime::print_model_tests::print_model_saved_private_id_cannot_reuse_another_private_route ... ok
+test print_runtime::print_model_tests::print_model_unauthenticated_default_does_not_switch_to_another_gateway ... ok
+test print_runtime::print_model_tests::print_model_without_configured_auth_does_not_select_a_bundled_fixture ... ok
+test print_runtime::print_model_tests::print_model_uses_saved_gateway_and_full_model_metadata ... ok
+test print_runtime::tests::headless_image_router_settle_preserves_a_mid_run_model_switch ... ok
+test print_runtime::tests::print_mode_mcp_manager_resolves_declared_catalog_sources ... ok
+test print_goal::tests::non_goal_empty_turn_returns_without_a_wake ... ok
+test print_runtime::tests::print_mode_mcp_manager_serves_settings_servers_and_resolves_live ... ok
+test print_runtime::tests::print_lease_outlives_runtime_writers_on_every_return_path ... ok
+test print_boundary::tests::stale_overflow_error_recovers_before_the_next_prompt_after_a_resume ... ok
+test print_session_command::tests::compact_skip_warns_without_a_row ... ok
+test print_goal::tests::seed_rides_the_first_turn_and_stays_silent ... ok
+test prompt_command::tests::assembles_the_layered_prompt_for_a_directory ... ok
+test prompt_command::tests::help_request_prints_usage ... ok
+test prompt_command::tests::parses_flags ... ok
+test provider_login::tests::a_stored_web_search_key_pairs_with_the_logout_row ... ok
+test print_goal::tests::seeding_respects_the_branch ... ok
+test provider_login::tests::login_options_list_providers_only ... ok
+test print_session_command::tests::failed_command_carries_the_raw_error ... ok
+test provider_login::tests::the_api_key_login_rule_matches_ts ... ok
+test provider_login::tests::the_display_names_match_the_ts_map ... ok
+test provider_login::tests::the_status_indicator_maps_the_ts_labels ... ok
+test public_command::incident_dispatch_tests::rejects_a_bad_incident_time_with_usage_guidance ... ok
+test provider_login::tests::login_stores_an_api_key_and_logout_removes_it ... ok
+test public_command::incident_dispatch_tests::rejects_an_unordered_incident_window_with_usage_guidance ... ok
+test public_command::incident_dispatch_tests::rejects_unknown_incident_options_with_usage_guidance ... ok
+test public_command::incident_dispatch_tests::shows_incident_in_the_top_level_command_list ... ok
+test public_command::incident_dispatch_tests::the_incident_help_matches_the_ts_spec ... ok
+test public_command::update_options_tests::check_combines_with_one_channel_flag ... ok
+test public_command::update_options_tests::invalid_restart_coordinator_preserves_the_failure_exit_code ... ok
+test public_command::update_options_tests::parses_the_direct_install_pair ... ok
+test public_command::update_options_tests::parses_the_ts_booleans ... ok
+test public_command::update_options_tests::the_bare_and_check_invocations_short_circuit_the_staged_parse ... ok
+test self_update::tests::a_nightly_switch_needs_confirmation_on_a_non_tty_run ... ok
+test self_update::tests::force_confirms_the_switch_without_a_tty ... ok
+test self_update::tests::the_settings_wire_name_matches_the_update_vocabulary ... ok
+test print_boundary::tests::threshold_compaction_counts_into_the_run_telemetry ... ok
+test session_export::tests::missing_file_errors ... ok
+test provider_login::tests::the_anthropic_subscription_warning_matches_the_active_credential ... ok
+test session_export::tests::exports_a_session_file ... ok
+test sessions_table_format::tests::measures_wide_glyph_cells_by_display_width ... ok
+test sessions_table_format::tests::sorts_failures_first_then_recovering_then_running_then_idle_then_rest ... ok
+test sessions_table_format::tests::rows_render_the_ts_vectors ... ok
+test subscription_login::tests::a_cancelled_pane_writes_no_credential ... ok
+test subscription_login::tests::a_failed_flow_reports_the_ts_error_row ... ok
+test subscription_login::tests::the_anthropic_login_stores_the_credential_and_reports_the_ts_status ... ok
+test subscription_login::tests::the_genspark_login_stores_the_api_key_and_reports_the_status ... ok
+test subscription_login::tests::the_muse_login_stores_the_minted_key_and_reports_the_status ... ok
+test public_command::incident_dispatch_tests::routes_the_incident_command_with_parsed_window_options ... ok
+test print_goal::tests::three_empty_turns_hit_the_cap_with_exactly_three_model_calls ... ok
+test print_session_command::tests::goal_clear_answers_the_action_it_took ... ok
+test telemetry_notice::tests::disabled_never_discloses ... ok
+test telemetry_notice::tests::headless_discloses_immediately_and_once ... ok
+test print_boundary::tests::threshold_compaction_streams_the_ts_event_pair ... ok
+test prime_inference_login::tests::an_empty_paste_reprompts_and_eof_cancels ... ok
+test print_session_command::tests::goal_start_admits_the_continuation ... ok
+test print_session_command::tests::goal_status_stream_matches_ts ... ok
+test print_goal::tests::threshold_hold_mints_before_the_compaction_and_runs_after ... ok
+test update_flow::intent::tests::a_dead_holder_is_stolen ... ok
+test update_flow::intent::tests::acquire_then_join_then_stale_steal ... ok
+test update_flow::legacy_admission::tests::refresh_refuses_a_replacement_owners_token ... ok
+test update_flow::legacy_admission::tests::release_preserves_a_replacement_owners_token ... ok
+test update_flow::legacy_restart::tests::absent_daemon_does_not_skip_an_incompatible_recovery_checkpoint ... ok
+test update_flow::legacy_restart::tests::legacy_caller_without_a_staged_status_receives_a_ts_terminal_record ... ok
+test update_flow::legacy_restart::tests::lost_prepare_reply_adopts_durable_manifest_before_shutdown ... ok
+test update_flow::legacy_restart::tests::persisted_manifest_must_be_new_for_the_recorded_attempt ... ok
+test update_flow::legacy_restart::tests::preparation_refusal_reports_failure_without_stopping_the_old_daemon ... ok
+test update_flow::legacy_restart::tests::successor_must_be_the_spawned_process_with_the_expected_schema ... ok
+test update_flow::legacy_roster::tests::conversion_preserves_restore_inputs_and_parent_topology ... ok
+test update_flow::legacy_roster::tests::conversion_rejects_cycles_instead_of_hanging_during_restore_ordering ... ok
+test update_flow::legacy_roster::tests::earlier_checkpoints_without_newer_activity_flags_remain_restorable ... ok
+test update_flow::plan::tests::download_base_url_prefers_the_override ... ok
+test update_flow::report::tests::builds_the_ts_report_lines ... ok
+test update_flow::report::tests::failed_warns_before_counts_and_nonterminal_reports_empty ... ok
+test update_flow::status::tests::adoption_continues_the_epoch_above_the_predecessor ... ok
+test subscription_login::tests::the_copilot_login_stores_the_credential_and_reports_the_ts_status ... ok
+test update_flow::status::tests::missing_or_corrupt_status_reads_as_none ... ok
+test update_flow::status::tests::writes_and_receives_the_ts_schema ... ok
+test update_flow::successor::tests::hello_wait_times_out_on_a_silent_socket ... ok
+test update_flow::successor::tests::identity_maps_the_hello_frame_fields ... ok
+test update_flow::successor::tests::unknown_process_probes_do_not_prove_predecessor_exit ... ok
+test update_flow::successor::tests::waiting_for_a_dead_identity_returns_immediately ... ok
+test update_flow::swap::tests::activation_moves_previous_and_points_current ... ok
+test update_flow::swap::tests::the_candidate_probe_reports_stdout_and_failures ... ok
+test update_flow::update_command::tests::an_exited_coordinator_fails_without_waiting_for_the_heartbeat_timeout ... ok
+test prime_inference_login::tests::the_browser_login_completes_when_the_prompt_never_answers ... ok
+test subscription_login::tests::the_xai_login_stores_the_credential_and_reports_the_ts_status ... ok
+test update_flow::status::tests::heartbeat_touches_the_file ... ok
+test subscription_login::tests::the_codebuddy_login_stores_the_credential_and_reports_the_ts_status ... ok
+test traces_login::tests::a_cancelled_prompt_stays_silent ... ok
+test subscription_login::tests::the_stored_credentials_round_trip_and_refresh ... ok
+test traces_login::tests::a_denied_manual_key_reports_the_ts_error ... ok
+test traces_login::tests::a_failed_browser_falls_back_to_the_paste_prompt ... ok
+test traces_login::tests::the_browser_login_completes_when_the_prompt_never_answers ... ok
+test traces_login::tests::the_cli_candidate_logs_in_without_a_prompt ... ok
+test traces_login::tests::the_manual_key_wins_the_race_and_checks_access ... ok
+
+test result: ok. 311 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 65.55s
+

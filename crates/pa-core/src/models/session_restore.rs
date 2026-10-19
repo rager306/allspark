@@ -13,13 +13,13 @@ use super::registry::ModelRegistry;
 /// before the lookup may fail.
 pub const SESSION_MODEL_RESTORE_READINESS_TIMEOUT_MS: u64 = 5_000;
 
-/// The model is registered and its provider has configured auth (TS `findRestorable`).
+/// The saved model is registered and has request auth (including native free models).
 fn find_restorable(registry: &ModelRegistry, provider: &str, model_id: &str) -> Option<Model> {
     registry
         .get_all()
         .iter()
         .find(|model| model.provider == provider && model.id == model_id)
-        .filter(|model| registry.has_configured_auth(model))
+        .filter(|model| registry.has_request_auth(model))
         .cloned()
 }
 
@@ -48,6 +48,27 @@ pub async fn find_session_model_with_readiness_wait(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn restore_keeps_an_explicit_native_free_model_without_provider_credentials() {
+        let auth = crate::auth::AuthStorage::in_memory_without_env(
+            &crate::auth::AuthStorageData::default(),
+            std::sync::Arc::new(crate::auth::NoOAuth),
+        );
+        let mut registry = ModelRegistry::in_memory(auth);
+        let expected = registry
+            .get_all()
+            .iter()
+            .find(|model| model.provider == "opencode" && model.id == "deepseek-v4.1-flash-free")
+            .unwrap()
+            .clone();
+        assert_eq!(
+            find_session_model_with_readiness_wait(&mut registry, "opencode", &expected.id, 0)
+                .await,
+            Some(expected)
+        );
+        assert!(!registry.auth.has_auth("opencode"));
+    }
 
     #[tokio::test]
     async fn restore_requires_a_registered_model_with_configured_auth() {

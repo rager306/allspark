@@ -248,6 +248,12 @@ impl ModelRegistry {
             || self.has_configured_provider_request_auth(&model.provider)
     }
 
+    /// Whether an explicitly selected model can send requests. Native free
+    /// models use public request auth without configuring their provider.
+    pub fn has_request_auth(&self, model: &Model) -> bool {
+        self.has_configured_auth(model) || native_free_api_key(model).is_some()
+    }
+
     /// The provider's auth status without credential values: callers
     /// classifying unauthenticated vs stale providers read this instead of
     /// probing for keys.
@@ -287,6 +293,9 @@ impl ModelRegistry {
                 model_id: model_id.to_string(),
             });
         };
+        if native_free_api_key(model).is_some() {
+            return Ok(model);
+        }
         if self.get_provider_auth_status(provider).source
             == Some(crate::auth::types::AuthSource::Stale)
         {
@@ -802,7 +811,7 @@ impl ModelRegistry {
             return !is_private_prime_inference_model(model)
                 || self.is_authorized_private_model(model);
         }
-        if !self.has_configured_auth(model) {
+        if !self.has_request_auth(model) {
             return false;
         }
         if !is_private_prime_inference_model(model) {
@@ -835,6 +844,9 @@ impl ModelRegistry {
                     }
                 }
             }
+        }
+        if api_key.is_none() {
+            api_key = native_free_api_key(model).map(str::to_string);
         }
         let provider_headers = provider_config
             .as_ref()
@@ -880,6 +892,24 @@ impl ModelRegistry {
             error: None,
         }
     }
+}
+
+/// Public auth belongs to the native free endpoint, not the provider's
+/// credential sources (which also cover paid models and custom endpoints).
+fn native_free_api_key(model: &Model) -> Option<&'static str> {
+    let url = url::Url::parse(&model.base_url).ok()?;
+    (model.provider == "opencode"
+        && model.api == "openai-completions"
+        && model.id.ends_with("-free")
+        && url.scheme() == "https"
+        && url.host_str() == Some("opencode.ai")
+        && url.port_or_known_default() == Some(443)
+        && url.path().trim_end_matches('/') == "/inference/v1"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none())
+    .then_some("public")
 }
 
 fn now_millis() -> u64 {

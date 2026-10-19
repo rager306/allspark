@@ -1,0 +1,26 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on build directory
+   Compiling pa-ast v0.10.1-beta.35 (/root/prime-agent/crates/pa-ast)
+   Compiling pa-ai v0.10.1-beta.35 (/root/prime-agent/crates/pa-ai)
+   Compiling pa-agent v0.10.1-beta.35 (/root/prime-agent/crates/pa-agent)
+   Compiling pa-diff v0.10.1-beta.35 (/root/prime-agent/crates/pa-diff)
+   Compiling pa-graph v0.10.1-beta.35 (/root/prime-agent/crates/pa-graph)
+   Compiling pa-edit v0.10.1-beta.35 (/root/prime-agent/crates/pa-edit)
+   Compiling pa-lsp v0.10.1-beta.35 (/root/prime-agent/crates/pa-lsp)
+   Compiling pa-models v0.10.1-beta.35 (/root/prime-agent/crates/pa-models)
+   Compiling pa-telemetry v0.10.1-beta.35 (/root/prime-agent/crates/pa-telemetry)
+   Compiling pa-jev v0.10.1-beta.35 (/root/prime-agent/crates/pa-jev)
+   Compiling pa-core v0.10.1-beta.35 (/root/prime-agent/crates/pa-core)
+    Finished `test` profile [unoptimized] target(s) in 5m 58s
+     Running unittests src/lib.rs (target/debug/deps/pa_core-4474e33bf9917dea)
+
+running 4 tests
+test models::registry::tests::native_free_models_do_not_configure_a_provider_or_enter_default_candidates ... ok
+test models::session_restore::tests::restore_keeps_an_explicit_native_free_model_without_provider_credentials ... ok
+test models::registry::tests::explicit_native_free_selection_resolves_public_request_auth_only_on_its_endpoint ... ok
+test models::registry::tests::native_free_request_auth_preserves_configured_credentials ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1448 filtered out; finished in 0.02s
+
