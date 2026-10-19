@@ -923,10 +923,31 @@ fn extra_recorded_skills_do_not_force_reinstall() {
 #[cfg(unix)]
 fn fake_uv(dir: &Path, script: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
+    let source = dir.join("uv-script");
     let uv = dir.join("uv");
-    std::fs::write(&uv, script).unwrap();
+    std::fs::write(&source, script).unwrap();
+    // Only the copy child opens the executable writable: sibling test
+    // forks can inherit the source writer, but never the executed inode.
+    let status = std::process::Command::new("cp")
+        .arg(&source)
+        .arg(&uv)
+        .status()
+        .expect("copy fake uv in an isolated process");
+    assert!(status.success(), "copy fake uv script");
     std::fs::set_permissions(&uv, std::fs::Permissions::from_mode(0o755)).unwrap();
     uv
+}
+
+#[cfg(unix)]
+#[test]
+fn fake_uv_executes_the_published_script() {
+    let dir = tempfile::tempdir().unwrap();
+    let uv = fake_uv(dir.path(), "#!/bin/sh\nprintf 'fixture-ready'\nexit 7\n");
+    let output = std::process::Command::new(uv).output().unwrap();
+    assert_eq!(
+        (output.status.code(), output.stdout),
+        (Some(7), b"fixture-ready".to_vec())
+    );
 }
 
 #[cfg(unix)]

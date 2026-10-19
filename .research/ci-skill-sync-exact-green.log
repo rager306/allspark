@@ -1,0 +1,9 @@
+   Compiling pa-core v0.10.1-beta.35 (/root/prime-agent/crates/pa-core)
+    Finished `test` profile [unoptimized] target(s) in 1m 57s
+     Running unittests src/lib.rs (target/debug/deps/pa_core-8cfbab2ac19af3a3)
+
+running 1 test
+test kernel::bootstrap::venv::tests::skill_sync_falls_back_to_per_skill_installs_on_batch_failure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1452 filtered out; finished in 0.03s
+

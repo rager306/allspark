@@ -1,0 +1,27 @@
+{
+  "toolchain": "1.98.1",
+  "entrypoint": "make check",
+  "profile": "approved DEBUG0 JOBS2",
+  "exit_code": 2,
+  "fmt": "passed",
+  "workspace_clippy": "passed",
+  "workspace_tests": "failed",
+  "release_build": "not_run",
+  "failed_binary": "pa-core lib tests",
+  "failed_test": "kernel::bootstrap::venv::tests::skill_sync_falls_back_to_per_skill_installs_on_batch_failure",
+  "passed": 1448,
+  "failed": 1,
+  "ignored": 3,
+  "duration_s": 27.55,
+  "expected_logged_calls": 3,
+  "actual_logged_calls": 2,
+  "logged_call_types": [
+    "single edit",
+    "single broken"
+  ],
+  "missing_call": "initial batch",
+  "historical_spawn_error": "not captured; mechanism not yet claimed",
+  "local_raw_log": ".research/ci-fullgate-1.98.1-skill-sync-red.log",
+  "local_raw_log_sha256": "1cea09c31fc02064bd2fe7ac83e328e50719418c7ad7f7488cdd47d5ec55744b",
+  "scope": "Partial workspace attempt; no release result or raw frames reproduced."
+}

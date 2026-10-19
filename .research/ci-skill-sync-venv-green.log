@@ -1,0 +1,27 @@
+    Finished `test` profile [unoptimized] target(s) in 0.55s
+     Running unittests src/lib.rs (target/debug/deps/pa_core-8cfbab2ac19af3a3)
+
+running 20 tests
+test kernel::bootstrap::venv::tests::live_probe_closure_is_stdlib_or_rlm_relative ... ignored, live: needs a real kernel venv under HOME (bench VMs)
+test kernel::bootstrap::venv::tests::live_probe_memo_reprobes_when_installed_rlm_is_removed ... ignored, live: needs a real kernel venv under HOME (bench VMs)
+test kernel::bootstrap::venv::tests::dependency_names_parse ... ok
+test kernel::bootstrap::venv::tests::venv_dir_honors_override ... ok
+test kernel::bootstrap::venv::tests::version_file_round_trips ... ok
+test kernel::bootstrap::venv::tests::extra_recorded_skills_do_not_force_reinstall ... ok
+test kernel::bootstrap::venv::tests::windows_executable_candidates_default_order ... ok
+test kernel::bootstrap::venv::tests::windows_executable_candidates_skips_suffix_and_duplicates ... ok
+test kernel::bootstrap::venv::tests::windows_executable_candidates_follows_pathext_order ... ok
+test kernel::bootstrap::venv::tests::fake_uv_executes_the_published_script ... ok
+test kernel::bootstrap::venv::tests::windows_layout_venv_rlm_is_witnessed ... ok
+test kernel::bootstrap::venv::tests::skill_sync_batches_missing_installs_into_one_uv_call ... ok
+test kernel::bootstrap::venv::tests::disk_memo_hits_across_a_fresh_process_with_zero_probes ... ok
+test kernel::bootstrap::venv::tests::skill_sync_falls_back_to_per_skill_installs_on_batch_failure ... ok
+test kernel::bootstrap::venv::tests::custom_override_never_touches_the_disk_memo ... ok
+test kernel::bootstrap::venv::tests::disk_memo_damage_across_processes_misses_and_reprobes ... ok
+test kernel::bootstrap::venv::tests::disk_memo_late_write_after_invalidate_is_benign ... ok
+test kernel::bootstrap::venv::tests::disk_memo_masked_class_hits_across_processes_until_invalidation ... ok
+test kernel::bootstrap::venv::tests::probe_memo_key_distinguishes_every_input_and_drops_on_invalidate ... ok
+test kernel::bootstrap::venv::tests::probe_memo_misses_on_out_of_band_venv_mutation ... ok
+
+test result: ok. 18 passed; 0 failed; 2 ignored; 0 measured; 1433 filtered out; finished in 0.15s
+
