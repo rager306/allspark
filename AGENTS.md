@@ -21,10 +21,11 @@ Every contributor (human or agent) must read this before working on this repo.
   `gh pr create --repo PrimeIntellect-ai/prime-agent --base main`.
 - CI runs on the org's billing: `.github/workflows/continuous.yml` on `main` pushes and
   `release.yml` on version tags.
-- Parity ground truth is unchanged: a read-only checkout of the TS implementation (this
-  repo at tag `v0.9.8`, the last TS release before the Rust port merged to `main`). Clone
-  it to `~/prime-agent`, the conventional location the parity scripts and code fall back
-  to; tooling that honors an override reads `PA_TS_REFERENCE`.
+- Parity ground truth (advisory since 2026-10-19): a read-only checkout of the TS
+  implementation (this repo at tag `v0.9.8`, the last TS release before the Rust port merged
+  to `main`). Clone it to `~/prime-agent`, the conventional location the parity scripts and
+  code fall back to; tooling that honors an override reads `PA_TS_REFERENCE`. The CI gate
+  that consumed it is disabled (see Merge gates); run parity diffs on demand.
 
 ## Style and structure
 
@@ -194,16 +195,15 @@ launch path must keep that test red-first.
   the same gates; CI runs on the org's billing (`.github/workflows/continuous.yml` on `main`
   pushes; `release.yml` on version tags). The PR-only codebase-health check reports growth
   past 2,000 lines as review guidance; it never blocks a merge.
-- **Parity-diff evidence is a merge gate** (the port's definition, not optional polish): every PR
-  that touches a user-visible surface must include a "parity-diff evidence" section in its
-  description showing the TS-binary comparison for what it changed: (1) rendered output —
-  frame-diff vs the TS binary;
-  (2) interactive behavior — the same input handled identically (keys, mouse, timing); 
-  (3) wire parity — byte-compare the TS daemon's traffic for protocol changes; (4) user-visible
-  invariants — every user action produces the same visible reaction as TS (`/compact` shows
-  started+completed; `/model` shows the selector; a refinement shows its decoration). A feature
-  that "works" but was never diffed against the TS binary does not pass review. If TS shows it,
-  Rust shows it identically; if Rust shows something TS does not, that is also a parity bug.
+- **Parity-diff evidence is advisory, not a merge gate** (fork change, 2026-10-19): the
+  mandatory CI TS-parity step is disabled — upstream tests the TS reference itself, and the
+  per-shard TS download doubled CI load. The parity scripts stay in `scripts/review_*_parity.py`
+  and run on demand (`PA_TS_BINARY=<ts> python3 scripts/review_<scenario>_parity.py --receipt ...`);
+  the Rust differential tests keep their skip contract (no `PA_TS_BINARY` -> SKIPPED). When a PR
+  changes a user-visible surface, include a parity diff in the description when practical
+  (frame-diff, interactive behavior, wire bytes, user-visible invariants) — treat a mismatch as
+  a strong signal, not a blocker. Wire-compat with TS (`PI_*` names, socket leases, session
+  JSONL layout) stays binding regardless: parity beats branding on the wire.
 - PRs must state ownership compliance (crate README scope/non-goals/public API, dependency
   direction) and classify the change: internals, new `pub` surface, or a new
   dependency/cross-crate re-export. The latter two are architectural changes — an innocent-looking
