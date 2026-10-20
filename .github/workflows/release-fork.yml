@@ -114,6 +114,19 @@ jobs:
             *"fork build ${{ needs.tag-check.outputs.build }}"*) ;;
             *) echo "::error::the binary does not report the tagged fork build: ${built}"; exit 1 ;;
           esac
+      - name: Generate bundled catalog assets (fixture, offline-safe)
+        # Upstream release.yml parity: the no-cold-start layer 2 assets
+        # (models.bundled.json + mcp-services.bundled.json) the binary
+        # reads when no network is available. --fixture keeps the release
+        # deterministic (no network fetch, no token); the verify run is
+        # the packer gate upstream's assemble_artifacts.py enforces
+        # (>= 42 transport tuples, >= 68 services) - the fork's packaging
+        # is hand-rolled, so the gate lives here.
+        run: |
+          set -euo pipefail
+          python3 scripts/release/bundle_catalog.py generate --fixture \
+            --out target/catalog-assets
+          python3 scripts/release/bundle_catalog.py verify --out target/catalog-assets
       - name: Package the payload
         run: |
           set -euo pipefail
@@ -122,6 +135,14 @@ jobs:
           mkdir -p "package/${root}/bin" "package/${root}/libexec"
           cp target/dist/prime-agent "package/${root}/libexec/prime-agent"
           cp scripts/allspark-launcher.sh "package/${root}/bin/allspark"
+          # The catalog assets ship beside the payload binary, not the
+          # launcher: the runtime resolves them from the executable's own
+          # directory (BundledAssets::package_dir), and bin/allspark is a
+          # shell script - the executable the launcher execs is
+          # libexec/prime-agent.
+          cp target/catalog-assets/models.bundled.json \
+             target/catalog-assets/mcp-services.bundled.json \
+             "package/${root}/libexec/"
           chmod 755 "package/${root}/bin/allspark" "package/${root}/libexec/prime-agent"
           tar -C package -czf "${root}.tar.gz" "${root}"
           sha256sum "${root}.tar.gz" > SHA256SUMS
@@ -134,6 +155,11 @@ jobs:
           root="${tag}-linux-x86_64"
           mkdir -p unpack && tar -xzf "${root}.tar.gz" -C unpack
           ./unpack/"${root}"/bin/allspark --version
+          # The offline catalog assets are part of the packaged contract:
+          # a tarball that dropped them ships a release with no offline
+          # catalog, so assert them on the unpacked archive.
+          test -f "unpack/${root}/libexec/models.bundled.json"
+          test -f "unpack/${root}/libexec/mcp-services.bundled.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: fork-payload
