@@ -7,9 +7,8 @@ use super::{
     CompactionAbortNote, Context, DaemonClient, DaemonCommand, DockFold, Duration, GoalView,
     HashSet, InteractiveOptions, LoaderTokenTracker, Map, ModelCatalogUpdate, PromptOrder,
     PromptSubmitNote, ReattachOutcome, RebuildKind, RecoveryKind, ReloadNote, Result, ResyncBash,
-    SessionSelection, SessionUi, ShareNote, StatsNote, TranscriptBackfillNote,
-    TranscriptRebuildNote, UpdateNote, Value, EXIT_DETACH_TIMEOUT_MS, EXIT_STATS_TIMEOUT_MS,
-    UI_REQUEST_TIMEOUT_MS,
+    SessionSelection, SessionUi, ShareNote, TranscriptPageNote, UpdateNote, Value,
+    EXIT_DETACH_TIMEOUT_MS, EXIT_STATS_TIMEOUT_MS, UI_REQUEST_TIMEOUT_MS,
 };
 
 impl SessionUi {
@@ -28,9 +27,7 @@ impl SessionUi {
         catalog_updates: mpsc::UnboundedSender<ModelCatalogUpdate>,
         auth_panel_notes: mpsc::UnboundedSender<crate::auth_panel::AuthPanelRequest>,
         activity_updates: ActivityUpdates,
-        backfill_notes: mpsc::UnboundedSender<TranscriptBackfillNote>,
-        transcript_rebuild_notes: mpsc::UnboundedSender<TranscriptRebuildNote>,
-        stats_notes: mpsc::UnboundedSender<StatsNote>,
+        page_notes: mpsc::UnboundedSender<TranscriptPageNote>,
     ) -> Result<SessionUi> {
         let active_session_id = match &options.session {
             SessionSelection::New => create_session(&client, options, None).await?,
@@ -171,17 +168,9 @@ impl SessionUi {
             prompt_orders: orders_tx,
             input_submission_generation: 0,
             prompt_in_flight: 0,
-            transcript_stale: false,
-            transcript_epoch: 0,
-            backfill_compaction_count: None,
-            backfill_leaf_id: None,
-            transcript_backfill: None,
-            pending_backfill: None,
-            backfill_seam: crate::snapshot::BackfillSeam::Preserve,
-            backfill_notes,
-            transcript_rebuild_notes,
-            stats_epoch: 0,
-            stats_notes,
+            compaction_settled: false,
+            window: super::window::TranscriptWindow::default(),
+            page_notes,
             telemetry: options.telemetry.clone(),
             scroll_adoption_emitted: false,
             exit_reason: "daemon_closed",
@@ -523,15 +512,13 @@ impl SessionUi {
         // The rebuild's first frame materializes the visible window; arm the
         // post-frame trim so its wrap/render churn returns too.
         self.trim_after_frame = true;
-        self.transcript_epoch = self.transcript_epoch.wrapping_add(1);
-        self.transcript_backfill = None;
-        self.backfill_seam = reconstructed.backfill_seam;
-        self.backfill_compaction_count = attach.snapshot["state"]["compactionCount"].as_u64();
-        self.backfill_leaf_id = attach.snapshot["state"]["leafId"]
-            .as_str()
-            .map(str::to_owned);
-        self.pending_backfill =
-            Some(reconstructed.history_before).filter(|history_before| *history_before > 0);
+        self.window.reset(
+            attach.snapshot["state"]["leafId"]
+                .as_str()
+                .map(str::to_owned),
+            reconstructed.history_before_entry_id,
+            reconstructed.backfill_seam,
+        );
         Ok(())
     }
 
@@ -709,52 +696,6 @@ impl SessionUi {
         self.dirty = true;
     }
 
-    /// Refresh the tray usage off the UI loop: the bounded `get_session_stats`
-    /// fetch runs in a spawned task and the note delivers the refreshed usage
-    /// (the transcript-backfill pattern — a slow daemon answer must never hold
-    /// the render/input loop). Each refresh mints a fresh epoch; a late reply
-    /// from an older refresh is dropped by [`Self::apply_stats_note`].
-    pub(crate) fn spawn_stats_refresh(&mut self) {
-        self.stats_epoch = self.stats_epoch.wrapping_add(1);
-        let epoch = self.stats_epoch;
-        let client = self.client.clone();
-        let active_session_id = self.active_session_id.clone();
-        let notes = self.stats_notes.clone();
-        tokio::spawn(async move {
-            let data = tokio::time::timeout(
-                Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
-                client.request_ok(DaemonCommand::GetSessionStats {
-                    id: None,
-                    active_session_id,
-                    rest: Map::default(),
-                }),
-            )
-            .await
-            .ok()
-            .and_then(Result::ok);
-            // A failed fetch keeps the previous usage (the inline refresh's
-            // contract); only a successful one delivers a note.
-            if let Some(data) = data {
-                // Unknown usage (tokens null right after a compaction, or a
-                // response without the field) clears the tray display.
-                let context = data
-                    .get("contextUsage")
-                    .and_then(crate::chrome::ContextUsage::from_wire);
-                let _ = notes.send(StatsNote { epoch, context });
-            }
-        });
-    }
-
-    /// Fold a delivered stats refresh into the tray: a stale epoch drops, the
-    /// current one re-applies the usage and repaints the chrome.
-    pub(crate) fn apply_stats_note(&mut self, note: StatsNote, view: &mut AgentView) {
-        if note.epoch != self.stats_epoch {
-            return;
-        }
-        self.context = note.context;
-        self.rebuild_tray(view);
-    }
-
     /// Refresh context usage from `get_session_stats`: tokens, context window,
     /// and percent. The title's spend comes from the roster pushes instead.
     pub(crate) async fn refresh_stats(&mut self) {
@@ -826,243 +767,5 @@ impl SessionUi {
         )
         .await;
         resume_hint_from_stats(&stats.ok()?.ok()?)
-    }
-}
-
-#[cfg(all(test, unix))]
-mod backfill_tests {
-    use super::*;
-    use serde_json::json;
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-
-    #[tokio::test]
-    async fn a_rebuild_rejects_an_already_queued_backfill_note() {
-        tokio::time::timeout(Duration::from_secs(10), async {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("backfill.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let (read, mut write) = stream.into_split();
-            write.write_all(b"{\"type\":\"daemon_hello\",\"protocol\":{\"name\":\"prime-agent.daemon\",\"version\":7},\"serverCapabilities\":[],\"clientId\":\"mock\"}\n").await.unwrap();
-            let mut lines = BufReader::new(read).lines();
-            while let Some(line) = lines.next_line().await.unwrap() {
-                let request: Value = serde_json::from_str(&line).unwrap();
-                let kind = request["command"]["type"].as_str().unwrap();
-                let data = match kind {
-                    "attach" => json!({
-                        "activeSessionId": "s1", "snapshot": {
-                            "activeSessionId": "s1", "summary": {"id": "s1", "cwd": "/tmp"},
-                            "state": {"sessionId": "s1", "cwd": "/tmp", "isStreaming": false},
-                            "messages": [], "historyBefore": 1, "lastEventSequence": 0,
-                        }, "replay": {"status": "complete", "toSequence": 0},
-                        "lastEventSequence": 0,
-                    }),
-                    "get_messages" => {
-                        json!({"messages": [{"role": "user", "content": "rebuilt transcript", "timestamp": 1}]})
-                    }
-                    _ => json!({}),
-                };
-                let mut reply = serde_json::to_vec(&json!({
-                    "type": "response", "id": request["id"], "command": kind,
-                    "success": true, "data": data,
-                }))
-                .unwrap();
-                reply.push(b'\n');
-                write.write_all(&reply).await.unwrap();
-            }
-        });
-            let mut options =
-                crate::interactive::tests::options(crate::interactive::ModelSelection::default());
-        options.socket_path = socket.clone();
-        options.session = SessionSelection::Attach("s1".to_string());
-        let (client, _events) = DaemonClient::connect(&socket).await.unwrap();
-        let (backfill_tx, mut backfill_rx) = mpsc::unbounded_channel();
-        let (transcript_rebuild_tx, _transcript_rebuild_rx) = mpsc::unbounded_channel();
-        let (stats_tx, _stats_rx) = mpsc::unbounded_channel();
-        let mut session = SessionUi::open(
-            client,
-            &options,
-            mpsc::unbounded_channel().0,
-            mpsc::unbounded_channel().0,
-            mpsc::unbounded_channel().0,
-            mpsc::unbounded_channel().0,
-            mpsc::unbounded_channel().0,
-            mpsc::unbounded_channel().0,
-            mpsc::unbounded_channel().0,
-            mpsc::unbounded_channel().0,
-            mpsc::unbounded_channel().0,
-            ActivityUpdates {
-                heartbeats: mpsc::unbounded_channel().0,
-                bash: mpsc::unbounded_channel().0,
-                factory: mpsc::unbounded_channel().0,
-                commands: mpsc::unbounded_channel().0,
-            },
-            backfill_tx.clone(),
-            transcript_rebuild_tx,
-            stats_tx,
-        )
-        .await
-        .unwrap();
-        let old_epoch = session.transcript_epoch;
-        assert!(backfill_tx
-            .send(TranscriptBackfillNote {
-                epoch: old_epoch,
-                entries: Ok(crate::snapshot::transcript_to_entries(&[
-                    json!({"role": "user", "content": "stale history", "timestamp": 0}),
-                ])),
-            })
-            .is_ok());
-        let mut view = AgentView::new(crate::theme::Theme::builtin(
-            "prime",
-            crate::theme::ColorMode::TrueColor,
-        ));
-        session.rebuild_transcript(&mut view).await;
-        assert_ne!(session.transcript_epoch, old_epoch);
-        assert_eq!(view.chat.len(), 1, "rebuild applied the current transcript");
-        let expected = view.chat.clone();
-        // Deliver the note that was demonstrably queued before the real rebuild.
-        session.apply_transcript_backfill(backfill_rx.try_recv().unwrap(), &mut view);
-        assert_eq!(
-            view.chat, expected,
-            "an obsolete queued page cannot prepend rows after rebuild"
-        );
-        drop(session);
-        server.abort();
-        }).await.expect("mock session open, rebuild and stale-note delivery complete within ten seconds");
-    }
-
-    /// The spawned rebuild's note handling: a stale epoch drops without a
-    /// re-fetch, a fetch that raced newer transcript events re-fetches instead
-    /// of clearing the newer rows, and a current note replaces the chat.
-    #[tokio::test]
-    async fn a_rebuild_note_races_only_forward() {
-        tokio::time::timeout(Duration::from_secs(10), async {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("rebuild.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let (read, mut write) = stream.into_split();
-            write.write_all(b"{\"type\":\"daemon_hello\",\"protocol\":{\"name\":\"prime-agent.daemon\",\"version\":7},\"serverCapabilities\":[],\"clientId\":\"mock\"}\n").await.unwrap();
-            let mut lines = BufReader::new(read).lines();
-            while let Some(line) = lines.next_line().await.unwrap() {
-                let request: Value = serde_json::from_str(&line).unwrap();
-                let kind = request["command"]["type"].as_str().unwrap();
-                let data = match kind {
-                    "attach" => json!({
-                        "activeSessionId": "s1", "snapshot": {
-                            "activeSessionId": "s1", "summary": {"id": "s1", "cwd": "/tmp"},
-                            "state": {"sessionId": "s1", "cwd": "/tmp", "isStreaming": false},
-                            "messages": [], "historyBefore": 0, "lastEventSequence": 0,
-                        }, "replay": {"status": "complete", "toSequence": 0},
-                        "lastEventSequence": 0,
-                    }),
-                    "get_messages" => {
-                        json!({"messages": [{"role": "user", "content": "rebuilt transcript", "timestamp": 1}]})
-                    }
-                    _ => json!({}),
-                };
-                let mut reply = serde_json::to_vec(&json!({
-                    "type": "response", "id": request["id"], "command": kind,
-                    "success": true, "data": data,
-                }))
-                .unwrap();
-                reply.push(b'\n');
-                write.write_all(&reply).await.unwrap();
-            }
-        });
-            let mut options =
-                crate::interactive::tests::options(crate::interactive::ModelSelection::default());
-        options.socket_path = socket.clone();
-        options.session = SessionSelection::Attach("s1".to_string());
-        let (client, _events) = DaemonClient::connect(&socket).await.unwrap();
-        let (transcript_rebuild_tx, mut transcript_rebuild_rx) = mpsc::unbounded_channel();
-        let mut session = SessionUi::open(
-            client,
-            &options,
-            mpsc::unbounded_channel().0,
-            mpsc::unbounded_channel().0,
-            mpsc::unbounded_channel().0,
-            mpsc::unbounded_channel().0,
-            mpsc::unbounded_channel().0,
-            mpsc::unbounded_channel().0,
-            mpsc::unbounded_channel().0,
-            mpsc::unbounded_channel().0,
-            mpsc::unbounded_channel().0,
-            ActivityUpdates {
-                heartbeats: mpsc::unbounded_channel().0,
-                bash: mpsc::unbounded_channel().0,
-                factory: mpsc::unbounded_channel().0,
-                commands: mpsc::unbounded_channel().0,
-            },
-            mpsc::unbounded_channel().0,
-            transcript_rebuild_tx,
-            mpsc::unbounded_channel().0,
-        )
-        .await
-        .unwrap();
-        session.last_event_sequence = 5;
-        let mut view = AgentView::new(crate::theme::Theme::builtin(
-            "prime",
-            crate::theme::ColorMode::TrueColor,
-        ));
-        view.push_entry(ChatEntry::Status {
-            text: "newer streamed row".to_string(),
-            kind: crate::chat::StatusKind::Info,
-        });
-        let expected = view.chat.clone();
-
-        // A stale epoch drops the note entirely — no re-fetch, no clear.
-        session.apply_transcript_rebuild(
-            TranscriptRebuildNote {
-                epoch: session.transcript_epoch.wrapping_sub(1),
-                sequence: 5,
-                incomplete_history: false,
-                entries: Some(Vec::new()),
-            },
-            &mut view,
-        );
-        assert_eq!(view.chat, expected, "a stale-epoch note changed nothing");
-        assert!(
-            transcript_rebuild_rx.try_recv().is_err(),
-            "a stale-epoch note must not re-fetch"
-        );
-
-        // A fetch that raced newer events re-fetches instead of clearing them.
-        session.apply_transcript_rebuild(
-            TranscriptRebuildNote {
-                epoch: session.transcript_epoch,
-                sequence: 4,
-                incomplete_history: false,
-                entries: Some(Vec::new()),
-            },
-            &mut view,
-        );
-        assert_eq!(
-            view.chat, expected,
-            "a raced note must not clear newer rows while re-fetching"
-        );
-        let note = transcript_rebuild_rx
-            .recv()
-            .await
-            .expect("the raced note re-fetched under the current watermark");
-        assert_eq!(note.sequence, 5, "the re-fetch ran under sequence 5");
-        assert_eq!(note.epoch, session.transcript_epoch);
-        assert!(
-            note.entries.as_ref().is_some_and(|entries| !entries.is_empty()),
-            "the re-fetch decoded the mock transcript"
-        );
-
-        // The current note replaces the chat with the rebuilt transcript.
-        session.apply_transcript_rebuild(note, &mut view);
-        assert_eq!(view.chat.len(), 1, "the current note replaced the chat");
-        assert_ne!(
-            view.chat, expected,
-            "the replaced chat is the rebuilt transcript, not the streamed rows"
-        );
-        drop(session);
-        server.abort();
-        }).await.expect("mock session open and rebuild-note races complete within ten seconds");
     }
 }

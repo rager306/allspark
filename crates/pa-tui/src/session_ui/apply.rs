@@ -1,10 +1,9 @@
 //! The streamed-event pump: client events, turn updates, assistant/tool
 //! rows, compaction aborts, and the telemetry seams.
 use super::{
-    assistant_message_parts, event_to_update, last_assistant_text_of, pop_superseded_attempt_row,
-    AgentView, ChatEntry, CompactionReason, CompactionState, DaemonClientEvent, DaemonCommand,
-    Duration, Map, MessageBlock, Result, RetryState, SessionUi, StatusKind, ToolResultView,
-    TranscriptBackfillNote, TranscriptRebuildNote, TurnUpdate, Value, UI_REQUEST_TIMEOUT_MS,
+    assistant_message_parts, event_to_update, pop_superseded_attempt_row, AgentView, ChatEntry,
+    CompactionReason, CompactionState, DaemonClientEvent, DaemonCommand, Map, MessageBlock, Result,
+    RetryState, SessionUi, StatusKind, ToolResultView, TurnUpdate, Value,
 };
 
 /// One backgrounded compaction-abort outcome: a failed abort surfaces as
@@ -105,262 +104,6 @@ impl SessionUi {
 
     pub(crate) fn apply_background_note(&mut self, text: &str, view: &mut AgentView) {
         self.note(text, view);
-    }
-
-    /// A compaction succeeded and the durable transcript was rebuilt: re-fetch it. Best effort — a
-    /// failed fetch keeps the pushed outcome row instead of an empty transcript.
-    pub(crate) async fn rebuild_transcript(&mut self, view: &mut AgentView) {
-        let incomplete_history =
-            self.pending_backfill.is_some() || self.transcript_backfill.is_some();
-        self.transcript_stale = false;
-        self.transcript_epoch = self.transcript_epoch.wrapping_add(1);
-        self.transcript_backfill = None;
-        self.pending_backfill = None;
-        self.last_status_index = None;
-        self.pressed_click = None;
-        let data = self
-            .bounded_request(
-                Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
-                DaemonCommand::GetMessages {
-                    id: None,
-                    active_session_id: self.active_session_id.clone(),
-                    before: None,
-                    capabilities: None,
-                    rest: Map::default(),
-                },
-            )
-            .await;
-        let Some(messages) = data
-            .as_ref()
-            .ok()
-            .and_then(|data| data.get("messages"))
-            .and_then(Value::as_array)
-        else {
-            if incomplete_history {
-                view.push_entry(ChatEntry::Status {
-                    text: "Transcript refresh failed; displayed history may be incomplete or stale. Reopen the session to retry.".to_string(),
-                    kind: StatusKind::Warning,
-                });
-                self.dirty = true;
-            }
-            return;
-        };
-        let entries = crate::snapshot::transcript_to_entries(messages);
-        view.clear_chat();
-        for entry in entries {
-            view.push_entry(entry);
-        }
-        view.follow();
-        self.dirty = true;
-    }
-
-    /// A succeeded compaction rebuilt the durable transcript: re-fetch it OFF
-    /// the UI loop (the bounded `get_messages` fetch must never hold the
-    /// render/input loop — the transcript-backfill pattern): the spawned task
-    /// delivers the replacement chat through the rebuild notes, epoch- and
-    /// sequence-guarded. The synchronous head is [`Self::rebuild_transcript`]'s:
-    /// it invalidates the view-sensitive state and retires any in-flight
-    /// backfill before the fetch starts.
-    pub(crate) fn spawn_transcript_rebuild(&mut self) {
-        let incomplete_history =
-            self.pending_backfill.is_some() || self.transcript_backfill.is_some();
-        self.transcript_stale = false;
-        self.transcript_epoch = self.transcript_epoch.wrapping_add(1);
-        self.transcript_backfill = None;
-        self.pending_backfill = None;
-        self.last_status_index = None;
-        self.pressed_click = None;
-        let client = self.client.clone();
-        let active_session_id = self.active_session_id.clone();
-        let epoch = self.transcript_epoch;
-        let sequence = self.last_event_sequence;
-        let notes = self.transcript_rebuild_notes.clone();
-        tokio::spawn(async move {
-            let data = tokio::time::timeout(
-                Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
-                client.request_ok(DaemonCommand::GetMessages {
-                    id: None,
-                    active_session_id,
-                    before: None,
-                    capabilities: None,
-                    rest: Map::default(),
-                }),
-            )
-            .await
-            .ok()
-            .and_then(Result::ok);
-            let messages =
-                data.and_then(|data| data.get("messages").and_then(Value::as_array).cloned());
-            // The decode is the heavy tail of a long transcript; it runs on the
-            // blocking pool like the backfill's decode. `None` marks a failed
-            // fetch or a response without the transcript (the caller keeps the
-            // pushed outcome row instead of an empty chat).
-            let entries = match messages {
-                Some(messages) => tokio::task::spawn_blocking(move || {
-                    crate::snapshot::transcript_to_entries(&messages)
-                })
-                .await
-                .ok(),
-                None => None,
-            };
-            let _ = notes.send(TranscriptRebuildNote {
-                epoch,
-                sequence,
-                incomplete_history,
-                entries,
-            });
-        });
-    }
-
-    /// Fold a delivered transcript rebuild into the view: a stale epoch drops;
-    /// a fetch that raced newer transcript events re-fetches instead of
-    /// clearing rows the stream added after it (the inline rebuild could not
-    /// race — the loop was blocked for its whole duration); a current one
-    /// replaces the chat with the rebuilt transcript.
-    pub(crate) fn apply_transcript_rebuild(
-        &mut self,
-        note: TranscriptRebuildNote,
-        view: &mut AgentView,
-    ) {
-        if note.epoch != self.transcript_epoch {
-            return;
-        }
-        if note.sequence != self.last_event_sequence {
-            self.spawn_transcript_rebuild();
-            return;
-        }
-        let Some(entries) = note.entries else {
-            if note.incomplete_history {
-                view.push_entry(ChatEntry::Status {
-                    text: "Transcript refresh failed; displayed history may be incomplete or stale. Reopen the session to retry.".to_string(),
-                    kind: StatusKind::Warning,
-                });
-                self.dirty = true;
-            }
-            return;
-        };
-        view.clear_chat();
-        for entry in entries {
-            view.push_entry(entry);
-        }
-        view.follow();
-        self.dirty = true;
-    }
-
-    pub(crate) fn spawn_pending_backfill(&mut self) {
-        if let Some(before) = self.pending_backfill.take() {
-            self.spawn_transcript_backfill(before);
-        }
-    }
-
-    pub(crate) fn spawn_transcript_backfill(&mut self, before: usize) {
-        let client = self.client.clone();
-        let active_session_id = self.active_session_id.clone();
-        let epoch = self.transcript_epoch;
-        let compaction_count = self.backfill_compaction_count;
-        let leaf_id = self.backfill_leaf_id.clone();
-        let session_id = self.session_id.clone();
-        let notes = self.backfill_notes.clone();
-        let task = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
-            let entries: Result<Vec<ChatEntry>> = async {
-                let leaf_id =
-                    leaf_id.ok_or_else(|| anyhow::anyhow!("missing history branch anchor"))?;
-                let command = DaemonCommand::GetMessages {
-                    id: None,
-                    active_session_id: active_session_id.clone(),
-                    before: Some(before as u64),
-                    capabilities: Some(crate::session_ui::attach_capabilities()),
-                    rest: Map::from_iter([(
-                        "historyLeafId".to_owned(),
-                        Value::String(leaf_id.clone()),
-                    )]),
-                };
-                // A read-only request can safely retry once on a live link. Keep
-                // the same cursor; a second failure must not masquerade as an empty page.
-                let mut data = match client.request_ok(command.clone()).await {
-                    Ok(data) => data,
-                    Err(error) if crate::daemon_client::is_daemon_timeout(&error) => {
-                        return Err(error)
-                    }
-                    Err(_) => client.request_ok(command).await?,
-                };
-                // Require the echo so workers that ignore the optional anchor fail closed.
-                if data.get("historyLeafId").and_then(Value::as_str) != Some(leaf_id.as_str()) {
-                    return Err(anyhow::anyhow!("unverified history branch anchor"));
-                }
-                // Validate after the prefix read: a compaction that changed its
-                // indices has already advanced the persisted count, even if its
-                // end event has not reached the UI yet. Ordinary appends do not.
-                let state = client
-                    .request_ok(DaemonCommand::GetConnectionState {
-                        id: None,
-                        active_session_id: active_session_id.clone(),
-                        rest: Map::default(),
-                    })
-                    .await?;
-                if compaction_count.is_none()
-                    || state.get("compactionCount").and_then(Value::as_u64) != compaction_count
-                    || state.get("sessionId").and_then(Value::as_str) != Some(session_id.as_str())
-                    || state.get("activeSessionId").and_then(Value::as_str)
-                        != Some(active_session_id.as_str())
-                {
-                    return Err(anyhow::anyhow!("history changed during backfill"));
-                }
-                let Some(Value::Array(messages)) = data.get_mut("messages").map(Value::take) else {
-                    return Err(anyhow::anyhow!("missing messages in history response"));
-                };
-                Ok(tokio::task::spawn_blocking(move || {
-                    crate::snapshot::transcript_to_entries(&messages)
-                })
-                .await?)
-            }
-            .await;
-            let entries = entries.map_err(|error| error.to_string());
-            let _ = notes.send(TranscriptBackfillNote { epoch, entries });
-        }));
-        self.transcript_backfill = Some(task);
-    }
-
-    pub(crate) fn apply_transcript_backfill(
-        &mut self,
-        note: TranscriptBackfillNote,
-        view: &mut AgentView,
-    ) {
-        if note.epoch != self.transcript_epoch {
-            return;
-        }
-        self.transcript_backfill = None;
-        let mut entries = match note.entries {
-            Ok(entries) => entries,
-            Err(error) => {
-                view.push_entry(ChatEntry::Status {
-                    text: format!(
-                        "Older history could not be loaded: {error}. Reopen the session to retry."
-                    ),
-                    kind: StatusKind::Warning,
-                });
-                self.dirty = true;
-                return;
-            }
-        };
-        crate::snapshot::join_backfilled_entries(&mut entries, self.backfill_seam);
-        let count = entries.len();
-        if let Some(index) = self.last_status_index {
-            self.last_status_index = Some(index + count);
-        }
-        if let Some(index) = self.streaming_index {
-            self.streaming_index = Some(index + count);
-        }
-        if let Some(index) = self.goal_view.last_status_index {
-            self.goal_view.last_status_index = Some(index + count);
-        }
-        self.pressed_click = None;
-        if self.last_assistant_text.is_none() {
-            self.last_assistant_text = last_assistant_text_of(&entries);
-        }
-        view.prepend_entries(entries);
-        self.trim_after_frame = true;
-        self.dirty = true;
     }
 
     /// Report the first scroll action of the run (`tui_scroll_count`),
@@ -782,8 +525,8 @@ impl SessionUi {
             } => {
                 view.compaction = None;
                 if let Some(result) = result {
-                    // A succeeded compaction rebuilt the durable transcript: show the outcome
-                    // row immediately, then re-fetch so the compacted-away rows drop.
+                    // The display transcript keeps every row: the summary appends at the
+                    // compaction's own position.
                     view.push_entry(ChatEntry::CompactionSummary {
                         summary: result
                             .get("summary")
@@ -796,7 +539,7 @@ impl SessionUi {
                             .unwrap_or_default(),
                         custom_instructions,
                     });
-                    self.transcript_stale = true;
+                    self.compaction_settled = true;
                 } else if reason == "manual" {
                     // Aborts and error messages surface only for user-issued compactions.
                     if aborted {

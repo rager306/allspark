@@ -56,9 +56,10 @@ impl AgentSessionEngine {
                 config.agent_dir.clone(),
                 link_config.active_session_id.clone(),
                 std::sync::Arc::clone(&model_refusal_telemetry),
+                link_config.worker_token.clone(),
             ));
             // The spawn admission queue rides the same cross-session plane
-            // as the streams (ADR `ratelimit-admission`, M2).
+            // as the streams (ADR `ratelimit-admission`, M2) - fork.
             children.set_admission_client(config.admission.clone());
             children
         });

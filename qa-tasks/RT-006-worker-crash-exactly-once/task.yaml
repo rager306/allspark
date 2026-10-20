@@ -34,4 +34,4 @@ oracle:
         text: Append one line to counter.txt
         count: 1
 reference: reference/solution.md
-status_note: "Daemon lane (scripts/qa/run_suite.py --lane daemon): JSON-RPC create/attach/prompt, then SIGKILL the worker pid from its descriptor and wait for the supervisor relaunch. The oracle counts the side effect in counter.txt AND the delivered prompt rows in the transcript, so a re-delivery fails it."
+status_note: "Daemon lane (scripts/qa/run_suite.py --lane daemon): JSON-RPC create/attach/prompt, then SIGKILL the worker pid from its descriptor and wait for the supervisor relaunch. The oracle counts the side effect in counter.txt AND the delivered prompt rows in the transcript, so a re-delivery fails it. GREEN (2026-10-18): the worker's pickup now appends a write-ahead `turn_delivered` recovery checkpoint BEFORE the engine runs, so the journal's restored lanes no longer hold a row the turn already executed; a kill mid-turn restores nothing to replay."

@@ -20,6 +20,8 @@ mod sessions_fork;
 mod settings;
 mod share;
 mod stream;
+mod window;
+pub(crate) use window::TranscriptPageNote;
 
 pub(crate) use apply::CompactionAbortNote;
 use auth::{McpAuthIntent, PendingModelSignIn, SetModelOutcome};
@@ -142,33 +144,6 @@ pub(crate) fn last_assistant_text_of(chat: &[ChatEntry]) -> Option<String> {
         }
         _ => None,
     })
-}
-
-pub(crate) struct TranscriptBackfillNote {
-    pub epoch: u64,
-    pub entries: std::result::Result<Vec<ChatEntry>, String>,
-}
-
-/// A finished background transcript rebuild (the post-compaction re-fetch): the
-/// epoch stamps the rebuild generation it belongs to, `sequence` the event
-/// watermark the fetch ran under — the apply re-fetches when the view moved
-/// past it instead of clearing newer rows. `entries` is `None` when the fetch
-/// failed (the pushed outcome row stays).
-pub(crate) struct TranscriptRebuildNote {
-    pub epoch: u64,
-    pub sequence: u64,
-    pub incomplete_history: bool,
-    pub entries: Option<Vec<ChatEntry>>,
-}
-
-/// A finished background tray-stats refresh (the settled-turn / post-compaction
-/// `get_session_stats` fetch): the epoch stamps the refresh generation it
-/// belongs to. Only delivered when the fetch succeeded — a failed fetch keeps
-/// the previous usage, exactly like the inline refresh did.
-#[derive(Clone, Copy)]
-pub(crate) struct StatsNote {
-    pub epoch: u64,
-    pub context: Option<crate::chrome::ContextUsage>,
 }
 
 pub(crate) struct SessionUi {
@@ -342,7 +317,7 @@ pub(crate) struct SessionUi {
     factory_updates: mpsc::UnboundedSender<FactoryUpdate>,
     /// The open view's selected run id: the refresh's watch target.
     factory_selected_run: Option<String>,
-    /// The subagent summary line holds keyboard focus.
+    /// The activity dock holds keyboard focus (and renders expanded).
     subagents_focused: bool,
     activity_group: crate::chrome::ActivityGroup,
     subagent_counts: crate::subagents::SubagentCounts,
@@ -374,26 +349,10 @@ pub(crate) struct SessionUi {
     /// Armed prompt round trips (one per spawned request): the headless
     /// idle and exit gates treat an in-flight submit as busy.
     prompt_in_flight: usize,
-    pub(crate) transcript_stale: bool,
-    transcript_epoch: u64,
-    backfill_compaction_count: Option<u64>,
-    backfill_leaf_id: Option<String>,
-    /// Dropping or replacing the handle aborts an obsolete backfill task. An
-    /// already-running decode finishes on the blocking pool and its result is
-    /// discarded: the aborted task never sends it, and an already-queued note
-    /// is dropped by the epoch check.
-    pub(crate) transcript_backfill: Option<tokio_util::task::AbortOnDropHandle<()>>,
-    pending_backfill: Option<usize>,
-    backfill_seam: crate::snapshot::BackfillSeam,
-    backfill_notes: mpsc::UnboundedSender<TranscriptBackfillNote>,
-    /// Where the spawned post-compaction transcript rebuild delivers its
-    /// replacement chat (the run loop folds it in off the render path).
-    transcript_rebuild_notes: mpsc::UnboundedSender<TranscriptRebuildNote>,
-    /// Monotonic id of the latest issued tray-stats refresh; a late reply from
-    /// an older refresh never repaints a newer one.
-    stats_epoch: u64,
-    /// Where the spawned tray-stats refreshes deliver the refreshed usage.
-    stats_notes: mpsc::UnboundedSender<StatsNote>,
+    /// A compaction settled: the tray's context usage refreshes.
+    pub(crate) compaction_settled: bool,
+    pub(crate) window: window::TranscriptWindow,
+    page_notes: mpsc::UnboundedSender<window::TranscriptPageNote>,
     /// Adoption telemetry (counted into `tui exit`); `None` drops events.
     pub(crate) telemetry: Option<std::sync::Arc<dyn crate::interactive::InteractionTelemetry>>,
     scroll_adoption_emitted: bool,
@@ -514,7 +473,7 @@ impl SessionUi {
         std::mem::take(&mut self.trim_after_frame)
     }
 
-    /// Hand the keyboard focus to the compact dock on its selected group (operator ruling
+    /// Hand the keyboard focus to the dock on its selected group (operator ruling
     /// 2026-09-26: leaving a panel lands on the panel's own dock item, never the prompt bar).
     fn focus_activity_dock(&mut self, view: &mut AgentView) {
         self.subagents_focused = true;
