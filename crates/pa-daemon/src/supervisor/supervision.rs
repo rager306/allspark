@@ -1055,8 +1055,10 @@ mod tests {
     /// rides over the inherited daemon base, the internal identity
     /// overrides ride over the client's env (a client-supplied worker
     /// token never wins), and `RLM_DEPTH` is an explicit removal even
-    /// when the client forwarded one — the only removal, so the daemon's
-    /// own env stays the inherited base.
+    /// when the client forwarded one. The session-root and worker-
+    /// handshake overrides are removals too (fork): a daemon started
+    /// inside a session must not drag that session root into every
+    /// worker it spawns.
     #[test]
     fn the_client_env_rides_under_the_internal_overrides() {
         let client = std::collections::BTreeMap::from([
@@ -1095,11 +1097,29 @@ mod tests {
             .filter(|(_, value)| value.is_none())
             .map(|(key, _)| *key)
             .collect();
-        assert_eq!(
-            removals,
-            vec![std::ffi::OsStr::new("RLM_DEPTH")],
-            "RLM_DEPTH is the only removal: the daemon's own env stays             inherited (the e2e's base-sentinel check proves the layer)"
-        );
+        // The fork scrubs the session-root and worker-handshake overrides
+        // alongside RLM_DEPTH: an inherited session root would redirect the
+        // worker's ledger and session writes into the launching session's
+        // tree.
+        for key in [
+            "RLM_DEPTH",
+            "PRIME_AGENT_SESSION_DIR",
+            "PRIME_AGENT_DAEMON_SOCKET",
+            "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET",
+            "PRIME_AGENT_INTERNAL_DAEMON_WORKER",
+            "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID",
+            "PRIME_AGENT_INTERNAL_DAEMON_WORKER_CWD",
+            "PRIME_AGENT_INTERNAL_DAEMON_WORKER_INSTANCE_ID",
+            "PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL",
+            "PRIME_AGENT_INTERNAL_ORPHAN_PROCESS_JOURNAL",
+            "PRIME_AGENT_INTERNAL_SESSION_LEASES",
+            "PRIME_AGENT_INTERNAL_SESSION_LEASE_OWNER_ID",
+        ] {
+            assert!(
+                removals.contains(&std::ffi::OsStr::new(key)),
+                "{key} is scrubbed from the worker spawn: {removals:?}"
+            );
+        }
     }
 
     /// The recursion marker is stripped even with no client env at all
