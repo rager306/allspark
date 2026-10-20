@@ -1,0 +1,178 @@
+# Fork release pipeline (allspark tags).
+#
+# The upstream `release.yml` triggers on `vX.Y.Z` / `vX.Y.Z-beta*` and
+# publishes the upstream channels (R2 `latest.json` / `beta.json`, the
+# 4-target continuous restamp). Fork tags carry the `allspark-` prefix and
+# must never enter that pipeline: their version string would fail
+# `tag-check`, and the fork has no R2 channel to publish.
+#
+# This workflow owns the fork tags instead: build the dist-profile Linux
+# binary, package it as `bin/allspark` + `libexec/prime-agent` (the layout
+# `scripts/allspark-launcher.sh` expects), and attach it to a GitHub
+# release whose body is the CHANGELOG-FORK.md entry for `fork.NNN`.
+
+name: release-fork
+
+on:
+  push:
+    tags:
+      - "allspark-v[0-9]+.[0-9]+.[0-9]+*-fork.[0-9][0-9][0-9]"
+
+permissions: {}
+
+concurrency:
+  group: release-fork-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  tag-check:
+    name: validate the fork tag
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.parse.outputs.version }}
+      build: ${{ steps.parse.outputs.build }}
+      tag: ${{ steps.parse.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: The tag names a Cargo.toml version and a fork.NNN build
+        id: parse
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          # allspark-v<version>-fork.NNN -> <version>, fork.NNN
+          rest="${tag#allspark-v}"
+          version="${rest%-fork.*}"
+          counter="${rest##*-fork.}"
+          cargo_ver="$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -1)"
+          if [ "${version}" != "${cargo_ver}" ]; then
+            echo "::error::tag ${tag} names version ${version}, Cargo.toml is ${cargo_ver}"
+            exit 1
+          fi
+          if ! printf '%s' "${counter}" | grep -Eq '^[0-9]{3}$'; then
+            echo "::error::the fork counter must be three digits (fork.NNN), got fork.${counter}"
+            exit 1
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "build=fork.${counter}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+      - name: The changelog carries this release's entry
+        run: |
+          set -euo pipefail
+          build="${{ steps.parse.outputs.build }}"
+          if ! grep -q "^## ${build} " CHANGELOG-FORK.md; then
+            echo "::error::CHANGELOG-FORK.md has no '## ${build} ' entry; add it before tagging"
+            exit 1
+          fi
+
+  build:
+    name: build the fork payload (linux-x86_64)
+    needs: tag-check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # the 1.98.1 pin
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: release-fork
+      - name: Build the dist payload
+        env:
+          ALLSPARK_FORK_BUILD: ${{ needs.tag-check.outputs.build }}
+        run: |
+          set -euo pipefail
+          cargo build --locked --profile dist -p pa-cli
+          built="$(./target/dist/prime-agent --version)"
+          echo "built: ${built}"
+          case "${built}" in
+            *"fork build ${{ needs.tag-check.outputs.build }}"*) ;;
+            *) echo "::error::the binary does not report the tagged fork build: ${built}"; exit 1 ;;
+          esac
+      - name: Package the payload
+        run: |
+          set -euo pipefail
+          tag="${{ needs.tag-check.outputs.tag }}"
+          root="${tag}-linux-x86_64"
+          mkdir -p "package/${root}/bin" "package/${root}/libexec"
+          cp target/dist/prime-agent "package/${root}/libexec/prime-agent"
+          cp scripts/allspark-launcher.sh "package/${root}/bin/allspark"
+          chmod 755 "package/${root}/bin/allspark" "package/${root}/libexec/prime-agent"
+          tar -C package -czf "${root}.tar.gz" "${root}"
+          ( cd package && sha256sum "${root}.tar.gz" > SHA256SUMS )
+          echo "archive ${root}.tar.gz"
+          cat package/SHA256SUMS
+      - name: Prove the packaged launcher runs
+        run: |
+          set -euo pipefail
+          tag="${{ needs.tag-check.outputs.tag }}"
+          root="${tag}-linux-x86_64"
+          mkdir -p unpack && tar -xzf "${root}.tar.gz" -C unpack
+          ./unpack/"${root}"/bin/allspark --version
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fork-payload
+          path: |
+            *.tar.gz
+            package/SHA256SUMS
+          if-no-files-found: error
+
+  publish:
+    name: publish the GitHub release
+    needs: [tag-check, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fork-payload
+          path: dist
+      - name: Extract the changelog entry as the release body
+        env:
+          BUILD: ${{ needs.tag-check.outputs.build }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, pathlib, re
+          build = os.environ["BUILD"]
+          text = pathlib.Path("CHANGELOG-FORK.md").read_text()
+          start = text.index(f"## {build} ")
+          rest = text[start:]
+          nxt = re.search(r"\n## fork\.", rest[1:])
+          body = rest[: nxt.start() + 1] if nxt else rest
+          pathlib.Path("release-body.md").write_text(body.strip() + "\n")
+          print(body[:400])
+          PY
+      - name: Create the release (idempotent)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.tag-check.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "release ${TAG} already exists: uploading assets over it"
+            gh release upload "${TAG}" dist/*.tar.gz dist/package/SHA256SUMS \
+              --repo "${GITHUB_REPOSITORY}" --clobber
+            gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" \
+              --notes-file release-body.md
+          else
+            gh release create "${TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "allspark ${TAG#allspark-v}" \
+              --notes-file release-body.md \
+              dist/*.tar.gz dist/package/SHA256SUMS
+          fi

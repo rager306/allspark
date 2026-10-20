@@ -14,8 +14,9 @@ they were local-only artifacts and are superseded by the NNN scheme below.
 ## fork.009 — upstream v0.10.1-beta.38
 
 - Tag: `allspark-v0.10.1-beta.38-fork.009` (2026-10-20)
-- Base: `70564a692` — the beta.38 merge, the fork CI/nightly cleanup, and
-  the toolchain pin.
+- Base: `cf206108b` (fork.008) — 69 commits: the beta.38 upstream merge,
+  the fork CI and nightly cleanup, the toolchain pin, and the wasmtime
+  advisory bump.
 
 **Upstream merge (beta.35 -> beta.38, 12 commits)**: the windowed
 transcript pager (#3674 — scrolling now continues past a compaction into
