@@ -567,30 +567,45 @@ fn concurrent_producers_drop_at_the_reserve_when_the_queue_is_full() {
     let dir_path = dir.path().join("request-payloads");
     // The ring keeps every body: the count assertions need no eviction.
     let capture = RequestPayloadCapture::at(&dir_path, 4 * REQUEST_PAYLOAD_CAPTURE_KEEP);
-    // The stall body: serialized for far longer than the whole storm
-    // window, so no slot frees mid storm.
+    // The stall body: serialized for far longer than the fill window, so
+    // the fills reach saturation against the reserve counter while the
+    // writer is still inside this one write.
     let stall = json!({
         "marker": "stall",
         "messages": (0..100_000_u32).map(|seq| json!({ "seq": seq })).collect::<Vec<_>>()
     });
     capture.record(&stall, &agent_model(), Some("sess-timing"), 1);
     let fills = fill_until_saturated(&capture, "fill");
+    // The storm body is priced beyond the retained budget on purpose. The
+    // writer drains the fills behind the stall's serialization, so a
+    // scheduling-delayed producer can find a freed slot mid storm, and a
+    // budget-fitting body would then land legitimately — the assertion
+    // below would race the writer's drain. Priced over budget, a producer
+    // facing the full queue still drops at the reserve (the gate under
+    // test), and one that finds a freed slot drops at the budget gate and
+    // releases it: no storm body can land, by invariant, not by timing.
+    // The one shared body is also never cloned — the budget gate precedes
+    // the clone — so the storm itself costs each producer microseconds.
+    let storm = Arc::new(json!({
+        "marker": "storm",
+        "body": "s".repeat(24 * 1024 * 1024),
+    }));
+    assert!(
+        payload_bytes(&storm) > REQUEST_PAYLOAD_BUDGET_BYTES,
+        "the storm body must stay beyond the retained budget for the drop to hold by invariant"
+    );
     // The storm: many concurrent producers racing the full queue; none
     // of their bodies exists anywhere afterwards.
     let producers = 4 * REQUEST_PAYLOAD_CAPTURE_KEEP;
     let barrier = Arc::new(std::sync::Barrier::new(producers + 1));
     let mut handles = Vec::new();
-    for producer in 0..producers {
+    for _ in 0..producers {
         let capture = capture.clone();
         let barrier = Arc::clone(&barrier);
+        let storm = Arc::clone(&storm);
         handles.push(std::thread::spawn(move || {
             barrier.wait();
-            capture.record(
-                &json!({ "marker": format!("storm-{producer}") }),
-                &agent_model(),
-                Some("sess-timing"),
-                u64::MAX,
-            );
+            capture.record(&storm, &agent_model(), Some("sess-timing"), u64::MAX);
         }));
     }
     barrier.wait();
@@ -621,11 +636,11 @@ fn concurrent_producers_drop_at_the_reserve_when_the_queue_is_full() {
     wait_for_payload_files(&dir_path, fills + 2);
     let landed = payload_files(&dir_path);
     let storm_body = landed.iter().any(|name| {
-        std::fs::read_to_string(dir_path.join(name)).is_ok_and(|content| content.contains("storm-"))
+        std::fs::read_to_string(dir_path.join(name)).is_ok_and(|content| content.contains("storm"))
     });
     assert!(
         !storm_body,
-        "no storm body may land: every storm producer dropped at the reserve"
+        "no storm body may land: the full queue dropped every producer at the reserve, and any that found a freed slot at the budget gate"
     );
     assert_eq!(
         landed.len(),
