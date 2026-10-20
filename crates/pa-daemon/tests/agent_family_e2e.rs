@@ -82,6 +82,16 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
     let log_file = std::fs::File::create(socket.with_extension("daemon.log")).expect("log file");
     let log_err = log_file.try_clone().expect("clone log file");
     let child = Command::new(binary)
+        // The daemon and its workers must not inherit the outer session's
+        // dir overrides: the child workers then write their RLM ledger rows
+        // outside the isolated tmp tree and the test reads an empty ledger.
+        .env_remove("PRIME_AGENT_SESSION_DIR")
+        .env_remove("PRIME_AGENT_DAEMON_SOCKET")
+        .env_remove("PRIME_AGENT_INTERNAL_DAEMON_WORKER")
+        .env_remove("PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID")
+        .env_remove("PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL")
+        .env_remove("PRIME_AGENT_INTERNAL_DAEMON_WORKER_INSTANCE_ID")
+        .env_remove("PRIME_AGENT_INTERNAL_DAEMON_WORKER_CWD")
         .arg("supervisor")
         .arg("--socket")
         .arg(socket)

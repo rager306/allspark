@@ -64,6 +64,27 @@ fn apply_worker_env(
     client_launch_env: Option<&std::collections::BTreeMap<String, String>>,
     internal_launch_env: std::collections::BTreeMap<String, String>,
 ) {
+    // Scrub the inherited overrides BEFORE the launch env lands: the worker's
+    // session root comes from its own config/agent dir, never from a daemon
+    // started inside a session (the TUI's env). Without this the isolated
+    // test harness's tmp agent dir is bypassed and the worker's RLM ledger
+    // rows land in the outer tree.
+    for key in [
+        "PRIME_AGENT_SESSION_DIR",
+        "PRIME_AGENT_DAEMON_SOCKET",
+        "PRIME_AGENT_INTERNAL_DAEMON_WORKER",
+        "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID",
+        "PRIME_AGENT_INTERNAL_DAEMON_WORKER_INSTANCE_ID",
+        "PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL",
+        "PRIME_AGENT_INTERNAL_DAEMON_WORKER_CWD",
+        "PRIME_AGENT_INTERNAL_DAEMON_WORKER_TOKEN",
+        "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET",
+        "PRIME_AGENT_INTERNAL_SESSION_LEASE_OWNER_ID",
+        "PRIME_AGENT_INTERNAL_SESSION_LEASES",
+        "PRIME_AGENT_INTERNAL_ORPHAN_PROCESS_JOURNAL",
+    ] {
+        command.env_remove(key);
+    }
     if let Some(env) = client_launch_env {
         command.envs(env);
     }

@@ -211,7 +211,38 @@ impl Inner {
                 bash_commands: buffers.bash_commands.take(),
                 background_output: (!background_output.is_empty()).then_some(background_output),
                 status,
-                error: buffers.error.take(),
+                // The settle cap covers the error payload like result text
+                // (the fork's kernel-error cap): `ename` and `evalue` each
+                // clip, and the traceback clips on its joined length.
+                error: buffers.error.take().map(|mut error| {
+                    error.ename = Self::clip_at_chars(error.ename, execution.max_chars);
+                    error.evalue = Self::clip_at_chars(error.evalue, execution.max_chars);
+                    let mut remaining = execution.max_chars;
+                    let mut frames = Vec::with_capacity(error.traceback.len());
+                    for (index, frame) in error.traceback.into_iter().enumerate() {
+                        if index > 0 {
+                            remaining = remaining.saturating_sub(1);
+                        }
+                        let frame_chars = frame.chars().count();
+                        if frame_chars > remaining {
+                            let mut cut = frame;
+                            if let Some((end, _)) = cut.char_indices().nth(remaining) {
+                                cut.truncate(end);
+                            }
+                            let _ = write!(
+                                cut,
+                                "\n[... output truncated at {} chars ...]",
+                                execution.max_chars
+                            );
+                            frames.push(cut);
+                            break;
+                        }
+                        remaining -= frame_chars;
+                        frames.push(frame);
+                    }
+                    error.traceback = frames;
+                    error
+                }),
                 duration_ms: execution.started.elapsed().as_millis() as u64,
             };
             drop(buffers);
@@ -225,6 +256,17 @@ impl Inner {
         if did_clear_active {
             self.notify_active_execution_idle();
         }
+    }
+
+    /// Clip a string to `max_chars` Unicode scalars, appending the standard
+    /// truncation marker when the cut lands (the fork's kernel-error cap).
+    fn clip_at_chars(mut text: String, max_chars: usize) -> String {
+        // Match the Unicode-scalar limit used for stdout and stderr.
+        if let Some((end, _)) = text.char_indices().nth(max_chars) {
+            text.truncate(end);
+            let _ = write!(text, "\n[... output truncated at {max_chars} chars ...]");
+        }
+        text
     }
 
     fn register_late_sent_agent_message_handler(
