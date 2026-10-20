@@ -17,6 +17,14 @@ on:
   push:
     tags:
       - "allspark-v[0-9]+.[0-9]+.[0-9]+*-fork.[0-9][0-9][0-9]"
+  # Re-run/repair path: the tag names the release, so a dispatch re-publishes
+  # it (the publish job is idempotent) without moving the tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The fork tag to (re)publish, e.g. allspark-v0.10.1-beta.38-fork.009"
+        required: true
+        type: string
 
 permissions: {}
 
@@ -27,6 +35,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  FORK_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
   tag-check:
@@ -42,11 +51,14 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          # A dispatch re-publishes an existing tag: check out that tag's tree,
+          # not the default branch (the version/changelog checks run on it).
+          ref: ${{ env.FORK_TAG }}
       - name: The tag names a Cargo.toml version and a fork.NNN build
         id: parse
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
+          tag="${FORK_TAG}"
           # allspark-v<version>-fork.NNN -> <version>, fork.NNN
           rest="${tag#allspark-v}"
           version="${rest%-fork.*}"
@@ -83,6 +95,9 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          # A dispatch re-publishes an existing tag: check out that tag's tree,
+          # not the default branch (the version/changelog checks run on it).
+          ref: ${{ env.FORK_TAG }}
       - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # the 1.98.1 pin
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -137,6 +152,9 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          # A dispatch re-publishes an existing tag: check out that tag's tree,
+          # not the default branch (the version/changelog checks run on it).
+          ref: ${{ env.FORK_TAG }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: fork-payload
