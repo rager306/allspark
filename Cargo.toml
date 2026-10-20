@@ -83,10 +83,10 @@ pa-lsp = { path = "crates/pa-lsp" }
 pa-jev = { path = "crates/pa-jev" }
 # AST & tree-sitter: `ast-grep-core` without its default grammar features —
 # pa-ast links the grammars itself and loads the rest as wasm.
-ast-grep-core = { version = "0.39", default-features = false, features = [
+ast-grep-core = { version = "0.45", default-features = false, features = [
     "tree-sitter",
 ] }
-tree-sitter = "0.25"
+tree-sitter = "0.27"
 tree-sitter-bash = "0.25"
 tree-sitter-c = "0.24"
 tree-sitter-cpp = "0.23"
