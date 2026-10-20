@@ -32,16 +32,24 @@ fn payload_binary() -> PathBuf {
 }
 
 /// Spawn the fork binary in text mode with a faux-scripted lsp tool call.
-fn run_text_mode(home: &Path, cwd: &Path, script: &str, prompt: &str) -> (i32, String, String) {
-    let script_path = home.join("faux-script.json");
-    fs::write(&script_path, script).expect("write faux script");
+fn run_text_mode(
+    home: &Path,
+    cwd: &Path,
+    script: &serde_json::Value,
+    prompt: &str,
+) -> (i32, String, String) {
+    // The faux seam carries the script inline, not a path to it.
+    let inline = serde_json::to_string(script).expect("serialize script");
     let output = Command::new(payload_binary())
         .arg("--mode")
         .arg("text")
-        .arg("--no-session")
+        .arg("--session-dir")
+        .arg(home.join("sessions"))
         .arg(prompt)
         .env("HOME", home)
-        .env("ALLSPARK_FAUX_SCRIPT", &script_path)
+        .env("PRIME_AGENT_AGENT_DIR", home.join(".prime-agent-home"))
+        .env("PRIME_AGENT_CODING_AGENT_DIR", home.join("agent"))
+        .env("PRIME_AGENT_FAUX_SCRIPT", inline)
         .env_remove("ALLSPARK_DEBUG")
         .current_dir(cwd)
         .output()
@@ -78,14 +86,66 @@ fn lsp_tool_executes_through_the_fork_binary() {
     fs::create_dir_all(&cwd).expect("cwd dir");
     fs::write(cwd.join("demo.rs"), DEMO_RS).expect("write demo.rs");
 
-    let (code, stdout, stderr) =
-        run_text_mode(&home, &cwd, MUSE_DEVICE_SCRIPT, "покажи символы demo.rs");
+    let script: serde_json::Value = serde_json::from_str(MUSE_DEVICE_SCRIPT).expect("script json");
+    let (code, stdout, stderr) = run_text_mode(&home, &cwd, &script, "покажи символы demo.rs");
     assert_eq!(code, 0, "exit {code}: stderr={stderr}");
-    // The tool result must carry the real symbol names from demo.rs.
-    for symbol in ["Shape", "new", "scale", "main"] {
-        assert!(
-            stdout.contains(symbol) || stderr.contains(symbol),
-            "symbol {symbol} must appear in the output: stdout={stdout}"
-        );
+    // The printed answer is the scripted final text; the lsp result itself
+    // lives in the session transcript under HOME/sessions.
+    assert!(
+        stdout.contains("Symbols listed."),
+        "the scripted answer must print: stdout={stdout:?} stderr={stderr:?}"
+    );
+    // The chain this test exists for: the lsp tool actually executed against
+    // demo.rs and returned the real symbol names without an error.
+    let mut found: Option<Vec<String>> = None;
+    for entry in fs::read_dir(home.join("sessions"))
+        .expect("sessions dir")
+        .flatten()
+    {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let text = fs::read_to_string(&path).expect("read session file");
+        for line in text.lines() {
+            let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let Some(message) = row.get("message") else {
+                continue;
+            };
+            if message.get("role").and_then(|v| v.as_str()) != Some("toolResult") {
+                continue;
+            }
+            if message.get("toolName").and_then(|v| v.as_str()) != Some("lsp") {
+                continue;
+            }
+            if message.get("isError").and_then(serde_json::Value::as_bool) == Some(true) {
+                continue;
+            }
+            let text = message
+                .get("content")
+                .and_then(|v| v.as_array())
+                .map(|blocks| {
+                    blocks
+                        .iter()
+                        .filter_map(|b| b.get("text").and_then(|v| v.as_str()))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+            let symbols = ["Shape", "new", "scale", "main"]
+                .iter()
+                .filter(|s| text.contains(*s))
+                .map(std::string::ToString::to_string)
+                .collect::<Vec<_>>();
+            if symbols.len() == 4 {
+                found = Some(symbols);
+            }
+        }
     }
+    assert!(
+        found.is_some(),
+        "the lsp tool result must carry all demo.rs symbols: stdout={stdout:?} stderr={stderr:?}"
+    );
 }

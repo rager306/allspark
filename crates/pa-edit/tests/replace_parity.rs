@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use common::run_fixture;
 use pa_edit::{
-    EditMode, EditStore, PathPolicy,
+    EditMode, PathPolicy,
     fuzzy::{FindMatchOptions, find_match},
     path_policy::canonical_key,
     text::adjust_indentation,
@@ -166,7 +166,7 @@ fn canonical_snapshot_keys_fuse_symlink_equivalent_paths() {
     let alias_key = canonical_key(&alias_file);
     assert_eq!(alias_key, real_key);
 
-    let store = EditStore::new();
+    let store = pa_edit::EditStore::new();
     let hash = store.record(&real_key, "x\n", None);
     assert_eq!(
         store.by_hash(&alias_key, &hash).unwrap().text.as_ref(),

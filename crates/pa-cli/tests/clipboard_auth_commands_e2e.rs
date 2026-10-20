@@ -980,9 +980,17 @@ async fn tui_prime_login_escape_keeps_the_default_team_status() {
         steps: vec![
             pa_tui::interactive::HeadlessStep::Submit("/login".to_string()),
             enter(),
-            pa_tui::interactive::HeadlessStep::WaitMs(400),
+            // The login screen renders before the escape; the picker mounts
+            // after it (observed, not slept-for).
+            pa_tui::interactive::HeadlessStep::WaitRender {
+                needle: "Select a Prime Team:".to_string(),
+                timeout_ms: 30_000,
+            },
             key(crossterm::event::KeyCode::Esc),
-            pa_tui::interactive::HeadlessStep::WaitMs(400),
+            pa_tui::interactive::HeadlessStep::WaitRender {
+                needle: "Saved API key for Prime Inference. Using personal account.".to_string(),
+                timeout_ms: 30_000,
+            },
         ],
         width: 120,
         height: 36,
