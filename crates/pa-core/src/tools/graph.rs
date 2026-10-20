@@ -17,7 +17,7 @@ use pa_agent::abort::AbortSignal;
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
 use pa_graph::{
     ArchitectureView, Direction, EdgeType, GraphStore, IndexOptions, IndexReport, SearchOptions,
-    TraceOptions,
+    TraceOptions, TreeNode,
 };
 
 /// Project name a store rooted at `root` indexes under (its final path
@@ -34,6 +34,33 @@ fn parse_direction(raw: Option<&str>) -> Direction {
         Some("in" | "incoming" | "callers") => Direction::In,
         Some("both" | "all") => Direction::Both,
         _ => Direction::Out,
+    }
+}
+
+/// Render a count map as `key=value` pairs for report lines.
+fn render_counts(counts: &std::collections::BTreeMap<String, usize>) -> String {
+    counts
+        .iter()
+        .map(|(key, count)| format!("{key}={count}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Append one file-tree directory (and its children, recursively) to the
+/// report lines.
+fn render_file_tree(node: &TreeNode, depth: usize, lines: &mut Vec<String>) {
+    let indent = "  ".repeat(depth);
+    lines.push(format!(
+        "{indent}{}: {} file(s), {} symbol(s)",
+        node.name,
+        node.files.len(),
+        node.symbol_count,
+    ));
+    for file in &node.files {
+        lines.push(format!("{indent}  {file}"));
+    }
+    for child in &node.children {
+        render_file_tree(child, depth + 1, lines);
     }
 }
 
@@ -538,21 +565,120 @@ impl GraphTool {
                 .architecture(&project, view)
                 .map_err(|err| anyhow::anyhow!("architecture failed: {err}"))
         })?;
-        let note = indexed_now.map_or_else(String::new, |report| {
-            format!(
-                " The graph was empty, so this query indexed the project first: {} nodes, {} edges, \
+        // Providers forward only `content` to the model; `details` stays for
+        // tests and the UI. The report body therefore rides in `content`,
+        // the same shape `search` and `trace` already use. Only the section
+        // for the requested view is populated, so iterating every section
+        // renders exactly that view.
+        let mut lines = Vec::new();
+        if let Some(report) = &indexed_now {
+            lines.push(format!(
+                "The graph was empty, so this query indexed the project first: {} nodes, {} edges, \
                  {} files parsed.",
                 report.nodes,
                 report.edges,
                 report.parsed,
-            )
-        });
+            ));
+        }
+        lines.push(format!(
+            "Architecture view `{}` for project `{}`:",
+            view.as_str(),
+            arch.project,
+        ));
+        if let Some(overview) = &arch.overview {
+            lines.push(format!(
+                "overview: {} node(s), {} edge(s), {} file(s); labels [{}], edge types [{}], \
+                 languages [{}]",
+                overview.nodes,
+                overview.edges,
+                overview.files,
+                render_counts(&overview.labels),
+                render_counts(&overview.edge_types),
+                render_counts(&overview.languages),
+            ));
+        }
+        if !arch.structure.is_empty() {
+            lines.push(format!("{} module edge(s):", arch.structure.len()));
+            for edge in &arch.structure {
+                lines.push(format!(
+                    "- {} -> {} (weight={}, {})",
+                    edge.from,
+                    edge.to,
+                    edge.weight,
+                    edge.kinds.join("+"),
+                ));
+            }
+        }
+        if !arch.layers.is_empty() {
+            lines.push(format!("{} layer(s):", arch.layers.len()));
+            for layer in &arch.layers {
+                lines.push(format!("layer {}: {}", layer.level, layer.files.join(", ")));
+            }
+        }
+        if !arch.clusters.is_empty() {
+            lines.push(format!("{} cluster(s):", arch.clusters.len()));
+            for cluster in &arch.clusters {
+                lines.push(format!(
+                    "cluster {} ({} internal edge(s)): {}",
+                    cluster.id,
+                    cluster.internal_edges,
+                    cluster.files.join(", "),
+                ));
+            }
+        }
+        if !arch.cycles.is_empty() {
+            lines.push(format!("{} cycle(s):", arch.cycles.len()));
+            for cycle in &arch.cycles {
+                lines.push(format!("cycle: {}", cycle.files.join(" -> ")));
+                for edge in &cycle.edges {
+                    lines.push(format!(
+                        "  {} -> {} (weight={})",
+                        edge.from, edge.to, edge.weight,
+                    ));
+                }
+            }
+        }
+        if !arch.hotspots.is_empty() {
+            lines.push(format!("{} hotspot(s):", arch.hotspots.len()));
+            for hotspot in &arch.hotspots {
+                lines.push(format!(
+                    "- {} [{}] fan_in={} fan_out={} degree={}",
+                    hotspot.qualified_name,
+                    hotspot.file_path,
+                    hotspot.fan_in,
+                    hotspot.fan_out,
+                    hotspot.degree,
+                ));
+            }
+        }
+        if !arch.entry_points.is_empty() {
+            lines.push(format!("{} entry point(s):", arch.entry_points.len()));
+            for entry in &arch.entry_points {
+                lines.push(format!(
+                    "- {} [{}] out_degree={}",
+                    entry.qualified_name, entry.file_path, entry.out_degree,
+                ));
+            }
+        }
+        if let Some(tree) = &arch.file_tree {
+            render_file_tree(tree, 0, &mut lines);
+        }
+        // A `structure` view on a large repo is one line per module edge, so
+        // the report gets the same byte ceiling as bash output and says so
+        // when it is cut.
+        let mut report = lines.join("\n");
+        let (capped, was_truncated) = crate::resources::truncate_context_content(
+            &report,
+            crate::tools::truncate::DEFAULT_MAX_BYTES,
+        );
+        if was_truncated {
+            report = format!(
+                "{capped}\n[architecture report truncated at {} bytes; query a narrower view]",
+                crate::tools::truncate::DEFAULT_MAX_BYTES,
+            );
+        }
         Ok(AgentToolResult {
-            content: vec![pa_agent::types::ToolResultContent::text(format!(
-                "Architecture view `{}` for project `{project}` (see details for the full \
-                 report).{note}",
-                view.as_str(),
-            ))],
+            content: vec![pa_agent::types::ToolResultContent::text(report)],
             details: serde_json::to_value(&arch).unwrap_or(serde_json::Value::Null),
             terminate: None,
             is_error: false,
@@ -1200,6 +1326,86 @@ mod tests {
             !text_of(&result).contains("indexed the project first"),
             "a warm graph must not claim a build: {}",
             text_of(&result)
+        );
+    }
+
+    /// `architecture` used to put the whole report in `details` and leave the
+    /// model-visible `content` at a one-line stub — but providers only forward
+    /// `content`, so the model never saw the architecture data. The report
+    /// body must live in the content text itself.
+    #[tokio::test]
+    async fn architecture_report_lives_in_content_not_details() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        // a.rs depends on b.rs (a cross-file call edge), so `layers` has two
+        // real depth buckets and `structure` has one real module edge.
+        std::fs::write(
+            src.join("a.rs"),
+            "pub fn entry() -> u32 { helper() }
+",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("b.rs"),
+            "pub fn helper() -> u32 { 41 }
+",
+        )
+        .unwrap();
+
+        let layers = run_action(
+            dir.path(),
+            "architecture",
+            serde_json::json!({"view": "layers"}),
+        )
+        .await
+        .expect("architecture answers");
+        let text = text_of(&layers);
+        assert!(text.contains("Architecture view `layers`"), "{text}");
+        assert!(
+            text.contains("layer 0") && text.contains("layer 1"),
+            "the depth buckets are in the content, not a stub: {text}"
+        );
+        assert!(text.contains("b.rs"), "{text}");
+        assert!(text.contains("a.rs"), "the dependent file is named: {text}");
+        assert!(
+            !text.contains("see details"),
+            "the old stub pointed the model at invisible details: {text}"
+        );
+        // `details` keeps the structured rows for tests and the UI.
+        assert!(
+            layers.details["layers"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty()),
+            "{}",
+            layers.details
+        );
+
+        let structure = run_action(
+            dir.path(),
+            "architecture",
+            serde_json::json!({"view": "structure"}),
+        )
+        .await
+        .expect("architecture answers");
+        let text = text_of(&structure);
+        assert!(
+            text.contains("module edge(s)") && text.contains("->"),
+            "the structure edges are in the content: {text}"
+        );
+        assert!(text.contains("b.rs"), "{text}");
+
+        let overview = run_action(dir.path(), "architecture", serde_json::json!({}))
+            .await
+            .expect("architecture answers");
+        let text = text_of(&overview);
+        assert!(
+            text.contains("node(s)") && text.contains("labels ["),
+            "the census is in the content: {text}"
+        );
+        assert!(
+            !text.contains("see details"),
+            "no stub for the default view either: {text}"
         );
     }
 }
