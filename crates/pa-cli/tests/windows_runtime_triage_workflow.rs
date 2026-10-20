@@ -145,17 +145,27 @@ fn the_pr_wave_runs_on_windows_touched_paths() {
     );
 }
 
+/// The fork runs no nightly Windows battery: 50+ minutes of a windows-2022
+/// runner every day, and the job kept failing on the shared pool. The lane
+/// stays available through the PR wave and `workflow_dispatch`; when the
+/// schedule comes back, this test's first branch returns to asserting the
+/// cron entry.
 #[test]
-fn the_nightly_wave_runs_on_main() {
+fn the_nightly_wave_is_fork_disabled_but_dispatchable() {
     let (_, triggers) = workflow_yaml();
-    let schedule = triggers
+    match triggers
         .get("schedule")
         .and_then(serde_yaml::Value::as_sequence)
-        .expect("the workflow carries the nightly schedule");
-    assert!(
-        schedule.iter().any(|entry| entry.get("cron").is_some()),
-        "a nightly cron entry exists: {schedule:?}"
-    );
+    {
+        Some(schedule) => assert!(
+            schedule.iter().any(|entry| entry.get("cron").is_some()),
+            "a nightly cron entry exists: {schedule:?}"
+        ),
+        None => assert!(
+            triggers.get("workflow_dispatch").is_some(),
+            "without the nightly schedule the dispatch loop must stay: {triggers:?}"
+        ),
+    }
 }
 
 #[test]

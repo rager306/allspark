@@ -15,4 +15,4 @@ Parent verification completed after the worker froze the archive allowlist.
 
 The completed research evidence from `/tmp/roadmap_audit`, `/tmp/cc_verify` and the selected `/tmp/cx` artifacts is now preserved. Use `TMP-ARCHIVE-INVENTORY.md` for the per-path exclusions and replay limits.
 
-No `/tmp` cleanup has been performed. Do not remove active sockets, runtime homes, ongoing test state or unrelated project research. This receipt is not blanket authorization to clean `/tmp`.
+Research/archive sources under `/tmp` have not been removed. A later CI headroom action removed only46 completed installer-test sandboxes matching `/tmp/pa-update-e2e-PID-counter`, after verifying dead owner PIDs and no active cwd/executable/open-fd references. It reclaimed9.64GiB; details in `ci-owned-fixture-cleanup.json`. No target, kernel, runtime, research, active socket or unrelated project data was cleaned. This receipt is not blanket authorization to clean `/tmp`.
