@@ -1,9 +1,9 @@
 name: Prime Agent daily stats
 
 on:
-  schedule:
-    - cron: '0 9 * * *'
-      timezone: America/Los_Angeles
+  # Fork: the daily report gates its body on vars.PRIME_AGENT_STATS_ENABLED
+  # (never set on the fork), so the cron only burned a runner slot daily.
+  # Kept for workflow_dispatch and the workflow PR wave.
   workflow_dispatch:
     inputs:
       date:
