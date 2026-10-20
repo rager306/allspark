@@ -109,9 +109,9 @@ jobs:
           cp scripts/allspark-launcher.sh "package/${root}/bin/allspark"
           chmod 755 "package/${root}/bin/allspark" "package/${root}/libexec/prime-agent"
           tar -C package -czf "${root}.tar.gz" "${root}"
-          ( cd package && sha256sum "${root}.tar.gz" > SHA256SUMS )
+          sha256sum "${root}.tar.gz" > SHA256SUMS
           echo "archive ${root}.tar.gz"
-          cat package/SHA256SUMS
+          cat SHA256SUMS
       - name: Prove the packaged launcher runs
         run: |
           set -euo pipefail
@@ -124,7 +124,7 @@ jobs:
           name: fork-payload
           path: |
             *.tar.gz
-            package/SHA256SUMS
+            SHA256SUMS
           if-no-files-found: error
 
   publish:
@@ -165,7 +165,7 @@ jobs:
           set -euo pipefail
           if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             echo "release ${TAG} already exists: uploading assets over it"
-            gh release upload "${TAG}" dist/*.tar.gz dist/package/SHA256SUMS \
+            gh release upload "${TAG}" dist/*.tar.gz dist/SHA256SUMS \
               --repo "${GITHUB_REPOSITORY}" --clobber
             gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" \
               --notes-file release-body.md
@@ -174,5 +174,5 @@ jobs:
               --repo "${GITHUB_REPOSITORY}" \
               --title "allspark ${TAG#allspark-v}" \
               --notes-file release-body.md \
-              dist/*.tar.gz dist/package/SHA256SUMS
+              dist/*.tar.gz dist/SHA256SUMS
           fi
