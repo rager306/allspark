@@ -37,10 +37,9 @@ on:
       - "scripts/**"
       - "Cargo.toml"
       - "Cargo.lock"
-  # The nightly wave: main gets the battery every night even when no PR
-  # touched it (the schedule trigger runs on the default branch only).
-  schedule:
-    - cron: "0 4 * * *"
+  # Fork: the nightly wave bills 50+ min of windows-2022 nightly and keeps
+  # failing on the shared runner pool; upstream runs this triage itself.
+  # Kept for workflow_dispatch and the PR wave.
 
 permissions:
   contents: read

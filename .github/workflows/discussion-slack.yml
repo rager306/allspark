@@ -1,8 +1,10 @@
 name: Prime discussion notifications
 
 on:
-  schedule:
-    - cron: '7-57/10 * * * *'
+  # Fork: the scheduled run is upstream-only (the notify job gates on
+  # PrimeIntellect-ai/prime-agent and always skips here anyway); a cron
+  # tick every 10 minutes created a skipped run per tick. Kept for
+  # workflow_dispatch so the notifier stays runnable by hand.
   workflow_dispatch:
     inputs:
       dry_run:
