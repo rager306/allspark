@@ -9,9 +9,9 @@ fn overflow_patterns() -> &'static Vec<Regex> {
     static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
     PATTERNS.get_or_init(|| {
         [
-            r"prompt is too long",                             // Anthropic token overflow
-            r"request_too_large", // Anthropic request byte-size overflow (HTTP 413)
-            r"input is too long for requested model", // Amazon Bedrock
+            r"prompt is too long", // Anthropic token overflow
+            r"request_too_large",  // Anthropic request byte-size overflow (HTTP 413)
+            r"(?i)input is too long for (?:the )?(?:requested|selected) model", // Bedrock; opencode #57412 custom endpoints
             r"exceeds the context window", // OpenAI (Completions & Responses API)
             r"(?i)input token count.*exceeds the maximum", // Google (Gemini)
             r"(?i)maximum prompt length is \d+", // xAI (Grok)
@@ -32,6 +32,13 @@ fn overflow_patterns() -> &'static Vec<Regex> {
             r"(?i)context[_ ]length[_ ]exceeded",                     // Generic fallback
             r"(?i)too many tokens",                                   // Generic fallback
             r"(?i)token limit exceeded",                              // Generic fallback
+            // opencode #56296: the gateway reports its own input limit as a
+            // 400 `unsupported_request` while the catalog promised more (same
+            // wording upstream pins in opencode PR #56454).
+            r"(?i)(?:text )?request is too large for the model'?s configured input limit",
+            // Generic size-rejection fallback (413-style gateway answers);
+            // mirrors upstream's payloadPatterns `request too large`.
+            r"(?i)request (?:is )?too large",
             r"(?i)^4(?:00|13)\s*(?:status code)?\s*\(no body\)", // Cerebras: 400/413 with no body
         ]
         .iter()
@@ -227,5 +234,88 @@ mod tests {
     fn normal_success_is_not_overflow() {
         let m = message(StopReason::Stop, None, usage(100, 10, 0));
         assert!(!is_context_overflow(&m, Some(100_000)));
+    }
+
+    /// The real incident strings that must classify as overflow (each red
+    /// before the pattern-table fix): opencode #57412, #56296, #54690.
+    #[test]
+    fn detects_selected_model_input_too_long() {
+        // #57412 verbatim: a custom endpoint's overflow wording ("The input
+        // is too long for the selected model.").
+        let m = message(
+            StopReason::Error,
+            Some("400 The input is too long for the selected model."),
+            usage(0, 0, 0),
+        );
+        assert!(is_context_overflow(&m, None));
+        assert!(error_message_has_overflow(
+            "The input is too long for the selected model."
+        ));
+    }
+
+    #[test]
+    fn detects_gateway_configured_input_limit() {
+        // #56296 verbatim: the gateway reports its own input limit as
+        // `400 [unsupported_request]`; the catalog promised 1M, the gateway
+        // cuts at ~270k and the session dead-ends without compaction.
+        let m = message(
+            StopReason::Error,
+            Some(
+                "400 [unsupported_request] This text request is too large for the model's configured input limit.",
+            ),
+            usage(270_000, 0, 0),
+        );
+        assert!(is_context_overflow(&m, None));
+        assert!(error_message_has_overflow(
+            "This text request is too large for the model's configured input limit."
+        ));
+        // The wrapper the server log carries (AI.Error.InvalidRequest:
+        // Upstream request failed: [...]) still matches by content.
+        assert!(error_message_has_overflow(
+            "AI.Error.InvalidRequest: Upstream request failed: [unsupported_request] This text request is too large for the model's configured input limit."
+        ));
+    }
+
+    /// #54690: the error arrives as a generic `invalid_request_error` (HTTP
+    /// 400, null code) — the type/code carry no size signal, so the decision
+    /// must come from the message content, never from type/code equality.
+    #[test]
+    fn a_generic_invalid_request_classifies_by_message_content() {
+        let m = message(
+            StopReason::Error,
+            Some(
+                "AI.Error.InvalidRequest: Upstream request failed: [unsupported_request] This text request is too large for the model's configured input limit.",
+            ),
+            usage(0, 0, 0),
+        );
+        assert!(is_context_overflow(&m, None));
+        // The bare type string alone is not overflow.
+        assert!(!error_message_has_overflow("invalid_request_error"));
+    }
+
+    /// #54690's own message text carries no size signal at all; upstream pins
+    /// it unclassified (recovery goes through the runner's oversized-request
+    /// gate, not the pattern table — classifying it would compact on every
+    /// genuinely invalid request from those gateways).
+    #[test]
+    fn a_fully_generic_invalid_request_message_stays_unclassified() {
+        let m = message(
+            StopReason::Error,
+            Some(
+                "400 The request contains invalid parameters. Check the request body for any errors or inconsistencies.",
+            ),
+            usage(0, 0, 0),
+        );
+        assert!(!is_context_overflow(&m, None));
+    }
+
+    /// The generic size-rejection fallback (413-style `Request too large`
+    /// gateway answers) is an overflow of the request payload.
+    #[test]
+    fn detects_bare_request_too_large() {
+        assert!(error_message_has_overflow("413 Request too large"));
+        assert!(error_message_has_overflow(
+            "This request is too large. Please reduce the input."
+        ));
     }
 }

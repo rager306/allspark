@@ -8,12 +8,20 @@ use std::sync::OnceLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::utils::stream_failure::{
-    ConnectionErrorKind, ConnectionErrorProfile, ProviderConnectionError, ProviderError,
-    ProviderHttpError,
+    stream_idle_timeout_failure, ConnectionErrorKind, ConnectionErrorProfile,
+    ProviderConnectionError, ProviderError, ProviderHttpError,
 };
 
 static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 static H2_ALPN_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+/// The inter-chunk idle bound for response bodies. `timeout_ms` bounds only
+/// head receipt: once streaming begins, every body-chunk read must produce
+/// bytes within this window or the read fails as the retryable `stream_drop`
+/// failure. Without it a provider that sends its head and then goes silent
+/// hangs the session until an abort fires (opencode #54888/#57127: dead
+/// streams held turns for hours).
+pub(crate) const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// The HTTP/1.1 client every provider shares, pinned with `http1_only()` so that enabling the
 /// reqwest `http2` feature (bedrock) cannot change the transport of any other provider.
@@ -55,12 +63,39 @@ pub struct HttpResponse {
     signal: Option<CancellationToken>,
     /// Trailing bytes of a UTF-8 sequence split across body chunks, held until the rest arrives.
     utf8_tail: Vec<u8>,
+    /// The per-chunk idle bound ([`STREAM_IDLE_TIMEOUT`] by default);
+    /// crate-internal so tests can shorten it.
+    pub(crate) idle_timeout: std::time::Duration,
     /// The request's connection-error profile: body-read failures on the AWS http2 profile surface
     /// the TS bedrock transport's mid-stream texts.
     pub(crate) connection: ConnectionErrorProfile,
 }
 
 impl HttpResponse {
+    /// Read the next raw body chunk under the idle bound and the abort
+    /// signal. `Err` carries the abort or the idle-timeout `stream_drop`
+    /// failure; `Ok` is the raw reqwest chunk result (classified by the
+    /// caller).
+    async fn next_chunk(
+        &mut self,
+    ) -> Result<Result<Option<bytes::Bytes>, reqwest::Error>, ProviderError> {
+        match self.signal.clone() {
+            Some(signal) => tokio::select! {
+                () = signal.cancelled() => Err(ProviderError::Aborted),
+                chunk = self.body.chunk() => Ok(chunk),
+                () = tokio::time::sleep(self.idle_timeout) => {
+                    Err(ProviderError::StreamFailure(stream_idle_timeout_failure(self.idle_timeout)))
+                }
+            },
+            None => match tokio::time::timeout(self.idle_timeout, self.body.chunk()).await {
+                Ok(chunk) => Ok(chunk),
+                Err(_elapsed) => Err(ProviderError::StreamFailure(stream_idle_timeout_failure(
+                    self.idle_timeout,
+                ))),
+            },
+        }
+    }
+
     /// Read the next text chunk from the body (None at end of stream). A UTF-8 sequence split
     /// across body chunks is held until it completes; a sequence still incomplete at end of
     /// stream yields one U+FFFD.
@@ -73,17 +108,7 @@ impl HttpResponse {
             {
                 return Err(ProviderError::Aborted);
             }
-            let signal = self.signal.clone();
-            let chunk = match signal {
-                Some(signal) => {
-                    let next = self.body.chunk();
-                    tokio::select! {
-                        () = signal.cancelled() => return Err(ProviderError::Aborted),
-                        result = next => result,
-                    }
-                }
-                None => self.body.chunk().await,
-            };
+            let chunk = self.next_chunk().await?;
             let text = match chunk {
                 Ok(Some(bytes)) => {
                     self.utf8_tail.extend_from_slice(&bytes);
@@ -130,17 +155,7 @@ impl HttpResponse {
         {
             return Err(ProviderError::Aborted);
         }
-        let signal = self.signal.clone();
-        let chunk = match signal {
-            Some(signal) => {
-                let next = self.body.chunk();
-                tokio::select! {
-                    () = signal.cancelled() => return Err(ProviderError::Aborted),
-                    result = next => result,
-                }
-            }
-            None => self.body.chunk().await,
-        };
+        let chunk = self.next_chunk().await?;
         match chunk {
             Ok(Some(bytes)) => Ok(Some(bytes.to_vec())),
             Ok(None) => Ok(None),
@@ -326,6 +341,7 @@ pub async fn send(request: RequestOptions) -> Result<HttpResponse, ProviderError
         body: response,
         signal,
         utf8_tail: Vec::new(),
+        idle_timeout: STREAM_IDLE_TIMEOUT,
         connection: request.connection,
     })
 }
@@ -473,5 +489,54 @@ mod tests {
             text.push_str(&chunk);
         }
         assert_eq!(text, "cut \u{FFFD}");
+    }
+
+    /// A provider that sends its response head and then goes silent must fail
+    /// as the retryable `stream_drop` within the idle window: the request
+    /// timeout bounds only head receipt, so without a per-chunk bound the
+    /// read waits solely on the abort signal and the session hangs
+    /// indefinitely (opencode #54888/#57127).
+    #[tokio::test]
+    async fn a_body_that_stalls_after_the_head_fails_as_stream_drop() {
+        use crate::utils::stream_failure::StreamFailureKind;
+
+        let server = crate::testing::MockInferenceServer::new();
+        server.queue_sse_stalling(
+            vec![r#"{"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}"#],
+            1,
+        );
+        let mut response = send(RequestOptions::new(
+            reqwest::Method::POST,
+            server.completions_url(),
+        ))
+        .await
+        .expect("the head arrives");
+        response.idle_timeout = std::time::Duration::from_millis(250);
+        // The pre-stall frame reads fine ...
+        let first = response
+            .next_text()
+            .await
+            .expect("the pre-stall chunk reads")
+            .expect("one frame was sent before the stall");
+        assert!(first.contains("partial"), "{first}");
+        // ... then the body stalls: the read must settle as a stream_drop,
+        // not wait for the abort signal (the 2s bound is the test's own).
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), response.next_text())
+            .await
+            .expect("an idle read must settle within its window, not hang");
+        match result {
+            Err(ProviderError::StreamFailure(failure)) => {
+                assert_eq!(failure.info.kind, StreamFailureKind::StreamDrop);
+                assert_eq!(
+                    failure.info.provider_error_type.as_deref(),
+                    Some("stream_drop")
+                );
+                assert!(failure.message.contains("stalled"), "{}", failure.message);
+            }
+            Err(other) => panic!("expected a stream_drop failure, got {other:?}"),
+            Ok(chunk) => panic!("a stalled body must not yield a chunk: {chunk:?}"),
+        }
+        // The request reached the server (the stall is post-head).
+        assert_eq!(server.request_count(), 1);
     }
 }

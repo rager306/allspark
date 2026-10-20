@@ -84,6 +84,16 @@ enum ScriptedResponse {
     /// the wait (a stalled peer, the shape `send` bounds with
     /// `timeout_ms`). Dropping the server releases the hold.
     Hang,
+    /// An SSE response whose head and first `stall_after` frames are sent,
+    /// then the connection is held open with no further bytes: the mid-stream
+    /// stall a per-chunk idle timeout must bound (the head arrived, so the
+    /// request timeout no longer applies; body EOF never comes).
+    SseStall {
+        status: u16,
+        headers: Vec<(String, String)>,
+        frames: Vec<String>,
+        stall_after: usize,
+    },
 }
 
 /// A wire-level mock inference server.
@@ -249,6 +259,18 @@ impl MockInferenceServer {
         self.push(ScriptedResponse::Hang);
     }
 
+    /// Queue an SSE response that sends its head and the first `stall_after`
+    /// frames, then holds the connection open without any further bytes: the
+    /// headers-then-silence shape a body-read idle timeout must bound.
+    pub fn queue_sse_stalling(&self, chunks: Vec<&str>, stall_after: usize) {
+        self.push(ScriptedResponse::SseStall {
+            status: 200,
+            headers: Vec::new(),
+            frames: chunks.into_iter().map(str::to_string).collect(),
+            stall_after,
+        });
+    }
+
     /// The responses still queued.
     ///
     /// # Panics
@@ -337,6 +359,16 @@ fn serve(
             hold_until_shutdown(shutdown, hang_wake);
             Ok(())
         }
+        Some(ScriptedResponse::SseStall {
+            status,
+            headers,
+            frames,
+            stall_after,
+        }) => {
+            write_stalling_sse(&mut stream, status, &headers, &frames, stall_after)?;
+            hold_until_shutdown(shutdown, hang_wake);
+            Ok(())
+        }
         Some(response) => write_response(&mut stream, response),
         // An unscripted request is a test bug: answer loudly instead of
         // hanging the client.
@@ -420,10 +452,10 @@ fn read_request(stream: &TcpStream) -> std::io::Result<Option<RecordedRequest>> 
 
 fn write_response(stream: &mut TcpStream, response: ScriptedResponse) -> std::io::Result<()> {
     match response {
-        // `serve` intercepts `Hang` before reaching here (it holds the
-        // connection instead of writing); this arm keeps the match
-        // exhaustive.
-        ScriptedResponse::Hang => Ok(()),
+        // `serve` intercepts `Hang` and `SseStall` before reaching here (they
+        // hold the connection instead of finishing); these arms keep the
+        // match exhaustive.
+        ScriptedResponse::Hang | ScriptedResponse::SseStall { .. } => Ok(()),
         ScriptedResponse::Body {
             status,
             headers,
@@ -494,6 +526,37 @@ fn write_response(stream: &mut TcpStream, response: ScriptedResponse) -> std::io
             stream.flush()
         }
     }
+}
+
+/// Write the chunked SSE head plus the first `stall_after` frames, then
+/// return without the terminating zero-length chunk: the caller holds the
+/// connection open so the body stalls mid-stream.
+fn write_stalling_sse(
+    stream: &mut TcpStream,
+    status: u16,
+    headers: &[(String, String)],
+    frames: &[String],
+    stall_after: usize,
+) -> std::io::Result<()> {
+    let mut head = format!(
+        "HTTP/1.1 {status} {}
+Content-Type: text/event-stream
+Transfer-Encoding: chunked
+Cache-Control: no-cache
+Connection: close
+",
+        reason_phrase(status),
+    );
+    push_headers(&mut head, headers);
+    stream.write_all(head.as_bytes())?;
+    for frame in frames.iter().take(stall_after) {
+        let frame = format!("data: {frame}\n\n");
+        stream.write_all(format!("{:x}\r\n", frame.len()).as_bytes())?;
+        stream.write_all(frame.as_bytes())?;
+        stream.write_all(b"\r\n")?;
+        stream.flush()?;
+    }
+    Ok(())
 }
 
 /// Append the header block (each `name: value\r\n`) followed by the blank

@@ -660,6 +660,32 @@ pub(crate) fn stream_drop_failure(open_block: OpenStreamBlock) -> StreamFailureE
     }
 }
 
+/// Failure for a body that stalled mid-stream: the head arrived (so the
+/// request timeout no longer applies) and then no further bytes came within
+/// the idle window. Same retryable class as a dropped stream — the request
+/// may simply be re-issued — with the stall disclosed as the detail.
+#[must_use]
+pub(crate) fn stream_idle_timeout_failure(idle_timeout: std::time::Duration) -> StreamFailureError {
+    let info = StreamFailureInfo {
+        kind: StreamFailureKind::StreamDrop,
+        provider_error_type: Some("stream_drop".to_string()),
+        status: None,
+        request_id: None,
+        retry_after_ms: None,
+        raw: None,
+    };
+    let window_ms = idle_timeout.as_millis();
+    StreamFailureError {
+        message: stream_failure_message(
+            &info,
+            Some(&format!(
+                "no body chunk arrived within {window_ms}ms; the provider stalled mid-stream"
+            )),
+        ),
+        info,
+    }
+}
+
 const MAX_RAW_LENGTH: usize = 2000;
 
 #[must_use]
