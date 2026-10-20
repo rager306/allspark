@@ -11,6 +11,63 @@ Pre-numbering history: two single-digit tags (fork.1, fork.2, 2026-10-13)
 marked the abandoned in-binary rebrand branch (`feat/allspark-identity`);
 they were local-only artifacts and are superseded by the NNN scheme below.
 
+## fork.009 — upstream v0.10.1-beta.38
+
+- Tag: `allspark-v0.10.1-beta.38-fork.009` (2026-10-20)
+- Base: `70564a692` — the beta.38 merge, the fork CI/nightly cleanup, and
+  the toolchain pin.
+
+**Upstream merge (beta.35 -> beta.38, 12 commits)**: the windowed
+transcript pager (#3674 — scrolling now continues past a compaction into
+pre-compaction history, and a compaction no longer rebuilds the visible
+transcript); head-and-tail clipping for `python_repl` cell output
+(#3526); subagent roster and `agent_observe` fidelity (#3576); a bounded
+degrade window for `await bash()` (#3523); paged saved-session listing
+(#3656); read-only kernel venvs that degrade instead of raw EACCES
+(#3633); empty compaction summaries rejected and length-capped ones
+retried once (#3529); the stop escalation signal without pidfd (#3404).
+
+**Fork regressions caught by the merge**:
+- The kernel-error settle cap was lost when the merge took upstream's
+  `execution.rs`; restored (`ename`/`evalue`/`traceback` clip through
+  `clip_at_chars`).
+- **Product bug fixed**: a daemon started inside a session dragged
+  `PRIME_AGENT_SESSION_DIR` (and the internal worker-handshake vars)
+  into every worker it spawned, so an isolated harness wrote its RLM
+  ledger rows into the outer tree. `apply_worker_env` now scrubs them
+  before the launch env lands.
+- `import_compaction_e2e` read `{session}.window-cache.json` (new in
+  #3674) instead of the transcript; it now filters on `.jsonl`.
+- The fork's `loop_rpc_spawned_headless` test asserted the
+  `spawn_transcript_rebuild` mechanism that #3674 replaced with the
+  windowed pager; removed (upstream's `transcript_window_headless` and
+  `windowed_backfill_headless` carry the coverage).
+
+**TS parity is advisory, and its CI gate is off (fork)**: upstream's own
+#3554 removed the parity scripts that could not catch regressions but
+kept 59 of them, including `review_model_facts_parity.py` — whose leaked
+reference daemons burned a core for 7.5 hours on the build host. The
+fork disables the `lifecycle_parity` step outright (`if: false`, the body
+stays) and documents parity as advisory in AGENTS.md.
+
+**Scheduled CI noise removed**: the 10-minute `discussion-slack` cron
+(the notify job gates on the upstream repository and always skipped on
+the fork), the nightly `windows-runtime-triage` wave (50+ minutes of a
+windows-2022 runner per day, kept failing), and the `daily-stats` cron
+(gated on an unset variable). Their `workflow_dispatch` and PR waves stay.
+
+**Toolchain pinned in-tree**: `rust-toolchain.toml` selects 1.98.1, the
+same version CI pins, so local clippy/test no longer diverge from CI.
+
+**wasmtime advisories cleared**: RustSec published six advisories
+(RUSTSEC-2026-0374..0380) against `wasmtime` on 2026-10-20. `ast-grep-core`
+0.39 -> 0.45.3, `tree-sitter` 0.25 -> 0.27.1, `wasmtime` 29.0.1 -> 48.0.7
+(the patched series). One API break absorbed: `extract_injections` now
+returns `Vec<(String, Vec<Range>)>`.
+
+**Verification**: PR #1 green (18/18 jobs) before merge; the post-merge
+`main` push run `39417228406` green (18/18, 16m42s).
+
 ## fork.008 — tool arbiter, review hardening, daemon-lane QA
 
 - Tag: `allspark-v0.10.0-fork.008` (2026-10-18)
