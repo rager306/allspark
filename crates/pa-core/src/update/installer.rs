@@ -1117,6 +1117,10 @@ mod tests {
             Self::set(Some("1"))
         }
 
+        // Used only by the cfg(unix) refusal test; on other targets the
+        // whole gated test set compiles out, so this variant would sit
+        // unused under -D warnings.
+        #[cfg(unix)]
         fn closed() -> Self {
             Self::set(None)
         }
