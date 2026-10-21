@@ -140,6 +140,10 @@ impl Worker {
             // the same per-model fold `/cache` reads — no extra request, no second
             // formula.
             cache_usage: store.and_then(crate::state_getters::cache_totals),
+            // FORK-ONLY: the kept-region walk `session_stats` also runs, so the
+            // first frame's `N since compact` segment matches the stats response.
+            turns_since_compaction: store
+                .and_then(crate::session_stats::store_turns_since_compaction),
         }
     }
 

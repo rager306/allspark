@@ -941,8 +941,8 @@ fn tray_renders_the_cache_hit_rate_only_when_there_is_traffic() {
     assert!(!text(&state).contains("cache"));
 }
 
-/// A narrow tray gives up the fork's added fact first, then the badge; the model id
-/// and the context usage survive last. The row never exceeds the width.
+/// A narrow tray gives up the fork's added facts first, then the badge; the model
+/// id and the context usage survive last. The row never exceeds the width.
 #[test]
 fn tray_degrades_in_priority_order_without_overflowing() {
     let state = ChromeState {
@@ -954,6 +954,7 @@ fn tray_degrades_in_priority_order_without_overflowing() {
             context_window: 128_000,
         }),
         cache_hit_percent: Some(88),
+        turns_since_compaction: Some(4),
         ..Default::default()
     };
     let text = |width: usize| {
@@ -964,7 +965,9 @@ fn tray_degrades_in_priority_order_without_overflowing() {
     };
     // Wide: every segment.
     assert!(
-        text(120).ends_with("faux-1 \u{00b7} fast \u{00b7} 6.1k (5%) \u{00b7} cache 88%"),
+        text(120).ends_with(
+            "faux-1 \u{00b7} fast \u{00b7} 6.1k (5%) \u{00b7} cache 88% \u{00b7} 4 since compact"
+        ),
         "{}",
         text(120)
     );
@@ -972,7 +975,13 @@ fn tray_degrades_in_priority_order_without_overflowing() {
     // is the first width that must drop a segment.
     // Widths are display columns, never bytes: both the arrow and the separator are
     // multi-byte.
-    let segments = ["faux-1", "fast", "6.1k (5%)", "cache 88%"];
+    let segments = [
+        "faux-1",
+        "fast",
+        "6.1k (5%)",
+        "cache 88%",
+        "4 since compact",
+    ];
     // One ` · ` separator (3 columns) between adjacent segments, none before the first.
     let content = |count: usize| {
         str_width("\u{2190} manage")
@@ -983,15 +992,43 @@ fn tray_degrades_in_priority_order_without_overflowing() {
             + 3 * count.saturating_sub(1)
     };
     let full = content(segments.len());
-    // One column short drops the least valuable label first: the cache rate.
-    let without_cache = text(full - 1);
-    assert!(!without_cache.contains("cache"), "{without_cache}");
-    assert!(without_cache.contains("(5%)"), "{without_cache}");
-    // Dropping further takes the badge, then the context usage.
+    // One column short drops the least valuable label first.
+    let without_since_compaction = text(full - 1);
+    assert!(
+        !without_since_compaction.contains("since compact"),
+        "{without_since_compaction}"
+    );
+    assert!(without_since_compaction.contains("cache 88%"));
+    // Dropping further takes the cache rate, then the badge, then the context.
+    assert!(!text(content(3) - 1).contains("cache"));
     assert!(!text(content(2) - 1).contains("fast"));
     assert!(!text(content(1) - 1).contains("(5%)"));
     // The model id alone still renders inside its own width.
     assert!(text(content(1)).ends_with("faux-1"));
+}
+
+/// FORK-ONLY: the turns-since-compaction counter follows the cache rate, and it
+/// renders only once the branch HAS compacted.
+#[test]
+fn tray_renders_the_since_compaction_count_after_the_cache_rate() {
+    let state = ChromeState {
+        model_id: Some("faux-1".to_string()),
+        context: Some(ContextUsage {
+            tokens: 6_123,
+            context_window: 128_000,
+        }),
+        cache_hit_percent: Some(88),
+        turns_since_compaction: Some(4),
+        ..Default::default()
+    };
+    let text = render_tray(&state, &theme(), 120)
+        .iter()
+        .map(|s| s.content.as_str())
+        .collect::<String>();
+    assert!(
+        text.ends_with("6.1k (5%) \u{00b7} cache 88% \u{00b7} 4 since compact"),
+        "{text}"
+    );
 }
 
 #[test]

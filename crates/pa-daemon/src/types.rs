@@ -248,6 +248,11 @@ pub struct AgentConnectionState {
     /// oversized child attribution).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_usage: Option<Value>,
+    /// FORK-ONLY: the user turns on the branch since its latest compaction; absent
+    /// before the first one, so the tray's `N since compact` segment never repeats
+    /// the session's whole turn count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turns_since_compaction: Option<u64>,
 }
 
 #[cfg(test)]

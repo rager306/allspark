@@ -55,6 +55,9 @@ pub struct Reconstructed {
     /// FORK-ONLY: the tray's cache-hit rate (`state.cacheUsage.hitPercent`), the
     /// same fold `/cache` renders; `None` hides the segment.
     pub cache_hit_percent: Option<u64>,
+    /// FORK-ONLY: the user turns since the branch's latest compaction
+    /// (`state.turnsSinceCompaction`); `None` before the first compaction.
+    pub turns_since_compaction: Option<u64>,
     pub session_name: Option<String>,
     /// Session id of the persisted session file.
     pub session_id: String,
@@ -333,6 +336,9 @@ pub fn reconstruct(attach: &AttachData) -> Reconstructed {
         .and_then(|state| state.get("cacheUsage"))
         .and_then(|cache| cache.get("hitPercent"))
         .and_then(Value::as_u64);
+    let turns_since_compaction = state
+        .and_then(|state| state.get("turnsSinceCompaction"))
+        .and_then(Value::as_u64);
     let session_name = state
         .and_then(|state| state.get("sessionName"))
         .and_then(Value::as_str)
@@ -415,6 +421,7 @@ pub fn reconstruct(attach: &AttachData) -> Reconstructed {
         thinking_suffix,
         context_usage,
         cache_hit_percent,
+        turns_since_compaction,
         session_name,
         session_id,
         event_generation,

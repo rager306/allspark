@@ -182,39 +182,56 @@ async fn summary_retry_resolves_the_selection_that_owns_the_locked_core() {
     assert_eq!(state.context_usage, None);
 }
 
-/// FORK-ONLY: the attach state's `cacheUsage` is byte-identical to
-/// `get_session_stats`'s, so the first frame's tray row and the post-turn refresh
-/// can never disagree — and both read the same per-model fold `/cache` renders.
+/// FORK-ONLY: the attach state's `cacheUsage` and `turnsSinceCompaction` are
+/// byte-identical to `get_session_stats`'s, so the first frame's tray row and the
+/// post-turn refresh can never disagree — and both read the same per-model fold
+/// `/cache` renders.
 #[tokio::test]
-async fn the_attach_state_carries_the_stats_cache_totals() {
+async fn the_attach_state_carries_the_stats_cache_and_compaction_facts() {
     let dir = tempfile::tempdir().unwrap();
     let session_dir = dir.path().join("sessions");
     std::fs::create_dir_all(&session_dir).unwrap();
     let session_file = session_dir.join("cache-facts.jsonl");
+    let usage = json!({
+        "input": 1_000, "output": 200, "cacheRead": 9_000, "cacheWrite": 0,
+        "totalTokens": 10_200,
+        "cost": { "input": 0.005, "output": 0.0025, "cacheRead": 0.0045,
+                  "cacheWrite": 0.0, "total": 0.012 },
+    });
     let lines = [
-        json!({"type": "session", "version": 3, "id": "tray-cache",
+        json!({"type": "session", "version": 3, "id": "tray-facts",
                "timestamp": "2026-09-24T00:00:00.000Z", "cwd": "/tmp"}),
         // The per-model fold resolves every usage row to a model; without a model
-        // timeline the summarizer's own usage has no bucket and the breakdown (and
-        // with it the tray's cache rate) degrades to `None`.
+        // timeline the summarizer's own usage has no bucket and the whole breakdown
+        // (and with it the tray's cache rate) degrades to `None`.
         json!({"type": "model_change", "id": "mc1", "parentId": null,
                "timestamp": "2026-09-24T00:00:01.000Z",
                "provider": "anthropic", "modelId": "claude-opus-4-6"}),
         json!({"type": "message", "id": "u1", "parentId": "mc1",
                "timestamp": "2026-09-24T00:00:02.000Z",
                "message": {"role": "user", "content": "one"}}),
+        // The billing row is the first kept entry (`firstKeptEntryId`), so the kept
+        // region covers it — the same shape a real compacted file has, where the kept
+        // rows precede the compaction entry in file order.
         json!({"type": "message", "id": "a1", "parentId": "u1",
                "timestamp": "2026-09-24T00:00:03.000Z",
                "message": {"role": "assistant", "provider": "anthropic",
                            "model": "claude-opus-4-6",
                            "content": [{"type": "text", "text": "hi"}],
-                           "stopReason": "stop",
-                           "usage": {"input": 1_000, "output": 200,
-                                     "cacheRead": 9_000, "cacheWrite": 0,
-                                     "totalTokens": 10_200,
-                                     "cost": {"input": 0.005, "output": 0.0025,
-                                              "cacheRead": 0.0045, "cacheWrite": 0.0,
-                                              "total": 0.012}}}}),
+                           "stopReason": "stop", "usage": usage}}),
+        json!({"type": "compaction", "id": "c1", "parentId": "a1",
+               "timestamp": "2026-09-24T00:00:04.000Z",
+               "summary": "summary", "firstKeptEntryId": "a1", "tokensBefore": 100,
+               "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0,
+                         "totalTokens": 0,
+                         "cost": {"input": 0, "output": 0, "cacheRead": 0,
+                                  "cacheWrite": 0, "total": 0}}}),
+        json!({"type": "message", "id": "u2", "parentId": "c1",
+               "timestamp": "2026-09-24T00:00:05.000Z",
+               "message": {"role": "user", "content": "two"}}),
+        json!({"type": "message", "id": "u3", "parentId": "u2",
+               "timestamp": "2026-09-24T00:00:06.000Z",
+               "message": {"role": "user", "content": "three"}}),
     ];
     std::fs::write(
         &session_file,
@@ -229,9 +246,9 @@ async fn the_attach_state_carries_the_stats_cache_totals() {
         WorkerConfig {
             socket_path: dir.path().join("worker.sock"),
             supervisor_socket_path: PathBuf::new(),
-            token: "tray-cache".into(),
+            token: "tray-facts".into(),
             worker_instance_id: String::new(),
-            active_session_id: "tray-cache-live".into(),
+            active_session_id: "tray-facts-live".into(),
             agent_dir: dir.path().join("agent"),
             recovery_journal_path: dir.path().join("recovery.jsonl"),
             telemetry_disabled: None,
@@ -245,7 +262,7 @@ async fn the_attach_state_carries_the_stats_cache_totals() {
             &json!({
                 "sessionPath": session_file.display().to_string(),
                 "cwd": "/tmp",
-                "name": "tray cache",
+                "name": "tray facts",
             }),
         )
         .await;
@@ -264,13 +281,26 @@ async fn the_attach_state_carries_the_stats_cache_totals() {
         })),
         "the attach state carries the cache totals: {snapshot_state}"
     );
+    assert_eq!(
+        snapshot_state.get("turnsSinceCompaction"),
+        Some(&json!(2)),
+        "two user turns sit inside the kept region"
+    );
     let stats = worker.dispatch("get_session_stats", &json!({})).await;
     assert!(stats.success, "{stats:?}");
+    let stats = stats.data.expect("stats data");
     assert_eq!(
-        stats.data.as_ref().unwrap().get("cacheUsage"),
+        stats.get("cacheUsage"),
         snapshot_state.get("cacheUsage"),
         "the snapshot fill equals the stats response"
     );
+    assert_eq!(
+        stats.get("turnsSinceCompaction"),
+        snapshot_state.get("turnsSinceCompaction"),
+        "the snapshot fill equals the stats response"
+    );
+    // The kept region's user turns are exactly the turns after the boundary.
+    assert_eq!(stats["userMessages"], json!(2));
 }
 
 /// The attach snapshot's state carries the tray's context usage exactly as
