@@ -21,9 +21,13 @@ pub(crate) const FORCE_QUIT_AFTER_MS: u64 = 1_500;
 /// How long the exit path may stay silent after a real observation of
 /// progress before the watchdog treats it as stalled. A slow terminal
 /// blocks inside `write` while it drains, which looks like a wedged
-/// shutdown to a wall clock; a completed chunk write is proof of movement
+/// shutdown to a wall clock; a completed write is proof of movement
 /// (TS has no watchdog — this is the TS-healthy behavior).
-const EXIT_PROGRESS_GRACE_MS: u64 = 500;
+///
+/// Writers owe their heartbeat against this tolerance: the flush's progress
+/// unit is sized so one unit drains in a small fraction of it
+/// (`view::flush::PROGRESS_WRITE_BYTES`, asserted by its unit test).
+pub(crate) const EXIT_PROGRESS_GRACE_MS: u64 = 500;
 /// Watchdog poll slice: re-read the deadline this often so a disarm or cancel lands.
 const WATCHDOG_POLL_MS: u64 = 25;
 /// The name of the watchdog thread (visible in thread dumps).

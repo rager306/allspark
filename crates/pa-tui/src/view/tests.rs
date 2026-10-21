@@ -723,6 +723,43 @@ fn flush_bytes(v: &mut AgentView, width: usize, screen_height: usize) -> Vec<u8>
     sink
 }
 
+/// The exit guard's heartbeat must be finer than its own grace window at the slowest drain the
+/// pty harness exercises, or a healthy flush reads as a stalled shutdown and the guard force-quits
+/// mid-transcript. This pins the relation the slow-drain e2e then observes end to end.
+#[test]
+fn one_flush_progress_unit_drains_well_inside_the_exit_grace() {
+    // The gate's slow-drain harness paces the terminal at 96 KiB/s.
+    const HARNESS_DRAIN_BYTES_PER_S: f64 = 96.0 * 1024.0;
+    let unit_ms = super::flush::PROGRESS_WRITE_BYTES as f64 / HARNESS_DRAIN_BYTES_PER_S * 1_000.0;
+    let grace_ms = crate::exit_guard::EXIT_PROGRESS_GRACE_MS as f64;
+    assert!(
+        unit_ms * 4.0 <= grace_ms,
+        "one flush progress unit drains in {unit_ms:.0}ms at the harness rate; the exit guard's \
+         {grace_ms:.0}ms grace needs a quarter of it or less as headroom for scheduler jitter"
+    );
+}
+
+/// The flush writes the same bytes it always did, and reports one progress stamp per unit —
+/// the mechanism that keeps the exit guard's heartbeat alive during a slow drain.
+#[test]
+fn the_flush_write_preserves_bytes_and_stamps_each_progress_unit() {
+    let payload: Vec<u8> = (0..(super::flush::PROGRESS_WRITE_BYTES * 2 + 7))
+        .map(|index| (index % 251) as u8)
+        .collect();
+    let mut written: Vec<u8> = Vec::new();
+    let mut stamps = 0usize;
+    super::flush::write_with_progress(&mut written, &payload, || stamps += 1)
+        .expect("the write accepts every slice");
+    assert_eq!(
+        written, payload,
+        "the progress slicing never alters the bytes"
+    );
+    assert_eq!(
+        stamps, 3,
+        "three units (two full plus the remainder) report three stamps"
+    );
+}
+
 #[test]
 fn flush_streams_append_then_repaints_the_changed_tail() {
     let mut v = view();

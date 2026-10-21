@@ -53,9 +53,21 @@ impl AgentView {
     }
 }
 
-/// The encoded flush rows leave the process in slices of at most this many bytes: each PTY
-/// write stays one syscall, and a completed chunk write is the exit guard's progress proof.
+/// The encoded flush rows leave the process in chunks of at most this many bytes: each PTY
+/// write stays one syscall.
 const CHUNK_BYTES: usize = 32 * 1024;
+
+/// The unit of exit-path progress one flush write reports.
+///
+/// A write to the pty blocks until the terminal drains its buffer, so a completed write is the
+/// only proof the flush is moving — and the granularity of that proof is the exit guard's
+/// heartbeat. Stamping once per [`CHUNK_BYTES`] tied the heartbeat to a whole chunk's drain:
+/// at the gate's 96 KiB/s slow-drain harness a 32 KiB chunk lands every ~350ms, so scheduler
+/// jitter alone pushed the gap past the guard's 500ms grace and force-quit a healthy flush
+/// mid-transcript (the `slow_drain_exit_guard_e2e` failure: one alt-screen leave, no `row 0`).
+/// A quarter of the grace at that rate is 4 KiB; a stalled terminal accepts nothing at all,
+/// which is the state the guard exists to catch.
+pub(super) const PROGRESS_WRITE_BYTES: usize = 4 * 1024;
 
 /// The streaming main-screen flush state: feeds rows section by section, routes them between
 /// the append stream and the repaint ring, writes in bounded chunks.
@@ -86,11 +98,12 @@ impl FlushSink {
                 crate::interactive::write_flush_rows(&mut self.chunk, std::slice::from_ref(row));
                 self.texts.push(text);
                 if self.chunk.len() >= CHUNK_BYTES {
-                    out.write_all(self.chunk.as_bytes())?;
+                    write_with_progress(
+                        out,
+                        self.chunk.as_bytes(),
+                        crate::exit_guard::note_exit_progress,
+                    )?;
                     self.chunk.clear();
-                    // A completed chunk write is exit-path progress for
-                    // the exit guard's force-quit hold.
-                    crate::exit_guard::note_exit_progress();
                 }
             } else if self.repaint || index >= self.flushed.len() {
                 // A changed row turns the write into a repaint; a row
@@ -129,9 +142,12 @@ impl FlushSink {
     fn finish(&mut self, out: &mut dyn std::io::Write) -> std::io::Result<()> {
         if self.appending {
             if !self.chunk.is_empty() {
-                out.write_all(self.chunk.as_bytes())?;
+                write_with_progress(
+                    out,
+                    self.chunk.as_bytes(),
+                    crate::exit_guard::note_exit_progress,
+                )?;
                 self.chunk.clear();
-                crate::exit_guard::note_exit_progress();
             }
         } else if self.repaint || self.texts.len() < self.flushed.len() {
             // A frame that shrank never rewinds into a rewrite of
@@ -139,12 +155,31 @@ impl FlushSink {
             let mut buffer = String::from("\x1b[2J\x1b[H");
             let ring: Vec<crate::Line> = std::mem::take(&mut self.ring).into_iter().collect();
             crate::interactive::write_flush_rows(&mut buffer, &ring);
-            out.write_all(buffer.as_bytes())?;
+            write_with_progress(
+                out,
+                buffer.as_bytes(),
+                crate::exit_guard::note_exit_progress,
+            )?;
             self.chunk.clear();
-            crate::exit_guard::note_exit_progress();
         }
         Ok(())
     }
+}
+
+/// Write one encoded flush buffer, stamping exit-path progress after every
+/// [`PROGRESS_WRITE_BYTES`] the terminal accepts: the exit guard's watchdog reads
+/// a completed write as proof the drain is moving, so its heartbeat must be
+/// finer than the guard's grace window at any drain rate it is meant to survive.
+pub(super) fn write_with_progress(
+    out: &mut dyn std::io::Write,
+    bytes: &[u8],
+    mut progress: impl FnMut(),
+) -> std::io::Result<()> {
+    for slice in bytes.chunks(PROGRESS_WRITE_BYTES) {
+        out.write_all(slice)?;
+        progress();
+    }
+    Ok(())
 }
 
 /// Concatenated span contents of a row (includes zero-width OSC zone
