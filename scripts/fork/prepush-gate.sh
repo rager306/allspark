@@ -30,6 +30,15 @@ export CARGO_TERM_COLOR=always
 export CARGO_INCREMENTAL=0
 export CARGO_PROFILE_TEST_DEBUG=0   # CI build shape: no debuginfo, ~5x smaller target
 export CARGO_PROFILE_DEV_DEBUG=0
+# Run scratch lives INSIDE the repo, not /tmp: systemd-tmpfiles deletes /tmp entries by
+# age (d /tmp ... 10d) and Debian 13 mounts it tmpfs, so a long gate run can lose a
+# worktree's fixtures to a cleaner — and a repo-level `rm -rf .tmp` is then the whole
+# cleanup story. The 194 integration tests that call TempDir::new() honour TMPDIR; the
+# nine that set TMPDIR themselves still win, so the isolation tests keep their shape.
+mkdir -p "$ROOT/.tmp"
+export TMPDIR="$ROOT/.tmp"
+export TEMP="$TMPDIR"
+export TMP="$TMPDIR"
 # Scrub the ambient agent-session environment: this gate often runs from
 # inside a live agent session, whose PRIME_AGENT_* overrides leak into the
 # test binaries and point their spawned daemons at the live session root

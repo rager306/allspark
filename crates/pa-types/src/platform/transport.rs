@@ -382,14 +382,24 @@ mod tests {
             std::path::Path::new("/tmp").join(&tag)
         };
         let mut dir = base;
-        // Keep at least one byte of room for a file name after the separator.
-        while dir.as_os_str().len() + 22 <= target {
+        // Grow in 21-byte steps (separator + 20) while at least two bytes stay free: the
+        // final component below needs a separator plus a NON-EMPTY name. The bound is 24,
+        // not 22, because each step lands the length 21 bytes further on and the pad is
+        // `target - len - 1`; at `+ 22 <= target` a deep `TMPDIR` (the repo-local `.tmp`)
+        // can stop exactly one byte short, making the pad 0 — and joining an empty
+        // component leaves a trailing separator the next `join` swallows, so the caller's
+        // socket name would land one byte under MAX_SUN_PATH.
+        while dir.as_os_str().len() + 24 <= target {
             dir = dir.join("d".repeat(20));
         }
         // Pad one final component: appending adds a separator plus the name.
         let pad = target
             .checked_sub(dir.as_os_str().len() + 1)
             .expect("base must leave room for a file name");
+        assert!(
+            pad >= 1,
+            "the loop must leave room for a non-empty final component"
+        );
         dir = dir.join("d".repeat(pad));
         assert_eq!(dir.as_os_str().len(), target);
         std::fs::create_dir_all(&dir).expect("create deep dir");

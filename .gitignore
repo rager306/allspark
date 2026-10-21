@@ -15,3 +15,8 @@ test-compile-*.log
 
 # QA deviation-suite manifests (generated per run; CI artifacts)
 out/
+
+# Transient run scratch, kept inside the repo so a system cleaner cannot delete a
+# worktree's fixtures and a repo-level `rm -rf .tmp` is the whole cleanup story.
+# Set by scripts/fork/prepush-gate.sh and the launcher (TMPDIR).
+.tmp/
