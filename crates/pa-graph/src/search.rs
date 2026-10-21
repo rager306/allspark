@@ -13,7 +13,7 @@
 use std::collections::{HashMap, HashSet};
 
 use regex::Regex;
-use rusqlite::{params_from_iter, Connection};
+use rusqlite::{params, params_from_iter, Connection};
 use serde_json::Value;
 
 use crate::bm25::min_max_normalize;
@@ -284,7 +284,7 @@ pub fn search(conn: &Connection, query: &str, opts: &SearchOptions) -> Result<Ve
     let mut hits: Vec<SearchHit> = Vec::with_capacity(fused.len());
     for (id, score) in fused {
         let Some(row) = rows.get(&id) else { continue };
-        let (in_degree, out_degree) = degrees(conn, id)?;
+        let (in_degree, out_degree) = degrees(conn, &opts.project, id)?;
         hits.push(SearchHit {
             id,
             label: Label::from_str_or_default(&row.label),
@@ -363,6 +363,17 @@ fn fts_channel(
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// In+out edge count for the joined node `n`.
+///
+/// `e.project = n.project` is load-bearing, not cosmetic: `idx_edges_target` is
+/// `(project, target, edge_type)` and `idx_edges_source` is
+/// `(project, source, edge_type)`. Without the leading column SQLite cannot seek
+/// and falls back to a covering-index SCAN per candidate — measured 2,669 ms vs
+/// 2.2 ms on a 36k-node store, for the same result set.
+const DEGREE_EXPR: &str =
+    "(SELECT count(*) FROM edges e WHERE e.project = n.project AND e.target = n.id) \
+     + (SELECT count(*) FROM edges e WHERE e.project = n.project AND e.source = n.id)";
+
 /// Graph-degree channel: the most-connected symbols matching `query` by name.
 fn graph_channel(
     conn: &Connection,
@@ -384,8 +395,7 @@ fn graph_channel(
 
     let sql = format!(
         "SELECT n.id,
-                (SELECT count(*) FROM edges e WHERE e.target = n.id) +
-                (SELECT count(*) FROM edges e WHERE e.source = n.id) AS deg
+                {DEGREE_EXPR} AS deg
          FROM symbols_fts f
          JOIN nodes n ON n.id = f.rowid
          WHERE f.symbols_fts MATCH ?1 AND n.project = ?2 {label_sql} {filter_sql}
@@ -468,13 +478,22 @@ fn load_rows(conn: &Connection, ids: &[i64]) -> Result<HashMap<i64, Row>> {
     Ok(out)
 }
 
-fn degrees(conn: &Connection, id: i64) -> Result<(usize, usize)> {
-    let inc: i64 = conn.query_row("SELECT count(*) FROM edges WHERE target = ?1", [id], |r| {
-        r.get(0)
-    })?;
-    let out: i64 = conn.query_row("SELECT count(*) FROM edges WHERE source = ?1", [id], |r| {
-        r.get(0)
-    })?;
+/// In/out edge counts for one node, scoped to its project.
+///
+/// The project predicate lets SQLite seek `idx_edges_target`/`idx_edges_source`;
+/// unscoped, each call scans the covering index — measured 8.9 ms per node on the
+/// live store versus 0.045 ms scoped, i.e. 89 ms vs 0.45 ms for ten hits.
+fn degrees(conn: &Connection, project: &str, id: i64) -> Result<(usize, usize)> {
+    let inc: i64 = conn.query_row(
+        "SELECT count(*) FROM edges WHERE project = ?1 AND target = ?2",
+        params![project, id],
+        |r| r.get(0),
+    )?;
+    let out: i64 = conn.query_row(
+        "SELECT count(*) FROM edges WHERE project = ?1 AND source = ?2",
+        params![project, id],
+        |r| r.get(0),
+    )?;
     Ok((inc as usize, out as usize))
 }
 
@@ -587,6 +606,45 @@ mod tests {
         let store = GraphStore::open_in_memory().expect("store");
         seed(&store);
         store
+    }
+
+    /// The degree subqueries must be project-scoped so SQLite can seek
+    /// `idx_edges_target(project, target, edge_type)` instead of scanning it.
+    /// Unscoped, the graph channel took 2,669 ms on the live store where the
+    /// scoped form takes 2.2 ms — a plan property, so it is asserted on the plan
+    /// rather than on a clock.
+    #[test]
+    fn the_degree_subqueries_seek_the_project_scoped_indexes() {
+        let store = open();
+        search(store.connection(), "load_config", &SearchOptions::new("p")).expect("warm");
+        let mut stmt = store
+            .connection()
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN SELECT n.id, {DEGREE_EXPR} AS deg
+                 FROM symbols_fts f JOIN nodes n ON n.id = f.rowid
+                 WHERE f.symbols_fts MATCH 'load_config' AND n.project = 'p'"
+            ))
+            .expect("prepare");
+        let plan: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(3))
+            .expect("plan")
+            .map(|r| r.expect("plan row"))
+            .collect();
+        let edges_steps: Vec<&String> = plan.iter().filter(|s| s.contains(" e ")).collect();
+        assert!(
+            !edges_steps.is_empty(),
+            "expected the plan to mention the edges table: {plan:?}"
+        );
+        assert!(
+            edges_steps
+                .iter()
+                .any(|s| s.starts_with("SEARCH") && s.contains("idx_edges_target")),
+            "in-degree must seek idx_edges_target, plan was: {plan:?}"
+        );
+        assert!(
+            edges_steps.iter().all(|s| !s.starts_with("SCAN")),
+            "no edges access may be a full scan, plan was: {plan:?}"
+        );
     }
 
     #[test]
