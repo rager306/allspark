@@ -23,7 +23,7 @@ mod tests;
 use context_tree::truncate_plain;
 
 pub use admission::admission_rows;
-pub use cache::cache_rows;
+pub use cache::{cache_rows, cache_totals, CacheTotals};
 pub use context_tree::{context_tree_rows, ContextTreeScope};
 
 /// One styled segment of a client info row: text plus its theme color

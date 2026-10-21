@@ -286,37 +286,6 @@ pub(crate) fn compute_own_usage_by_model(
     )
 }
 
-/// FORK-ONLY: the cache totals the TUI tray's `cache N%` segment reads, folded from
-/// the SAME per-model breakdown `get_cache_stats` serves (so the tray and the `/cache`
-/// panel can never disagree). Rows with no input and no cache read are skipped exactly
-/// like the panel's `Totals:` line, and `hitPercent` is the same
-/// `cacheRead / (input + cacheRead)` ratio in the same rounding. `hitPercent` is null
-/// when nothing was sent, so the client hides the segment instead of printing `0%`.
-pub(crate) fn cache_totals(store: &crate::session_store::SessionFile) -> Option<Value> {
-    let mut input = 0u64;
-    let mut cache_read = 0u64;
-    let mut cache_write = 0u64;
-    let mut total_tokens = 0u64;
-    for model in cache_breakdown(store)? {
-        let field = |name: &str| model.get(name).and_then(Value::as_u64).unwrap_or_default();
-        let (model_input, model_read) = (field("input"), field("cacheRead"));
-        if model_input + model_read == 0 {
-            continue;
-        }
-        input = input.saturating_add(model_input);
-        cache_read = cache_read.saturating_add(model_read);
-        cache_write = cache_write.saturating_add(field("cacheWrite"));
-        total_tokens = total_tokens.saturating_add(field("totalTokens"));
-    }
-    Some(json!({
-        "input": input,
-        "cacheRead": cache_read,
-        "cacheWrite": cache_write,
-        "totalTokens": total_tokens,
-        "hitPercent": pa_types::usage::cache_hit_percent(input, cache_read),
-    }))
-}
-
 /// FORK-ONLY: the per-model cache statistics over the persisted branch — the
 /// `ownUsageByModel` fold projected to the fields `/cache` reads
 /// (input/cacheRead/cacheWrite/totalTokens plus the cost block). `None` when

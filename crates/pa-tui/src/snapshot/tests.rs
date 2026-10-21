@@ -2019,39 +2019,6 @@ fn attach_snapshot_carries_the_tray_context_usage() {
     assert_eq!(reconstruct(&data).context_usage, None);
 }
 
-/// FORK-ONLY: the tray's cache rate and post-compaction turn count ride the same
-/// attach state, so a fresh attach paints them on its first frame.
-#[test]
-fn attach_snapshot_carries_the_fork_tray_facts() {
-    let mut attach = slim_attach();
-    {
-        attach["snapshot"]["state"]["cacheUsage"] = json!({
-            "input": 1_000, "cacheRead": 9_000, "cacheWrite": 0,
-            "totalTokens": 10_000, "hitPercent": 90,
-        });
-        attach["snapshot"]["state"]["turnsSinceCompaction"] = json!(4);
-    }
-    let data = attach_data_from_response(attach).unwrap();
-    let reconstructed = reconstruct(&data);
-    assert_eq!(reconstructed.cache_hit_percent, Some(90));
-    assert_eq!(reconstructed.turns_since_compaction, Some(4));
-
-    // A session with no cache traffic reports a null rate, and a branch that never
-    // compacted carries no turn count: both segments stay hidden rather than reading
-    // like a measurement they are not.
-    let mut attach = slim_attach();
-    {
-        attach["snapshot"]["state"]["cacheUsage"] = json!({
-            "input": 0, "cacheRead": 0, "cacheWrite": 0,
-            "totalTokens": 0, "hitPercent": null,
-        });
-    }
-    let data = attach_data_from_response(attach).unwrap();
-    let reconstructed = reconstruct(&data);
-    assert_eq!(reconstructed.cache_hit_percent, None);
-    assert_eq!(reconstructed.turns_since_compaction, None);
-}
-
 /// A `role: "toolResult"` message with one 500KB image payload block
 /// (the `attach_image` emit's stored shape).
 fn image_heavy_tool_result(payload: &str) -> serde_json::Value {

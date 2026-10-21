@@ -109,7 +109,6 @@ impl SessionUi {
             queue_selection: crate::queued::QueueSelection::default(),
             context: None,
             cache_hit_percent: None,
-            turns_since_compaction: None,
             list_rows: Vec::new(),
             turn_active: false,
             turn_ends_seen: 0,
@@ -447,6 +446,14 @@ impl SessionUi {
             DockFold::FirstFrame => self.fetch_heartbeat_catalog().await,
             DockFold::Fresh | DockFold::Held => self.spawn_heartbeat_refresh(),
         }
+        // FORK-ONLY: the tray's cache-hit rate is a `get_cache_stats` fold (the
+        // `/cache` panel's own payload), so a first-content-frame attach fetches it
+        // with the other dock folds and a rebind refreshes it in place. A held dock
+        // keeps its rate: an already-up surface must not flicker.
+        match dock_fold {
+            DockFold::FirstFrame | DockFold::Fresh => self.refresh_cache_rate().await,
+            DockFold::Held => {}
+        }
         // The slash-command catalog is session-scoped too; the skill commands
         // land in the autocomplete provider when the response arrives.
         self.spawn_command_catalog_refresh();
@@ -482,8 +489,6 @@ impl SessionUi {
         // or compaction settles): the rebuild below re-syncs it into the
         // chrome exactly like the other reconstructed session fields.
         self.context = reconstructed.context_usage;
-        self.cache_hit_percent = reconstructed.cache_hit_percent;
-        self.turns_since_compaction = reconstructed.turns_since_compaction;
         self.last_assistant_text = last_assistant_text_of(&reconstructed.chat);
         self.pending_queue = Some(reconstructed.queued);
         self.pending_snapshot = Some(reconstructed.chat);
@@ -624,7 +629,6 @@ impl SessionUi {
         view.chrome.chat_name = self.session_display();
         view.chrome.context = self.context;
         view.chrome.cache_hit_percent = self.cache_hit_percent;
-        view.chrome.turns_since_compaction = self.turns_since_compaction;
         // The rebuilt transcript invalidates the announcement row tracking;
         // the goal state itself carries over (seeded at attach).
         self.goal_view.reset_row_tracking();
@@ -723,14 +727,30 @@ impl SessionUi {
         self.context = data
             .get("contextUsage")
             .and_then(crate::chrome::ContextUsage::from_wire);
-        // FORK-ONLY: the tray's cache rate and the post-compaction turn count come
-        // from the same response, so one round-trip refreshes the whole tray.
-        self.cache_hit_percent = data
-            .get("cacheUsage")
-            .and_then(|cache| cache.get("hitPercent"))
-            .and_then(Value::as_u64);
-        self.turns_since_compaction = data.get("turnsSinceCompaction").and_then(Value::as_u64);
+        self.refresh_cache_rate().await;
         self.dirty = true;
+    }
+
+    /// FORK-ONLY: refresh the tray's cache-hit rate from `get_cache_stats` — the
+    /// very payload `/cache` renders — and fold it with `info_commands::cache_totals`,
+    /// so the status line can never print a number the panel disagrees with. A failed
+    /// fetch keeps the last rate (stale beats a flicker); it clears only when the
+    /// session's own fold reports no traffic.
+    async fn refresh_cache_rate(&mut self) {
+        let Ok(tree) = self
+            .bounded_request(
+                Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
+                DaemonCommand::GetCacheStats {
+                    id: None,
+                    active_session_id: self.active_session_id.clone(),
+                    rest: Map::default(),
+                },
+            )
+            .await
+        else {
+            return;
+        };
+        self.cache_hit_percent = crate::info_commands::cache_totals(&tree).hit_percent;
     }
 
     /// Detach on the agents-view handoff without blocking it: a background task owns the connection

@@ -999,6 +999,61 @@ fn admission_rows_empty_state_without_providers() {
     assert_eq!(rows[4], "Queued: 1 waiting across providers");
 }
 
+/// The tray's `cache N%` segment reads `cache_totals`, and the panel's `Totals:` row
+/// reads the SAME fold: pin them against each other so the two can never drift.
+#[test]
+fn cache_totals_match_the_panel_total_row() {
+    let tree = json(
+        r#"{
+                "models": [
+                    {"provider": "anthropic", "id": "claude-opus-4-6",
+                     "input": 1000, "cacheRead": 9000, "cacheWrite": 0,
+                     "totalTokens": 10000,
+                     "cost": {"input": 0.005, "cacheRead": 0.0045,
+                              "cacheWrite": 0.0, "total": 0.0095}},
+                    {"provider": "openai", "id": "gpt-5.6-sol",
+                     "input": 2000, "cacheRead": 0, "cacheWrite": 500,
+                     "totalTokens": 2500,
+                     "cost": {"input": 0.02, "cacheRead": 0.0,
+                              "cacheWrite": 0.005, "total": 0.025}}
+                ]
+            }"#,
+    );
+    let totals = cache_totals(&tree);
+    assert_eq!(
+        totals,
+        CacheTotals {
+            input: 3000,
+            cache_read: 9000,
+            cache_write: 500,
+            total_tokens: 12500,
+            hit_percent: Some(75),
+        }
+    );
+    let rows = plain(&cache_rows(&tree, None));
+    assert_eq!(
+        rows[5],
+        format!(
+            "Total: input={}  cached={} ({}%)  write={}  total={}",
+            totals.input, totals.cache_read, 75, totals.cache_write, totals.total_tokens
+        ),
+        "the panel's total row and the tray's fold are one source"
+    );
+    // No traffic at all (and a write-only model): the ratio does not exist, so the
+    // tray hides the segment while the panel keeps its "-" cell.
+    for empty in [
+        json(r#"{"models": []}"#),
+        json(
+            r#"{"models": [{"provider": "p", "id": "m", "input": 0, "cacheRead": 0,
+                            "cacheWrite": 10, "totalTokens": 10,
+                            "cost": {"input": 0, "cacheRead": 0,
+                                     "cacheWrite": 0, "total": 0}}]}"#,
+        ),
+    ] {
+        assert_eq!(cache_totals(&empty).hit_percent, None);
+    }
+}
+
 #[test]
 fn cache_rows_empty_state_without_activity() {
     let tree = json(r#"{"models": []}"#);

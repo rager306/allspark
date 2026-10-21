@@ -86,11 +86,6 @@ pub fn session_stats(store: &SessionFile, context_window: Option<u64>) -> Value 
         }
     }
     let total_messages = durable_messages.len() as u64 + older_total_messages;
-    // FORK-ONLY: the tray's "N since compact" segment. The kept region starts at the
-    // latest on-chain compaction's `firstKeptEntryId`, so the user turns inside it are
-    // exactly the turns since that compaction. `None` before the first compaction:
-    // the number would just repeat the session's whole turn count.
-    let turns_since_compaction = boundary.map(|_| user_messages);
     let mut stats = json!({
         "sessionFile": store.path.display().to_string(),
         "sessionId": store.session_id(),
@@ -110,15 +105,6 @@ pub fn session_stats(store: &SessionFile, context_window: Option<u64>) -> Value 
     });
     if let Some(usage) = context_usage(&branch, &messages, context_window) {
         stats["contextUsage"] = usage;
-    }
-    // FORK-ONLY: the tray's cache segment reads these totals from the very fold
-    // `/cache` renders, exactly like `contextUsage` above; an unresolved fold
-    // leaves the field off the wire and the segment hidden.
-    if let Some(cache) = crate::state_getters::cache_totals(store) {
-        stats["cacheUsage"] = cache;
-    }
-    if let Some(turns) = turns_since_compaction {
-        stats["turnsSinceCompaction"] = json!(turns);
     }
     stats
 }
@@ -169,22 +155,6 @@ pub(crate) fn store_context_usage(
         .filter_map(|entry| entry.fields.get("message"))
         .collect();
     context_usage(&branch, &messages, context_window)
-}
-
-/// FORK-ONLY: the user turns on the branch since its latest on-chain compaction
-/// (`None` before the first one). The attach snapshot carries it beside
-/// `contextUsage` so the tray's `N since compact` segment paints on the first frame
-/// instead of after the first stats round-trip; the kept-region walk is the same one
-/// `session_stats` folds, so the two surfaces agree by construction.
-pub(crate) fn store_turns_since_compaction(store: &SessionFile) -> Option<u64> {
-    let (messages, boundary) = kept_region_messages(store);
-    boundary?;
-    Some(
-        messages
-            .iter()
-            .filter(|message| message.get("role").and_then(Value::as_str) == Some("user"))
-            .count() as u64,
-    )
 }
 
 /// `toolCall` content blocks on one assistant message.

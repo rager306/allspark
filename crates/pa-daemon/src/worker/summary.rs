@@ -136,14 +136,6 @@ impl Worker {
             context_usage: store.and_then(|store| {
                 crate::session_stats::store_context_usage(store, inputs.model_context_window)
             }),
-            // FORK-ONLY: the tray's cache segment rides the same sealed state, from
-            // the same per-model fold `/cache` reads — no extra request, no second
-            // formula.
-            cache_usage: store.and_then(crate::state_getters::cache_totals),
-            // FORK-ONLY: the kept-region walk `session_stats` also runs, so the
-            // first frame's `N since compact` segment matches the stats response.
-            turns_since_compaction: store
-                .and_then(crate::session_stats::store_turns_since_compaction),
         }
     }
 

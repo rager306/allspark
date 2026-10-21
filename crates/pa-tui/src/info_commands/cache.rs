@@ -82,6 +82,18 @@ impl ModelCache {
     }
 }
 
+/// The session's cache totals as the `/cache` panel reports them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CacheTotals {
+    pub input: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub total_tokens: u64,
+    /// The shared hit ratio; `None` when nothing was sent, so the tray hides the
+    /// segment instead of printing a meaningless `0%`.
+    pub hit_percent: Option<u64>,
+}
+
 /// Whether `current_model` names this model: an exact `provider/id` match, a
 /// suffix match on the bare id, or a prefix `provider/` match.
 fn is_current(model: &ModelCache, current_model: &str) -> bool {
@@ -111,6 +123,32 @@ fn model_line(model: &ModelCache) -> String {
         model.cache_write,
         model.total_tokens,
     )
+}
+
+/// The grand total across the rows `/cache` renders, plus the same ratio the panel
+/// prints: the TUI tray's `cache N%` segment reads THIS function over the very
+/// `get_cache_stats` payload `/cache` renders, so the two surfaces share one fold
+/// and one formula by construction. `hit_percent` is `None` when no model logged
+/// traffic, which is what hides the tray segment.
+#[must_use]
+pub fn cache_totals(tree: &Value) -> CacheTotals {
+    let mut totals = CacheTotals::default();
+    let models: Vec<ModelCache> = tree
+        .get("models")
+        .and_then(Value::as_array)
+        .map(|models| models.iter().filter_map(ModelCache::parse).collect())
+        .unwrap_or_default();
+    for model in models
+        .iter()
+        .filter(|model| model.input + model.cache_read > 0)
+    {
+        totals.input = totals.input.saturating_add(model.input);
+        totals.cache_read = totals.cache_read.saturating_add(model.cache_read);
+        totals.cache_write = totals.cache_write.saturating_add(model.cache_write);
+        totals.total_tokens = totals.total_tokens.saturating_add(model.total_tokens);
+    }
+    totals.hit_percent = pa_types::usage::cache_hit_percent(totals.input, totals.cache_read);
+    totals
 }
 
 /// The `/cache` rows: one summary line per model with the cache-hit rate, the
@@ -143,19 +181,17 @@ pub fn cache_rows(tree: &Value, current_model: Option<&str>) -> Vec<ClientLine> 
     }
     rows.push(vec![]);
 
-    // The grand total across every model row.
-    let input: u64 = active.iter().map(|model| model.input).sum();
-    let cache_read: u64 = active.iter().map(|model| model.cache_read).sum();
-    let cache_write: u64 = active.iter().map(|model| model.cache_write).sum();
-    let total: u64 = active.iter().map(|model| model.total_tokens).sum();
-    // The grand total reads the same shared ratio the tray segment uses, so a
+    // The grand total reads the one shared fold the tray segment also reads, so a
     // session can never show one hit rate here and another in the status line.
-    let hit = pa_types::usage::cache_hit_percent(input, cache_read)
+    let totals = cache_totals(tree);
+    let hit = totals
+        .hit_percent
         .map_or_else(|| "-".to_string(), |percent| format!("{percent}%"));
     rows.push(vec![
         dim("Total:"),
         raw_span(format!(
-            " input={input}  cached={cache_read} ({hit})  write={cache_write}  total={total}"
+            " input={}  cached={} ({hit})  write={}  total={}",
+            totals.input, totals.cache_read, totals.cache_write, totals.total_tokens
         )),
     ]);
 

@@ -242,9 +242,6 @@ pub(crate) struct SessionUi {
     /// FORK-ONLY: the tray's cache-hit rate, from the same fold `/cache` renders
     /// (`get_session_stats`'s `cacheUsage.hitPercent` or the attach state).
     cache_hit_percent: Option<u64>,
-    /// FORK-ONLY: user turns since the branch's latest compaction; `None` before
-    /// the first compaction.
-    turns_since_compaction: Option<u64>,
     list_rows: Vec<Value>,
     pub(crate) turn_active: bool,
     /// Completed turns observed on this connection. A prompt ACK may arrive
