@@ -1028,7 +1028,7 @@ mod tests {
         })
         .await
         .unwrap());
-        assert!(calls.is_empty());
+        assert_eq!(calls.len(), 0);
         row.should_resume = true;
         let mut failed_calls = Vec::new();
         let error = restore_legacy_session(&row, None, "1.0.0", |command, _| {

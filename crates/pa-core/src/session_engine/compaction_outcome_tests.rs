@@ -130,7 +130,10 @@ async fn record_appends_row_to_entries_and_live_context_but_not_llm_input() {
             .any(|message| matches!(message, SessionAgentMessage::Custom(custom) if custom.custom_type == "compaction_outcome")),
         "the rebuilt context keeps the outcome row"
     );
-    assert!(convert_to_llm(std::slice::from_ref(&SessionAgentMessage::Custom(row))).is_empty());
+    assert_eq!(
+        convert_to_llm(std::slice::from_ref(&SessionAgentMessage::Custom(row))).len(),
+        0
+    );
 }
 
 /// The disclosure survives a failed disk write: the entry chain keeps

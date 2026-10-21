@@ -825,7 +825,7 @@ mod tests {
         assert_eq!(filtered.len(), 1);
         let empty = vec![json!({ "id": "s3", "path": "/x/s3.jsonl", "messageCount": 0 })];
         let records = reconcile_unified_sessions(&[], &empty, None);
-        assert!(filter_empty_sessions(&records, &[]).is_empty());
+        assert_eq!(filter_empty_sessions(&records, &[]).len(), 0);
         assert_eq!(filter_empty_sessions(&records, &["s3"]).len(), 1);
     }
 
@@ -968,7 +968,10 @@ mod tests {
             })
             .collect();
         assert_eq!(titles, vec!["root agent", "child agent"]);
-        assert!(filter_unified_sessions(&records, &parse_search_query("zebra")).is_empty());
+        assert_eq!(
+            filter_unified_sessions(&records, &parse_search_query("zebra")).len(),
+            0
+        );
         let parent_only = filter_unified_sessions(&records, &parse_search_query("root"));
         assert_eq!(parent_only.len(), 1);
         assert_eq!(

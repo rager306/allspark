@@ -69,7 +69,7 @@ fn tokenizer_recognizes_headers_ops_payloads_and_envelope() {
 #[test]
 fn tokenizer_streams_crlf_and_final_lines() {
     let mut tokenizer = Tokenizer::new();
-    assert!(tokenizer.feed("PUT 2:\r").unwrap().is_empty());
+    assert_eq!(tokenizer.feed("PUT 2:\r").unwrap().len(), 0);
     let tokens = tokenizer.feed("\n+x").unwrap();
     assert!(matches!(
         tokens.as_slice(),
@@ -481,7 +481,7 @@ fn abort_terminates_parser_without_warning() {
     let parsed = parse_patch("PUT >1:\n+HELLO\n*** Abort\nPUT >99:\n+never").unwrap();
     assert_eq!(parsed.edits.len(), 1);
     assert!(matches!(&parsed.edits[0], Edit::Insert { text, .. } if text == "HELLO"));
-    assert!(parsed.warnings.is_empty());
+    assert_eq!(parsed.warnings.len(), 0);
 }
 
 #[test]
@@ -526,7 +526,7 @@ fn detects_and_coalesces_overlapping_hunks() {
 
 #[test]
 fn streaming_drops_incomplete_empty_body_but_keeps_bodyless_ops() {
-    assert!(parse_patch_streaming("PUT 2.=").unwrap().edits.is_empty());
+    assert_eq!(parse_patch_streaming("PUT 2.=").unwrap().edits.len(), 0);
     let parsed = parse_patch_streaming("CUT 1\nPUT >$").unwrap();
     assert_eq!(
         parsed

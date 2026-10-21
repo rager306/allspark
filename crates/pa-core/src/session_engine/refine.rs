@@ -610,8 +610,10 @@ impl AgentSession {
     }
 }
 
-/// The default model seam over pa-ai completion.
-#[must_use]
+/// The default model seam over pa-ai completion. The attribute carries a message because the
+/// return type (a boxed `FnOnce`) is already `#[must_use]`: rustc 1.99's `double_must_use`
+/// rejects a message-less duplicate, while 1.98 asks for the attribute at all.
+#[must_use = "the refiner is the seam itself; calling it only to drop it does nothing"]
 pub fn default_refiner_call(api_key: Option<String>) -> crate::refinement::executor::RefinerFn {
     Box::new(move |model, system_prompt, prompt| {
         let api_key = api_key;
@@ -1162,7 +1164,7 @@ Reviewer instructions: record it"
             )
             .await
             .unwrap_or_else(|error| panic!("'{leg}' leg failed: {error:#}"));
-            assert!(result.applied_edits.is_empty());
+            assert_eq!(result.applied_edits.len(), 0);
             let got = captured_requests.lock().unwrap().clone();
             assert_eq!(got.len(), 1, "'{leg}' leg: exactly one refiner call");
             captured.push(got[0].clone());

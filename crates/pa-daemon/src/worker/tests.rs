@@ -156,5 +156,5 @@ async fn background_refinement_event_is_fenced_to_its_review_session() {
         &original_id,
         json!({ "type": "refine_failed", "error": "old session" }),
     ));
-    assert!(session_events_since(&mut subscription).is_empty());
+    assert_eq!(session_events_since(&mut subscription).len(), 0);
 }

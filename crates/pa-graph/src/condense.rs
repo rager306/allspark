@@ -189,7 +189,7 @@ mod tests {
         let cg = condense(&nodes, &edges, &communities);
         assert_eq!(cg.expand(0), &[0, 1, 2]);
         assert_eq!(cg.expand(1), &[3, 4, 5]);
-        assert!(cg.expand(99).is_empty());
+        assert_eq!(cg.expand(99).len(), 0);
     }
 
     #[test]

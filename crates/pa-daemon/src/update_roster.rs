@@ -583,7 +583,7 @@ mod tests {
         assert!(root.should_resume);
         assert!(root.queue.actions.get("steering").is_some());
         // No next-turn lane: pending prompts live in the lane snapshot.
-        assert!(root.queue.next_turn.is_empty());
+        assert_eq!(root.queue.next_turn.len(), 0);
         let child = &roster.sessions[1];
         assert_eq!(child.kind, UpdateRosterSessionKind::Subagent);
         assert_eq!(child.parent_session_id.as_deref(), Some("p1"));

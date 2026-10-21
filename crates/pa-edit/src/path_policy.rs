@@ -927,7 +927,7 @@ mod tests {
         assert!(files.resolve("sbx://plan.md", false).is_err());
         assert!(files.resolve("ro://a.md", false).is_err());
         assert_eq!(files.take_unresolved(), ["sbx://plan.md", "ro://a.md"]);
-        assert!(files.take_unresolved().is_empty());
+        assert_eq!(files.take_unresolved().len(), 0);
 
         let backing = tmp.path().join("elsewhere/plan.md");
         files.provide(
@@ -958,7 +958,7 @@ mod tests {
                 .to_string(),
             "No local file backs ro://gone.md"
         );
-        assert!(files.take_unresolved().is_empty());
+        assert_eq!(files.take_unresolved().len(), 0);
     }
 
     #[test]

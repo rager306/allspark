@@ -209,7 +209,7 @@ mod tests {
         assert_eq!(r.route("q", 10), vec![5, 1, 2]);
         assert_eq!(r.route("q", 2), vec![5, 1]);
         assert_eq!(r.route("q", 0), Vec::<ShardId>::new());
-        assert!(r.route("unknown", 10).is_empty());
+        assert_eq!(r.route("unknown", 10).len(), 0);
     }
 
     #[test]

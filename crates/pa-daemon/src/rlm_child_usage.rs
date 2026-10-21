@@ -209,7 +209,7 @@ mod tests {
         assert!(batches.iter().all(|(_, usage)| usage.input != 999));
 
         let (again, cursor_again) = child_usage_batches(&entries, cursor);
-        assert!(again.is_empty());
+        assert_eq!(again.len(), 0);
         assert_eq!(cursor_again, entries.len());
 
         // A delta window: a second run's rows only.

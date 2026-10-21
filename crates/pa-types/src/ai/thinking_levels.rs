@@ -251,7 +251,7 @@ mod tests {
         );
         assert!(!supports_thinking(&non_thinking));
         let reasoning = model(true, Some(all_null));
-        assert_eq!(get_supported_thinking_levels(&reasoning), []);
+        assert_eq!(get_supported_thinking_levels(&reasoning).len(), 0);
     }
 
     #[test]

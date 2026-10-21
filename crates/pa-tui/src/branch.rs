@@ -185,8 +185,8 @@ mod tests {
 
     #[test]
     fn empty_block_renders_nothing() {
-        assert!(branch_block(&vec![Span::raw("   ")], &theme(), 40).is_empty());
-        assert!(branch_block(&Vec::new(), &theme(), 40).is_empty());
+        assert_eq!(branch_block(&vec![Span::raw("   ")], &theme(), 40).len(), 0);
+        assert_eq!(branch_block(&Vec::new(), &theme(), 40).len(), 0);
         assert_eq!(branch_block_count("  ", 40), 0);
     }
 

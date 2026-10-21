@@ -915,9 +915,10 @@ mod tests {
         assert_eq!(key.code, KeyCode::Up);
         assert_eq!(key.modifiers, KeyModifiers::ALT);
         // The repaired Alt+Up is not a bare Esc press, so nothing is held.
-        assert!(guard
-            .flush_expired(now + crate::sequence_guard::HOLD)
-            .is_empty());
+        assert_eq!(
+            guard.flush_expired(now + crate::sequence_guard::HOLD).len(),
+            0
+        );
     }
 
     /// The repair never steals the guard's held sequence: a real partial read ends its write on
@@ -943,7 +944,7 @@ mod tests {
             &mut guard,
             vec![Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))],
         );
-        assert!(held.is_empty());
+        assert_eq!(held.len(), 0);
         // The next write carries the rest of the sequence as folded chars.
         let outputs = feed_write(&mut guard, vec![press('['), shift_press('A')]);
         assert_eq!(outputs.len(), 1, "{outputs:?}");
@@ -952,8 +953,9 @@ mod tests {
         };
         assert_eq!(key.code, KeyCode::Up);
         assert_eq!(key.modifiers, KeyModifiers::NONE);
-        assert!(guard
-            .flush_expired(now + crate::sequence_guard::HOLD)
-            .is_empty());
+        assert_eq!(
+            guard.flush_expired(now + crate::sequence_guard::HOLD).len(),
+            0
+        );
     }
 }

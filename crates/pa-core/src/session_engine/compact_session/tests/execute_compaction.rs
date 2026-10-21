@@ -47,7 +47,7 @@ async fn execute_compaction_persists_and_rebuilds() {
     // The live context keeps the summary role; provider conversion
     // still formats it as a user turn.
     let rebuilt = rebuilt_context_after_compaction(&session);
-    assert!(!rebuilt.is_empty());
+    assert_ne!(rebuilt.len(), 0);
     assert!(matches!(&rebuilt[0], AgentMessage::CompactionSummary(_)));
     let provider_messages = super::super::messages::convert_to_llm(&rebuilt);
     match &provider_messages[0] {

@@ -41,7 +41,7 @@ fn matcher_digest_uses_added_lines_and_whole_create_content() {
         inspection.entries,
         [("a.txt".into(), "new\nwhole content".into())]
     );
-    assert!(inspection.file_ops.is_empty());
+    assert_eq!(inspection.file_ops.len(), 0);
 }
 
 #[tokio::test]
@@ -52,5 +52,5 @@ async fn streaming_preview_drops_an_unclosed_first_entry() {
     session.push(r#"{"path":"a.txt","edits":[{"op":"update","diff":"@@\n-old\n+new"#);
     let preview = session.preview();
     assert!(preview.streaming);
-    assert!(preview.files.is_empty());
+    assert_eq!(preview.files.len(), 0);
 }

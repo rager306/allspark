@@ -43,5 +43,5 @@ async fn session_commands_never_reach_the_model() {
     }
     // No model call and no persisted user message.
     assert!(provider.calls().is_empty());
-    assert!(engine.entries().await.is_empty());
+    assert_eq!(engine.entries().await.len(), 0);
 }

@@ -787,9 +787,11 @@ mod tests {
             Some("company.ghe.com")
         );
         assert_eq!(credentials.access, "copilot-e");
-        assert!(!http
-            .bodies_for("https://copilot-api.company.ghe.com/models/")
-            .is_empty());
+        assert_ne!(
+            http.bodies_for("https://copilot-api.company.ghe.com/models/")
+                .len(),
+            0
+        );
     }
 
     #[tokio::test]

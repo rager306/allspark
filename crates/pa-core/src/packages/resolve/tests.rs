@@ -129,8 +129,8 @@ fn has_path(resources: &[ResolvedResource], suffix: &str) -> bool {
 fn resolve_without_configured_sources_returns_only_auto_resources() {
     let mut fixture = Fixture::new();
     let result = fixture.manager.resolve().unwrap();
-    assert!(result.prompts.is_empty());
-    assert!(result.themes.is_empty());
+    assert_eq!(result.prompts.len(), 0);
+    assert_eq!(result.themes.len(), 0);
     assert!(result.skills.iter().all(|r| {
         r.metadata.source == MetadataSource::Auto && r.metadata.origin == ResourceOrigin::TopLevel
     }));

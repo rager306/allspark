@@ -504,7 +504,7 @@ mod tests {
         let store = AgentCronJobStore::new(dir.path().join("jobs.json"));
         let now = 1_700_000_000_000;
         let job = store.create(&input("tick", "every 10m", now)).unwrap();
-        assert!(store.claim_due(now, now).unwrap().is_empty());
+        assert_eq!(store.claim_due(now, now).unwrap().len(), 0);
         let dispatches = store.claim_due(now + 600_000, now + 600_000).unwrap();
         assert_eq!(dispatches.len(), 1);
         assert_eq!(dispatches[0].job.id, job.id);

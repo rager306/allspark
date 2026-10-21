@@ -317,7 +317,7 @@ mod tests {
         let dropped = c.drop_cascade("green").unwrap();
         assert_eq!(dropped, vec!["a".to_string(), "c".into(), "d".into()]);
         assert!(!c.contains("green"));
-        assert!(c.list_aliases().is_empty());
+        assert_eq!(c.list_aliases().len(), 0);
     }
 
     #[test]

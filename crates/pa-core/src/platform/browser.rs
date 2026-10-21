@@ -48,8 +48,8 @@ mod tests {
     #[test]
     fn opener_selection() {
         let (program, args) = opener("https://example.com/login");
-        assert!(!program.is_empty());
-        assert!(!args.is_empty());
+        assert_ne!(program, "");
+        assert_ne!(args.len(), 0);
         assert!(args.iter().any(|arg| arg.contains("example.com")));
     }
 

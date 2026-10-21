@@ -123,10 +123,11 @@ fn rejects_empty_update_file_hunk() {
 
 #[test]
 fn parses_empty_patch() {
-    assert!(
+    assert_eq!(
         parse_apply_patch("*** Begin Patch\n*** End Patch")
             .unwrap()
-            .is_empty()
+            .len(),
+        0
     );
 }
 

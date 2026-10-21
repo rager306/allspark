@@ -102,7 +102,7 @@ async fn supports_helper_blocks_for_text_thinking_and_tool_calls() {
                     .cloned()
                     .unwrap()
             );
-            assert!(!tool_call.id.is_empty());
+            assert_ne!(tool_call.id, "");
         }
         other => panic!("expected tool call, got {other:?}"),
     }

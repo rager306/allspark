@@ -261,8 +261,8 @@ mod tests {
         let mut stopped: Vec<(String, String)> = Vec::new();
         let mut failed: Vec<(String, String)> = Vec::new();
         terminate_verified_residuals(&root, &mut stopped, &mut failed, &HashSet::new());
-        assert!(stopped.is_empty());
-        assert!(failed.is_empty());
+        assert_eq!(stopped.len(), 0);
+        assert_eq!(failed.len(), 0);
     }
 
     #[test]

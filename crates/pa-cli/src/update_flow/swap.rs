@@ -225,7 +225,7 @@ mod tests {
         let ok = probe(Path::new("/bin/sh"), &["-c", "true"], PROBE_TIMEOUT)
             .await
             .unwrap();
-        assert!(ok.is_empty());
+        assert_eq!(ok, "");
         assert!(
             probe(Path::new("/bin/sh"), &["-c", "exit 3"], PROBE_TIMEOUT)
                 .await

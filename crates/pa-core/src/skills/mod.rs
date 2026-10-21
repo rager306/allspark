@@ -336,17 +336,17 @@ mod tests {
 
     #[test]
     fn name_validation_rules() {
-        assert!(validate_name("web-search", "web-search").is_empty());
-        assert!(!validate_name("web_search", "web_search").is_empty());
-        assert!(!validate_name("-lead", "-lead").is_empty());
-        assert!(!validate_name("a--b", "a--b").is_empty());
-        assert!(!validate_name("web", "other").is_empty());
+        assert_eq!(validate_name("web-search", "web-search").len(), 0);
+        assert_ne!(validate_name("web_search", "web_search").len(), 0);
+        assert_ne!(validate_name("-lead", "-lead").len(), 0);
+        assert_ne!(validate_name("a--b", "a--b").len(), 0);
+        assert_ne!(validate_name("web", "other").len(), 0);
     }
 
     #[test]
     fn description_validation_rules() {
         assert_eq!(validate_description(""), vec!["description is required"]);
-        assert!(validate_description("ok").is_empty());
+        assert_eq!(validate_description("ok").len(), 0);
         let long = "x".repeat(MAX_DESCRIPTION_LENGTH + 1);
         assert_eq!(validate_description(&long).len(), 1);
     }
@@ -415,7 +415,7 @@ mod tests {
         std::fs::create_dir_all(&skill_dir).expect("mkdir");
         std::fs::write(skill_dir.join("SKILL.md"), "---\n---\nUse it well.").expect("write");
         let result = crate::skills::load_skills_from_dir(dir.path(), "user");
-        assert!(result.skills.is_empty());
+        assert_eq!(result.skills.len(), 0);
         assert!(result.diagnostics.iter().any(
             |d| matches!(d, crate::skills::ResourceDiagnostic::Warning { message, .. }
                 if message == "description is required")

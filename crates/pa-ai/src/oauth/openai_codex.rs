@@ -736,7 +736,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error, LOGIN_CANCELLED);
-        assert!(http.seen_bodies(TOKEN_URL).is_empty());
+        assert_eq!(http.seen_bodies(TOKEN_URL).len(), 0);
     }
 
     #[tokio::test]
@@ -880,7 +880,7 @@ mod tests {
         .expect("the cancelled wait returns instead of hanging")
         .unwrap_err();
         assert_eq!(error, LOGIN_CANCELLED);
-        assert!(http.seen_bodies(TOKEN_URL).is_empty());
+        assert_eq!(http.seen_bodies(TOKEN_URL).len(), 0);
         drop(held);
     }
 
@@ -904,7 +904,7 @@ mod tests {
         .expect("the no-paste login ends on the surface's cancel")
         .unwrap_err();
         assert_eq!(error, LOGIN_CANCELLED);
-        assert!(http.seen_bodies(TOKEN_URL).is_empty());
+        assert_eq!(http.seen_bodies(TOKEN_URL).len(), 0);
     }
 
     #[tokio::test]

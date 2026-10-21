@@ -669,7 +669,7 @@ mod context_tests {
         // The snapshot outranks every retained digest copy, so no digest
         // custom message rides the session_context and the summary keeps its
         // snapshot (with the fingerprint of the state behind it).
-        assert!(digest_rows(&session_context).is_empty());
+        assert_eq!(digest_rows(&session_context).len(), 0);
         assert_eq!(
             summary_digest(&session_context).as_deref(),
             Some("snapshot digest")

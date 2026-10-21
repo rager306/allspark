@@ -21,9 +21,9 @@ fn parses_wire_images_and_drops_incomplete_entries() {
 
 #[test]
 fn missing_or_empty_images_admit_text_only() {
-    assert!(parse_prompt_images(&json!({ "message": "plain" })).is_empty());
-    assert!(parse_prompt_images(&json!({ "images": [] })).is_empty());
-    assert!(parse_prompt_images(&json!({ "images": null })).is_empty());
+    assert_eq!(parse_prompt_images(&json!({ "message": "plain" })).len(), 0);
+    assert_eq!(parse_prompt_images(&json!({ "images": [] })).len(), 0);
+    assert_eq!(parse_prompt_images(&json!({ "images": null })).len(), 0);
 }
 
 fn test_worker() -> Arc<Worker> {

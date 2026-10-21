@@ -770,7 +770,7 @@ mod tests {
 
         let empty = snapshot_from_text(r#"{"edits":["#, false, false);
         assert!(empty.has_edits);
-        assert!(empty.edits.is_empty());
+        assert_eq!(empty.edits.len(), 0);
     }
 
     #[test]

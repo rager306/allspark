@@ -732,7 +732,7 @@ mod tests {
         // The first three frames arrive, then the body read fails: no
         // terminating chunk and no `[DONE]`.
         let error = response.text().await.expect_err("truncated body");
-        assert!(!error.to_string().is_empty());
+        assert_ne!(error.to_string(), "");
     }
 
     #[tokio::test]

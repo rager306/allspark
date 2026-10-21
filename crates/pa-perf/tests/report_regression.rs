@@ -58,7 +58,7 @@ fn a_report_only_row_never_fails_the_gate() {
         &[result(Scenario::ColdStart, 5_000.0)],
         &baseline(1_000.0, true),
     );
-    assert!(report.regressions.is_empty());
+    assert_eq!(report.regressions.len(), 0);
     assert!(report.markdown.contains("report-only"));
 }
 
@@ -68,7 +68,7 @@ fn a_missing_baseline_prints_no_baseline() {
         &[result(Scenario::OpenSession, 147.0)],
         &baseline(1_000.0, false),
     );
-    assert!(report.regressions.is_empty());
+    assert_eq!(report.regressions.len(), 0);
     assert!(report.markdown.contains("open-session/small"));
     assert!(report.markdown.contains("(no baseline)"));
 }

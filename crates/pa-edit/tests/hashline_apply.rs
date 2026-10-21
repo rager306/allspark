@@ -154,7 +154,7 @@ fn preserves_intentional_indentation_only_replacements() {
         Some("x.ts"),
     );
     assert_eq!(result.text, "first();\nsecond();");
-    assert!(result.warnings.is_empty());
+    assert_eq!(result.warnings.len(), 0);
 }
 
 #[test]
@@ -186,7 +186,7 @@ fn does_not_spare_a_deleted_closing_line_that_the_payload_restates() {
         Some("x.ts"),
     );
     assert_eq!(result.text, "class Foo {\n\tok();\n}");
-    assert!(result.warnings.is_empty());
+    assert_eq!(result.warnings.len(), 0);
 }
 
 #[test]
@@ -290,7 +290,7 @@ fn refuses_to_cross_a_line_targeted_by_another_hunk() {
         result.text,
         "function f() {\n    if (x) {\n        a();\n    c();\n    b();\n}\n"
     );
-    assert!(result.warnings.is_empty());
+    assert_eq!(result.warnings.len(), 0);
 }
 
 #[test]

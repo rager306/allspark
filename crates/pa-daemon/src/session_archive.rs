@@ -308,7 +308,7 @@ mod tests {
         let now = SystemTime::now();
         let candidates = [candidate("ancient", 400, false, now)];
         let doomed = plan_archive(&candidates, &policy(None, None), now);
-        assert!(doomed.is_empty());
+        assert_eq!(doomed.len(), 0);
     }
 
     #[test]
@@ -346,7 +346,7 @@ mod tests {
             candidate("b", 200, false, now),
         ];
         let doomed = plan_archive(&candidates, &policy(None, Some(5)), now);
-        assert!(doomed.is_empty());
+        assert_eq!(doomed.len(), 0);
     }
 
     #[test]
@@ -407,7 +407,7 @@ mod tests {
             SystemTime::now(),
         )
         .expect("sweep");
-        assert!(doomed.is_empty());
+        assert_eq!(doomed.len(), 0);
         assert!(old.is_file());
     }
 

@@ -78,7 +78,7 @@ fn the_output_budget_counts_against_the_window() {
     let decision = decide(&[candidate], &context, ModelRoutingLevel::On).expect("a decision");
     assert_eq!(decision.reason, RouteReason::AllRejected);
     assert_eq!(decision.chosen, "");
-    assert!(decision.ladder().is_empty());
+    assert_eq!(decision.ladder().len(), 0);
 }
 
 #[test]

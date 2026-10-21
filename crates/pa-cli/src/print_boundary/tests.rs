@@ -356,7 +356,7 @@ async fn overflow_retry_succeeds_on_the_compacted_context() {
     .unwrap();
 
     assert_eq!(compaction_count(&engine).await, 1);
-    assert!(outcome_rows(&engine).await.is_empty());
+    assert_eq!(outcome_rows(&engine).await.len(), 0);
     let last = last_assistant(&engine).await.expect("a settled turn");
     let text = last
         .content
@@ -453,7 +453,7 @@ async fn stale_overflow_error_recovers_before_the_next_prompt_after_a_resume() {
     .await
     .unwrap();
     assert_eq!(compaction_count(&engine_a).await, 0);
-    assert!(outcome_rows(&engine_a).await.is_empty());
+    assert_eq!(outcome_rows(&engine_a).await.len(), 0);
 
     // Run two: a fresh boundary over the persisted session, compaction enabled;
     // the faux queue carries the summarizer then the recovered turn.
@@ -488,7 +488,7 @@ async fn stale_overflow_error_recovers_before_the_next_prompt_after_a_resume() {
         1,
         "the pre-turn arm compacted the stale overflow"
     );
-    assert!(outcome_rows(&engine_b).await.is_empty());
+    assert_eq!(outcome_rows(&engine_b).await.len(), 0);
     let stale = last_assistant(&engine_b).await;
     assert!(
         !matches!(
@@ -556,7 +556,7 @@ async fn autonomous_continuation_turns_cross_the_boundary_arms() {
     .await
     .unwrap();
     assert_eq!(compaction_count(&engine).await, 1);
-    assert!(outcome_rows(&engine).await.is_empty());
+    assert_eq!(outcome_rows(&engine).await.len(), 0);
     let last = last_assistant(&engine).await.expect("a settled turn");
     assert_eq!(last.stop_reason, pa_types::ai::StopReason::Stop);
     let text = last
@@ -1178,7 +1178,7 @@ async fn pre_turn_threshold_arm_compacts_a_resumed_session_before_the_prompt() {
     .await
     .unwrap();
     assert_eq!(compaction_count(&engine_a).await, 0);
-    assert!(outcome_rows(&engine_a).await.is_empty());
+    assert_eq!(outcome_rows(&engine_a).await.len(), 0);
 
     // Run two: a fresh boundary over the persisted session — the pre-turn arm
     // compacts first.
@@ -1220,7 +1220,7 @@ async fn pre_turn_threshold_arm_compacts_a_resumed_session_before_the_prompt() {
     assert_eq!(events[1]["result"]["summary"], "the resumed summary");
     assert_eq!(events[1]["willRetry"], false);
     assert_eq!(compaction_count(&engine_b).await, 1);
-    assert!(outcome_rows(&engine_b).await.is_empty());
+    assert_eq!(outcome_rows(&engine_b).await.len(), 0);
     // The settled boundary stays quiet (the stale-usage guard holds).
     admit(
         &mut boundary,
@@ -1278,7 +1278,7 @@ async fn pre_turn_abort_arm_drops_pending_requests_and_continues() {
     assert!(!engine.turn_boundary.refine_pending().await);
     assert!(events.lock().unwrap().is_empty(), "no compaction events");
     assert_eq!(compaction_count(&engine).await, 0);
-    assert!(outcome_rows(&engine).await.is_empty());
+    assert_eq!(outcome_rows(&engine).await.len(), 0);
     admit(&mut boundary, &engine, &model, "next prompt".to_string())
         .await
         .unwrap();
@@ -1768,7 +1768,7 @@ async fn non_overflow_error_never_triggers_the_arm() {
         .await
         .unwrap();
     assert_eq!(compaction_count(&engine).await, 0);
-    assert!(outcome_rows(&engine).await.is_empty());
+    assert_eq!(outcome_rows(&engine).await.len(), 0);
     let last = last_assistant(&engine)
         .await
         .expect("the settled error turn");
@@ -1800,7 +1800,7 @@ async fn overflow_error_with_compaction_disabled_ends_without_recovery() {
         .await
         .unwrap();
     assert_eq!(compaction_count(&engine).await, 0);
-    assert!(outcome_rows(&engine).await.is_empty());
+    assert_eq!(outcome_rows(&engine).await.len(), 0);
     let last = last_assistant(&engine)
         .await
         .expect("the settled error turn");

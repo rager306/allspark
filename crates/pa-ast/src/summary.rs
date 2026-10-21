@@ -1050,7 +1050,7 @@ mod tests {
 
         assert!(result.parsed);
         assert_eq!(result.language.as_deref(), Some("fortran"));
-        assert!(!result.segments.is_empty());
+        assert_ne!(result.segments.len(), 0);
     }
 
     #[test]

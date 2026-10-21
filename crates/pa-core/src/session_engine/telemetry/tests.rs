@@ -254,9 +254,12 @@ async fn emits_aggregate_metrics_without_content() {
     );
     // Deferred finalize: AgentEnd alone must not seal the run yet (the
     // post-run compaction window stays open).
-    assert!(event_properties(&fixture.mock, "agent run completed")
-        .await
-        .is_empty());
+    assert_eq!(
+        event_properties(&fixture.mock, "agent run completed")
+            .await
+            .len(),
+        0
+    );
 
     fixture.clock.set(1_200);
     let telemetry = SessionTelemetry::detached(
@@ -318,9 +321,12 @@ async fn post_run_compaction_counts_into_the_open_run() {
             messages: Vec::new(),
         },
     );
-    assert!(event_properties(&fixture.mock, "agent run completed")
-        .await
-        .is_empty());
+    assert_eq!(
+        event_properties(&fixture.mock, "agent run completed")
+            .await
+            .len(),
+        0
+    );
 
     // The scheduled compaction drains between AgentEnd and the next run.
     let telemetry = SessionTelemetry::detached(

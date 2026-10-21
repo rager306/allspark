@@ -1127,7 +1127,7 @@ mod tests {
         let linear = status.iter().find(|row| row.server == "linear").unwrap();
         assert!(!linear.enabled);
         assert!(linear.uses_oauth);
-        assert!(manager.get_enabled_persistent_generic_servers().is_empty());
+        assert_eq!(manager.get_enabled_persistent_generic_servers().len(), 0);
     }
 
     #[test]

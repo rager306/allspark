@@ -445,7 +445,7 @@ async fn returns_a_diff_for_an_applicable_section_and_an_error_for_a_miss() {
         ..ArgSnapshot::default()
     };
     let preview = engine.preview(&partial, true, &mut files, &workspace.store);
-    assert!(preview.is_empty());
+    assert_eq!(preview.len(), 0);
 }
 
 #[tokio::test]

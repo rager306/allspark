@@ -659,7 +659,7 @@ mod tests {
         assert_eq!(assistant.len(), 2);
         assert_eq!(assistant[1]["content"][0]["text"], "recovered reply");
         assert_eq!(done_result(&probe_events), Some(&Ok(())));
-        assert!(outcome_rows(&probe_events).is_empty());
+        assert_eq!(outcome_rows(&probe_events).len(), 0);
         assert_eq!(user_messages(&probe_events).len(), 1);
     }
 
@@ -704,7 +704,7 @@ mod tests {
         assert_eq!(assistant.len(), 2);
         assert_eq!(assistant[1]["content"][0]["text"], "recovered reply");
         assert_eq!(done_result(&probe_events), Some(&Ok(())));
-        assert!(outcome_rows(&probe_events).is_empty());
+        assert_eq!(outcome_rows(&probe_events).len(), 0);
     }
 
     #[test]
@@ -837,9 +837,9 @@ mod tests {
         admit(&engine, "seed turn".to_string(), &mut events);
         let mut error_events: Vec<EngineEvent> = Vec::new();
         admit(&engine, "flaky turn".to_string(), &mut error_events);
-        assert!(compaction_starts(&error_events).is_empty());
-        assert!(compaction_ends(&error_events).is_empty());
-        assert!(outcome_rows(&error_events).is_empty());
+        assert_eq!(compaction_starts(&error_events).len(), 0);
+        assert_eq!(compaction_ends(&error_events).len(), 0);
+        assert_eq!(outcome_rows(&error_events).len(), 0);
         assert!(matches!(done_result(&error_events), Some(Err(_))));
     }
 
@@ -936,9 +936,9 @@ mod tests {
             format!("overflow probe {}", "x".repeat(48_000)),
             &mut probe_events,
         );
-        assert!(compaction_starts(&probe_events).is_empty());
-        assert!(compaction_ends(&probe_events).is_empty());
-        assert!(outcome_rows(&probe_events).is_empty());
+        assert_eq!(compaction_starts(&probe_events).len(), 0);
+        assert_eq!(compaction_ends(&probe_events).len(), 0);
+        assert_eq!(outcome_rows(&probe_events).len(), 0);
         assert_eq!(
             done_result(&probe_events),
             Some(&Err(

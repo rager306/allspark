@@ -891,8 +891,8 @@ pub(crate) mod tests {
         );
         assert_eq!(row.summary["thinkingLevel"], json!("high"));
         let reseeded = supervisor.seed_roster_family_edges(&root_file).await;
-        assert!(reseeded.is_empty());
-        assert!(drain_roster_pushes(&mut events).is_empty());
+        assert_eq!(reseeded.len(), 0);
+        assert_eq!(drain_roster_pushes(&mut events).len(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

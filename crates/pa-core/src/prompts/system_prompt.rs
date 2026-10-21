@@ -782,7 +782,7 @@ mod tests {
         assert!(!no_lsp.contains("safe_delete_symbol` is already complete"));
 
         // A roster with none of them renders no section at all.
-        assert!(native_tools_section(&["bash", "python_repl"]).is_empty());
+        assert_eq!(native_tools_section(&["bash", "python_repl"]), "");
     }
 
     /// Every action named in the native-tools section must exist on the tool

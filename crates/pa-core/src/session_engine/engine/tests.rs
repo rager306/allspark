@@ -606,7 +606,7 @@ async fn native_tools_honour_their_disable_flags() {
     assert!(!engine.system_prompt.contains("# Native tools"));
     assert!(!agent_dir.join("graph.db").exists());
     // FORK-ONLY: every gate off leaves the recorded roster empty.
-    assert!(engine.native_tool_names().is_empty());
+    assert_eq!(engine.native_tool_names().len(), 0);
 }
 
 /// The native `edit` tool honours `editHybrid.defaultMode` / `allowModes`:

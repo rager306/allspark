@@ -524,7 +524,7 @@ mod tests {
         assert_eq!(engine.commit(id(3)).unwrap(), vec![id(4)]);
         assert_eq!(engine.commit(id(4)).unwrap(), Vec::<CallId>::new());
         assert_eq!(engine.committed(), vec![id(1), id(2), id(3), id(4)]);
-        assert!(engine.ready().is_empty());
+        assert_eq!(engine.ready().len(), 0);
     }
 
     #[test]
@@ -537,7 +537,7 @@ mod tests {
         assert_eq!(engine.state(id(3)), Some(SpecState::Ready));
         assert_eq!(engine.commit(id(3)).unwrap(), Vec::<CallId>::new());
         assert_eq!(engine.committed(), vec![id(1), id(3)]);
-        assert!(engine.ready().is_empty());
+        assert_eq!(engine.ready().len(), 0);
     }
 
     #[test]

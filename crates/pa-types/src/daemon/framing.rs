@@ -320,7 +320,7 @@ mod tests {
         )
         .await;
         assert!(error.is_err());
-        assert_eq!(sink, [] as [u8; 0]);
+        assert_eq!(sink.len(), 0);
     }
 
     #[test]

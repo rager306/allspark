@@ -1266,7 +1266,7 @@ async fn a_replied_child_gets_no_terminal_notice() {
         sessions_with_fake_supervisor(follow_up_tx, 250, FakeKill::Success, FakeChild::Healthy)
             .await;
     let handle = spawn_child(&sessions).await;
-    assert!(!handle.rlm_child_id.is_empty());
+    assert_ne!(handle.rlm_child_id, "");
     sessions.mark_replied("child-live").await;
     sessions.notify_turn_done();
 

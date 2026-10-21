@@ -835,7 +835,7 @@ mod tests {
             &recorded.runner(),
         );
         assert_eq!(outcome.exit_code, None);
-        assert!(recorded.invocations().is_empty());
+        assert_eq!(recorded.invocations().len(), 0);
     }
 
     #[test]

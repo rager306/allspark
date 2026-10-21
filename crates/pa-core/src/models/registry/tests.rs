@@ -31,7 +31,7 @@ fn model(id: &str, provider: &str) -> Model {
 fn in_memory_loads_built_in_catalog() {
     let registry = ModelRegistry::in_memory(auth_with(&serde_json::json!({})));
     assert!(registry.get_error().is_none());
-    assert!(!registry.get_all().is_empty());
+    assert_ne!(registry.get_all().len(), 0);
     assert!(registry
         .get_all()
         .iter()
@@ -45,7 +45,7 @@ fn in_memory_loads_built_in_catalog() {
 #[test]
 fn built_in_catalog_models_stay_unmarked() {
     let registry = ModelRegistry::in_memory(auth_with(&serde_json::json!({})));
-    assert!(!registry.get_all().is_empty());
+    assert_ne!(registry.get_all().len(), 0);
     assert!(registry
         .get_all()
         .iter()
@@ -85,7 +85,7 @@ fn native_free_models_do_not_configure_a_provider_or_enter_default_candidates() 
         crate::auth::types::AuthStatus::default()
     );
     assert!(!registry.has_configured_auth(free));
-    assert!(registry.get_available().is_empty());
+    assert_eq!(registry.get_available().len(), 0);
 }
 
 #[test]
@@ -245,7 +245,7 @@ fn models_json_error_keeps_built_ins() {
     std::fs::write(&models_path, "{ not json").unwrap();
     let registry = ModelRegistry::create(auth_with(&serde_json::json!({})), &models_path);
     assert!(registry.get_error().is_some());
-    assert!(!registry.get_all().is_empty());
+    assert_ne!(registry.get_all().len(), 0);
 }
 
 #[test]

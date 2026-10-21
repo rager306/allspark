@@ -456,8 +456,8 @@ mod tests {
             assert_eq!(params["client_id"], "1601185624273.8899143856786");
             assert_eq!(params["redirect_uri"], "http://localhost:3118/callback");
             assert_eq!(params["code_challenge_method"], "S256");
-            assert!(!params["state"].is_empty());
-            assert!(!params["code_challenge"].is_empty());
+            assert_ne!(params["state"], "");
+            assert_ne!(params["code_challenge"], "");
 
             let config = manager.lock().unwrap().oauth_config("slack").unwrap();
             let refreshed = super::super::mcp_refresh_token(http.as_ref(), &config, &credential)
@@ -494,7 +494,7 @@ mod tests {
             if token["grant_type"] == "authorization_code" {
                 assert_eq!(token["redirect_uri"], "http://localhost:3118/callback");
                 assert_eq!(token["code"], "the-code");
-                assert!(!token["code_verifier"].is_empty());
+                assert_ne!(token["code_verifier"], "");
             } else {
                 assert_eq!(token["refresh_token"], "slack-refresh");
             }

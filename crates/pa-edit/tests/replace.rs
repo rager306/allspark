@@ -132,7 +132,7 @@ fn replace_matcher_omits_incomplete_entries() {
         ..ArgSnapshot::default()
     };
     assert_eq!(engine.inspect(&snapshot).paths, vec!["src/foo.ts"]);
-    assert!(engine.inspect(&snapshot).entries.is_empty());
+    assert_eq!(engine.inspect(&snapshot).entries.len(), 0);
 }
 
 #[test]
@@ -141,7 +141,7 @@ fn streaming_preview_waits_until_new_string_is_present() {
     workspace.write("a.txt", "alpha\n");
     let mut session = workspace.session();
     session.push(r#"{"path":"a.txt","old_string":"alp"#);
-    assert!(session.preview().files.is_empty());
+    assert_eq!(session.preview().files.len(), 0);
     session.push(r#"ha","new_string":"beta"}"#);
     let preview = session.preview();
     assert_eq!(preview.files.len(), 1);

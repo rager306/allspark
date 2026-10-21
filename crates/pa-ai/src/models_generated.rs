@@ -4527,7 +4527,7 @@ mod tests {
     #[test]
     fn unknown_lookups_are_none() {
         assert!(get_model("nope", "nope").is_none());
-        assert!(get_models("nope").is_empty());
+        assert_eq!(get_models("nope").len(), 0);
     }
 
     /// The compiled Prime Inference section is the conservative fallback (TS #2519): it declares no

@@ -621,8 +621,12 @@ mod liveness_tests {
         }
         // A spawned `ps` resolves to the fake and would answer `Some("ps:...")`.
         assert_ne!(
-            std::process::Command::new("ps").output().unwrap().stdout,
-            [] as [u8; 0]
+            std::process::Command::new("ps")
+                .output()
+                .unwrap()
+                .stdout
+                .len(),
+            0
         );
         assert_eq!(process_start_id(100_000_000), None);
         assert!(process_start_id(std::process::id()).is_some());

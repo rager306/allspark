@@ -960,7 +960,7 @@ mod tests {
         assert!(latest[0].busy);
         let restored = reopened.latest_queue_snapshot("s1").unwrap();
         assert_eq!(restored.0, vec![item]);
-        assert!(restored.1.is_empty());
+        assert_eq!(restored.1.len(), 0);
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 

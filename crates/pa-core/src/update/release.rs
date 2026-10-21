@@ -234,12 +234,12 @@ mod tests {
         });
         let release = parse_channel_manifest(lying_row.to_string().as_bytes()).unwrap();
         assert_eq!(release.version, "1.2.3");
-        assert!(release.artifacts.is_empty());
+        assert_eq!(release.artifacts.len(), 0);
         assert!(parse_channel_manifest(b"{").is_none());
         assert!(parse_channel_manifest(br#"{"binaries": []}"#).is_none());
         let version_only = parse_channel_manifest(br#"{"version": "v1.2.3"}"#).unwrap();
         assert_eq!(version_only.version, "1.2.3");
-        assert!(version_only.artifacts.is_empty());
+        assert_eq!(version_only.artifacts.len(), 0);
     }
 
     #[test]

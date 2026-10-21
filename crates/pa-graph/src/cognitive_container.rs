@@ -186,7 +186,7 @@ mod tests {
     fn empty_chain_verifies() {
         let c = CognitiveContainer::new(2);
         assert!(c.verify_chain());
-        assert!(c.epochs().is_empty());
+        assert_eq!(c.epochs().len(), 0);
     }
 
     #[test]

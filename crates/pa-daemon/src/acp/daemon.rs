@@ -2118,11 +2118,11 @@ mod tests {
         )
         .await;
         assert!(responses.recv().await.unwrap().get("result").is_some());
-        assert!(state.lock().await.mcp_server_names.is_empty());
+        assert_eq!(state.lock().await.mcp_server_names.len(), 0);
         drop(link);
         let (replacements, installed) = worker.await.unwrap();
         assert_eq!(replacements, vec![vec!["example"], vec![], vec![]]);
-        assert!(installed.is_empty());
+        assert_eq!(installed.len(), 0);
     }
 
     #[tokio::test]

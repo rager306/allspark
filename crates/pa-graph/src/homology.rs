@@ -257,10 +257,10 @@ mod tests {
 
     #[test]
     fn single_point_and_empty_cloud() {
-        assert!(h0_persistence(&[], 0).is_empty());
+        assert_eq!(h0_persistence(&[], 0).len(), 0);
         let one = h0_persistence(&[(3.0, 4.0)], 0);
         assert_eq!(one, vec![(0.0, f32::INFINITY)]);
-        assert!(betti0_curve(&[], 5).is_empty());
+        assert_eq!(betti0_curve(&[], 5).len(), 0);
         assert_eq!(betti0_curve(&[(0.0, 0.0)], 5), vec![(0.0, 1)]);
     }
 

@@ -37,7 +37,7 @@ fn the_two_stored_row_shapes_render_their_channels_faithfully() {
         ],
         "the healthy row decodes to its thinking and text blocks"
     );
-    assert!(healthy_calls.is_empty());
+    assert_eq!(healthy_calls.len(), 0);
     let (leak_blocks, leak_calls) = assistant_message_parts(&leak_row);
     assert_eq!(
         leak_blocks,
@@ -46,7 +46,7 @@ fn the_two_stored_row_shapes_render_their_channels_faithfully() {
         )],
         "the content-only row decodes to a single text block"
     );
-    assert!(leak_calls.is_empty());
+    assert_eq!(leak_calls.len(), 0);
 
     let frame_text = |view: &mut crate::view::AgentView| -> Vec<String> {
         view.render_frame(80, 30).iter().map(line_text).collect()

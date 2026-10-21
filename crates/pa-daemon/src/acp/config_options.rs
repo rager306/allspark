@@ -233,7 +233,10 @@ mod tests {
 
     #[test]
     fn no_model_yields_no_options() {
-        assert!(session_config_options(None, "medium", &levels(&["off"]), &[]).is_empty());
+        assert_eq!(
+            session_config_options(None, "medium", &levels(&["off"]), &[]).len(),
+            0
+        );
     }
 
     #[test]

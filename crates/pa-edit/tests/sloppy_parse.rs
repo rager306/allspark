@@ -194,7 +194,7 @@ fn ignores_payloads_quoted_in_markdown_fences() {
         "```",
     ]
     .join("\n");
-    assert!(extract_inline_sloppy_regions(&text).is_empty());
+    assert_eq!(extract_inline_sloppy_regions(&text).len(), 0);
 }
 
 #[test]
@@ -238,8 +238,14 @@ fn old_xml_looking_lines_are_literal_body_content() {
 
 #[test]
 fn returns_empty_without_a_pathful_leading_edit_header() {
-    assert!(split_sloppy_sections("*** Find\nold\n*** Replace\nnew").is_empty());
-    assert!(split_sloppy_sections("*** Edit File:\n*** Find\nold").is_empty());
+    assert_eq!(
+        split_sloppy_sections("*** Find\nold\n*** Replace\nnew").len(),
+        0
+    );
+    assert_eq!(
+        split_sloppy_sections("*** Edit File:\n*** Find\nold").len(),
+        0
+    );
 }
 
 #[test]
