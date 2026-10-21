@@ -58,7 +58,12 @@ fn tabs_partition_the_settings_rows() {
             ),
             (
                 "Models",
-                vec!["thinking", "transport", "default-service-tier"]
+                vec![
+                    "thinking",
+                    "transport",
+                    "default-service-tier",
+                    "routing-mode"
+                ]
             ),
             (
                 "Display",
@@ -674,6 +679,55 @@ fn harness_refinement_row_cycles_both_values_in_the_agents_tab() {
             value: "true".to_string()
         }
     );
+}
+
+#[test]
+fn the_routing_row_cycles_every_level_in_the_models_tab() {
+    let values = SettingsCurrentValues {
+        routing_mode: "off".to_string(),
+        ..SettingsCurrentValues::default()
+    };
+    let mut menu = SettingsMenu::new(settings_menu_rows(&values));
+    // 2 jumps to the Models tab, three downs reach the routing row
+    // (thinking, transport, default-service-tier).
+    menu.handle_key("2", &kb());
+    for _ in 0..3 {
+        menu.handle_key("down", &kb());
+    }
+    for expected in ["dry-run", "auto", "on", "off"] {
+        assert_eq!(
+            menu.handle_key("right", &kb()),
+            SettingsMenuAction::Change {
+                id: "routing-mode",
+                value: expected.to_string()
+            }
+        );
+    }
+    let text = render_text(&menu);
+    assert!(text.iter().any(|row| row.contains("Model routing")));
+    // The description wraps; assert the whole block, since the point is that
+    // the row says what each level does before an operator cycles it.
+    let description = text.join("\n");
+    for phrase in [
+        "off keeps the pinned model",
+        "dry-run only records",
+        "auto applies it past the margin",
+        "on always applies it",
+    ] {
+        assert!(
+            description.contains(phrase),
+            "the row explains {phrase:?}: {description}"
+        );
+    }
+}
+
+#[test]
+fn the_routing_choices_are_the_router_vocabulary() {
+    // `pa-tui` links `pa-types` only, so the menu keeps its own list.
+    // `pa-core` pins `ModelRoutingLevel::all()` to this same list and to
+    // `pa_telemetry::ROUTING_LEVELS`, so the three cannot drift apart
+    // silently: a fourth vocabulary entry fails one of those tests.
+    assert_eq!(routing_level_choices(), &["off", "dry-run", "auto", "on"]);
 }
 
 #[test]

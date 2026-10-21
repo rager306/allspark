@@ -73,6 +73,8 @@ pub use config::SupervisorLinkConfig;
 use config::{GoalRuntimeHandles, ProducerUsageSink, RestoredSessionModel, StartupScope};
 
 mod reload;
+/// [FORK-ONLY] The model router's turn-boundary seam.
+mod routing;
 mod session_engine_impl;
 
 mod turn;
@@ -303,6 +305,13 @@ pub struct AgentSessionEngine {
     /// reload's fresher pair (the last reload to run leaves the target
     /// serving the newest store).
     pub(crate) reload_lock: std::sync::Mutex<()>,
+    /// [FORK-ONLY] The model router's per-session memory (the incumbent's
+    /// dwell); the level itself lives in settings (`routing.mode`).
+    pub(crate) router_state: std::sync::Mutex<routing::RouterState>,
+    /// [FORK-ONLY] The router's telemetry seam: one lazily built client per
+    /// worker (the model-refusal pattern), so a decision never builds a client
+    /// per turn.
+    pub(crate) router_telemetry: std::sync::Arc<routing::RouterTelemetry>,
 
     /// Turn-boundary runs register their controller here;
     /// [`SessionEngine::abort_auto_compaction`] aborts whatever holds it.

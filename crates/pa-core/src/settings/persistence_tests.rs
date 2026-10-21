@@ -3,6 +3,7 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use super::{InMemorySettingsStorage, SettingsManager, SettingsScope, SettingsStorage};
+use crate::settings::ModelRoutingLevel;
 
 fn fixture(content: &str) -> (Arc<InMemorySettingsStorage>, SettingsManager) {
     let storage = Arc::new(InMemorySettingsStorage::default());
@@ -270,4 +271,71 @@ fn project_percentage_overrides_global_and_stale_writes_preserve_external_settin
     first.set_compaction_threshold_percent(90.0).unwrap();
     first.reload().unwrap();
     assert_eq!(first.get_compaction_threshold_percent(), 60.5);
+}
+
+#[test]
+fn routing_mode_defaults_off_and_rejects_nothing_it_cannot_name() {
+    // Unset reads as `off`: the pre-router behaviour, byte for byte.
+    let (_storage, manager) = fixture(r#"{"theme":"light"}"#);
+    assert_eq!(manager.get_routing_level(), ModelRoutingLevel::Off);
+    // Every unknown spelling lands on `off` too. That is the fail-closed
+    // default at the READ seam; the settings seam that writes the value
+    // refuses an unknown spelling instead (see `pa-cli`'s client settings),
+    // so a typo can never be persisted as a level the operator did not mean.
+    for value in ["", "OFFF", "dryrun!", "autopilot", "1"] {
+        let (_storage, manager) = fixture(&format!(r#"{{"routing":{{"mode":"{value}"}}}}"#));
+        assert_eq!(
+            manager.get_routing_level(),
+            ModelRoutingLevel::Off,
+            "{value:?} must not enable the router"
+        );
+    }
+    // A wrong-typed `routing` is a known field: it loads as unset, never as a
+    // surviving raw value.
+    let (_storage, manager) = fixture(r#"{"routing":"auto"}"#);
+    assert_eq!(manager.get_routing_level(), ModelRoutingLevel::Off);
+}
+
+#[test]
+fn routing_mode_persists_globally_and_only_touches_its_own_key() {
+    let (storage, mut manager) =
+        fixture(r#"{"theme":"light","routing":{"mode":"off"},"future":{"keep":true}}"#);
+    manager
+        .set_routing_level(ModelRoutingLevel::DryRun)
+        .unwrap();
+    assert_eq!(
+        manager.reopen().get_routing_level(),
+        ModelRoutingLevel::DryRun
+    );
+    assert_eq!(
+        document(storage.as_ref()),
+        json!({
+            "theme":"light", "routing":{"mode":"dry-run"}, "future":{"keep":true}
+        })
+    );
+    for level in ModelRoutingLevel::all() {
+        manager.set_routing_level(level).unwrap();
+        assert_eq!(manager.reopen().get_routing_level(), level);
+    }
+}
+
+#[test]
+fn routing_level_vocabulary_is_one_list() {
+    let spelled: Vec<&str> = ModelRoutingLevel::all()
+        .iter()
+        .map(|level| level.as_str())
+        .collect();
+    assert_eq!(spelled, vec!["off", "dry-run", "auto", "on"]);
+    // The telemetry catalog sanitizes the emitted `level` against its own
+    // closed list; a level the catalog does not know would be rewritten to
+    // `off` on the wire, so the two lists must agree exactly.
+    assert_eq!(spelled, pa_telemetry::ROUTING_LEVELS.to_vec());
+    for level in ModelRoutingLevel::all() {
+        assert_eq!(ModelRoutingLevel::parse(level.as_str()), level);
+    }
+    assert!(!ModelRoutingLevel::Off.is_enabled());
+    assert!(ModelRoutingLevel::DryRun.is_enabled());
+    assert!(!ModelRoutingLevel::DryRun.applies());
+    assert!(ModelRoutingLevel::Auto.applies());
+    assert!(ModelRoutingLevel::On.applies());
 }

@@ -119,6 +119,15 @@ struct SettingsTab {
     selected: usize,
 }
 
+/// The router's levels in cycle order. Kept as a plain local list because
+/// `pa-tui` links `pa-types` only; the values are asserted against
+/// `pa_telemetry::ROUTING_LEVELS` and `ModelRoutingLevel` in the node test
+/// battery, so a vocabulary change cannot silently desync the menu.
+#[must_use]
+pub fn routing_level_choices() -> &'static [&'static str] {
+    &["off", "dry-run", "auto", "on"]
+}
+
 /// The TS settings-menu rows in the TS order, with the caller-assembled
 /// current values.
 pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRow> {
@@ -275,6 +284,19 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             submenu: None,
         },
         SettingsMenuRow {
+            id: "routing-mode",
+            label: "Model routing",
+            description: "Who picks the serving provider for a turn: off keeps the pinned model, dry-run only records the choice, auto applies it past the margin, on always applies it",
+            current: current.routing_mode.clone(),
+            values: Some(
+                routing_level_choices()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+            ),
+            submenu: None,
+        },
+        SettingsMenuRow {
             id: "transport",
             label: "Transport",
             description: "Preferred transport for providers that support multiple transports",
@@ -366,6 +388,8 @@ pub struct SettingsCurrentValues {
     pub steering_mode: String,
     pub follow_up_mode: String,
     pub transport: String,
+    /// [FORK-ONLY] The model router's level (`off` by default).
+    pub routing_mode: String,
     pub default_service_tier: String,
     pub mermaid: String,
     pub quiet_startup: bool,

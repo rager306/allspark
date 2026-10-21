@@ -37,6 +37,9 @@ pub mod request_timing;
 pub mod rlm_host;
 pub mod rlm_notices;
 pub mod rlm_usage;
+/// [FORK-ONLY] The pure model router (see the module docs for the level gate
+/// and the anti-thrash contract).
+pub mod routing;
 pub mod runtime;
 pub mod runtime_wiring;
 pub mod semantic_edges;

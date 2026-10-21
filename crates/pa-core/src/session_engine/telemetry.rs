@@ -41,10 +41,10 @@ pub use track::{
 };
 
 mod classify;
-pub use classify::provider_category;
+pub use classify::{model_category, provider_category};
 
 mod status;
-use classify::{error_category, model_category, opt_value, run_outcome};
+use classify::{error_category, opt_value, run_outcome};
 pub use status::{
     set_telemetry_enabled_text, telemetry_endpoint, telemetry_status_text, telemetry_switch,
     TelemetrySwitch,

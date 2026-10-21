@@ -302,6 +302,84 @@ pub struct EditHybridSettings {
     pub allow_modes: Option<Vec<String>>,
 }
 
+/// [FORK-ONLY] The model router's gate and mode (`[routing]`): whether the
+/// per-turn chooser runs at all, and how far it may act. The router owns
+/// no state of its own; it orders the provider ladder the failover driver
+/// already walks, so `off` is exactly the pre-router behaviour.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutingSettings {
+    /// `"off" | "dry-run" | "auto" | "on"`; unset or unrecognized reads as
+    /// `off` (fail-closed on a typo, never fail-open).
+    pub mode: Option<String>,
+}
+
+/// The resolved `routing.mode` gate.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ModelRoutingLevel {
+    /// The router never runs: the pinned model serves, and failover keeps
+    /// catalog order (the default).
+    #[default]
+    Off,
+    /// The router decides and records the decision, and applies nothing:
+    /// the level that produces the data justifying the rest.
+    DryRun,
+    /// The router may reorder the provider ladder, but only when a
+    /// challenger beats the incumbent by the hysteresis margin.
+    Auto,
+    /// The router always orders by score (still behind every hard filter).
+    On,
+}
+
+impl ModelRoutingLevel {
+    /// Parse the settings string; unrecognized spellings read as `off`
+    /// (fail-closed on a typo, never fail-open).
+    #[must_use]
+    pub fn parse(value: &str) -> ModelRoutingLevel {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "dry-run" | "dry_run" | "dryrun" => ModelRoutingLevel::DryRun,
+            "auto" => ModelRoutingLevel::Auto,
+            "on" => ModelRoutingLevel::On,
+            _ => ModelRoutingLevel::Off,
+        }
+    }
+
+    /// Every level, in the menu's cycle order (`off` first, the default).
+    #[must_use]
+    pub fn all() -> [ModelRoutingLevel; 4] {
+        [
+            ModelRoutingLevel::Off,
+            ModelRoutingLevel::DryRun,
+            ModelRoutingLevel::Auto,
+            ModelRoutingLevel::On,
+        ]
+    }
+
+    /// The settings/wire spelling.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::DryRun => "dry-run",
+            Self::Auto => "auto",
+            Self::On => "on",
+        }
+    }
+
+    /// Whether the router runs at all (every level but `off`).
+    #[must_use]
+    pub fn is_enabled(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+
+    /// Whether a decision may reorder the provider ladder (`auto` and `on`;
+    /// `dry-run` records and applies nothing).
+    #[must_use]
+    pub fn applies(self) -> bool {
+        matches!(self, Self::Auto | Self::On)
+    }
+}
+
 /// `factory` (the agent factory's opt-in gate): `factory.enabled` is
 /// unset/false by default, and the `/factory on` client command persists
 /// it. Both the daemon's `factory_activity` lane advertisement and the
@@ -584,6 +662,9 @@ pub struct Settings {
     /// defaults off - see [`JevSettings`]).
     pub jev: Option<JevSettings>,
     pub factory: Option<FactorySettings>,
+    /// [FORK-ONLY] The model router's gate and mode (see
+    /// [`RoutingSettings`]); `mode` unset reads as `off`.
+    pub routing: Option<RoutingSettings>,
     /// `[agents]`: subagent admission (the per-provider AIMD ceiling).
     pub agents: Option<AgentsSettings>,
     pub telemetry: Option<TelemetrySettings>,

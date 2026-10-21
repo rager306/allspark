@@ -76,6 +76,20 @@ pub trait ClientSettings: Send + Sync {
     /// `imageModel` ("provider/model-id" or a bare id; unset by default),
     /// read-only for the paste-time hint.
     fn image_model(&self) -> Option<String>;
+    /// [FORK-ONLY] The model router's level (`routing.mode`; `off` when unset
+    /// or unrecognized). A missing seam never enables a selector nobody asked
+    /// for: the default trait body answers `off`.
+    fn model_routing_mode(&self) -> String {
+        "off".to_string()
+    }
+    /// Persists `routing.mode` to the global scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown level, or when the settings store fails.
+    fn set_model_routing_mode(&self, _mode: &str) -> Result<()> {
+        anyhow::bail!("Model routing settings are unavailable")
+    }
     /// `enableSkillCommands` (TS default true).
     fn enable_skill_commands(&self) -> bool;
     /// Persists `enableSkillCommands` to the global scope.

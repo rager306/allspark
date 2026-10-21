@@ -242,6 +242,7 @@ impl SessionUi {
             values.quiet_startup = settings.quiet_startup();
             values.tree_filter_mode = settings.tree_filter_mode();
             values.warnings_anthropic_extra_usage = settings.warnings_anthropic_extra_usage();
+            values.routing_mode = settings.model_routing_mode();
             values.theme = settings.theme().unwrap_or_else(|| "prime".to_string());
             // The tier row preselects the saved default instead of the struct default.
             values.default_service_tier = settings.default_service_tier();
@@ -255,6 +256,7 @@ impl SessionUi {
             values.mermaid = "streaming".to_string();
             values.tree_filter_mode = "user-only".to_string();
             values.warnings_anthropic_extra_usage = true;
+            values.routing_mode = "off".to_string();
             values.theme = "prime".to_string();
             // No settings seam: the tier row reads "default", never a blank value.
             values.default_service_tier = "default".to_string();
@@ -378,6 +380,13 @@ impl SessionUi {
                 };
                 view.editor.set_autocomplete_skill_commands(skills);
                 self.dirty = true;
+            }
+            "routing-mode" => {
+                if let Some(settings) = &self.client_settings {
+                    if let Err(error) = settings.set_model_routing_mode(value) {
+                        self.error_row(&format!("{error:#}"), view);
+                    }
+                }
             }
             "harness-refinements" => {
                 self.persist_bool_setting(

@@ -28,7 +28,11 @@ impl AgentSessionEngine {
     /// serving the same model id, in catalog order after the current one,
     /// filtered by the daemon model allowlist. Faux-script sessions never
     /// fail over.
-    pub(super) fn failover_candidates(
+    ///
+    /// `agent_engine`-wide (not `turn`-private): the [FORK-ONLY] model router
+    /// (`agent_engine::routing`) reorders exactly this vector, so it reads the
+    /// same resolver rather than re-deriving the ladder.
+    pub(in crate::agent_engine) fn failover_candidates(
         &self,
         model: &pa_types::ai::Model,
     ) -> Vec<pa_types::ai::Model> {

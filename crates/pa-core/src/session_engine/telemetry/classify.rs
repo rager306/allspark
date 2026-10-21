@@ -42,7 +42,11 @@ pub fn provider_category(provider: Option<&str>) -> String {
         .map_or_else(|| "custom".to_string(), std::string::ToString::to_string)
 }
 
-pub(super) fn model_category(model: &str) -> &str {
+/// The model family a model id belongs to (`MODEL_CATEGORIES`), `custom`
+/// when nothing matches. Public so the daemon's router seam classifies a
+/// decision the same way every other telemetry property does.
+#[must_use]
+pub fn model_category(model: &str) -> &'static str {
     let normalized = model.to_ascii_lowercase();
     let categories = [
         "claude", "gpt", "o1", "o3", "o4", "gemini", "glm", "kimi", "qwen", "deepseek", "llama",

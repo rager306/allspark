@@ -5,7 +5,19 @@ use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use pa_core::settings::ModelRoutingLevel;
 use pa_tui::client_settings::ClientSettings;
+
+/// Parse one `routing.mode` value at the settings seam, refusing an unknown
+/// spelling instead of letting [`ModelRoutingLevel::parse`]'s fail-closed
+/// default hide a typo the operator meant as a different level.
+fn parse_routing_mode(mode: &str) -> Result<ModelRoutingLevel> {
+    let level = ModelRoutingLevel::parse(mode);
+    if level.as_str() == mode.trim().to_ascii_lowercase() {
+        return Ok(level);
+    }
+    anyhow::bail!("Unknown model routing level \"{mode}\"; use one of: off, dry-run, auto, on")
+}
 
 /// The seam handle the interactive run carries.
 #[derive(Clone)]
@@ -155,6 +167,30 @@ impl ClientSettings for CliClientSettings {
 
     fn image_model(&self) -> Option<String> {
         self.manager().get_image_model()
+    }
+
+    fn model_routing_mode(&self) -> String {
+        self.manager().get_routing_level().as_str().to_string()
+    }
+
+    fn set_model_routing_mode(&self, mode: &str) -> Result<()> {
+        // Parse BEFORE writing: an unknown value must fail loudly at the
+        // settings seam, not persist and then read back as `off`.
+        let level = parse_routing_mode(mode)?;
+        self.manager().set_routing_level(level)?;
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let agent_dir = self.agent_dir.clone();
+            let manager = self.manager();
+            // Adoption bookkeeping stays off the UI input/paint path.
+            runtime.spawn_blocking(move || {
+                let client = pa_core::session_engine::telemetry::build_client(&manager, &agent_dir);
+                pa_telemetry::RoutingSettingChanged {
+                    level: level.as_str(),
+                }
+                .track(&client);
+            });
+        }
+        Ok(())
     }
     setting!(
         enable_skill_commands,

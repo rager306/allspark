@@ -933,6 +933,38 @@ impl SettingsManager {
             .unwrap_or(true)
     }
 
+    /// [FORK-ONLY] The model router's level (`routing.mode`).
+    ///
+    /// Unset and unrecognized spellings read as [`ModelRoutingLevel::Off`],
+    /// the pre-router behaviour byte for byte: a typo disables the router
+    /// instead of silently enabling a selector nobody asked for.
+    #[must_use]
+    pub fn get_routing_level(&self) -> super::types::ModelRoutingLevel {
+        self.merged
+            .routing
+            .as_ref()
+            .and_then(|routing| routing.mode.as_deref())
+            .map_or(
+                super::types::ModelRoutingLevel::Off,
+                super::types::ModelRoutingLevel::parse,
+            )
+    }
+
+    /// Persist the router's level to the GLOBAL scope: the policy is the
+    /// user's, never a project's (an untrusted checkout must not reorder
+    /// which provider serves its prompts).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the global settings scope cannot be saved.
+    pub fn set_routing_level(&mut self, level: super::types::ModelRoutingLevel) -> Result<()> {
+        self.global_mut()
+            .routing
+            .get_or_insert_with(Default::default)
+            .mode = Some(level.as_str().to_string());
+        self.save_global_scope(&["routing.mode"])
+    }
+
     /// The graph's background build/refresh policy (`graph.auto`).
     ///
     /// Unset reads as [`GraphAuto::Auto`]: the first query builds on demand and

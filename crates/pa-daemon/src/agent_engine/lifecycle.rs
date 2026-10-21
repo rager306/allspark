@@ -171,6 +171,8 @@ impl AgentSessionEngine {
             provider_target: std::sync::Arc::new(std::sync::RwLock::new(None)),
             image_route: std::sync::Mutex::new(None),
             reload_lock: std::sync::Mutex::new(()),
+            router_state: std::sync::Mutex::new(super::routing::RouterState::default()),
+            router_telemetry: std::sync::Arc::new(super::routing::RouterTelemetry::default()),
             own_summary: std::sync::Arc::new(std::sync::Mutex::new(None)),
             create_resources: std::sync::RwLock::default(),
             autonomous: std::sync::Arc::new(tokio::sync::Mutex::new(

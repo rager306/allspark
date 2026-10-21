@@ -105,6 +105,19 @@ impl AgentSessionEngine {
             Some(route) => self.failover_candidates(&route.target.model),
             None => self.failover_candidates(&model),
         };
+        // [FORK-ONLY] The model router reorders that same ladder when
+        // `routing.mode` enables it (see `agent_engine::routing`): `off` hands
+        // back the vector untouched, `dry-run` records the decision and applies
+        // nothing, `auto`/`on` reorder it. The serving model and the retry
+        // loop are untouched either way — the router only decides which
+        // provider the next attempt walks to.
+        let candidates = {
+            let serving = self
+                .armed_image_route()
+                .map_or_else(|| model.clone(), |route| route.target.model);
+            let facts = self.turn_route_facts(prompt, &serving);
+            self.route_turn_candidates(&serving, candidates, facts)
+        };
         // The pa-core retry driver owns the attempt loop; this engine
         // owns one turn. The single `emit` reference is handed through
         // a RefCell slot to whichever closure is currently running.

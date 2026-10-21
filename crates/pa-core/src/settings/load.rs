@@ -65,6 +65,8 @@ const KNOWN_FIELDS: &[&str] = &[
     "debugLog",
     // FORK-ONLY: the typed-decision (judgment) layer's gate (default off).
     "jev",
+    // FORK-ONLY: the model router's gate and mode (default off).
+    "routing",
 ];
 
 /// Extract each known field independently; ignore fields whose JSON type does not match the Rust
