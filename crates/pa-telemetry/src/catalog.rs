@@ -1181,6 +1181,59 @@ const ADMISSION_DEMOTED: EventRule = EventRule {
     ],
 };
 
+/// The router's level names (`routing.mode`), the fixed vocabulary the
+/// `router_decision` and `routing_setting_changed` events carry.
+pub const ROUTING_LEVELS: &[&str] = &["off", "dry-run", "auto", "on"];
+
+/// Why the router chose what it chose (`router_decision.reason`).
+pub const ROUTING_REASONS: &[&str] = &[
+    "incumbent_retained",
+    "challenger_won",
+    "incumbent_failed",
+    "no_incumbent",
+    "all_rejected",
+    "disabled",
+];
+
+/// `router_decision` (v2): one model-router decision at a turn boundary.
+/// Model categories and scores only — never a selector, a prompt, or a
+/// credential.
+const ROUTER_DECISION: EventRule = EventRule {
+    name: "router_decision",
+    since: 2,
+    properties: &[
+        ("level", required(enum_rule(ROUTING_LEVELS, "off"))),
+        (
+            "reason",
+            required(enum_rule(ROUTING_REASONS, "incumbent_retained")),
+        ),
+        (
+            "incumbent_model_category",
+            optional(enum_rule(MODEL_CATEGORIES, "custom")),
+        ),
+        (
+            "chosen_model_category",
+            optional(enum_rule(MODEL_CATEGORIES, "custom")),
+        ),
+        ("candidate_count", optional(count())),
+        ("rejected_count", optional(count())),
+        // The two scores in thousandths of a point, so a primitive integer
+        // carries the comparison without a float property the backend would
+        // have to reshape.
+        ("chosen_score_milli", optional(count())),
+        ("runner_up_score_milli", optional(count())),
+        ("switched", optional(boolean())),
+        ("dwell_turns", optional(count())),
+    ],
+};
+
+/// `routing_setting_changed` (v2): the operator moved `routing.mode`.
+const ROUTING_SETTING_CHANGED: EventRule = EventRule {
+    name: "routing_setting_changed",
+    since: 2,
+    properties: &[("level", required(enum_rule(ROUTING_LEVELS, "off")))],
+};
+
 /// `update completed` plus the per-phase events (one per status
 /// transition, the same names the `phase` property carries).
 const UPDATE_EVENTS: &[EventRule] = &[
@@ -1337,6 +1390,8 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &ADMISSION_SNAPSHOT,
         &ADMISSION_PROMOTED,
         &ADMISSION_DEMOTED,
+        &ROUTER_DECISION,
+        &ROUTING_SETTING_CHANGED,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all

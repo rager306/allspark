@@ -308,6 +308,78 @@ impl AdmissionLimitStep {
     }
 }
 
+/// `router_decision`: one model-router decision at a turn boundary.
+///
+/// Counters, categories, and the closed reason vocabulary only. The chosen
+/// and incumbent models arrive as CATEGORIES (the `model refused` precedent),
+/// so no selector, provider key, or prompt ever rides the event: the router's
+/// value is the decision shape, not the deployment's model list.
+#[derive(Debug, Clone, Copy)]
+pub struct RouterDecision<'a> {
+    /// The `routing.mode` that produced the decision
+    /// ([`crate::catalog::ROUTING_LEVELS`]).
+    pub level: &'static str,
+    /// The outcome ([`crate::catalog::ROUTING_REASONS`]).
+    pub reason: &'static str,
+    /// The model category (model family) of the serving model
+    /// ([`crate::catalog::MODEL_CATEGORIES`]).
+    pub incumbent_model_category: &'a str,
+    /// The model category of the candidate the router would serve.
+    pub chosen_model_category: &'a str,
+    pub candidate_count: u64,
+    pub rejected_count: u64,
+    /// The chosen row's score in thousandths of a point.
+    pub chosen_score_milli: Option<u64>,
+    /// The runner-up's score in thousandths of a point.
+    pub runner_up_score_milli: Option<u64>,
+    /// Whether this decision moved the serving target off the incumbent.
+    pub switched: bool,
+    /// The incumbent's dwell (turns since the last switch).
+    pub dwell_turns: u64,
+}
+
+impl RouterDecision<'_> {
+    pub fn track(&self, client: &TelemetryClient) {
+        let mut properties = Properties::new();
+        properties.set("level", Value::from(self.level));
+        properties.set("reason", Value::from(self.reason));
+        properties.set(
+            "incumbent_model_category",
+            Value::from(self.incumbent_model_category),
+        );
+        properties.set(
+            "chosen_model_category",
+            Value::from(self.chosen_model_category),
+        );
+        properties.set("candidate_count", Value::from(self.candidate_count));
+        properties.set("rejected_count", Value::from(self.rejected_count));
+        if let Some(score) = self.chosen_score_milli {
+            properties.set("chosen_score_milli", Value::from(score));
+        }
+        if let Some(score) = self.runner_up_score_milli {
+            properties.set("runner_up_score_milli", Value::from(score));
+        }
+        properties.set("switched", Value::from(self.switched));
+        properties.set("dwell_turns", Value::from(self.dwell_turns));
+        client.track("router_decision", properties);
+    }
+}
+
+/// `routing_setting_changed`: the operator moved `routing.mode`.
+#[derive(Debug, Clone, Copy)]
+pub struct RoutingSettingChanged {
+    /// The level now in force ([`crate::catalog::ROUTING_LEVELS`]).
+    pub level: &'static str,
+}
+
+impl RoutingSettingChanged {
+    pub fn track(&self, client: &TelemetryClient) {
+        let mut properties = Properties::new();
+        properties.set("level", Value::from(self.level));
+        client.track("routing_setting_changed", properties);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,6 +423,41 @@ mod tests {
             ToolCategory::Unknown,
         ] {
             assert!(TOOL_CATEGORIES.contains(&category.as_str()));
+        }
+    }
+
+    #[test]
+    fn router_vocabularies_stay_in_the_catalog() {
+        for level in ["off", "dry-run", "auto", "on"] {
+            assert!(crate::catalog::ROUTING_LEVELS.contains(&level));
+        }
+        for reason in [
+            "incumbent_retained",
+            "challenger_won",
+            "incumbent_failed",
+            "no_incumbent",
+            "all_rejected",
+            "disabled",
+        ] {
+            assert!(crate::catalog::ROUTING_REASONS.contains(&reason));
+        }
+        let rule = crate::catalog::lookup("router_decision").expect("catalogued");
+        for key in [
+            "level",
+            "reason",
+            "incumbent_model_category",
+            "chosen_model_category",
+            "candidate_count",
+            "rejected_count",
+            "chosen_score_milli",
+            "runner_up_score_milli",
+            "switched",
+            "dwell_turns",
+        ] {
+            assert!(
+                rule.properties.iter().any(|(known, _)| *known == key),
+                "{key} joins router_decision"
+            );
         }
     }
 }
