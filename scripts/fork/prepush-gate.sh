@@ -111,12 +111,33 @@ run_unit() {
     return 1
   fi
 }
+# Suites that are correct but CPU-timing-sensitive: their pty pacing and
+# kernel-dispose deadlines are calibrated for a runner with the whole machine
+# (CI gives each shard its own 4-core runner). Under this gate's local
+# parallelism they flake while passing alone; run them one at a time at the
+# end so the gate still covers them.
+SERIAL_UNITS="pa-cli#test:slow_drain_exit_guard_e2e
+pa-cli#test:termios_process_exit_e2e
+pa-cli#test:kitty_early_typing_e2e
+pa-daemon#test:kernel_dispose_e2e
+pa-daemon#test:idle_passivation_e2e"
+
 export -f run_unit
 export OUT
 
-# jobs: one unit per process, JOBS at a time
-xargs -P "$JOBS" -I{} bash -c 'run_unit "$@"' _ {} < "$OUT/tests/units.txt" \
+# jobs: one unit per process, JOBS at a time; the timing-sensitive suites
+# are held back for a serial tail.
+printf '%s\n' "$SERIAL_UNITS" > "$OUT/tests/serial.txt"
+grep -vxF -f "$OUT/tests/serial.txt" "$OUT/tests/units.txt" > "$OUT/tests/parallel.txt"
+echo "parallel: $(wc -l < "$OUT/tests/parallel.txt"), serial tail: $(wc -l < "$OUT/tests/serial.txt")"
+
+xargs -P "$JOBS" -I{} bash -c 'run_unit "$@"' _ {} < "$OUT/tests/parallel.txt" \
   >"$OUT/tests/summary.log" 2>&1
+echo "--- serial tail" >> "$OUT/tests/summary.log"
+while IFS= read -r unit; do
+  [[ -z "$unit" ]] && continue
+  run_unit "$unit" >> "$OUT/tests/summary.log" 2>&1
+done < "$OUT/tests/serial.txt"
 test_fail=$(grep -c '^FAIL' "$OUT/tests/summary.log" || true)
 tail -3 "$OUT/tests/summary.log"
 if [[ "$test_fail" -gt 0 ]]; then
