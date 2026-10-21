@@ -260,7 +260,8 @@ pub struct IndexReport {
     pub unchanged: usize,
     /// Nodes written.
     pub nodes: usize,
-    /// Edges written.
+    /// Edges in the store after this run (insert attempts are deduped by the
+    /// store, so this is the graph's true size, not the attempts count).
     pub edges: usize,
     /// Files that failed to parse.
     pub failed: usize,

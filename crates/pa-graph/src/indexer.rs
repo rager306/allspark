@@ -127,7 +127,11 @@ impl GraphStore {
             }
             report.parsed += 1;
 
-            self.clear_file(&opts.project, &w.rel)?;
+            // Keep this file's nodes (stable ids) so CALLS edges from
+            // unchanged files survive the re-parse; only its FTS rows and
+            // outgoing edges are dropped. Stale symbols go once extraction
+            // has run (see `delete_file_nodes_not_in` below).
+            self.clear_file_for_reparse(&opts.project, &w.rel)?;
             // Re-record this file's coverage from scratch so a file that now
             // parses cleanly stops being reported as `parse_partial`.
             self.clear_file_coverage(&opts.project, &w.rel)?;
@@ -150,7 +154,14 @@ impl GraphStore {
                     ParseHealth::Clean => {}
                 }
             }
-            let (nodes, edges, file_id) = self.write_file(&opts.project, &w.rel, &extracted)?;
+            let (nodes, file_id) = self.write_file(&opts.project, &w.rel, &extracted)?;
+            // Symbols that disappeared in this revision must go (their edges
+            // cascade); survivors keep their ids, so other files' incoming
+            // edges stay attached.
+            let mut keep: Vec<String> = Vec::with_capacity(extracted.symbols.len() + 1);
+            keep.push(format!("{}::{}::__file__", opts.project, w.rel));
+            keep.extend(extracted.symbols.iter().map(|s| s.qualified_name.clone()));
+            self.delete_file_nodes_not_in(&opts.project, &w.rel, &keep)?;
             // Record the file's surface so the next incremental run can tell a
             // body-only edit (surface unchanged) from an API change (G7).
             let surface = crate::surface::surface_of(&w.source, lang, &module);
@@ -162,7 +173,6 @@ impl GraphStore {
                 &surface.surface_json,
             )?;
             report.nodes += nodes;
-            report.edges += edges;
             if let Some(id) = file_id {
                 file_node_ids.insert(w.rel.clone(), id);
             }
@@ -191,7 +201,6 @@ impl GraphStore {
         for (caller_qn, call) in &pending_calls {
             if let Some((source, target, props)) = resolver.resolve_call(caller_qn, call) {
                 self.insert_edge(&opts.project, source, target, EdgeType::Calls, &props)?;
-                report.edges += 1;
             }
         }
         for (rel, import) in &pending_imports {
@@ -200,9 +209,12 @@ impl GraphStore {
             };
             if let Some((target, props)) = resolver.resolve_import(import) {
                 self.insert_edge(&opts.project, file_id, target, EdgeType::Imports, &props)?;
-                report.edges += 1;
             }
         }
+
+        // The store dedupes insert attempts (`INSERT OR IGNORE`), so counting
+        // attempts overstates the graph; report the store's actual edge count.
+        report.edges = self.edge_count(&opts.project)?;
 
         Ok(report)
     }
@@ -241,13 +253,13 @@ impl GraphStore {
 
     /// Write one file's File node, symbol nodes, FTS rows, and CONTAINS edges.
     ///
-    /// Returns `(node_count, edge_count, file_node_id)`.
+    /// Returns `(node_count, file_node_id)`.
     pub(crate) fn write_file(
         &self,
         project: &str,
         rel: &str,
         extracted: &ExtractedFile,
-    ) -> Result<(usize, usize, Option<i64>)> {
+    ) -> Result<(usize, Option<i64>)> {
         let file_node = Node {
             id: 0,
             project: project.to_string(),
@@ -270,7 +282,6 @@ impl GraphStore {
         )?;
 
         let mut nodes = 1;
-        let mut edges = 0;
         for sym in &extracted.symbols {
             let node = Node {
                 id: 0,
@@ -299,9 +310,8 @@ impl GraphStore {
             )?;
             self.insert_edge(project, file_id, id, EdgeType::Contains, &json!({}))?;
             nodes += 1;
-            edges += 1;
         }
-        Ok((nodes, edges, Some(file_id)))
+        Ok((nodes, Some(file_id)))
     }
 
     /// Snapshot of `qualified_name -> node id` for the project.
@@ -689,6 +699,71 @@ mod tests {
         assert!(cov.complete, "fixed file must read clean: {cov:?}");
         assert_eq!(cov.partial, 0);
         assert_eq!(cov.unusable, 0);
+    }
+
+    #[test]
+    fn report_edges_matches_the_store_after_indexing() {
+        // R07: `report.edges` used to count insert ATTEMPTS, but the store
+        // dedupes (`INSERT OR IGNORE` on a UNIQUE key), so the report
+        // overstated the graph by a quarter on a real project. The
+        // user-visible number must be the store's truth.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "pub fn caller() -> u32 { helper() + helper() }\npub fn helper() -> u32 { 1 }\n",
+        )
+        .expect("lib.rs");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        let report = store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("index");
+        // Two call sites of the same callee collapse into one stored edge;
+        // the report must agree with what the store actually holds.
+        assert_eq!(
+            report.edges,
+            store.edge_count("p").expect("count"),
+            "report counts attempts, store dedupes"
+        );
+    }
+
+    #[test]
+    fn modified_file_keeps_incoming_call_edges() {
+        // R08: re-parsing a modified file used to delete its nodes, and the
+        // schema's ON DELETE CASCADE silently dropped every CALLS edge from
+        // unchanged files into it. Each edit permanently thinned the graph.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.rs"), "pub fn foo() -> u32 { 1 }\n").expect("a.rs");
+        std::fs::write(
+            dir.path().join("b.rs"),
+            "pub fn caller() -> u32 { foo() }\n",
+        )
+        .expect("b.rs");
+        std::fs::write(dir.path().join("c.rs"), "pub fn other() -> u32 { foo() }\n").expect("c.rs");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("first");
+        let before = store.edge_count("p").expect("count");
+
+        // Body-only edit of a.rs; b.rs and c.rs are untouched.
+        std::fs::write(dir.path().join("a.rs"), "pub fn foo() -> u32 { 1 + 1 }\n").expect("edit");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("second");
+
+        assert_eq!(
+            store.edge_count("p").expect("count"),
+            before,
+            "a body edit must not drop incoming CALLS edges"
+        );
+        let foo = store
+            .node_by_qn("p", "a::foo")
+            .expect("qn")
+            .expect("foo survived");
+        let calls = store
+            .in_edges(foo.id, Some(EdgeType::Calls))
+            .expect("in edges");
+        assert_eq!(calls.len(), 2, "b::caller and c::other still call a::foo");
     }
 
     #[test]

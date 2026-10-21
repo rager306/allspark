@@ -381,6 +381,28 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Clear a file's FTS rows and the edges **originating** from its nodes,
+    /// keeping the nodes themselves so a re-parse upserts onto stable ids and
+    /// other files' incoming edges survive the edit.
+    ///
+    /// Used by the re-parse path of [`GraphStore::index_project`]. Symbols
+    /// that disappeared from the new content are removed afterwards by
+    /// [`GraphStore::delete_file_nodes_not_in`], once the fresh symbol set is
+    /// known — their edges then cascade, which is the correct outcome. A file
+    /// gone from disk uses [`GraphStore::clear_file`] instead.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    pub fn clear_file_for_reparse(&self, project: &str, rel_path: &str) -> Result<()> {
+        self.clear_file_fts(project, rel_path)?;
+        self.conn.execute(
+            "DELETE FROM edges WHERE project = ?1 AND source IN
+                (SELECT id FROM nodes WHERE project = ?1 AND file_path = ?2)",
+            params![project, rel_path],
+        )?;
+        Ok(())
+    }
+
     /// Delete every FTS row belonging to a file's nodes, **without** deleting
     /// the nodes. Used by the incremental in-place rewriter, which preserves
     /// node ids (so edges from other files survive) and must re-insert fresh
