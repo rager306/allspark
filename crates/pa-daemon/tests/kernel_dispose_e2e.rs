@@ -48,8 +48,15 @@ fn kernel_python() -> Option<PathBuf> {
     None
 }
 
-/// Every live `python -m rlm.repl` pid on the box (ambient kernels are part of the baseline).
-fn kernel_pids() -> Vec<u32> {
+/// Every live `python -m rlm.repl` whose environment names this session's `agent_dir`.
+///
+/// The scan is box-wide because an orphaned kernel has lost its parent by definition. Ownership
+/// is decided by the agent dir the worker hands its kernel (`PRIME_AGENT_CODING_AGENT_DIR`)
+/// rather than by the pid-set diff alone: this suite runs three tests whose daemons each own a
+/// temp agent dir, and the gate runs the suite beside a live agent session whose own kernel can
+/// boot and exit mid-run — a bare pid-set diff would charge that neighbour's kernel to this
+/// session-end path.
+fn kernel_pids(agent_dir: &Path) -> Vec<u32> {
     let mut found = Vec::new();
     let entries = std::fs::read_dir("/proc").unwrap_or_else(|e| panic!("read /proc: {e}"));
     for entry in entries.flatten() {
@@ -62,19 +69,36 @@ fn kernel_pids() -> Vec<u32> {
         // The kernel is spawned as `python -m rlm.repl` (NUL-separated argv): the adjacent
         // pair avoids matching an unrelated process that merely mentions the module.
         let args: Vec<&str> = cmdline.split('\0').collect();
-        if args.windows(2).any(|window| window == ["-m", "rlm.repl"]) {
-            found.push(pid);
+        if !args.windows(2).any(|window| window == ["-m", "rlm.repl"]) {
+            continue;
         }
+        let owned = std::fs::read(format!("/proc/{pid}/environ")).is_ok_and(|environ| {
+            environ
+                .split(|byte| *byte == 0)
+                .any(|pair| pair == expected_agent_dir_pair(agent_dir).as_bytes())
+        });
+        if !owned {
+            continue;
+        }
+        found.push(pid);
     }
     found.sort_unstable();
     found
 }
 
-/// Poll until at least one kernel pid exists outside `baseline`.
-fn await_new_kernel(baseline: &[u32], budget: Duration) -> Vec<u32> {
+/// The exact `KEY=VALUE` entry a worker puts in its kernel's environment.
+fn expected_agent_dir_pair(agent_dir: &Path) -> String {
+    format!(
+        "PRIME_AGENT_CODING_AGENT_DIR={}",
+        agent_dir.to_string_lossy()
+    )
+}
+
+/// Poll until at least one kernel exists outside `baseline` among this session's own kernels.
+fn await_new_kernel(agent_dir: &Path, baseline: &[u32], budget: Duration) -> Vec<u32> {
     let deadline = Instant::now() + budget;
     loop {
-        let fresh: Vec<u32> = kernel_pids()
+        let fresh: Vec<u32> = kernel_pids(agent_dir)
             .into_iter()
             .filter(|pid| !baseline.contains(pid))
             .collect();
@@ -89,12 +113,14 @@ fn await_new_kernel(baseline: &[u32], budget: Duration) -> Vec<u32> {
     }
 }
 
-/// Poll until no kernel pid exists outside `baseline` — the session-end dispose under test;
-/// a survivor past the budget is the leak this test exists to catch.
-fn await_kernels_gone(baseline: &[u32], budget: Duration) {
+/// Poll until none of this session's own kernels exists outside `baseline` — the session-end
+/// dispose under test; a survivor past the budget is the leak this test exists to catch. A
+/// kernel owned by any other agent dir (a neighbour session, this suite's other tests) is not
+/// this path's business.
+fn await_kernels_gone(agent_dir: &Path, baseline: &[u32], budget: Duration) {
     let deadline = Instant::now() + budget;
     loop {
-        let fresh: Vec<u32> = kernel_pids()
+        let fresh: Vec<u32> = kernel_pids(agent_dir)
             .into_iter()
             .filter(|pid| !baseline.contains(pid))
             .collect();
@@ -327,7 +353,7 @@ fn kill_disposes_the_session_kernel() {
     let agent_dir = dir.path().join("agent");
     let socket = dir.path().join("supervisor.sock");
     let script = write_faux_script(dir.path());
-    let baseline = kernel_pids();
+    let baseline = kernel_pids(&agent_dir);
 
     let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python, "15000");
     wait_socket_ready(&socket);
@@ -336,7 +362,7 @@ fn kill_disposes_the_session_kernel() {
     let session_id = create_session_with_kernel(&mut client, dir.path(), &script, "c1");
 
     // The session's kernel booted and executed the cell.
-    let kernels = await_new_kernel(&baseline, Duration::from_mins(2));
+    let kernels = await_new_kernel(&agent_dir, &baseline, Duration::from_mins(2));
     await_receipt(dir.path());
 
     // User delete: the routed `kill` closes the session (the worker stops right after).
@@ -350,7 +376,7 @@ fn kill_disposes_the_session_kernel() {
 
     // The kernel died with the session: process exit never runs the
     // engine-drop teardown, so only the explicit dispose clears this.
-    await_kernels_gone(&baseline, Duration::from_secs(90));
+    await_kernels_gone(&agent_dir, &baseline, Duration::from_secs(90));
 }
 
 /// Daemon `shutdown` routes a `shutdown` to every worker: each disposes its kernel
@@ -365,14 +391,14 @@ fn shutdown_disposes_session_kernels_before_the_worker_exits() {
     let agent_dir = dir.path().join("agent");
     let socket = dir.path().join("supervisor.sock");
     let script = write_faux_script(dir.path());
-    let baseline = kernel_pids();
+    let baseline = kernel_pids(&agent_dir);
 
     let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python, "15000");
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
     let _session_id = create_session_with_kernel(&mut client, dir.path(), &script, "c1");
-    await_new_kernel(&baseline, Duration::from_mins(2));
+    await_new_kernel(&agent_dir, &baseline, Duration::from_mins(2));
     await_receipt(dir.path());
 
     // Daemon stop: the supervisor routes `shutdown` to the workers and exits.
@@ -380,7 +406,7 @@ fn shutdown_disposes_session_kernels_before_the_worker_exits() {
     let shutdown = client.read_response("sd");
     assert_eq!(shutdown["success"], true, "shutdown failed: {shutdown}");
 
-    await_kernels_gone(&baseline, Duration::from_secs(90));
+    await_kernels_gone(&agent_dir, &baseline, Duration::from_secs(90));
 }
 
 #[test]
@@ -393,7 +419,7 @@ fn orphan_exit_disposes_the_kernel_before_the_worker_exits() {
     let agent_dir = dir.path().join("agent");
     let socket = dir.path().join("supervisor.sock");
     let script = write_faux_script(dir.path());
-    let baseline = kernel_pids();
+    let baseline = kernel_pids(&agent_dir);
 
     // A short supervisor-lost window: the orphan exits quickly once the supervisor is gone.
     let mut daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python, "5000");
@@ -401,7 +427,7 @@ fn orphan_exit_disposes_the_kernel_before_the_worker_exits() {
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
     let _session_id = create_session_with_kernel(&mut client, dir.path(), &script, "c1");
-    await_new_kernel(&baseline, Duration::from_mins(2));
+    await_new_kernel(&agent_dir, &baseline, Duration::from_mins(2));
     await_receipt(dir.path());
 
     // Hard-kill the supervisor: no graceful stop runs, so the worker's
@@ -411,5 +437,5 @@ fn orphan_exit_disposes_the_kernel_before_the_worker_exits() {
 
     // The orphaned worker exits on the lost window and disposes its kernel; the first check
     // lands 1.5s after boot and the window is 5s, so 90s covers slow boxes.
-    await_kernels_gone(&baseline, Duration::from_secs(90));
+    await_kernels_gone(&agent_dir, &baseline, Duration::from_secs(90));
 }
