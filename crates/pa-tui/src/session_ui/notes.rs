@@ -56,11 +56,12 @@ impl SessionUi {
         }
     }
 
-    /// Re-apply the refreshed context usage (and the tray's fork-only cache rate)
-    /// to the chrome state.
+    /// Re-apply the refreshed context usage (and the tray's fork-only cache and
+    /// compaction facts) to the chrome state.
     pub(crate) fn rebuild_tray(&mut self, view: &mut AgentView) {
         view.chrome.context = self.context;
         view.chrome.cache_hit_percent = self.cache_hit_percent;
+        view.chrome.turns_since_compaction = self.turns_since_compaction;
         view.chrome.chat_name = self.session_display();
         self.dirty = true;
     }

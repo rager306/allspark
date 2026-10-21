@@ -66,6 +66,11 @@ pub struct ChromeState {
     /// a session with no cache traffic must never render `cache 0%`, which reads
     /// like a real measurement.
     pub cache_hit_percent: Option<u64>,
+    /// FORK-ONLY: the user turns on the branch since its latest compaction.
+    /// `None` when the branch never compacted, so the segment only ever
+    /// explains a summarized context (and the cache-rate step a compaction
+    /// causes) instead of repeating the session's whole turn count.
+    pub turns_since_compaction: Option<u64>,
     /// `← manage` hint: shown for persisted (attachable) sessions.
     pub show_manage: bool,
     /// The attached session's RLM depth: a subagent session renders
@@ -573,6 +578,15 @@ pub fn render_tray_with_hint(
     if let Some(percent) = state.cache_hit_percent {
         segments.push((TrayPriority::CacheHit, format!("cache {percent}%")));
     }
+    // FORK-ONLY: user turns since the branch's latest compaction. It only renders
+    // once the branch HAS compacted: before that the number is just the session's
+    // turn count, which the transcript already shows.
+    if let Some(turns) = state.turns_since_compaction {
+        segments.push((
+            TrayPriority::SinceCompaction,
+            format!("{turns} since compact"),
+        ));
+    }
     let left_width: usize = left.iter().map(|s| str_width(&s.content)).sum();
     let separator = " \u{00b7} ";
     let separator_width = str_width(separator);
@@ -583,10 +597,10 @@ pub fn render_tray_with_hint(
             .sum::<usize>()
             + separator_width * segments.len().saturating_sub(1)
     };
-    // Drop the most dispensable label until the row fits. The fork's own fact goes
-    // first, so a narrow terminal renders exactly the TS tray (the divergence never
-    // costs upstream content); then the badge; the context usage and the model id
-    // (the tray's original readout) are the last to disappear.
+    // Drop the most dispensable label until the row fits. The fork's own two facts
+    // go first, so a narrow terminal renders exactly the TS tray (the divergence
+    // never costs upstream content); then the badge; the context usage and the
+    // model id (the tray's original readout) are the last to disappear.
     while segments.len() > 1 && left_width + rendered_width(&segments) > width {
         let mut droppable = 0;
         for (index, (priority, _)) in segments.iter().enumerate() {
@@ -619,11 +633,12 @@ pub fn render_tray_with_hint(
 }
 
 /// Which tray label a narrow row gives up first: the variants are ordered by
-/// increasing priority, so trimming walks from `CacheHit` up to `Model`. The fork's
-/// added fact goes first; the model id and the context usage (the tray's original
-/// readout) are the last to disappear.
+/// increasing priority, so trimming walks from `SinceCompaction` up to `Model`.
+/// The fork's two added facts go first; the model id and the context usage (the
+/// tray's original readout) are the last to disappear.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum TrayPriority {
+    SinceCompaction,
     CacheHit,
     ServiceTier,
     Context,

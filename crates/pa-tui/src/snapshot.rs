@@ -52,6 +52,9 @@ pub struct Reconstructed {
     /// feeds the first frame's tray row without a stats round-trip.
     /// `None` clears the tray display.
     pub context_usage: Option<crate::chrome::ContextUsage>,
+    /// FORK-ONLY: the user turns since the branch's latest compaction
+    /// (`state.turnsSinceCompaction`); `None` before the first compaction.
+    pub turns_since_compaction: Option<u64>,
     pub session_name: Option<String>,
     /// Session id of the persisted session file.
     pub session_id: String,
@@ -326,6 +329,9 @@ pub fn reconstruct(attach: &AttachData) -> Reconstructed {
     let context_usage = state
         .and_then(|state| state.get("contextUsage"))
         .and_then(crate::chrome::ContextUsage::from_wire);
+    let turns_since_compaction = state
+        .and_then(|state| state.get("turnsSinceCompaction"))
+        .and_then(Value::as_u64);
     let session_name = state
         .and_then(|state| state.get("sessionName"))
         .and_then(Value::as_str)
@@ -407,6 +413,7 @@ pub fn reconstruct(attach: &AttachData) -> Reconstructed {
         model_provider,
         thinking_suffix,
         context_usage,
+        turns_since_compaction,
         session_name,
         session_id,
         event_generation,

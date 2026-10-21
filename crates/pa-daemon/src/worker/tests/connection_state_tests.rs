@@ -182,6 +182,90 @@ async fn summary_retry_resolves_the_selection_that_owns_the_locked_core() {
     assert_eq!(state.context_usage, None);
 }
 
+/// FORK-ONLY: the attach state's `turnsSinceCompaction` is byte-identical to
+/// `get_session_stats`'s, so the first frame's tray row and the post-turn refresh can
+/// never disagree.
+#[tokio::test]
+async fn the_attach_state_carries_the_stats_compaction_turn_count() {
+    let dir = tempfile::tempdir().unwrap();
+    let session_dir = dir.path().join("sessions");
+    std::fs::create_dir_all(&session_dir).unwrap();
+    let session_file = session_dir.join("tray-facts.jsonl");
+    let lines = [
+        json!({"type": "session", "version": 3, "id": "tray-facts",
+               "timestamp": "2026-09-24T00:00:00.000Z", "cwd": "/tmp"}),
+        json!({"type": "message", "id": "u1", "parentId": null,
+               "timestamp": "2026-09-24T00:00:02.000Z",
+               "message": {"role": "user", "content": "one"}}),
+        json!({"type": "compaction", "id": "c1", "parentId": "u1",
+               "timestamp": "2026-09-24T00:00:04.000Z",
+               "summary": "summary", "firstKeptEntryId": "u1", "tokensBefore": 100,
+               "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0,
+                         "totalTokens": 0,
+                         "cost": {"input": 0, "output": 0, "cacheRead": 0,
+                                  "cacheWrite": 0, "total": 0}}}),
+        json!({"type": "message", "id": "u2", "parentId": "c1",
+               "timestamp": "2026-09-24T00:00:05.000Z",
+               "message": {"role": "user", "content": "two"}}),
+        json!({"type": "message", "id": "u3", "parentId": "u2",
+               "timestamp": "2026-09-24T00:00:06.000Z",
+               "message": {"role": "user", "content": "three"}}),
+    ];
+    std::fs::write(
+        &session_file,
+        lines
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .unwrap();
+    let worker = Worker::new(
+        WorkerConfig {
+            socket_path: dir.path().join("worker.sock"),
+            supervisor_socket_path: PathBuf::new(),
+            token: "tray-facts".into(),
+            worker_instance_id: String::new(),
+            active_session_id: "tray-facts-live".into(),
+            agent_dir: dir.path().join("agent"),
+            recovery_journal_path: dir.path().join("recovery.jsonl"),
+            telemetry_disabled: None,
+            script: Some(json!({"responses": []})),
+        },
+        None,
+    );
+    let created = worker
+        .dispatch(
+            "create",
+            &json!({
+                "sessionPath": session_file.display().to_string(),
+                "cwd": "/tmp",
+                "name": "tray facts",
+            }),
+        )
+        .await;
+    assert!(created.success, "create failed: {created:?}");
+    let worker = std::sync::Arc::new(worker);
+    let snapshot_state = {
+        let (core, inputs) = worker.connection_state_inputs();
+        let sealed = Worker::connection_state_locked(&core, inputs);
+        serde_json::to_value(&sealed).unwrap()
+    };
+    assert_eq!(
+        snapshot_state.get("turnsSinceCompaction"),
+        Some(&json!(3)),
+        "the kept region holds every user turn: {snapshot_state}"
+    );
+    let stats = worker.dispatch("get_session_stats", &json!({})).await;
+    assert!(stats.success, "{stats:?}");
+    let stats = stats.data.expect("stats data");
+    assert_eq!(
+        stats.get("turnsSinceCompaction"),
+        snapshot_state.get("turnsSinceCompaction"),
+        "the snapshot fill equals the stats response"
+    );
+}
+
 /// The attach snapshot's state carries the tray's context usage exactly as
 /// `get_session_stats` serves it (TS `createAgentConnectionState`'s
 /// `contextUsage: session.getContextUsage()`): the same walk, the same

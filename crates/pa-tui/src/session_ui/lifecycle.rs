@@ -109,6 +109,7 @@ impl SessionUi {
             queue_selection: crate::queued::QueueSelection::default(),
             context: None,
             cache_hit_percent: None,
+            turns_since_compaction: None,
             list_rows: Vec::new(),
             turn_active: false,
             turn_ends_seen: 0,
@@ -489,6 +490,7 @@ impl SessionUi {
         // or compaction settles): the rebuild below re-syncs it into the
         // chrome exactly like the other reconstructed session fields.
         self.context = reconstructed.context_usage;
+        self.turns_since_compaction = reconstructed.turns_since_compaction;
         self.last_assistant_text = last_assistant_text_of(&reconstructed.chat);
         self.pending_queue = Some(reconstructed.queued);
         self.pending_snapshot = Some(reconstructed.chat);
@@ -629,6 +631,7 @@ impl SessionUi {
         view.chrome.chat_name = self.session_display();
         view.chrome.context = self.context;
         view.chrome.cache_hit_percent = self.cache_hit_percent;
+        view.chrome.turns_since_compaction = self.turns_since_compaction;
         // The rebuilt transcript invalidates the announcement row tracking;
         // the goal state itself carries over (seeded at attach).
         self.goal_view.reset_row_tracking();
@@ -727,6 +730,8 @@ impl SessionUi {
         self.context = data
             .get("contextUsage")
             .and_then(crate::chrome::ContextUsage::from_wire);
+        // FORK-ONLY: the post-compaction turn count rides the same response.
+        self.turns_since_compaction = data.get("turnsSinceCompaction").and_then(Value::as_u64);
         self.refresh_cache_rate().await;
         self.dirty = true;
     }

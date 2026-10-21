@@ -2019,6 +2019,22 @@ fn attach_snapshot_carries_the_tray_context_usage() {
     assert_eq!(reconstruct(&data).context_usage, None);
 }
 
+/// FORK-ONLY: the tray's post-compaction turn count rides the attach state, so a
+/// fresh attach paints it on its first frame. The cache rate is NOT here: it comes
+/// from the `get_cache_stats` fold, the same command `/cache` renders.
+#[test]
+fn attach_snapshot_carries_the_since_compaction_count() {
+    let mut attach = slim_attach();
+    attach["snapshot"]["state"]["turnsSinceCompaction"] = json!(4);
+    let data = attach_data_from_response(attach).unwrap();
+    assert_eq!(reconstruct(&data).turns_since_compaction, Some(4));
+
+    // A branch that never compacted carries no count: the segment stays hidden
+    // rather than repeating the session's whole turn count.
+    let data = attach_data_from_response(slim_attach()).unwrap();
+    assert_eq!(reconstruct(&data).turns_since_compaction, None);
+}
+
 /// A `role: "toolResult"` message with one 500KB image payload block
 /// (the `attach_image` emit's stored shape).
 fn image_heavy_tool_result(payload: &str) -> serde_json::Value {

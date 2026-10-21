@@ -343,6 +343,9 @@ fn compaction_boundary_serves_the_windowed_reader() {
         "contextUsage": {
             "tokens": 3_100, "contextWindow": 1_000, "percent": 310.0,
         },
+        // FORK-ONLY: the tray's `N since compact` segment — the user turns inside the
+        // kept region, which starts at the compaction boundary.
+        "turnsSinceCompaction": 3,
     });
     assert_eq!(session_stats(&full, Some(1_000)), expected);
     // The windowed store (retained region) and the full store walk the same kept region:
@@ -473,6 +476,8 @@ fn compaction_boundary_drops_the_pre_cut_ancestry() {
         // The strict branch truncates at the ghost parent, so the context estimate anchors on
         // the last row alone.
         "contextUsage": { "tokens": 15, "contextWindow": 1000, "percent": 1.5 },
+        // FORK-ONLY: the tray's `N since compact` segment.
+        "turnsSinceCompaction": 3,
     });
     assert_eq!(session_stats(&full, Some(1000)), expected);
     assert_eq!(session_stats(&windowed, Some(1000)), expected);
