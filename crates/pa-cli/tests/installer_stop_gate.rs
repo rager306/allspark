@@ -331,6 +331,24 @@ fn the_probe_stops_only_a_daemon_running_this_installs_payload() {
         "the invoking payload's tree is this install's own: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+
+    // THE UPSTREAM TAKEOVER still works: a trunk `prime-agent update` run
+    // writes into the rust install root (~/.local, or PRIME_AGENT_RUST_PREFIX),
+    // so that install's own daemon IS this run's to stop — the rule keys on the
+    // install root, never on which product built the binary.
+    let upstream_root = dir.path().join("upstream-root");
+    let takeover_payload = upstream_root.join("share/prime-agent/prime-agent");
+    std::fs::create_dir_all(takeover_payload.parent().expect("takeover payload dir"))
+        .expect("takeover payload dir");
+    std::fs::write(&takeover_payload, b"payload").expect("takeover payload file");
+    let takeover = FakeDaemon::start(&dir.path().join("takeover-state"), &takeover_payload);
+    let output = run_probe(&probe, &takeover.socket, &upstream_root, "");
+    assert_eq!(
+        verdict(&output),
+        "rust:stopped:2",
+        "a run writing into the rust install root stops that root's own daemon: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// THE ANCESTOR FALLBACK (the `env -i` hole): the self-socket refusal reads
