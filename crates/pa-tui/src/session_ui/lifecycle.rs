@@ -712,27 +712,40 @@ impl SessionUi {
     /// Refresh context usage from `get_session_stats`: tokens, context window,
     /// and percent. The title's spend comes from the roster pushes instead.
     pub(crate) async fn refresh_stats(&mut self) {
-        let Ok(data) = self
-            .bounded_request(
-                Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
-                DaemonCommand::GetSessionStats {
-                    id: None,
-                    active_session_id: self.active_session_id.clone(),
-                    rest: Map::default(),
-                },
-            )
-            .await
-        else {
-            return;
-        };
-        // Unknown usage (tokens null right after a compaction, or a
-        // response without the field) clears the tray display.
-        self.context = data
-            .get("contextUsage")
-            .and_then(crate::chrome::ContextUsage::from_wire);
-        // FORK-ONLY: the post-compaction turn count rides the same response.
-        self.turns_since_compaction = data.get("turnsSinceCompaction").and_then(Value::as_u64);
-        self.refresh_cache_rate().await;
+        // The two tray sources ride in parallel: the session stats (context usage and
+        // the post-compaction turn count) and the cache fold (the tray's rate, the
+        // `/cache` panel's own payload). Serial awaits would double the settle-tail
+        // latency for one visible row.
+        let stats = self.bounded_request(
+            Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
+            DaemonCommand::GetSessionStats {
+                id: None,
+                active_session_id: self.active_session_id.clone(),
+                rest: Map::default(),
+            },
+        );
+        let cache = self.bounded_request(
+            Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
+            DaemonCommand::GetCacheStats {
+                id: None,
+                active_session_id: self.active_session_id.clone(),
+                rest: Map::default(),
+            },
+        );
+        let (stats, cache) = tokio::join!(stats, cache);
+        if let Ok(data) = stats {
+            // Unknown usage (tokens null right after a compaction, or a
+            // response without the field) clears the tray display.
+            self.context = data
+                .get("contextUsage")
+                .and_then(crate::chrome::ContextUsage::from_wire);
+            // FORK-ONLY: the post-compaction turn count rides the same response.
+            self.turns_since_compaction = data.get("turnsSinceCompaction").and_then(Value::as_u64);
+        }
+        // A failed cache fetch keeps the last rate (stale beats a flicker).
+        if let Ok(tree) = cache {
+            self.cache_hit_percent = crate::info_commands::cache_totals(&tree).hit_percent;
+        }
         self.dirty = true;
     }
 
