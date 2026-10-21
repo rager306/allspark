@@ -15,6 +15,18 @@ either changes.
 - Comments must be short, human-readable, and only where the code cannot say it. Reject comments that restate code, narrate control flow, or describe deleted mechanisms or history.
 - Doc comments must describe current behavior, not the history of how it got there.
 
+## Live-system safety
+
+- Flag any code path, test, script, or documented experiment that runs `prime-agent update`, `allspark update`, `install-rust.sh`, or `install.sh`. The installer stops daemons by socket path, so running it from inside a live session ends the session and every worker under it (2026-10-21 incident). An update flow is proved only with a fake channel and a socket under a temp directory — never $TMPDIR/prime-agent*, $TMPDIR/allspark*, or /tmp/prime-agent*.
+- Flag `env -i` used as isolation around an installer or daemon probe: it strips `PRIME_AGENT_INTERNAL_DAEMON_*`, which is exactly what the self-socket refusal reads, so it makes a destructive probe more likely.
+- Flag any change to the stop-candidate set that is not proved on both install layouts (upstream Rust root and fork `bin/`+`libexec/` tarball), and flag a probe that stops a socket it cannot attribute to this install. The pinned rust socket `$TMPDIR/prime-agent-rust-<uid>/daemon.sock` is shared by both products.
+- Flag commands that signal a process they did not start (`pkill -f prime-agent`, `killall`) or that remove a socket the run did not create.
+
+## Parallel agents share one tree
+
+- Flag instructions or scripts that commit with `git commit -a`, `git add -A`, or `git add .`, and flag any `git checkout -- <path>`, `git stash`, `git reset --hard`, `git restore`, or `git rebase` while other work is uncommitted: this checkout is worked by several agents on one branch, one index, one target dir. Commits use `git commit -o -- <path>...`.
+- Flag an agent run that builds with more than `CARGO_BUILD_JOBS=2`, runs `cargo clean`, or deletes anything under `target/`.
+
 ## Module organization
 
 - One concern per module, named for what it owns. Reject new `utils.rs`/`common.rs` grab-bag modules.
@@ -42,6 +54,7 @@ either changes.
 
 ## Tests
 
+- A red unit in `scripts/fork/prepush-gate.sh` is classified, never retried to green: product regression, wrong test, or a calibration that belongs in the serial tail with its reason stated at the test. Flag a loosened assertion that exists only to make a load-sensitive test pass, and flag a serial-tail addition without a reason at the test.
 - Add a regression test only when it captures meaningful behavior that fails before the fix; do not require one for trivial or documentation-only changes.
 - Reject incidental or duplicate coverage and copy/string snapshot assertions that merely restate labels or descriptions; assert text only when the text is the behavior.
 - A bug fix that captures meaningful behavior lands with a regression test that fails without the fix (no test required for trivial or documentation-only fixes).

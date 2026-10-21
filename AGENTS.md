@@ -27,6 +27,30 @@ Every contributor (human or agent) must read this before working on this repo.
   code fall back to; tooling that honors an override reads `PA_TS_REFERENCE`. The CI gate
   that consumed it is disabled (see Merge gates); run parity diffs on demand.
 
+## Live-system safety
+
+These rules exist because one violation killed a running agent session (2026-10-21 05:56 UTC):
+a subagent ran `allspark update --force` from inside the session to test whether the command
+works. The installer's stop-probe connected to `/tmp/prime-agent-rust-0/daemon.sock` — that
+session's own supervisor — and shut it down; five workers and four subagents died with it.
+
+- **Never run `prime-agent update`, `allspark update`, `install-rust.sh`, or `install.sh` from
+  inside a live session, in any form** — not `--check`, not under `env -i`, not against a
+  fixture `HOME`. The installer stops daemons by socket path, so an experiment is
+  indistinguishable from a real update. Prove an update flow with a fake channel and a fake
+  socket path under a `tempfile` directory — never a path matching `$TMPDIR/prime-agent*`,
+  `$TMPDIR/allspark*`, or `/tmp/prime-agent*`.
+- `env -i` is not an isolation tool here: it strips `PRIME_AGENT_INTERNAL_DAEMON_*`, which is
+  exactly what the installer's self-socket refusal reads. A scrubbed environment makes a
+  destructive probe more likely, not safer.
+- The pinned rust socket (`$TMPDIR/prime-agent-rust-<uid>/daemon.sock`) is shared by an
+  upstream Rust install and a fork tarball install on the same machine, so a fork run that
+  probes it stops a daemon it does not own. Any change to the stop candidates is proved against
+  both layouts, with the red-first test in `crates/pa-cli/tests/installer_platform_map.rs`.
+- No command may signal a process it did not start: no `pkill -f prime-agent`, no `killall`,
+  no deleting a socket you did not create. Tear down what you spawned, by pid, and leave the
+  ambient machine's daemons alone.
+
 ## Style and structure
 
 - Workspace crates are prefixed `pa-`. The hard ownership rules: one owned area per crate,
@@ -65,6 +89,21 @@ Every contributor (human or agent) must read this before working on this repo.
   A new dependency is an architectural change: state in the PR why the existing crates cannot
   host the functionality, and `make deny` must stay clean for it.
 - If a change starts forcing edits across many crate internals, stop and fix the boundary instead.
+
+## Parallel agents share one working tree
+
+This checkout is often worked by several agents at once: same branch, same index, same build
+directory. Treat the tree as shared state.
+
+- Commit only your own paths: `git commit -o -- <path>...`. A bare `git commit -a`,
+  `git add -A`, or `git add .` sweeps another agent's half-finished change into your commit.
+  Stage explicitly too — the index is shared.
+- Never run `git checkout -- <path>`, `git stash`, `git reset --hard`, `git restore`, or
+  `git rebase` while work is in flight: uncommitted work belongs to someone else and the index
+  cannot recover it. If another agent's edit blocks your build, work around it and say so in
+  your report instead of reverting it.
+- Cap the build: `CARGO_BUILD_JOBS=2` per agent (the workspace target is tens of GB), never
+  `cargo clean`, never delete anything under `target/`.
 
 ## Tests
 
@@ -204,6 +243,15 @@ launch path must keep that test red-first.
   (frame-diff, interactive behavior, wire bytes, user-visible invariants) — treat a mismatch as
   a strong signal, not a blocker. Wire-compat with TS (`PI_*` names, socket leases, session
   JSONL layout) stays binding regardless: parity beats branding on the wire.
+- `scripts/fork/prepush-gate.sh` is the local mirror of those gates and the default before a
+  push. `--fast` is fmt + clippy; the full run covers the same 275 test units as
+  `cargo test --workspace`, sharded across processes, with three properties that exist because
+  the gate runs from inside an agent session: it scrubs the ambient `PRIME_AGENT_*` environment
+  (a live session's overrides otherwise point spawned daemons at the live root and fail ~42
+  daemon e2e suites), it refuses to start below `GATE_MIN_FREE_GB` (parallel test binaries fill
+  the disk), and it runs the timing-sensitive suites in a serial tail. A red unit is classified,
+  never retried: product regression, wrong test, or a calibration that belongs in the serial
+  tail with its reason stated at the test.
 - PRs must state ownership compliance (crate README scope/non-goals/public API, dependency
   direction) and classify the change: internals, new `pub` surface, or a new
   dependency/cross-crate re-export. The latter two are architectural changes — an innocent-looking
