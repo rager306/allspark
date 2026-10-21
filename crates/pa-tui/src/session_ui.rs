@@ -19,6 +19,7 @@ mod queue;
 mod sessions_fork;
 mod settings;
 mod share;
+mod statusline;
 mod stream;
 mod window;
 pub(crate) use window::TranscriptPageNote;
@@ -47,6 +48,7 @@ use settings::PendingConfirm;
 pub(crate) use settings::ReloadNote;
 pub(crate) use share::{ShareNote, TracesUploadNote, UpdateNote};
 use share::{ShareRun, TraceUploadAllRun, TracesLoginIntent};
+pub(crate) use statusline::CacheRateUpdate;
 use stream::already_running_warning;
 pub(crate) use stream::resume_hint_from_stats;
 use stream::streaming_tray_hint;
@@ -321,6 +323,15 @@ pub(crate) struct SessionUi {
     /// Where background factory refreshes deliver the run graph (the run
     /// loop folds them into the open view).
     factory_updates: mpsc::UnboundedSender<FactoryUpdate>,
+    /// FORK-ONLY: the tray's cache-rate refresh. One in flight at a time with
+    /// one queued trailing refresh (the factory/heartbeat serialization), so a
+    /// rebind burst cannot stack daemon requests for one decoration, and the
+    /// epoch keeps a stale reply off a newer session's tray.
+    cache_rate_in_flight: bool,
+    cache_rate_queued: bool,
+    cache_rate_epoch: u64,
+    /// Where background cache-rate refreshes deliver their landed fold.
+    cache_rate_updates: mpsc::UnboundedSender<CacheRateUpdate>,
     /// The open view's selected run id: the refresh's watch target.
     factory_selected_run: Option<String>,
     /// The activity dock holds keyboard focus (and renders expanded).

@@ -203,6 +203,11 @@ async fn run_interactive_surface(
     // into the session — the open page's panels and the dock's count.
     let (factory_tx, mut factory_rx) =
         mpsc::unbounded_channel::<crate::session_ui::FactoryUpdate>();
+    // FORK-ONLY: background cache-rate refreshes (the tray's `cache N%` segment)
+    // report here; the loop folds the landed rate into the chrome, so the paint
+    // path never awaits the round-trip.
+    let (cache_rate_tx, mut cache_rate_rx) =
+        mpsc::unbounded_channel::<crate::session_ui::CacheRateUpdate>();
     // Background slash-command-catalog refreshes (`get_commands`) report
     // here; the loop folds the session's skill commands into the
     // autocomplete provider.
@@ -309,6 +314,7 @@ async fn run_interactive_surface(
         let bash_tx = bash_tx.clone();
         let factory_tx = factory_tx.clone();
         let commands_tx = commands_tx.clone();
+        let cache_rate_tx = cache_rate_tx.clone();
         let page_tx = page_tx.clone();
         let waits_through_update_restart = route == SessionOpenRoute::AgentsView;
         tokio::spawn(async move {
@@ -337,6 +343,7 @@ async fn run_interactive_surface(
                     let bash_tx = bash_tx.clone();
                     let factory_tx = factory_tx.clone();
                     let commands_tx = commands_tx.clone();
+                    let cache_rate_tx = cache_rate_tx.clone();
                     let page_tx = page_tx.clone();
                     async move {
                         let (client, events) = match first {
@@ -364,6 +371,7 @@ async fn run_interactive_surface(
                                 bash: bash_tx,
                                 factory: factory_tx,
                                 commands: commands_tx,
+                                cache_rate: cache_rate_tx,
                             },
                             page_tx,
                         )
@@ -1580,6 +1588,11 @@ async fn run_interactive_surface(
             maybe_factory = factory_rx.recv() => {
                 if let Some(update) = maybe_factory {
                     session.apply_factory_update(update, &mut view);
+                }
+            }
+            maybe_cache_rate = cache_rate_rx.recv() => {
+                if let Some(update) = maybe_cache_rate {
+                    session.apply_cache_rate(&update, &mut view);
                 }
             }
             maybe_commands = commands_rx.recv() => {

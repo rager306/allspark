@@ -151,6 +151,10 @@ impl SessionUi {
             factory_refresh_queued: false,
             factory_list_epoch: 0,
             factory_updates: activity_updates.factory,
+            cache_rate_in_flight: false,
+            cache_rate_queued: false,
+            cache_rate_epoch: 0,
+            cache_rate_updates: activity_updates.cache_rate,
             factory_selected_run: None,
             subagents_focused: false,
             activity_group: crate::chrome::ActivityGroup::Subagents,
@@ -448,11 +452,12 @@ impl SessionUi {
             DockFold::Fresh | DockFold::Held => self.spawn_heartbeat_refresh(),
         }
         // FORK-ONLY: the tray's cache-hit rate is a `get_cache_stats` fold (the
-        // `/cache` panel's own payload), so a first-content-frame attach fetches it
-        // with the other dock folds and a rebind refreshes it in place. A held dock
-        // keeps its rate: an already-up surface must not flicker.
+        // `/cache` panel's own payload). It is a decoration on a visible row, so the
+        // attach NEVER awaits it (the paint-path rule): the refresh is spawned and
+        // the landed fold repaints through the run loop. A held dock keeps its
+        // already-painted rate instead of refetching.
         match dock_fold {
-            DockFold::FirstFrame | DockFold::Fresh => self.refresh_cache_rate().await,
+            DockFold::FirstFrame | DockFold::Fresh => self.spawn_cache_rate_refresh(),
             DockFold::Held => {}
         }
         // The slash-command catalog is session-scoped too; the skill commands
@@ -712,53 +717,10 @@ impl SessionUi {
     /// Refresh context usage from `get_session_stats`: tokens, context window,
     /// and percent. The title's spend comes from the roster pushes instead.
     pub(crate) async fn refresh_stats(&mut self) {
-        // The two tray sources ride in parallel: the session stats (context usage and
-        // the post-compaction turn count) and the cache fold (the tray's rate, the
-        // `/cache` panel's own payload). Serial awaits would double the settle-tail
-        // latency for one visible row.
-        let stats = self.bounded_request(
-            Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
-            DaemonCommand::GetSessionStats {
-                id: None,
-                active_session_id: self.active_session_id.clone(),
-                rest: Map::default(),
-            },
-        );
-        let cache = self.bounded_request(
-            Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
-            DaemonCommand::GetCacheStats {
-                id: None,
-                active_session_id: self.active_session_id.clone(),
-                rest: Map::default(),
-            },
-        );
-        let (stats, cache) = tokio::join!(stats, cache);
-        if let Ok(data) = stats {
-            // Unknown usage (tokens null right after a compaction, or a
-            // response without the field) clears the tray display.
-            self.context = data
-                .get("contextUsage")
-                .and_then(crate::chrome::ContextUsage::from_wire);
-            // FORK-ONLY: the post-compaction turn count rides the same response.
-            self.turns_since_compaction = data.get("turnsSinceCompaction").and_then(Value::as_u64);
-        }
-        // A failed cache fetch keeps the last rate (stale beats a flicker).
-        if let Ok(tree) = cache {
-            self.cache_hit_percent = crate::info_commands::cache_totals(&tree).hit_percent;
-        }
-        self.dirty = true;
-    }
-
-    /// FORK-ONLY: refresh the tray's cache-hit rate from `get_cache_stats` — the
-    /// very payload `/cache` renders — and fold it with `info_commands::cache_totals`,
-    /// so the status line can never print a number the panel disagrees with. A failed
-    /// fetch keeps the last rate (stale beats a flicker); it clears only when the
-    /// session's own fold reports no traffic.
-    async fn refresh_cache_rate(&mut self) {
-        let Ok(tree) = self
+        let Ok(data) = self
             .bounded_request(
                 Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
-                DaemonCommand::GetCacheStats {
+                DaemonCommand::GetSessionStats {
                     id: None,
                     active_session_id: self.active_session_id.clone(),
                     rest: Map::default(),
@@ -768,7 +730,17 @@ impl SessionUi {
         else {
             return;
         };
-        self.cache_hit_percent = crate::info_commands::cache_totals(&tree).hit_percent;
+        // Unknown usage (tokens null right after a compaction, or a
+        // response without the field) clears the tray display.
+        self.context = data
+            .get("contextUsage")
+            .and_then(crate::chrome::ContextUsage::from_wire);
+        // FORK-ONLY: the post-compaction turn count rides the same response.
+        self.turns_since_compaction = data.get("turnsSinceCompaction").and_then(Value::as_u64);
+        // FORK-ONLY: the cache rate is a decoration, so its refresh is spawned and
+        // folds through the run loop rather than holding this settle path open.
+        self.spawn_cache_rate_refresh();
+        self.dirty = true;
     }
 
     /// Detach on the agents-view handoff without blocking it: a background task owns the connection

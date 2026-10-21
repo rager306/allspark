@@ -3,9 +3,9 @@
 
 use super::{
     key_event_to_id, mpsc, paused_heartbeat_count, picker_viewport_rows, tray_goal_label,
-    AgentView, BashActivityUpdate, CommandCatalogUpdate, DaemonCommand, DockFocusSource,
-    FactoryUpdate, GoalPanel, HeartbeatsUpdate, InfoContent, InfoPanelAction, KeyEvent, Map,
-    Result, SessionUi, Value,
+    AgentView, BashActivityUpdate, CacheRateUpdate, CommandCatalogUpdate, DaemonCommand,
+    DockFocusSource, FactoryUpdate, GoalPanel, HeartbeatsUpdate, InfoContent, InfoPanelAction,
+    KeyEvent, Map, Result, SessionUi, Value,
 };
 
 pub(crate) struct ActivityUpdates {
@@ -13,6 +13,8 @@ pub(crate) struct ActivityUpdates {
     pub bash: mpsc::UnboundedSender<BashActivityUpdate>,
     pub factory: mpsc::UnboundedSender<FactoryUpdate>,
     pub commands: mpsc::UnboundedSender<CommandCatalogUpdate>,
+    /// FORK-ONLY: the tray's background cache-rate refreshes.
+    pub cache_rate: mpsc::UnboundedSender<CacheRateUpdate>,
 }
 
 impl SessionUi {
