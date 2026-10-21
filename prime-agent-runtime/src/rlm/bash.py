@@ -271,6 +271,11 @@ class BashResult:
     exit_code: int
     output: str
     duration: float
+    # Identity of the process that produced the output, so a long-running
+    # command can still be inspected after it finished. Defaults keep
+    # positional construction and older kernels working.
+    pid: int = 0
+    command: str = ""
 
     @property
     def running(self) -> bool:
@@ -278,6 +283,10 @@ class BashResult:
         # running (BashSnapshot.running is True). A property, not a field, so
         # repr, equality, and positional construction stay unchanged.
         return False
+
+    def tail(self, n: int = 50) -> str:
+        """The last n output lines: the same shape as `BashHandle.tail`."""
+        return "\n".join(self.output.splitlines()[-n:])
 
 
 @dataclass(frozen=True)
@@ -296,10 +305,12 @@ class BashSnapshot:
     running: bool
     duration: float
     handle: "BashHandle"
+    pid: int = 0
+    command: str = ""
 
     def __repr__(self) -> str:
         return (
-            f"<BashSnapshot running pid={self.handle._pid} "
+            f"<BashSnapshot running pid={self.pid} "
             f"after {self.duration:g}s: collect on the [bash-done] "
             "notification or await .handle>"
         )
@@ -773,6 +784,8 @@ class BashHandle:
                 exit_code=exit_code,
                 output=self._buffer.text() if output is None else output,
                 duration=time.monotonic() - self._started,
+                pid=self._pid,
+                command=self.command,
             )
             self._done.set()
             callbacks = self._callbacks
@@ -1094,6 +1107,8 @@ class BashHandle:
             running=True,
             duration=time.monotonic() - self._started,
             handle=self,
+            pid=self._pid,
+            command=self.command,
         )
 
     def __reduce__(self) -> NoReturn:

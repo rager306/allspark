@@ -122,6 +122,15 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
         awaited = await handle
         self.assertEqual(handle.poll(), awaited)
 
+    async def test_result_carries_pid_command_and_a_matching_tail(self):
+        command = "printf 'one\\ntwo\\nthree\\n'"
+        handle = bash(command)
+        result = await handle
+        self.assertEqual(result.pid, handle.pid)
+        self.assertEqual(result.command, command)
+        self.assertEqual(result.tail(2), "two\nthree")
+        self.assertEqual(result.tail().splitlines(), ["one", "two", "three"])
+
     def test_construction_cleanup_uses_windows_signal_without_sigkill(self):
         failure = RuntimeError("task construction failed")
         loop = mock.Mock()
@@ -1407,6 +1416,8 @@ class BoundedAwaitTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(returned.exit_code)
         self.assertTrue(returned.running)
         self.assertIsInstance(returned.output, str)
+        self.assertEqual(returned.pid, handle.pid)
+        self.assertEqual(returned.command, "sleep 0.5")
         # The prompt's collect idiom: re-awaiting the live handle returns the
         # final result once the command finishes inside the window.
         result = await returned.handle
