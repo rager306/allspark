@@ -24,6 +24,7 @@ import io
 import json
 import os
 import re
+import shlex
 import threading
 import time
 from contextlib import AsyncExitStack
@@ -38,6 +39,7 @@ __all__ = [
     "McpCredentialsUnavailable",
     "McpDiscoveryError",
     "McpStartupError",
+    "McpStartupTimeout",
     "McpToolError",
     "call_tool",
     "close",
@@ -82,6 +84,14 @@ _SECRET_KEY_PATTERN = re.compile(r"token|secret|password|credential|authorizatio
 class McpStartupError(RuntimeError):
     """A stdio server failed while completing the MCP startup handshake."""
 
+
+class McpStartupTimeout(McpStartupError):
+    """A stdio server never answered initialize before its startup timeout.
+
+    Subclasses `McpStartupError` so every existing handler (and
+    `_SEARCH_FAILURE_HINTS`) keeps working, and so the diagnostic carries the
+    child's stderr tail and command line like any other startup failure.
+    """
 
 
 class McpDiscoveryError(RuntimeError):
@@ -172,6 +182,8 @@ class _Generation:
         self._stderr_secrets: tuple[str, ...] = ()
         self._stderr_disclosable = True
         self._diagnostic_private_values: tuple[str, ...] = ()
+        # Resolved stdio command line, rendered for startup diagnostics only.
+        self._command_line = ""
         self._close_requested = asyncio.Event()
         self._lifecycle: asyncio.Task[None] | None = None
 
@@ -205,7 +217,8 @@ class _Generation:
         startup_failure: Exception | None = None
         try:
             try:
-                async with asyncio.timeout(self.startup_timeout):
+                watchdog = asyncio.timeout(self.startup_timeout)
+                async with watchdog:
                     read, write = await self._open_transport()
                     from mcp import ClientSession
 
@@ -222,8 +235,16 @@ class _Generation:
                     if startup_failure is None and self._stderr is not None:
                         self._stderr.stop_capture()
             except BaseException as exc:
+                # The startup deadline is a startup failure like any other: the
+                # child usually said why on stderr before going quiet, so the
+                # tail and command line are reported instead of a bare
+                # TimeoutError. A caller's cancellation, and any other
+                # transport's timeout, still propagates verbatim.
+                failure: BaseException = exc
+                if self._stderr is not None and _is_startup_deadline(exc, watchdog):
+                    failure = self._startup_timeout_error()
                 if not ready.done():
-                    ready.set_exception(exc)
+                    ready.set_exception(failure)
                 return
 
             if startup_failure is not None:
@@ -263,6 +284,32 @@ class _Generation:
         )
         detail = f" Stderr tail:\n{stderr}" if stderr else ""
         return McpStartupError(f"MCP stdio server failed during startup ({original}).{detail}")
+
+    def _startup_timeout_error(self) -> McpStartupTimeout:
+        """The startup deadline's diagnostic: the command line and the child's stderr.
+
+        The command line is sanitized with only the stderr-secret redaction list:
+        `_diagnostic_private_values` holds the command and args themselves, so
+        applying it here would blank the line that names what failed.
+        """
+        assert self._stderr is not None
+        detail = ""
+        stderr = ""
+        if self._stderr_disclosable:
+            # Redact the configured secrets the child's stderr shares, and cap
+            # it like the tail: an oversized command line must not become an
+            # unbounded prompt input either. `_diagnostic_private_values` is
+            # deliberately not applied -- it holds the command and args.
+            command = _sanitize_diagnostic(self._command_line, self._stderr_secrets)
+            if command:
+                detail = f"\nCommand: {command}"
+            stderr = self._stderr.tail(self._stderr_secrets, self._diagnostic_private_values)
+            if stderr:
+                detail += f"\nStderr tail:\n{stderr}"
+        return McpStartupTimeout(
+            f"MCP stdio server '{self.server}' did not answer initialize within "
+            f"{self.startup_timeout:g}s.{detail}"
+        )
 
     async def _open_transport(self):
         kind = self.config.get("type")
@@ -317,6 +364,7 @@ class _Generation:
             sorted({value for value in configured_values if len(value) >= 4}, key=len, reverse=True)
         )
         self._diagnostic_private_values = _private_config_values(self.config) + (os.getcwd(),)
+        self._command_line = _render_command(command, args, cwd)
         self._stderr = _StderrTail()
         params = StdioServerParameters(command=command, args=args, cwd=cwd, env=env)
         return await self.stack.enter_async_context(stdio_client(params, errlog=self._stderr))
@@ -847,13 +895,19 @@ def _bounded_error(exc: BaseException) -> str:
     """A fixed, redaction-safe summary of one connection's search failure.
 
     Raw exception text can embed credential-bearing URLs and HTTP bodies, so
-    only the exception type name and a fixed hint are ever surfaced.
+    only the exception type name and a fixed hint are ever surfaced. The one
+    exception is a startup timeout: its headline is built by
+    `_startup_timeout_error` from already-redacted parts, so it names the cause
+    (deadline, not a crash) without quoting the command line or the tail.
     """
     hint = "the connection could not be opened or searched"
     for failure_type, message in _SEARCH_FAILURE_HINTS:
         if isinstance(exc, failure_type):
             hint = message
             break
+    if isinstance(exc, McpStartupTimeout):
+        headline = str(exc).splitlines()[0].strip()
+        return f"{type(exc).__name__}: {headline}" if headline else f"{type(exc).__name__}: {hint}"
     return f"{type(exc).__name__}: {hint}"
 
 
@@ -996,6 +1050,26 @@ def _stdio_env(config: dict[str, Any]) -> dict[str, str]:
             raise ValueError(f"MCP stdio environment reference for '{key}' is unavailable")
         env[key] = os.environ[source]
     return env
+
+
+def _render_command(command: str, args: list[str], cwd: Any) -> str:
+    """The resolved command line a startup diagnostic names (not re-run)."""
+    line = " ".join(shlex.quote(arg) for arg in (command, *args))
+    return f"{line} (cwd {cwd})" if isinstance(cwd, str) and cwd else line
+
+
+def _is_startup_deadline(exc: BaseException, watchdog: asyncio.Timeout) -> bool:
+    """Whether the startup watchdog fired, as opposed to a caller cancelling.
+
+    `expired()` is False for a cancellation delivered inside the deadline, so a
+    cancelled open still propagates as CancelledError. The exception must also
+    be a timeout: a transport's own task group may wrap it one level deep.
+    """
+    if not watchdog.expired():
+        return False
+    return isinstance(exc, TimeoutError) or any(
+        isinstance(item, TimeoutError) for item in getattr(exc, "exceptions", ())
+    )
 
 
 def _is_exception_group(exc: BaseException) -> bool:

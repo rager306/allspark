@@ -54,6 +54,15 @@ raise ImportError("fixture startup crash")
 """
 
 
+_HANGING_STDIO_FIXTURE = r"""import os, sys, time
+if len(sys.argv) > 1:
+    open(sys.argv[1], "w").write(str(os.getpid()))
+print("fixture startup marker: could not start", file=sys.stderr, flush=True)
+print("fixture secret: " + os.environ.get("FIXTURE_SECRET", ""), file=sys.stderr, flush=True)
+time.sleep(600)
+"""
+
+
 _HTTP_FIXTURE = """from mcp.server.mcpserver import MCPServer
 server = MCPServer("fixture")
 @server.tool(name="http/raw.tool")
@@ -671,6 +680,62 @@ class McpRegistryTest(unittest.TestCase):
         self.assertLessEqual(len(diagnostic.splitlines()), mcp._STDERR_LINE_LIMIT + 1)
         with self.assertRaises(ProcessLookupError):
             os.kill(pid, 0)
+
+    def test_stdio_startup_timeout_reports_command_and_stderr_tail(self):
+        secret = "stdio-timeout-secret-SENTINEL"
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "hanging_stdio_server.py"
+            pid_file = Path(tmp) / "child.pid"
+            fixture.write_text(_HANGING_STDIO_FIXTURE)
+            config = {
+                "type": "stdio",
+                "command": sys.executable,
+                "args": [str(fixture), str(pid_file)],
+                "cwd": tmp,
+                "env": {"FIXTURE_SECRET": {"env": "SOURCE_SECRET"}},
+                "startupTimeoutMs": 500,
+            }
+
+            async def scenario():
+                with mock.patch.dict(os.environ, {"SOURCE_SECRET": secret}, clear=False):
+                    generation = mcp._Generation("svc", config)
+                    with self.assertRaises(mcp.McpStartupTimeout) as caught:
+                        await generation.open()
+                    self.assertIsInstance(caught.exception, mcp.McpStartupError)
+                    self.assertTrue(generation.closed)
+                    return str(caught.exception)
+
+            diagnostic = run(scenario())
+            pid = int(pid_file.read_text())
+
+        self.assertIn("did not answer initialize within 0.5s", diagnostic)
+        self.assertIn("fixture startup marker: could not start", diagnostic)
+        self.assertIn("Command: ", diagnostic)
+        self.assertIn(sys.executable, diagnostic)
+        self.assertIn(str(fixture), diagnostic)
+        self.assertIn("fixture secret: [REDACTED]", diagnostic)
+        self.assertNotIn(secret, diagnostic)
+        # A search across connections names the cause without the command line.
+        self.assertEqual(
+            mcp._bounded_error(mcp.McpStartupTimeout(diagnostic)),
+            "McpStartupTimeout: " + diagnostic.splitlines()[0],
+        )
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+
+    def test_http_startup_timeout_stays_a_plain_timeout(self):
+        generation = mcp._Generation("svc", {"type": "http", "url": "http://127.0.0.1:1", "startupTimeoutMs": 20})
+
+        async def open_transport():
+            await asyncio.sleep(10)
+
+        async def scenario():
+            with mock.patch.object(generation, "_open_transport", open_transport):
+                with self.assertRaises(TimeoutError):
+                    await generation.open()
+
+        run(scenario())
+        self.assertIsNone(generation._stderr)
 
     def test_successful_stdio_discards_startup_stderr(self):
         with tempfile.TemporaryDirectory() as tmp:
