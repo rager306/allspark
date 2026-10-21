@@ -227,6 +227,42 @@ must not delay paint) as the permanent guard. Any change touching the
 launch path must keep that test red-first.
 
 
+## Build stages (pick the cheapest that can answer)
+
+Every command below is a stage: run the cheapest one that can answer the question, and never a
+heavier one "to be safe". Cargo artifacts are the repo's largest disk cost, so an unnecessary stage
+is a tax on every later build.
+
+| need | command | artifacts produced |
+|---|---|---|
+| does it compile | `cargo check -p <crate>` | `.rmeta` only, no codegen |
+| lint | `cargo clippy -p <crate> --all-targets -- -D warnings` | `.rmeta` |
+| one test | `cargo test -p <crate> --lib <name>` | one test binary |
+| whole suite | `cargo nextest run --workspace` | `target/nextest` |
+| debugger | `cargo build --profile debugging -p <crate>` | full debuginfo |
+| package | `cargo build --profile dist -p pa-cli` | one stripped binary |
+
+- `cargo build` to answer a question `cargo check` answers is a defect, not caution.
+- No `--release` unless shipping; no `--all-targets` unless the change touches a test.
+- `debugging` is a declared profile because the default `dev` build carries
+  `debug = "line-tables-only"`: the debugger needs `--profile debugging` to see locals.
+- `scripts/fork/prepush-gate.sh` runs these stages in order (fmt, clippy, then the test units) and
+  is the pre-push entry point; `make check` remains the CI mirror.
+
+## Run scratch lives in the repo, not /tmp
+
+Transient files from a test run — fixtures, daemon sockets, kernel state — belong under
+`<repo>/.tmp` (gitignored, `CACHEDIR.TAG`-tagged), never the OS temp dir. `/tmp` is deleted by age
+(`d /tmp … 10d` in systemd-tmpfiles) and is tmpfs on some distributions, so a long gate run can lose a
+worktree's fixtures to a cleaner that has no idea what they are; and a shared `/tmp` is how one run's
+cleanup becomes another run's missing directory.
+
+- The gate exports `TMPDIR=<repo>/.tmp`; the 194 integration tests that call `TempDir::new()` honour
+  it, and the handful that set `TMPDIR` themselves still win, so the isolation tests keep their shape.
+- Anything a *system* tool spawns (a compiler cache daemon, a package manager) stays in its own
+  `~/.cache` home, outside the repo and outside `target/`.
+- Cleanup is `rm -rf .tmp` — one path, inside the tree, nothing outside it.
+
 ## Merge gates
 
 - `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,

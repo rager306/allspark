@@ -36,6 +36,12 @@ export CARGO_PROFILE_DEV_DEBUG=0
 # cleanup story. The 194 integration tests that call TempDir::new() honour TMPDIR; the
 # nine that set TMPDIR themselves still win, so the isolation tests keep their shape.
 mkdir -p "$ROOT/.tmp"
+# The same cache-directory marker Cargo writes into target/: backup tools that honour
+# CACHEDIR.TAG (tar, restic, borg) then skip run scratch instead of archiving it.
+if [ ! -f "$ROOT/.tmp/CACHEDIR.TAG" ]; then
+  printf 'Signature: 8a477f597d28d172789f06886806bc55\n# This file is a cache directory tag created by prepush-gate.sh.\n# For information about cache directory tags see https://bford.info/cachedir/\n' \
+    > "$ROOT/.tmp/CACHEDIR.TAG"
+fi
 export TMPDIR="$ROOT/.tmp"
 export TEMP="$TMPDIR"
 export TMP="$TMPDIR"
