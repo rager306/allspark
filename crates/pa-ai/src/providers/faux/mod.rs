@@ -385,29 +385,43 @@ fn with_usage_estimate(
     let mut input = prompt_tokens;
     let mut cache_read = 0u64;
     let mut cache_write = 0u64;
-    let session_id = options.and_then(|options| options.session_id.clone());
-    let cache_retention_none = options.map(|options| {
-        matches!(
-            options.cache_retention,
-            Some(crate::types::CacheRetention::None)
-        )
-    });
+    // The faux double simulates prompt caching only when the caller asks
+    // for retention. A session id alone is not a request to cache: every
+    // live request now carries one (the provider cache-key identity), and
+    // treating that as an opt-in would silently rewrite every test's token
+    // accounting — cache_write would land on the first request of each
+    // session and the usage totals the compaction threshold reads would
+    // shift under the tests that calibrate it.
+    let session_id = options
+        .and_then(|options| options.session_id.clone())
+        .filter(|_| {
+            options.is_some_and(|options| {
+                matches!(
+                    options.cache_retention,
+                    Some(crate::types::CacheRetention::Short | crate::types::CacheRetention::Long)
+                )
+            })
+        });
 
     if let Some(session_id) = session_id {
-        if !cache_retention_none.unwrap_or(false) {
-            let mut cache = prompt_cache.lock().unwrap();
-            if let Some(previous_prompt) = cache.get(&session_id).cloned() {
-                let cached_chars = common_prefix_length(&previous_prompt, &prompt_text);
-                let cached_prefix: String = previous_prompt.chars().take(cached_chars).collect();
-                cache_read = estimate_tokens(&cached_prefix);
-                let remaining: String = prompt_text.chars().skip(cached_chars).collect();
-                cache_write = estimate_tokens(&remaining);
-                input = prompt_tokens.saturating_sub(cache_read);
-            } else {
-                cache_write = prompt_tokens;
-            }
-            cache.insert(session_id, prompt_text);
+        let mut cache = prompt_cache.lock().unwrap();
+        if let Some(previous_prompt) = cache.get(&session_id).cloned() {
+            let cached_chars = common_prefix_length(&previous_prompt, &prompt_text);
+            let cached_prefix: String = previous_prompt.chars().take(cached_chars).collect();
+            cache_read = estimate_tokens(&cached_prefix);
+            let remaining: String = prompt_text.chars().skip(cached_chars).collect();
+            // The provider accounting semantics (openai_completions
+            // convert.rs): `input` is the uncached remainder, so the four
+            // fields sum to prompt + output. Counting cache_write into
+            // input too would double it in total_tokens.
+            cache_write = estimate_tokens(&remaining);
+            input = prompt_tokens
+                .saturating_sub(cache_read)
+                .saturating_sub(cache_write);
+        } else {
+            cache_write = prompt_tokens;
         }
+        cache.insert(session_id, prompt_text);
     }
 
     message.usage = Usage {
