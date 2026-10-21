@@ -472,6 +472,12 @@ async fn tool_calls_fold_into_run_aggregates() {
         ("edit", false, 1_200, 1_205),
         ("mcp__github__create_issue", false, 1_300, 1_350),
         ("private-extension-tool", false, 1_400, 1_401),
+        // FORK-ONLY: the three native fork tools must land in their OWN
+        // categories, not in the shared `custom` bucket beside the unknown tool
+        // above — that pooling was the defect this asserts against.
+        ("graph", false, 1_500, 1_620),
+        ("lsp", true, 1_700, 1_715),
+        ("jev", false, 1_800, 1_804),
     ] {
         let (tool_start, tool_end) = tool_execution_event(tool, is_error);
         fixture.clock.set(start);
@@ -489,8 +495,8 @@ async fn tool_calls_fold_into_run_aggregates() {
     emit(&fixture, AgentEvent::AgentStart);
     let runs = event_properties(&fixture.mock, "agent run completed").await;
     let run = &runs[0];
-    assert_eq!(run["tool_call_count"], serde_json::json!(5));
-    assert_eq!(run["tool_error_count"], serde_json::json!(1));
+    assert_eq!(run["tool_call_count"], serde_json::json!(8));
+    assert_eq!(run["tool_error_count"], serde_json::json!(2));
     assert_eq!(run["tool_bash_call_count"], serde_json::json!(2));
     assert_eq!(run["tool_bash_error_count"], serde_json::json!(1));
     assert_eq!(run["tool_bash_duration_ms"], serde_json::json!(50));
@@ -498,6 +504,15 @@ async fn tool_calls_fold_into_run_aggregates() {
     assert_eq!(run["tool_edit_call_count"], serde_json::json!(1));
     assert_eq!(run["mcp_tool_call_count"], serde_json::json!(1));
     assert_eq!(run["custom_tool_call_count"], serde_json::json!(1));
+    // Each fork tool reports its own rows, with its own duration and max.
+    assert_eq!(run["tool_graph_call_count"], serde_json::json!(1));
+    assert_eq!(run["tool_graph_duration_ms"], serde_json::json!(120));
+    assert_eq!(run["tool_graph_max_duration_ms"], serde_json::json!(120));
+    assert_eq!(run["tool_lsp_call_count"], serde_json::json!(1));
+    assert_eq!(run["tool_lsp_error_count"], serde_json::json!(1));
+    assert_eq!(run["tool_lsp_duration_ms"], serde_json::json!(15));
+    assert_eq!(run["tool_jev_call_count"], serde_json::json!(1));
+    assert_eq!(run["tool_jev_duration_ms"], serde_json::json!(4));
     assert!(
         run.get("tool_read_call_count").is_none(),
         "unused tools stay absent"

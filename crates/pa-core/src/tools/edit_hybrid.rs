@@ -317,7 +317,12 @@ impl AgentTool for EditHybridTool {
         _signal: AbortSignal,
         _on_update: AgentToolUpdateCallback,
     ) -> pa_agent::BoxFut<'static, anyhow::Result<AgentToolResult>> {
-        Box::pin(async move { Ok(self.run(&params).await) })
+        Box::pin(async move {
+            let started = std::time::Instant::now();
+            let result = self.run(&params).await;
+            Ok(result
+                .with_duration_ms(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)))
+        })
     }
 }
 

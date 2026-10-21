@@ -1034,10 +1034,13 @@ impl AgentTool for LspTool {
         _on_update: AgentToolUpdateCallback,
     ) -> pa_agent::BoxFut<'static, anyhow::Result<AgentToolResult>> {
         Box::pin(async move {
+            let started = std::time::Instant::now();
             let parsed: LspParams = serde_json::from_value(params)
                 .map_err(|err| anyhow::anyhow!("invalid lsp arguments: {err}"))?;
             let timeout = Duration::from_secs(parsed.timeout_secs());
-            self.dispatch(&parsed, timeout).await
+            let result = self.dispatch(&parsed, timeout).await?;
+            Ok(result
+                .with_duration_ms(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)))
         })
     }
 }

@@ -485,6 +485,22 @@ impl AgentToolResult {
             is_error: true,
         }
     }
+
+    /// Record the tool's own wall time as `details.durationMs` (the key the
+    /// fork's tools and the TUI card already read: `ipython`, the bash view,
+    /// the ACP frames). A tool calls this once at its execute boundary instead
+    /// of each reporting its timing its own way; `details` becomes an object
+    /// when it was null so the stamp never replaces a payload.
+    #[must_use]
+    pub fn with_duration_ms(mut self, duration_ms: u64) -> Self {
+        if self.details.is_null() {
+            self.details = serde_json::Value::Object(serde_json::Map::new());
+        }
+        if let Some(object) = self.details.as_object_mut() {
+            object.insert("durationMs".to_string(), serde_json::json!(duration_ms));
+        }
+        self
+    }
 }
 
 /// Callback used by tools to publish partial execution updates.
@@ -680,3 +696,26 @@ pub struct ShouldStopAfterTurnContext {
 }
 
 pub type GetContinuationMessagesContext = ShouldStopAfterTurnContext;
+
+#[cfg(test)]
+mod duration_tests {
+    use super::*;
+
+    /// The stamp lands on a null `details` (a plain-text tool), keeps an
+    /// existing object's keys, and is idempotent — so a tool can stamp at its
+    /// execute boundary without knowing what the result carries.
+    #[test]
+    fn with_duration_ms_stamps_a_null_payload_and_keeps_object_keys() {
+        let plain = AgentToolResult::text("ok").with_duration_ms(42);
+        assert_eq!(plain.details["durationMs"], serde_json::json!(42));
+        assert_eq!(plain.content.len(), 1, "content is untouched");
+
+        let rich = AgentToolResult {
+            details: serde_json::json!({ "hits": 3 }),
+            ..AgentToolResult::text("ok")
+        }
+        .with_duration_ms(7);
+        assert_eq!(rich.details["durationMs"], serde_json::json!(7));
+        assert_eq!(rich.details["hits"], serde_json::json!(3), "kept");
+    }
+}

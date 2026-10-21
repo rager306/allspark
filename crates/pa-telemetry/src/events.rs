@@ -48,6 +48,14 @@ pub enum ToolCategory {
     Ls,
     Ipython,
     Mcp,
+    /// FORK-ONLY: the code-graph tool. Without its own arm every graph call
+    /// folded into `custom` beside lsp and jev, so the run summary could not
+    /// say which of the three cost the time.
+    Graph,
+    /// FORK-ONLY: the language-server tool.
+    Lsp,
+    /// FORK-ONLY: the typed-judgment tool.
+    Jev,
     Custom,
     Unknown,
 }
@@ -68,6 +76,12 @@ impl ToolCategory {
             "ls" => Self::Ls,
             "python" | "ipython" => Self::Ipython,
             "mcp" => Self::Mcp,
+            // FORK-ONLY tools: each gets its own category so the run summary
+            // reports its own call/error/duration/max_duration rows instead of
+            // pooling them into `custom_tool_*`.
+            "graph" => Self::Graph,
+            "lsp" => Self::Lsp,
+            "jev" => Self::Jev,
             "" => Self::Unknown,
             _ => Self::Custom,
         }
@@ -86,6 +100,9 @@ impl ToolCategory {
             Self::Ls => "ls",
             Self::Ipython => "ipython",
             Self::Mcp => "mcp",
+            Self::Graph => "graph",
+            Self::Lsp => "lsp",
+            Self::Jev => "jev",
             Self::Custom => "custom",
             Self::Unknown => "unknown",
         }
@@ -402,6 +419,26 @@ mod tests {
             ToolCategory::Custom
         );
         assert_eq!(ToolCategory::from_tool_name(""), ToolCategory::Unknown);
+    }
+
+    /// FORK-ONLY: the three native fork tools each own a category. Before this,
+    /// `graph`, `lsp` and `jev` all fell into `Custom`, so `finalize_run_locked`
+    /// folded their call/error/duration rows into one `custom_tool_*` aggregate
+    /// and the run summary could not say which cost the time.
+    #[test]
+    fn the_fork_tools_have_their_own_categories() {
+        assert_eq!(ToolCategory::from_tool_name("graph"), ToolCategory::Graph);
+        assert_eq!(ToolCategory::from_tool_name("lsp"), ToolCategory::Lsp);
+        assert_eq!(ToolCategory::from_tool_name("jev"), ToolCategory::Jev);
+        // The wire names the catalog rules are keyed by.
+        assert_eq!(ToolCategory::Graph.as_str(), "graph");
+        assert_eq!(ToolCategory::Lsp.as_str(), "lsp");
+        assert_eq!(ToolCategory::Jev.as_str(), "jev");
+        // The custom bucket keeps meaning "a tool we do not know by name".
+        assert_eq!(
+            ToolCategory::from_tool_name("web-search"),
+            ToolCategory::Custom
+        );
     }
 
     #[test]

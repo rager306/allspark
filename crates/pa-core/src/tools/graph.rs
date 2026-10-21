@@ -815,6 +815,7 @@ impl AgentTool for GraphTool {
         _on_update: AgentToolUpdateCallback,
     ) -> pa_agent::BoxFut<'static, anyhow::Result<AgentToolResult>> {
         Box::pin(async move {
+            let started = std::time::Instant::now();
             let tool = Arc::clone(&self);
             // The re-rank's query is read before the store work (the params
             // move into the blocking task).
@@ -841,10 +842,14 @@ impl AgentTool for GraphTool {
             // FORK-ONLY (jev Phase 2): the judge re-rank runs on the async
             // path (it awaits the judgment); a failure inside it is
             // fail-open and returns the store's own result.
+            let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
             let Some(query) = rerank_query else {
-                return Ok(result);
+                return Ok(result.with_duration_ms(elapsed_ms));
             };
-            Ok(self.rerank_search(&query, result, &signal).await)
+            Ok(self
+                .rerank_search(&query, result, &signal)
+                .await
+                .with_duration_ms(elapsed_ms))
         })
     }
 }
@@ -1303,6 +1308,17 @@ mod tests {
         assert!(
             text.contains("1 hit(s)") || text.contains("2 hit(s)"),
             "the query answers with real hits, not 0: {text}"
+        );
+        // The tool stamps its own wall time so the run summary and the TUI card
+        // can show it (fork tools used to report none at all).
+        assert!(
+            result
+                .details
+                .get("durationMs")
+                .and_then(serde_json::Value::as_u64)
+                .is_some(),
+            "the graph result carries durationMs: {}",
+            result.details
         );
     }
 
