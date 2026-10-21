@@ -61,18 +61,34 @@ pub const COST_REFERENCE_USD_PER_1M: f64 = 3.0;
 /// milliseconds (the same saturating shape as the cost term).
 pub const LATENCY_REFERENCE_MS: f64 = 2_000.0;
 
+/// The observed error rate at which the reliability term scores `0.5`.
+///
+/// The same saturating shape as cost and latency, so a clean provider (0)
+/// scores `1.0`, the 10% retry budget that trips the breaker scores `0.5`, and
+/// a provider failing every call approaches `0.0`. Deliberately calibrated to
+/// the breaker's own threshold: the graded term starts costing a candidate
+/// exactly where the hard filter will soon start rejecting it, so behaviour
+/// degrades smoothly instead of jumping from full score to rejection.
+pub const ERROR_RATE_REFERENCE: f64 = 0.10;
+
 // The weight set. Sum = 1.00, so every score is in `[0, 1]` and a raw score
 // compares directly against the margin.
 //
 // They encode one judgment: capability fit and quality dominate, cost and
-// latency are tie-breakers, and pressure (quota headroom, idle capacity)
-// rounds it out. Cache affinity is not a term of its own — it enters through
-// the hysteresis, which is what actually prices a switch.
-const WEIGHT_FIT: f32 = 0.30;
+// latency are tie-breakers, observed reliability outranks both (a failing
+// provider is worse than a dear one), and pressure (quota headroom, idle
+// capacity) rounds it out. Cache affinity IS a term here — the incumbent's
+// provider keeps the prefix warm — but the hysteresis is what actually prices
+// a switch.
+const WEIGHT_FIT: f32 = 0.25;
 const WEIGHT_QUALITY: f32 = 0.20;
 const WEIGHT_COST: f32 = 0.20;
 const WEIGHT_LATENCY: f32 = 0.10;
-const WEIGHT_HEADROOM: f32 = 0.10;
+/// Observed reliability. Above cost and latency: a provider that fails is
+/// worse than one that is dear or slow, and the graded term is what lets the
+/// router prefer a stable sibling *before* the breaker forces its hand.
+const WEIGHT_RELIABILITY: f32 = 0.10;
+const WEIGHT_HEADROOM: f32 = 0.05;
 const WEIGHT_IDLE: f32 = 0.05;
 const WEIGHT_AFFINITY: f32 = 0.05;
 
@@ -82,6 +98,7 @@ pub const TERM_FIT: &str = "fit";
 pub const TERM_QUALITY: &str = "quality";
 pub const TERM_COST: &str = "cost";
 pub const TERM_LATENCY: &str = "latency";
+pub const TERM_RELIABILITY: &str = "reliability";
 pub const TERM_HEADROOM: &str = "headroom";
 pub const TERM_IDLE: &str = "idle";
 pub const TERM_AFFINITY: &str = "affinity";
@@ -154,6 +171,10 @@ pub struct RouteCandidate {
     /// The admission registry's breaker state: `true` rejects the candidate at
     /// once (a hard filter, no score).
     pub breaker_open: bool,
+    /// The observed failure rate over the provider's recent settles, `0.0..=1.0`
+    /// (`None` before the registry has samples). Graded, and scored — the
+    /// breaker above is the same fact at its hard limit.
+    pub error_rate: Option<f64>,
     /// Fraction of the provider's quota still available, `0.0..=1.0`
     /// (`None` when the provider reports nothing, e.g. an unmetered key).
     pub quota_remaining: Option<f64>,
@@ -459,6 +480,10 @@ pub fn decide(
                     lower_is_better_term(candidate.latency_ema_ms, LATENCY_REFERENCE_MS),
                 ),
                 (
+                    TERM_RELIABILITY,
+                    lower_is_better_term(candidate.error_rate, ERROR_RATE_REFERENCE),
+                ),
+                (
                     TERM_HEADROOM,
                     unit_term(candidate.quota_remaining.map(|remaining| remaining as f32)),
                 ),
@@ -475,9 +500,10 @@ pub fn decide(
                         + WEIGHT_QUALITY * terms[1].1
                         + WEIGHT_COST * terms[2].1
                         + WEIGHT_LATENCY * terms[3].1
-                        + WEIGHT_HEADROOM * terms[4].1
-                        + WEIGHT_IDLE * terms[5].1
-                        + WEIGHT_AFFINITY * terms[6].1
+                        + WEIGHT_RELIABILITY * terms[4].1
+                        + WEIGHT_HEADROOM * terms[5].1
+                        + WEIGHT_IDLE * terms[6].1
+                        + WEIGHT_AFFINITY * terms[7].1
                 }
             };
             ScoredCandidate {
@@ -579,6 +605,7 @@ pub fn candidate_from_model(model: &Model) -> RouteCandidate {
         cost_per_1m_input: Some(model.cost.input.0),
         latency_ema_ms: None,
         breaker_open: false,
+        error_rate: None,
         quota_remaining: None,
         free_capacity: None,
         capability_fit: None,

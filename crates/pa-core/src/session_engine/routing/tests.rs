@@ -14,6 +14,7 @@ fn candidate(selector: &str, provider: &str) -> RouteCandidate {
         cost_per_1m_input: Some(1.0),
         latency_ema_ms: Some(1_000.0),
         breaker_open: false,
+        error_rate: None,
         quota_remaining: None,
         free_capacity: None,
         capability_fit: None,
@@ -164,11 +165,16 @@ fn auto_keeps_the_incumbent_inside_the_margin() {
 
 #[test]
 fn auto_moves_only_after_the_dwell_floor() {
+    // A clearly better challenger: free, roomy, and reliable, against an
+    // incumbent that is dear, nearly spent, AND flaky. The lead must clear the
+    // margin comfortably so the test measures the dwell floor alone.
     let mut incumbent = candidate("a/mock-1", "a");
     incumbent.quota_remaining = Some(0.1);
+    incumbent.error_rate = Some(0.5);
     let mut challenger = candidate("b/mock-1", "b");
     challenger.cost_per_1m_input = Some(0.0);
     challenger.quota_remaining = Some(1.0);
+    challenger.error_rate = Some(0.0);
     let mut context = ctx(Some("a/mock-1"));
     context.dwell_turns = MIN_DWELL_TURNS - 1;
     let decision = decide(
@@ -237,7 +243,13 @@ fn a_single_candidate_is_its_own_answer() {
     unfactored.latency_ema_ms = None;
     let decision = decide(&[unfactored], &ctx(None), ModelRoutingLevel::On).expect("a decision");
     let terms = &decision.candidates.first().expect("one row").terms;
-    for name in [TERM_COST, TERM_LATENCY, TERM_HEADROOM, TERM_IDLE] {
+    for name in [
+        TERM_COST,
+        TERM_LATENCY,
+        TERM_RELIABILITY,
+        TERM_HEADROOM,
+        TERM_IDLE,
+    ] {
         let value = terms
             .iter()
             .find(|(term, _)| *term == name)
@@ -312,10 +324,14 @@ fn scores_stay_inside_the_unit_range() {
         .iter()
         .find(|row| row.selector == "b/mock-1")
         .expect("the cheap row");
+    // Every term at its best except the two whose facts the fixture does not
+    // supply (reliability has no sample, affinity has no incumbent): those
+    // score neutral.
     let expected = WEIGHT_FIT
         + WEIGHT_QUALITY
         + WEIGHT_COST
         + WEIGHT_LATENCY
+        + WEIGHT_RELIABILITY * UNKNOWN_TERM
         + WEIGHT_HEADROOM
         + WEIGHT_IDLE
         + WEIGHT_AFFINITY * UNKNOWN_TERM;
@@ -332,10 +348,80 @@ fn the_weights_sum_to_one() {
         + WEIGHT_QUALITY
         + WEIGHT_COST
         + WEIGHT_LATENCY
+        + WEIGHT_RELIABILITY
         + WEIGHT_HEADROOM
         + WEIGHT_IDLE
         + WEIGHT_AFFINITY;
     assert!((total - 1.0).abs() < 1e-6, "weights sum to {total}");
+}
+
+#[test]
+fn a_failing_provider_scores_below_a_stable_one() {
+    // Two candidates identical but for observed reliability: the stable one
+    // must win on score alone, before the breaker's hard filter ever trips.
+    // That grace period is the point of the graded term.
+    let stable = candidate("a/mock-1", "a");
+    let mut flaky = candidate("b/mock-1", "b");
+    flaky.error_rate = Some(0.3);
+    let decision = decide(&[flaky, stable], &ctx(None), ModelRoutingLevel::On).expect("a decision");
+    assert_eq!(decision.chosen, "a/mock-1");
+    let score = |selector: &str| {
+        decision
+            .candidates
+            .iter()
+            .find(|row| row.selector == selector)
+            .map(|row| row.score)
+            .expect("the row")
+    };
+    assert!(
+        score("a/mock-1") > score("b/mock-1"),
+        "{} !> {}",
+        score("a/mock-1"),
+        score("b/mock-1")
+    );
+}
+
+#[test]
+fn the_reliability_term_is_calibrated_to_the_breaker_threshold() {
+    // A clean provider scores full marks; the 10% retry budget that trips the
+    // breaker scores neutral; both are on the same saturating curve, so the
+    // score degrades exactly where the hard filter takes over.
+    let term = |rate: Option<f64>| lower_is_better_term(rate, ERROR_RATE_REFERENCE);
+    assert!((term(Some(0.0)) - 1.0).abs() < 1e-6);
+    assert!((term(Some(ERROR_RATE_REFERENCE)) - 0.5).abs() < 1e-6);
+    assert!(term(Some(1.0)) < 0.2, "a failing provider is near zero");
+    assert_eq!(term(None), UNKNOWN_TERM);
+}
+
+#[test]
+fn an_unmeasured_error_rate_is_neutral_not_perfect() {
+    // A provider the registry has never sampled must not out-score one with a
+    // measured clean record, and must not be punished for the silence.
+    let mut unsampled = candidate("a/mock-1", "a");
+    unsampled.error_rate = None;
+    let mut measured_clean = candidate("b/mock-1", "b");
+    measured_clean.error_rate = Some(0.0);
+    let decision = decide(
+        &[unsampled, measured_clean],
+        &ctx(None),
+        ModelRoutingLevel::On,
+    )
+    .expect("a decision");
+    let term = |selector: &str| {
+        decision
+            .candidates
+            .iter()
+            .find(|row| row.selector == selector)
+            .and_then(|row| {
+                row.terms
+                    .iter()
+                    .find(|(name, _)| *name == TERM_RELIABILITY)
+                    .map(|(_, value)| *value)
+            })
+            .expect("the reliability term")
+    };
+    assert_eq!(term("a/mock-1"), UNKNOWN_TERM);
+    assert_eq!(term("b/mock-1"), 1.0);
 }
 
 #[test]

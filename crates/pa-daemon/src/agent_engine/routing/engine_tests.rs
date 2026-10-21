@@ -300,3 +300,86 @@ fn a_real_faux_turn_passes_through_the_router_unharmed() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn the_local_registry_supplies_a_graded_error_rate() {
+    // The registry's retry-budget window is the graded twin of its breaker:
+    // the same samples, read as a rate. Prove the seam reads it, that it stays
+    // `None` below the window's minimum sample count (a 1-in-2 rate is noise,
+    // not evidence), and that a rate UNDER the breaker's 10% budget is still
+    // reported — which is the grace period the graded term exists for.
+    use crate::agent_engine::provider_admission::{
+        ProviderAdmission, ProviderKey, StreamAdmission, StreamOutcome,
+    };
+    let registry = ProviderAdmission::new(6);
+    let key = ProviderKey::new("router-dear", "mock-1");
+    let dir = tempfile::TempDir::new().unwrap();
+    write_routing_pair(&dir.path().join("agent"));
+    let engine = AgentSessionEngine::new(AgentEngineConfig {
+        admission: crate::agent_engine::provider_admission::AdmissionClient::local(
+            std::sync::Arc::clone(&registry),
+        ),
+        cwd: dir.path().to_path_buf(),
+        agent_dir: dir.path().join("agent"),
+        provider: Some("router-dear".to_string()),
+        model: Some("mock-1".to_string()),
+        api_key: None,
+        thinking: None,
+        session_dir: None,
+        session_file: None,
+        faux_script: None,
+        supervisor_link: None,
+        telemetry_disabled: Some(true),
+        cron_store: None,
+        queued_steering_probe: None,
+    })
+    .unwrap();
+    let model = engine.resolve_model().unwrap();
+
+    // No samples yet: no fact. The term must stay neutral rather than reading
+    // a clean record out of silence.
+    assert_eq!(engine.admission_facts(&model).unwrap().error_rate, None);
+
+    let settle = |outcome: StreamOutcome| {
+        let admission = engine
+            .runtime
+            .block_on(registry.acquire_stream(&key, "test-holder"));
+        let StreamAdmission::Admitted(lease) = admission else {
+            panic!("the registry admits a provider under its budget");
+        };
+        registry.settle(lease, outcome);
+    };
+
+    // Two clean settles: still below the window's minimum, so still no rate.
+    for _ in 0..2 {
+        settle(StreamOutcome::Settled);
+    }
+    assert_eq!(
+        engine.admission_facts(&model).unwrap().error_rate,
+        None,
+        "two samples is noise, not a rate"
+    );
+
+    // Nine more clean settles cross the minimum: the rate reports, at zero.
+    for _ in 0..9 {
+        settle(StreamOutcome::Settled);
+    }
+    let facts = engine.admission_facts(&model).unwrap();
+    assert_eq!(facts.error_rate, Some(0.0), "eleven clean settles");
+
+    // One rate limit out of twelve is 8.3% — under the 10% budget, so the
+    // breaker stays closed while the graded term already sees the defect.
+    settle(StreamOutcome::RateLimited(
+        pa_core::session_engine::provider_retry::RateLimitReason::RateLimit,
+    ));
+    let facts = engine.admission_facts(&model).unwrap();
+    let rate = facts.error_rate.expect("the window has samples");
+    assert!(
+        (rate - 1.0 / 12.0).abs() < 1e-9,
+        "one failure in twelve samples: {rate}"
+    );
+    assert!(
+        !facts.breaker_open,
+        "8.3% is under the 10% retry budget, so the hard filter has not tripped"
+    );
+}

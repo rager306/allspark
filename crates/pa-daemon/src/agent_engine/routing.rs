@@ -59,11 +59,14 @@ pub(crate) struct TurnRouteFacts {
     pub(crate) carries_images: bool,
 }
 
-/// The two health facts the admission registry contributes to a score.
+/// The health facts the admission registry contributes to a score.
 #[derive(Debug, Clone, Copy)]
 struct AdmissionFacts {
     breaker_open: bool,
     free_capacity: f32,
+    /// The graded failure rate over the retry-budget window (`None` before the
+    /// registry has enough samples to mean anything).
+    error_rate: Option<f64>,
 }
 
 /// The router's telemetry seam: one lazily built client per worker, the
@@ -186,9 +189,20 @@ impl AgentSessionEngine {
         let in_flight = u32::try_from(snapshot.in_flight).unwrap_or(u32::MAX);
         let limit = u32::try_from(snapshot.limit).unwrap_or(u32::MAX);
         let free = 1.0 - (in_flight as f32 / limit as f32);
+        // The graded twin of the breaker: the same window the breaker trips
+        // on, read as a rate instead of a verdict. Below the window's minimum
+        // sample count the rate is noise, so it stays unmeasured (`None`)
+        // rather than reporting a 1-in-2 failure rate as if it meant
+        // something.
+        let error_rate = (snapshot.breaker.budget_samples
+            >= crate::agent_engine::provider_admission::RETRY_BUDGET_MIN_SAMPLES)
+            .then(|| {
+                snapshot.breaker.budget_failures as f64 / snapshot.breaker.budget_samples as f64
+            });
         Some(AdmissionFacts {
             breaker_open: snapshot.breaker.state == BreakerState::Open,
             free_capacity: free.clamp(0.0, 1.0),
+            error_rate,
         })
     }
 
@@ -203,6 +217,7 @@ impl AgentSessionEngine {
                 if let Some(facts) = self.admission_facts(model) {
                     candidate.breaker_open = facts.breaker_open;
                     candidate.free_capacity = Some(facts.free_capacity);
+                    candidate.error_rate = facts.error_rate;
                 }
                 candidate
             })
