@@ -554,6 +554,42 @@ mod tests {
         assert!(hits.iter().any(|h| h.name == "load"), "{hits:?}");
     }
 
+    /// A `use` that binds a symbol to a file must produce an IMPORTS edge. The
+    /// live store on 2026-10-22 had 53,863 CALLS and **zero** IMPORTS, so every
+    /// structure/layers/cycles view saw call edges only — the resolver was
+    /// silently returning `None` for every binding in the repo.
+    #[test]
+    fn a_cross_file_use_emits_an_imports_edge() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "pub struct Widget;\npub fn make() -> Widget { Widget }\n",
+        )
+        .expect("a.rs");
+        std::fs::write(
+            dir.path().join("b.rs"),
+            "use crate::a::{Widget, make};\npub fn use_it() -> Widget { make() }\n",
+        )
+        .expect("b.rs");
+        std::fs::write(dir.path().join("lib.rs"), "pub mod a;\npub mod b;\n").expect("lib.rs");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("index");
+        let imports: i64 = store
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM edges WHERE edge_type = 'IMPORTS'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count");
+        assert!(
+            imports >= 2,
+            "a use binding of Widget and make must produce at least two IMPORTS edges, got {imports}"
+        );
+    }
+
     #[test]
     fn second_index_is_incremental() {
         let dir = tempfile::tempdir().expect("tempdir");
