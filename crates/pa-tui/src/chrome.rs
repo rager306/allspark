@@ -60,6 +60,11 @@ pub struct ChromeState {
     pub cost_usd: Option<f64>,
     /// Context usage: tokens, window, percent (tray right label).
     pub context: Option<ContextUsage>,
+    /// FORK-ONLY: the session's cache-hit rate as a rounded percentage
+    /// (`cacheRead / (input + cacheRead)`) — the same number `/cache`
+    /// prints. `None` hides the segment: a session with no cache traffic
+    /// must never render `cache 0%`, which reads like a real measurement.
+    pub cache_hit_percent: Option<u64>,
     /// `← manage` hint: shown for persisted (attachable) sessions.
     pub show_manage: bool,
     /// The attached session's RLM depth: a subagent session renders
@@ -530,17 +535,18 @@ pub fn render_tray_with_hint(
             left.push(Span::styled(format!("depth {depth}"), muted));
         }
     }
-    let mut right: Line = Vec::new();
+    // The right side is a list of independent labels joined by the dim dot
+    // separator. Keeping them separate lets a narrow tray drop the
+    // lowest-value ones instead of running past the edge (an over-wide
+    // tray row wraps onto a second terminal row and shifts the dock).
+    let mut segments: Vec<(TrayPriority, String)> = Vec::new();
     if let Some(model) = &state.model_id {
         let mut label = model.clone();
         if let Some(suffix) = &state.thinking_suffix {
             label.push(':');
             label.push_str(suffix);
         }
-        if !right.is_empty() {
-            right.push(Span::styled(" \u{00b7} ".to_string(), dim));
-        }
-        right.push(Span::styled(label, dim));
+        segments.push((TrayPriority::Model, label));
     }
     let tier_badge = match state.service_tier.as_deref() {
         Some("priority") => Some("fast"),
@@ -548,25 +554,60 @@ pub fn render_tray_with_hint(
         _ => None,
     };
     if let Some(badge) = tier_badge {
-        if !right.is_empty() {
-            right.push(Span::styled(" \u{00b7} ".to_string(), dim));
-        }
-        right.push(Span::styled(badge.to_string(), dim));
+        segments.push((TrayPriority::ServiceTier, badge.to_string()));
     }
     if let Some(context) = &state.context {
-        if !right.is_empty() {
-            right.push(Span::styled(" \u{00b7} ".to_string(), dim));
-        }
-        right.push(Span::styled(
+        segments.push((
+            TrayPriority::Context,
             format!(
                 "{} ({:.0}%)",
                 format_token_count(context.tokens),
                 context.percent()
             ),
-            dim,
         ));
     }
+    // FORK-ONLY: the cache-hit rate sits right after the context segment (the two
+    // are one readout: how full the window is, and how much of it is billed at
+    // full price). `None` hides it entirely.
+    if let Some(percent) = state.cache_hit_percent {
+        segments.push((TrayPriority::CacheHit, format!("cache {percent}%")));
+    }
     let left_width: usize = left.iter().map(|s| str_width(&s.content)).sum();
+    let separator = " \u{00b7} ";
+    let separator_width = str_width(separator);
+    let rendered_width = |segments: &[(TrayPriority, String)]| {
+        segments
+            .iter()
+            .map(|(_, text)| str_width(text))
+            .sum::<usize>()
+            + separator_width * segments.len().saturating_sub(1)
+    };
+    // Drop the most dispensable label until the row fits. The fork's own fact goes
+    // first, so a narrow terminal renders exactly the TS tray (the divergence never
+    // costs upstream content); then the badge; the context usage and the model id
+    // (the tray's original readout) are the last to disappear.
+    while segments.len() > 1 && left_width + rendered_width(&segments) > width {
+        let mut droppable = 0;
+        for (index, (priority, _)) in segments.iter().enumerate() {
+            if *priority <= segments[droppable].0 {
+                droppable = index;
+            }
+        }
+        segments.remove(droppable);
+    }
+    let mut right: Line = Vec::new();
+    for (index, (_, text)) in segments.into_iter().enumerate() {
+        if index > 0 {
+            right.push(Span::styled(separator.to_string(), dim));
+        }
+        right.push(Span::styled(text, dim));
+    }
+    // The last resort: a single label wider than the room left still gets cut,
+    // so the tray can never exceed the frame.
+    let room = width.saturating_sub(left_width);
+    if rendered_width_of(&right) > room {
+        right = truncate_spans_to_width(&right, room);
+    }
     let right_width: usize = right.iter().map(|s| str_width(&s.content)).sum();
     let gap = width.saturating_sub(left_width + right_width);
     let mut line: Line = Vec::new();
@@ -574,6 +615,23 @@ pub fn render_tray_with_hint(
     line.push(Span::styled(" ".repeat(gap), Style::default()));
     line.extend(right);
     (line, hint)
+}
+
+/// Which tray label a narrow row gives up first: the variants are ordered by
+/// increasing priority, so trimming walks from `CacheHit` up to `Model`. The
+/// fork's added fact goes first; the model id and the context usage (the tray's
+/// original readout) are the last to disappear.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum TrayPriority {
+    CacheHit,
+    ServiceTier,
+    Context,
+    Model,
+}
+
+/// The display width of one rendered row.
+fn rendered_width_of(row: &Line) -> usize {
+    row.iter().map(|span| str_width(&span.content)).sum()
 }
 
 /// The tray model label's thinking-effort suffix: a model without

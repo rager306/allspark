@@ -239,6 +239,9 @@ pub(crate) struct SessionUi {
     pending_queue: Option<crate::queued::QueuedMessages>,
     queue_selection: crate::queued::QueueSelection,
     context: Option<crate::chrome::ContextUsage>,
+    /// FORK-ONLY: the tray's cache-hit rate, from the same fold `/cache` renders
+    /// (`get_session_stats`'s `cacheUsage.hitPercent` or the attach state).
+    cache_hit_percent: Option<u64>,
     list_rows: Vec<Value>,
     pub(crate) turn_active: bool,
     /// Completed turns observed on this connection. A prompt ACK may arrive

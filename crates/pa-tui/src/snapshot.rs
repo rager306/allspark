@@ -52,6 +52,9 @@ pub struct Reconstructed {
     /// feeds the first frame's tray row without a stats round-trip.
     /// `None` clears the tray display.
     pub context_usage: Option<crate::chrome::ContextUsage>,
+    /// FORK-ONLY: the tray's cache-hit rate (`state.cacheUsage.hitPercent`), the
+    /// same fold `/cache` renders; `None` hides the segment.
+    pub cache_hit_percent: Option<u64>,
     pub session_name: Option<String>,
     /// Session id of the persisted session file.
     pub session_id: String,
@@ -326,6 +329,10 @@ pub fn reconstruct(attach: &AttachData) -> Reconstructed {
     let context_usage = state
         .and_then(|state| state.get("contextUsage"))
         .and_then(crate::chrome::ContextUsage::from_wire);
+    let cache_hit_percent = state
+        .and_then(|state| state.get("cacheUsage"))
+        .and_then(|cache| cache.get("hitPercent"))
+        .and_then(Value::as_u64);
     let session_name = state
         .and_then(|state| state.get("sessionName"))
         .and_then(Value::as_str)
@@ -407,6 +414,7 @@ pub fn reconstruct(attach: &AttachData) -> Reconstructed {
         model_provider,
         thinking_suffix,
         context_usage,
+        cache_hit_percent,
         session_name,
         session_id,
         event_generation,

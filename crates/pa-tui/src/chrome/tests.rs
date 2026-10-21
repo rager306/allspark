@@ -903,6 +903,97 @@ fn tray_never_repeats_the_heartbeat_counts() {
     assert_eq!(str_width(&text), 120);
 }
 
+/// FORK-ONLY: the cache-hit rate follows the context segment, and a session with
+/// no cache traffic renders no segment at all (never a meaningless `cache 0%`).
+#[test]
+fn tray_renders_the_cache_hit_rate_only_when_there_is_traffic() {
+    let mut state = ChromeState {
+        show_manage: true,
+        model_id: Some("faux-1".to_string()),
+        context: Some(ContextUsage {
+            tokens: 6_123,
+            context_window: 128_000,
+        }),
+        ..Default::default()
+    };
+    let text = |state: &ChromeState| {
+        render_tray(state, &theme(), 120)
+            .iter()
+            .map(|s| s.content.as_str())
+            .collect::<String>()
+    };
+    let bare = text(&state);
+    assert!(bare.starts_with("\u{2190} manage"), "{bare}");
+    assert!(bare.ends_with("faux-1 \u{00b7} 6.1k (5%)"), "{bare}");
+    assert_eq!(str_width(&bare), 120, "the tray fills the width");
+    state.cache_hit_percent = Some(91);
+    assert!(
+        text(&state).ends_with("faux-1 \u{00b7} 6.1k (5%) \u{00b7} cache 91%"),
+        "the rate follows the context segment: {}",
+        text(&state)
+    );
+    // A `Some(0)` rate is a real measurement (cache writes but no hits) and renders.
+    state.cache_hit_percent = Some(0);
+    assert!(text(&state).ends_with("cache 0%"));
+    // `None` hides the whole segment: the no-traffic state and the zero-rate state
+    // are different facts and must not render the same.
+    state.cache_hit_percent = None;
+    assert!(!text(&state).contains("cache"));
+}
+
+/// A narrow tray gives up the fork's added fact first, then the badge; the model id
+/// and the context usage survive last. The row never exceeds the width.
+#[test]
+fn tray_degrades_in_priority_order_without_overflowing() {
+    let state = ChromeState {
+        show_manage: true,
+        model_id: Some("faux-1".to_string()),
+        service_tier: Some("priority".to_string()),
+        context: Some(ContextUsage {
+            tokens: 6_123,
+            context_window: 128_000,
+        }),
+        cache_hit_percent: Some(88),
+        ..Default::default()
+    };
+    let text = |width: usize| {
+        let line = render_tray(&state, &theme(), width);
+        let text = line.iter().map(|s| s.content.as_str()).collect::<String>();
+        assert_eq!(str_width(&text), width, "the tray fills exactly {width}");
+        text
+    };
+    // Wide: every segment.
+    assert!(
+        text(120).ends_with("faux-1 \u{00b7} fast \u{00b7} 6.1k (5%) \u{00b7} cache 88%"),
+        "{}",
+        text(120)
+    );
+    // The row's content width (the tray pads beyond it): one column less than that
+    // is the first width that must drop a segment.
+    // Widths are display columns, never bytes: both the arrow and the separator are
+    // multi-byte.
+    let segments = ["faux-1", "fast", "6.1k (5%)", "cache 88%"];
+    // One ` · ` separator (3 columns) between adjacent segments, none before the first.
+    let content = |count: usize| {
+        str_width("\u{2190} manage")
+            + segments[..count]
+                .iter()
+                .map(|segment| str_width(segment))
+                .sum::<usize>()
+            + 3 * count.saturating_sub(1)
+    };
+    let full = content(segments.len());
+    // One column short drops the least valuable label first: the cache rate.
+    let without_cache = text(full - 1);
+    assert!(!without_cache.contains("cache"), "{without_cache}");
+    assert!(without_cache.contains("(5%)"), "{without_cache}");
+    // Dropping further takes the badge, then the context usage.
+    assert!(!text(content(2) - 1).contains("fast"));
+    assert!(!text(content(1) - 1).contains("(5%)"));
+    // The model id alone still renders inside its own width.
+    assert!(text(content(1)).ends_with("faux-1"));
+}
+
 #[test]
 fn tray_override_replaces_location_label() {
     let state = ChromeState {

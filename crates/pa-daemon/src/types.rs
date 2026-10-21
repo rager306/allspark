@@ -241,6 +241,13 @@ pub struct AgentConnectionState {
     pub active_tool_names: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_usage: Option<Value>,
+    /// FORK-ONLY: the session's cache totals — `{ input, cacheRead, cacheWrite,
+    /// totalTokens, hitPercent }` over the same per-model fold `get_cache_stats`
+    /// serves, so the tray's `cache N%` segment and the `/cache` panel cannot
+    /// disagree. Absent when the fold is unresolved (a foreign file or an
+    /// oversized child attribution).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_usage: Option<Value>,
 }
 
 #[cfg(test)]

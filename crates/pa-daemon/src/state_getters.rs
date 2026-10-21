@@ -303,8 +303,8 @@ impl Worker {
 mod usage;
 
 pub(crate) use usage::{
-    cache_breakdown, compute_own_and_total_usage, compute_own_usage_by_model, empty_usage,
-    worker_model_registry,
+    cache_breakdown, cache_totals, compute_own_and_total_usage, compute_own_usage_by_model,
+    empty_usage, worker_model_registry,
 };
 
 // The getter battery lives in state_getters::state_getters_tests.

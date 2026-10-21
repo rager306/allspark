@@ -935,4 +935,22 @@ async fn get_cache_stats_folds_per_model_cache_usage() {
     assert_eq!(models[0]["totalTokens"], json!(10100));
     assert_eq!(models[0]["cost"]["input"].as_f64(), Some(0.005));
     assert_eq!(models[0]["cost"]["cacheRead"].as_f64(), Some(0.0045));
+
+    // FORK-ONLY: the tray's `cache N%` segment reads `cache_totals`, which folds
+    // these very rows — the same numbers the `/cache` panel's `Totals:` line
+    // prints, from one source. The hit rate is the shared ratio (9000/10000).
+    let totals = crate::state_getters::cache_totals(
+        &crate::session_store::SessionFile::open(&session_file).unwrap(),
+    )
+    .expect("the per-model fold resolves");
+    assert_eq!(
+        totals,
+        json!({
+            "input": 1000,
+            "cacheRead": 9000,
+            "cacheWrite": 0,
+            "totalTokens": 10100,
+            "hitPercent": 90,
+        })
+    );
 }

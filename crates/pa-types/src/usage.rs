@@ -3,6 +3,21 @@
 
 use serde_json::Value;
 
+/// The cache-hit rate over one usage block: `cacheRead / (input + cacheRead) * 100`,
+/// rounded half away from zero. `None` when nothing was sent (a zero denominator),
+/// so a caller can hide the segment instead of printing a meaningless `0%`.
+#[must_use]
+pub fn cache_hit_percent(input: u64, cache_read: u64) -> Option<u64> {
+    let denominator = input.saturating_add(cache_read);
+    if denominator == 0 {
+        return None;
+    }
+    // Integer half-up rounding: `(2 * read * 100 + denom) / (2 * denom)`, in `u128` so
+    // a huge session cannot overflow the doubled numerator.
+    let numerator = u128::from(cache_read) * 200 + u128::from(denominator);
+    Some(u64::try_from(numerator / (u128::from(denominator) * 2)).unwrap_or(u64::MAX))
+}
+
 /// `totalTokens` when present, else the four-field sum (TS
 /// `calculateContextTokens` over the raw usage object).
 pub fn calculate_context_tokens(usage: &Value) -> u64 {
@@ -101,6 +116,17 @@ pub fn estimate_tokens(message: &Value) -> u64 {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn cache_hit_percent_rounds_and_hides_a_zero_denominator() {
+        // 9000 / 10000 -> 90%; the round is half-up on the exact ratio.
+        assert_eq!(cache_hit_percent(1000, 9000), Some(90));
+        assert_eq!(cache_hit_percent(1, 2), Some(67));
+        assert_eq!(cache_hit_percent(2, 1), Some(33));
+        assert_eq!(cache_hit_percent(0, 5), Some(100));
+        // No traffic at all: the ratio does not exist, so the caller can hide it.
+        assert_eq!(cache_hit_percent(0, 0), None);
+    }
 
     #[test]
     fn total_tokens_wins_when_positive() {

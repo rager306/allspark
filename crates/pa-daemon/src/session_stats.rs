@@ -106,6 +106,12 @@ pub fn session_stats(store: &SessionFile, context_window: Option<u64>) -> Value 
     if let Some(usage) = context_usage(&branch, &messages, context_window) {
         stats["contextUsage"] = usage;
     }
+    // FORK-ONLY: the tray's cache segment reads these totals from the very fold
+    // `/cache` renders, exactly like `contextUsage` above; an unresolved fold
+    // leaves the field off the wire and the segment hidden.
+    if let Some(cache) = crate::state_getters::cache_totals(store) {
+        stats["cacheUsage"] = cache;
+    }
     stats
 }
 

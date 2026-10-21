@@ -182,6 +182,97 @@ async fn summary_retry_resolves_the_selection_that_owns_the_locked_core() {
     assert_eq!(state.context_usage, None);
 }
 
+/// FORK-ONLY: the attach state's `cacheUsage` is byte-identical to
+/// `get_session_stats`'s, so the first frame's tray row and the post-turn refresh
+/// can never disagree — and both read the same per-model fold `/cache` renders.
+#[tokio::test]
+async fn the_attach_state_carries_the_stats_cache_totals() {
+    let dir = tempfile::tempdir().unwrap();
+    let session_dir = dir.path().join("sessions");
+    std::fs::create_dir_all(&session_dir).unwrap();
+    let session_file = session_dir.join("cache-facts.jsonl");
+    let lines = [
+        json!({"type": "session", "version": 3, "id": "tray-cache",
+               "timestamp": "2026-09-24T00:00:00.000Z", "cwd": "/tmp"}),
+        // The per-model fold resolves every usage row to a model; without a model
+        // timeline the summarizer's own usage has no bucket and the breakdown (and
+        // with it the tray's cache rate) degrades to `None`.
+        json!({"type": "model_change", "id": "mc1", "parentId": null,
+               "timestamp": "2026-09-24T00:00:01.000Z",
+               "provider": "anthropic", "modelId": "claude-opus-4-6"}),
+        json!({"type": "message", "id": "u1", "parentId": "mc1",
+               "timestamp": "2026-09-24T00:00:02.000Z",
+               "message": {"role": "user", "content": "one"}}),
+        json!({"type": "message", "id": "a1", "parentId": "u1",
+               "timestamp": "2026-09-24T00:00:03.000Z",
+               "message": {"role": "assistant", "provider": "anthropic",
+                           "model": "claude-opus-4-6",
+                           "content": [{"type": "text", "text": "hi"}],
+                           "stopReason": "stop",
+                           "usage": {"input": 1_000, "output": 200,
+                                     "cacheRead": 9_000, "cacheWrite": 0,
+                                     "totalTokens": 10_200,
+                                     "cost": {"input": 0.005, "output": 0.0025,
+                                              "cacheRead": 0.0045, "cacheWrite": 0.0,
+                                              "total": 0.012}}}}),
+    ];
+    std::fs::write(
+        &session_file,
+        lines
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .unwrap();
+    let worker = Worker::new(
+        WorkerConfig {
+            socket_path: dir.path().join("worker.sock"),
+            supervisor_socket_path: PathBuf::new(),
+            token: "tray-cache".into(),
+            worker_instance_id: String::new(),
+            active_session_id: "tray-cache-live".into(),
+            agent_dir: dir.path().join("agent"),
+            recovery_journal_path: dir.path().join("recovery.jsonl"),
+            telemetry_disabled: None,
+            script: Some(json!({"responses": []})),
+        },
+        None,
+    );
+    let created = worker
+        .dispatch(
+            "create",
+            &json!({
+                "sessionPath": session_file.display().to_string(),
+                "cwd": "/tmp",
+                "name": "tray cache",
+            }),
+        )
+        .await;
+    assert!(created.success, "create failed: {created:?}");
+    let worker = std::sync::Arc::new(worker);
+    let snapshot_state = {
+        let (core, inputs) = worker.connection_state_inputs();
+        let sealed = Worker::connection_state_locked(&core, inputs);
+        serde_json::to_value(&sealed).unwrap()
+    };
+    assert_eq!(
+        snapshot_state.get("cacheUsage"),
+        Some(&json!({
+            "input": 1_000, "cacheRead": 9_000, "cacheWrite": 0,
+            "totalTokens": 10_200, "hitPercent": 90,
+        })),
+        "the attach state carries the cache totals: {snapshot_state}"
+    );
+    let stats = worker.dispatch("get_session_stats", &json!({})).await;
+    assert!(stats.success, "{stats:?}");
+    assert_eq!(
+        stats.data.as_ref().unwrap().get("cacheUsage"),
+        snapshot_state.get("cacheUsage"),
+        "the snapshot fill equals the stats response"
+    );
+}
+
 /// The attach snapshot's state carries the tray's context usage exactly as
 /// `get_session_stats` serves it (TS `createAgentConnectionState`'s
 /// `contextUsage: session.getContextUsage()`): the same walk, the same

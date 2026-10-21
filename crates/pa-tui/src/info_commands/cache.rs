@@ -64,13 +64,10 @@ impl ModelCache {
     }
 
     /// `cacheRead / (input + cacheRead) * 100`, rounded; `None` when the
-    /// denominator is zero.
+    /// denominator is zero. The shared [`pa_types::usage::cache_hit_percent`]
+    /// keeps this panel and the tray's `cache N%` segment on one formula.
     fn hit_percent(&self) -> Option<u64> {
-        let denom = self.input + self.cache_read;
-        if denom == 0 {
-            return None;
-        }
-        Some(((self.cache_read as f64 / denom as f64) * 100.0).round() as u64)
+        pa_types::usage::cache_hit_percent(self.input, self.cache_read)
     }
 
     /// The estimated dollars saved by the cache: the cache-read tokens priced
@@ -151,14 +148,10 @@ pub fn cache_rows(tree: &Value, current_model: Option<&str>) -> Vec<ClientLine> 
     let cache_read: u64 = active.iter().map(|model| model.cache_read).sum();
     let cache_write: u64 = active.iter().map(|model| model.cache_write).sum();
     let total: u64 = active.iter().map(|model| model.total_tokens).sum();
-    let hit = if input + cache_read == 0 {
-        "-".to_string()
-    } else {
-        format!(
-            "{}%",
-            ((cache_read as f64 / (input + cache_read) as f64) * 100.0).round() as u64
-        )
-    };
+    // The grand total reads the same shared ratio the tray segment uses, so a
+    // session can never show one hit rate here and another in the status line.
+    let hit = pa_types::usage::cache_hit_percent(input, cache_read)
+        .map_or_else(|| "-".to_string(), |percent| format!("{percent}%"));
     rows.push(vec![
         dim("Total:"),
         raw_span(format!(
