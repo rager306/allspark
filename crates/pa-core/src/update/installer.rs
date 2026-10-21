@@ -31,6 +31,13 @@ pub const ENV_RELEASE_CHANNEL: &str = "PRIME_AGENT_RELEASE_CHANNEL";
 /// The installer's download-base knob (the bucket holding the channel
 /// manifests and release archives).
 pub const ENV_DOWNLOAD_BASE_URL: &str = "PRIME_AGENT_DOWNLOAD_BASE_URL";
+/// `PRIME_AGENT_INSTALL_PAYLOAD_DIR`: the directory of the payload binary
+/// that runs the update funnel. The installer script's daemon stop gate stops
+/// a Rust daemon only when its own executable lives under this run's install
+/// roots — the prefix it writes, or this payload's tree (the fork's launcher
+/// layout keeps the payload in `libexec/`, outside the prefix). Without the
+/// variable (a standalone `curl | sh` run) the prefix alone decides.
+pub const ENV_INSTALL_PAYLOAD_DIR: &str = "PRIME_AGENT_INSTALL_PAYLOAD_DIR";
 /// `PRIME_AGENT_FORK_BUILD`: the fork build id the funnel exports to the
 /// installer script so its daemon stop-probe can tell a fork run from an
 /// upstream one (both payloads are named `prime-agent`, so argv cannot; the
@@ -682,6 +689,15 @@ fn installer_child(
 ) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(shell);
     command.env(ENV_PREFIX, prefix);
+    // The tree this run's own payload lives in (see ENV_INSTALL_PAYLOAD_DIR):
+    // the launcher layout puts it outside the prefix, so the script's daemon
+    // stop gate needs both roots to recognise this install's own daemon.
+    if let Some(payload_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| crate::packages::exe_dir_of(&exe))
+    {
+        command.env(ENV_INSTALL_PAYLOAD_DIR, payload_dir);
+    }
     // FORK-ONLY: tell the installer script this run belongs to the fork, so
     // its daemon stop-probe skips the upstream TypeScript socket (known bug
     // #22: both payloads are named `prime-agent`, so only a marker/socket path
@@ -877,6 +893,42 @@ mod tests {
         let message = no_build_message("windows", "aarch64");
         assert!(message.contains("windows aarch64"), "{message}");
         assert!(message.contains("x86_64-pc-windows-msvc"), "{message}");
+    }
+
+    /// The installer's daemon stop gate needs BOTH of this run's install
+    /// roots: the prefix it writes and the tree of the payload that invoked
+    /// it (the fork's launcher keeps the payload in libexec/, outside the
+    /// prefix, and that payload is the install the update replaces). The
+    /// funnel exports them so the shipped script reads the same roots the
+    /// Rust side resolved.
+    #[test]
+    fn the_installer_child_carries_both_install_roots() {
+        /// The child's install-root knobs, read back from its environment.
+        fn roots(command: &tokio::process::Command) -> (Option<String>, Option<String>) {
+            // One pass over the child's env: the funnel sets both knobs.
+            let mut envs = std::collections::HashMap::new();
+            for (key, value) in command.as_std().get_envs() {
+                envs.insert(
+                    key.to_string_lossy().to_string(),
+                    value.map(|value| value.to_string_lossy().to_string()),
+                );
+            }
+            let read = |key: &str| envs.get(key).cloned().flatten();
+            (read(ENV_PREFIX), read(ENV_INSTALL_PAYLOAD_DIR))
+        }
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let shell = dir.path().join("sh");
+        std::fs::copy("/bin/sh", &shell).unwrap();
+        let prefix = dir.path().join("prefix");
+
+        let (carried_prefix, carried_payload) = roots(&installer_child(&shell, &prefix, None));
+        assert_eq!(carried_prefix, Some(prefix.to_string_lossy().to_string()));
+        let expected_payload = std::env::current_exe()
+            .ok()
+            .and_then(|exe| crate::packages::exe_dir_of(&exe))
+            .map(|dir| dir.to_string_lossy().to_string());
+        assert_eq!(carried_payload, expected_payload);
     }
 
     /// The ps1-era marker encodings read back as their ASCII content: a

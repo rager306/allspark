@@ -33,6 +33,19 @@
 #      in play) probes only the fork/rust sockets and leaves the upstream TS
 #      default socket alone; an upstream run probes the TS default, the
 #      profile-exported PRIME_AGENT_DAEMON_SOCKET, and the pinned rust socket.
+#      THE INSTALL-ROOT GATE: the pinned rust socket names the UPSTREAM Rust
+#      install's endpoint (its launcher writes that pin), so a co-installed
+#      upstream Rust tree answers there and a fork run probed it — the
+#      2026-10-21 field incident, where a fork update stopped the upstream
+#      daemon and killed the session that ran it. A daemon on either Rust
+#      socket is therefore stopped only when its own executable (the hello's
+#      runtime.executablePath) lives under the prefix this run writes; any
+#      other daemon is left running and reported loudly. Classification by
+#      IDENTITY cannot make that call: the fork builds the same crates, so its
+#      daemon reports the same "pa-daemon-rs-<version>" build id and schema as
+#      the upstream one — the executable path is the only field fact
+#      separating two installs, and the isolated HOME (~/.allspark-home) is
+#      what makes their prefixes differ.
 #      The upstream candidates: the TS daemon's default socket
 #      (${TMPDIR:-/tmp}/prime-agent-$(id -u)/daemon.sock),
 #      PRIME_AGENT_DAEMON_SOCKET when a profile exported it (the
@@ -50,15 +63,18 @@
 #      the TypeScript daemon of ANY version (the second field install
 #      answered schema-30-f908f493c9e1 where the last-known id was
 #      schema-29-a5c9d20f8b13; an exact-hash check left it running); the
-#      pinned rust socket is ours by construction, no classification at
-#      all (an installer older than the daemon build must still stop
-#      it). THE SELF-SOCKET REFUSAL: a candidate that equals the daemon
-#      DRIVING this very install (the internal supervisor-socket
-#      variable a daemon exports to its workers) is never probed at all
-#      — the suite that killed the fleet daemon twice ran exactly that
+#      pinned rust socket and the fork socket are this product's, no
+#      identity check at all (an installer older than the daemon build must
+#      still stop it) — the INSTALL-ROOT GATE above then decides whether the
+#      daemon there is this install's. THE SELF-SOCKET REFUSAL: a candidate
+#      that equals the daemon DRIVING this very install is never probed at
+#      all — the suite that killed the fleet daemon twice ran exactly that
 #      shape — unless PRIME_AGENT_STOP_LIVE_DAEMON=1 overrides for a
-#      deliberate in-daemon update (--force does not); an operator shell
-#      never carries the internal variable, so the field contract is
+#      deliberate in-daemon update (--force does not). The daemon is named
+#      by the internal supervisor-socket variable a daemon exports to its
+#      workers, and — because a scrubbed environment (env -i: the 2026-10-21
+#      shape) drops it — by the process tree's own ancestor command lines;
+#      an operator shell carries neither, so the field contract is
 #      unchanged.
 #      Every daemon so identified is shut down REGARDLESS of busy-ness (the
 #      field ruling: an install that leaves the old daemon up is the
@@ -1586,17 +1602,23 @@ fi
 # check classified it as foreign and the install stopped nothing): the
 # TS daemon is the protocol-7 SCHEMA FAMILY minus this product's own
 # hash — the family match catches every TS version. The pinned rust
-# socket is OUR daemon by construction (no schema inspection; the
-# pinned path is the identity). A daemon that answers neither shape, or
-# will not greet, is NEVER silently skipped: the LOUD warning names it
-# and the manual stop command.
+# socket and the fork socket are THIS PRODUCT's sockets, but not
+# necessarily THIS INSTALL's daemon: both are launcher pins an agent
+# exports to its whole process tree, so a co-installed upgrade (an
+# upstream Rust tree, a second fork HOME) carries the same pins into its
+# own update surface, and the pinned path alone says "a Prime Agent Rust
+# daemon", never "this install's daemon". The probe therefore gates them
+# on THE INSTALL ROOT: the daemon's hello names its executable, and only
+# one under ${PREFIX}/ counts as ours. A daemon that answers neither
+# shape, will not greet, or belongs to another install is NEVER silently
+# skipped: the LOUD warning names it and the manual stop command.
 # THE CANDIDATES (no silent skips): the TS daemon's default socket,
 # PRIME_AGENT_DAEMON_SOCKET when a profile exported it, and this
 # product's pinned rust socket. Every outcome is REPORTED (a say/note
 # line, plus a summary line for the stops) — a daemon that would not go
-# down is a LOUD warning, and the install ALWAYS verifies every stopped
-# socket is DOWN before the summary prints (a --listening re-check; the
-# socket stops answering).
+# down, or one another install owns, is a LOUD warning, and the install
+# ALWAYS verifies every stopped socket is DOWN before the summary prints
+# (a --listening re-check; the socket stops answering).
 # ts_stop_summary accumulates the summary line(s); the success block
 # prints them with the other takeover facts.
 # WINDOWS (uname MINGW*/MSYS/CYGWIN): the TypeScript product never shipped a
@@ -1662,6 +1684,25 @@ fi
 case "$live_daemon_socket" in
   "~/"*) live_daemon_socket="${HOME}${live_daemon_socket#\~}" ;;
 esac
+# THE ANCESTOR FALLBACK (the env -i hole): the refusal above reads the
+# variables a daemon EXPORTS, so an invocation with a scrubbed environment
+# (env -i, a service manager, a nested harness) silently loses it — the
+# 2026-10-21 incident reached the daemon that way. The process tree still
+# tells the truth: an ancestor running `<prime-agent> --mode daemon
+# --daemon-socket <socket>` (or `supervisor --socket <socket>`) names the
+# daemon this install runs under. The walk lives in the probe (POSIX sh has
+# no /proc and no portable ps format; the probe's python has both), is
+# bounded to 64 levels, and only an ABSOLUTE token counts as a socket, so
+# a relative one never produces a wrong refusal. Read after the probe file
+# is written; PRIME_AGENT_STOP_LIVE_DAEMON=1 still overrides it at the
+# refusal point.
+# THE INSTALL ROOTS the daemon stop gate checks (see the probe's
+# install-root test): the prefix this run writes, and the tree of the payload
+# that invoked it — the fork's launcher layout keeps its payload in libexec/,
+# OUTSIDE the prefix, and that payload IS the install the update replaces. The
+# funnel exports PRIME_AGENT_INSTALL_PAYLOAD_DIR; a standalone curl|sh run has
+# no invoking payload and the prefix alone decides.
+install_payload_dir="${PRIME_AGENT_INSTALL_PAYLOAD_DIR:-}"
 # THE CANDIDATES ride named variables, never a space-joined list (the
 # bots' finding): a socket path containing whitespace would word-split
 # into phantom candidates (and an unquoted iteration would glob too), so
@@ -1741,10 +1782,122 @@ probe_py="${dl}/daemon-stop.py"
 cat > "$probe_py" <<'PROBE_PY'
 import json, os, select, signal, socket, sys, time
 
+# --ancestor-daemon-socket: print the socket of the daemon this process tree
+# runs under, if there is one, and exit. The caller (the stop section under
+# this probe's text) folds the answer into the self-socket refusal, so an
+# env-scrubbed invocation (env -i) still refuses to stop the daemon it runs
+# under. Handled before the candidate path is read: this mode names no socket.
+def parent_of(pid):
+    # Linux: /proc/<pid>/stat, field 4 (ppid) after the parenthesized comm.
+    try:
+        with open("/proc/%d/stat" % pid, "rb") as handle:
+            data = handle.read().decode("utf-8", "replace")
+        return int(data.rsplit(")", 1)[-1].split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    # Everything else (macOS has no /proc): ps. Any failure ends the walk.
+    try:
+        import subprocess
+        out = subprocess.check_output(["ps", "-o", "ppid=", "-p", str(pid)],
+                                      stderr=subprocess.DEVNULL,
+                                      universal_newlines=True, timeout=5).strip()
+        return int(out) if out else None
+    except Exception:
+        return None
+
+def argv_of(pid):
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as handle:
+            parts = handle.read().split(b"\0")
+        return [part.decode("utf-8", "replace") for part in parts if part]
+    except OSError:
+        pass
+    try:
+        import subprocess
+        out = subprocess.check_output(["ps", "-o", "args=", "-p", str(pid)],
+                                      stderr=subprocess.DEVNULL,
+                                      universal_newlines=True, timeout=5)
+    except Exception:
+        return []
+    return out.split()
+
+SHELL_INTERPRETERS = ("sh", "bash", "dash", "zsh")
+
+def product_argv(args):
+    # The product command line behind an ancestor's argv, or None when the
+    # ancestor is not a product process. A launcher SCRIPT is a real shape
+    # (`bin/prime-agent` written as `#!/bin/sh` exec'ing the payload, the npm
+    # bridge): the kernel's shebang exec makes its /proc cmdline
+    # [interpreter, script, ...args], so the product name sits at argv[1]
+    # there. The interpreter alone is never product-shaped (an unrelated
+    # `sh --mode daemon` shell must not produce a refusal).
+    if not args:
+        return None
+    if is_product_binary(args[0]):
+        return args
+    if os.path.basename(args[0]) in SHELL_INTERPRETERS and len(args) > 1 \
+            and args[1].startswith("/") and is_product_binary(args[1]):
+        return args[1:]
+    return None
+
+def is_product_binary(name):
+    return os.path.basename(name) in ("prime-agent", "prime-agent.exe")
+
+def daemon_socket_of(args):
+    # The supervisor's own command line: the product form
+    # (`--mode daemon --daemon-socket <socket>`) or `supervisor --socket
+    # <socket>` — the same two spellings boot_reap's supervisor argv check
+    # keeps. The executable gate is load-bearing (an unrelated `daemon`
+    # subcommand must never produce a refusal), and ONLY an absolute socket
+    # token counts: a relative one would resolve against the ancestor's cwd,
+    # and guessing there is how a wrong refusal gets in.
+    args = product_argv(args)
+    if args is None:
+        return None
+    def after(flag):
+        for index in range(len(args) - 1):
+            if args[index] == flag:
+                return args[index + 1]
+        return None
+    named = after("--daemon-socket")
+    if named is not None:
+        return named if (named.startswith("/") and "daemon" in args) else None
+    named = after("--socket")
+    if named is not None:
+        return named if (named.startswith("/") and "supervisor" in args) else None
+    return None
+
+def ancestor_daemon_socket():
+    # Walk the ancestor chain from the parent up and answer the FIRST
+    # daemon-shaped process: the update funnel's own tree is
+    # daemon -> worker -> the CLI that runs this installer -> the installer's
+    # shell, so the walk must pass the worker and the client to reach the
+    # owner. Every answer only ever REFUSES a stop (never enables one), so a
+    # wrong answer costs a loud skip, never a kill. Bounded: a tree deeper
+    # than 64 levels is not this product's shape, and the bound keeps a
+    # parent-loop pid space from spinning here.
+    pid = os.getppid()
+    seen = set()
+    while pid and pid > 1 and pid not in seen and len(seen) < 64:
+        seen.add(pid)
+        named = daemon_socket_of(argv_of(pid))
+        if named:
+            return named
+        pid = parent_of(pid)
+    return None
+
+if "--ancestor-daemon-socket" in sys.argv[1:]:
+    ancestor_socket = ancestor_daemon_socket()
+    if ancestor_socket:
+        print(ancestor_socket)
+    sys.exit(0)
+
 path = sys.argv[-1]
 kind = "ts"
 listening_only = False
 force = False
+prefix = ""
+payload_dir = ""
 for flag in sys.argv[1:-1]:
     if flag == "--listening":
         listening_only = True
@@ -1752,6 +1905,10 @@ for flag in sys.argv[1:-1]:
         kind = flag[len("--kind="):]
     if flag == "--force=1":
         force = True
+    if flag.startswith("--prefix="):
+        prefix = flag[len("--prefix="):]
+    if flag.startswith("--payload-dir="):
+        payload_dir = flag[len("--payload-dir="):]
 
 # The visible progress: on a terminal the installer's renderer reads the
 # active step from PRIME_AGENT_INSTALL_UI_FILE (label, detail); otherwise
@@ -1792,6 +1949,13 @@ def progress(detail, label=None):
 TS_SCHEMA_FAMILY = "protocol-7-schema-"
 RUST_SCHEMA_ID = "protocol-7-schema-30-8e4b17c2a9f5"
 RUST_BUILD_ID_PREFIX = "pa-daemon-rs-"
+# The install roots this run owns, realpath'd (a symlinked spelling is one
+# tree), read by the install-root test below: the prefix this run writes, and
+# the tree of the payload that invoked the run (the Rust funnel names it; a
+# standalone curl|sh run has none). Two roots, because the fork's launcher
+# layout keeps its payload OUTSIDE the prefix (bin/allspark + libexec/) while
+# still being the install the update replaces.
+OWN_ROOTS = [os.path.realpath(root) for root in (prefix, payload_dir) if root]
 HELLO_TIMEOUT_S = 1.5
 PROBE_TIMEOUT_S = 5.0
 STOP_CONFIRM_TIMEOUT_S = 5.0
@@ -1887,6 +2051,26 @@ def envelope(request_id, body):
         "command": dict(body, id=request_id),
     }) + "\n"
 
+# THE INSTALL-ROOT TEST: this run writes into ${prefix} (the script's own
+# PREFIX: PRIME_AGENT_RUST_PREFIX, else $HOME/.local) and replaces the tree of
+# the payload that invoked it, so a daemon whose own executable lives outside
+# BOTH belongs to ANOTHER install — the 2026-10-21 field incident, where the
+# run's HOME was a temp dir while the daemon it met had been installed under
+# the real HOME. The isolation model is what makes the roots a discriminator:
+# the fork's launcher pins HOME to ~/.allspark-home, so a fork run's prefix is
+# never the co-installed upstream tree's ~/.local. One definition serves the
+# identify connection and the per-connection re-verification below.
+def executable_of(value):
+    runtime = value.get("runtime")
+    return runtime.get("executablePath") if isinstance(runtime, dict) else None
+
+def install_owns(value):
+    executable = executable_of(value)
+    if not isinstance(executable, str) or not executable:
+        return False
+    real_exe = os.path.realpath(executable)
+    return any(real_exe.startswith(root + os.sep) for root in OWN_ROOTS)
+
 def classify_hello(value):
     # The classification ladder, factored so every NEW connection
     # re-verifies it (the bots' finding: the probe classifies once and
@@ -1922,8 +2106,15 @@ def request(body):
     # owner that answered the hello must be the owner the ladder
     # classified, or a REPLACEMENT daemon took the socket (an
     # unrecognized one at that — the replacement check refuses to send
-    # it any command; never killed blind, never commanded blind).
+    # it any command; never killed blind, never commanded blind). The
+    # install-root candidate re-checks the SAME way: another install's
+    # daemon taking this socket between the hello and the command is
+    # exactly what must never be commanded (the 2026-10-21 incident).
     if owner == "ts" and classify_hello(hello) != "ts":
+        sock.close()
+        request_replaced = True
+        return None
+    if owner == "rust" and not install_owns(hello):
         sock.close()
         request_replaced = True
         return None
@@ -1982,11 +2173,33 @@ if kind == "ts":
             print("unrecognized:" + schema)
             sys.exit(0)
 else:
-    # --kind=ours: the pinned rust socket is this product's own daemon by
-    # construction — whatever answers there is stopped for the update,
-    # no schema inspection (an installer older than the daemon build must
-    # still stop it: the pinned path is the identity, not the hash).
+    # --kind=ours: the pinned rust socket and the fork socket are this
+    # PRODUCT's own sockets — no schema inspection (an installer older than
+    # the daemon build must still stop it). The install-root gate after this
+    # ladder is what decides whether that daemon is THIS install's.
     owner = "rust"
+# THE INSTALL-ROOT GATE (the 2026-10-21 field incident): a Rust daemon is
+# stopped only when its executable lives under THIS install's prefix. The
+# pinned rust socket names the UPSTREAM Rust install's endpoint — its launcher
+# writes that pin — so a co-installed upstream Rust tree answers there, and a
+# fork run probing it stopped the upstream daemon and killed the session that
+# ran the installer (the incident's exact shape: HOME was a temp dir, so this
+# run's prefix was a temp dir, while the daemon had been installed under the
+# real HOME). The fork socket has the same exposure to a second fork home.
+# Classification by IDENTITY cannot make this call: the fork builds the same
+# crates, so its daemon answers with the same "pa-daemon-rs-<version>" build
+# id and schema. THE INSTALL ROOTS can: this run writes into ${prefix} and
+# replaces the invoking payload's tree, so only a daemon running a payload
+# from one of THOSE trees holds the state this update replaces. Anything else
+# is left running and reported, never commanded (a TS daemon carries no
+# executable path: its takeover stays).
+if owner == "rust" and not install_owns(hello):
+    shown = executable_of(hello) or "an unnamed executable"
+    progress("%s is outside this install (%s); left alone"
+             % (shown, prefix or "the prefix its payload came from"))
+    print("foreign:" + shown)
+    sock.close()
+    sys.exit(0)
 # The identify connection's job is done; every command opens its own
 # connection so a busy daemon never parks the probe on a held socket.
 sock.close()
@@ -2104,7 +2317,8 @@ def kill_supervisor():
         return "unverified"
     current = wait_hello(sock)
     sock.close()
-    if current is None or (kind == "ts" and classify_hello(current) != owner):
+    if current is None or (owner == "ts" and classify_hello(current) != owner) \
+            or (owner == "rust" and not install_owns(current)):
         progress("could not re-identify the daemon on its socket; not signalled")
         return "unverified"
     pid = current.get("supervisorPid")
@@ -2145,6 +2359,15 @@ if force:
 print("%s:stop-failed:%s" % (owner, count_label))
 
 PROBE_PY
+
+# THE ANCESTOR FALLBACK's read (see the refusal above): the probe's own
+# process-tree walk names the daemon this install runs under when the
+# exported variables are absent. Best effort by construction — no ancestor,
+# no python, or a walk error leaves the variable empty and the exported-
+# variable refusal alone.
+if [ -z "$live_daemon_socket" ]; then
+  live_daemon_socket="$("$UVPY" "$probe_py" --ancestor-daemon-socket 2>/dev/null || true)"
+fi
 
 # The per-candidate verdict handler: every stop attempt and every skip
 # reason is reported (a say/note line now, a summary line for the stops);
@@ -2192,7 +2415,7 @@ stop_daemon_candidate() {
     step_start "Checking for a running daemon"
     probe_ui_file=""
     if [ -n "$ui_pid" ]; then probe_ui_file="$ui_active"; fi
-    verdict="$(PRIME_AGENT_INSTALL_UI_FILE="$probe_ui_file" "$UVPY" "$probe_py" "--kind=${candidate_kind}" "--force=${FORCE}" "$socket_path" 4>&2 2>/dev/null)" || verdict="probe-error"
+    verdict="$(PRIME_AGENT_INSTALL_UI_FILE="$probe_ui_file" "$UVPY" "$probe_py" "--kind=${candidate_kind}" "--force=${FORCE}" "--prefix=${PREFIX}" "--payload-dir=${install_payload_dir}" "$socket_path" 4>&2 2>/dev/null)" || verdict="probe-error"
   else
     verdict="absent"
   fi
@@ -2287,6 +2510,22 @@ stop_daemon_candidate() {
       note "  daemon; nothing was stopped. Stop it with:"
       todo "allspark shutdown --force"
       ts_stop_summary="${ts_stop_summary}daemon: WARNING unidentified on ${socket_path} (no daemon hello; left running; stop it by hand: allspark shutdown --force)
+"
+      ;;
+    foreign:*)
+      # THE INSTALL-ROOT GATE's refusal: a daemon answers on this product's
+      # socket but its executable belongs to another install (a co-installed
+      # upstream Rust tree, a second fork home). Stopping it would end that
+      # install's running sessions — the 2026-10-21 field incident. It is
+      # left running and reported loudly, in the summary too.
+      foreign_exe="${verdict#foreign:}"
+      say "left the daemon on ${socket_path} running: it is not this install's"
+      note "! The daemon on ${socket_path} runs ${foreign_exe}, which is outside"
+      note "  this install (${PREFIX}). Stopping it would end every session that"
+      note "  other install is running, so this update never commands or signals"
+      note "  it. This install's own daemon (if any) was stopped above."
+      ts_stop_found_any="yes"
+      ts_stop_summary="${ts_stop_summary}daemon: left running on ${socket_path} (${foreign_exe} is outside this install's ${PREFIX}: it belongs to another install, and this update never commands or signals it)
 "
       ;;
     stale)

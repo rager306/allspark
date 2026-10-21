@@ -66,6 +66,16 @@ launcher's pins plus parity diffs.
   supervisor socket comes from the launcher pin. Consequence (known bug #22):
   the installer/update stop-probe list must include the fork socket so a fork
   update never kills the upstream daemon (and vice versa).
+- **The pinned rust socket is upstream-named, and that is the 2026-10-21
+  incident**: the upstream Rust launcher pins
+  `${TMPDIR:-/tmp}/prime-agent-rust-<uid>/daemon.sock`, so a co-installed
+  upstream Rust tree answers exactly where a fork run's stop probe looks. The
+  fork update flow now stops a Rust daemon only when the daemon's own
+  executable (the `daemon_hello`'s `runtime.executablePath`) lives under the
+  prefix the run writes; anyone else's daemon is left running and reported.
+  Identity cannot separate the two installs — the fork builds the same crates,
+  so its daemon reports the same build id and schema; the isolated `HOME`
+  (hence a different prefix) is what does.
 - **Windows named pipes keep upstream names** (TS-parity, pinned by
   `windows_endpoints_are_the_ts_pipe_names`): fork and upstream share the
   pipe namespace on Windows. Open question — decide the Windows model before
