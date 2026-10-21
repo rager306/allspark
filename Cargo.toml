@@ -242,6 +242,24 @@ used_underscore_binding = "warn"
 # darwin builds keep line tables in the executable (dSYM extraction is a
 # documented follow-up); byte claims are measured on Linux x86_64 ELF
 # only.
+# The dev/test profile carries LINE TABLES, not full debug info: cargo's own
+# build-performance guidance, and the measured difference here is 3.1x on the biggest
+# crate (pa_core 352 MB at debug=2, 129 MB at line tables). Dependencies get no debug info
+# at all — we debug our code, not serde's. A real debugger session uses the `debugging`
+# profile below, which is one flag away and documented in AGENTS.md.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+# `cargo build --profile debugging -p <crate>` when a real debugger needs locals and
+# inlined frames. Same codegen as dev, only the debug info differs, so the switch is a
+# rebuild and not a behaviour change.
+[profile.debugging]
+inherits = "dev"
+debug = true
+
 [profile.release]
 lto = "thin"
 codegen-units = 4

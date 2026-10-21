@@ -24,12 +24,20 @@ JOBS="${GATE_JOBS:-4}"
 # Below this floor the run aborts instead of filling the disk and taking the
 # machine's other work down with it.
 MIN_FREE_GB="${GATE_MIN_FREE_GB:-15}"
+# Floor checked before every unit (see run_unit): the workspace's parallel test binaries can
+# consume several GB while the gate is already running.
+UNIT_MIN_FREE_GB="${GATE_UNIT_MIN_FREE_GB:-2}"
 
 # The pinned toolchain (rust-toolchain.toml) is what CI uses; no override.
 export CARGO_TERM_COLOR=always
 export CARGO_INCREMENTAL=0
-export CARGO_PROFILE_TEST_DEBUG=0   # CI build shape: no debuginfo, ~5x smaller target
-export CARGO_PROFILE_DEV_DEBUG=0
+# No CARGO_PROFILE_*_DEBUG overrides: the gate compiles the SAME profile the developer's
+# editor, `cargo check` and `cargo test` use (line tables for members, none for
+# dependencies — see [profile.dev] in Cargo.toml). Overriding debuginfo here used to build
+# a second, disjoint artifact set beside the working one: the same pa_core existed as
+# 352 MB (dev) and 114 MB (gate) copies, wasting 14.7 GB across 351 crates. CI keeps its
+# own overrides because it pays for the disk once; this gate shares the tree with the
+# work it is checking.
 # Run scratch lives INSIDE the repo, not /tmp: systemd-tmpfiles deletes /tmp entries by
 # age (d /tmp ... 10d) and Debian 13 mounts it tmpfs, so a long gate run can lose a
 # worktree's fixtures to a cleaner — and a repo-level `rm -rf .tmp` is then the whole
@@ -118,11 +126,36 @@ run_unit() {
     *) return 0;;
   esac
   local log="$OUT/tests/${pkg}-${kind}-${name//\//_}.log"
-  if cargo test --locked -p "$pkg" "${args[@]}" >"$log" 2>&1; then
+  # Free-space floor PER UNIT, not just at the gate's start: a long parallel run fills the
+  # disk mid-flight, and an ENOSPC then reads as a code failure in whichever unit happened
+  # to be writing (2026-10-21: thirteen "failures" that were all `No space left on
+  # device`). Refusing to run is honest; a fake red is not.
+  local free_gb
+  free_gb=$(df -BG --output=avail "$ROOT" | tail -1 | tr -dc '0-9')
+  if (( free_gb < UNIT_MIN_FREE_GB )); then
+    echo "SKIP $pkg $kind $name (only ${free_gb}G free, need ${UNIT_MIN_FREE_GB}G)"
+    return 1
+  fi
+  # lib and integration-test units go through nextest: one process per test instead of one
+  # shared binary, which is 2.8x on the measured suite (pa-daemon --lib: 384.8s -> 138.7s,
+  # 1195 tests). nextest reuses the artifacts cargo already built and keeps its own state
+  # under target/nextest, so it neither rebuilds nor perturbs the unit's dependencies.
+  # Doc/bin/example units stay on cargo test: nextest does not run doctests.
+  local ok=0
+  if [[ "$kind" == "lib" || "$kind" == "test" ]] && command -v cargo-nextest >/dev/null 2>&1; then
+    if [[ "$kind" == "lib" ]]; then
+      cargo nextest run --locked -p "$pkg" --lib >"$log" 2>&1 && ok=1
+    else
+      cargo nextest run --locked -p "$pkg" --test "$name" >"$log" 2>&1 && ok=1
+    fi
+  else
+    cargo test --locked -p "$pkg" "${args[@]}" >"$log" 2>&1 && ok=1
+  fi
+  if [[ $ok -eq 1 ]]; then
     echo "ok   $pkg $kind $name"
   else
     echo "FAIL $pkg $kind $name  -> $log"
-    grep -E '^test .* FAILED|panicked at' "$log" | head -5
+    grep -E '^\s*FAIL|panicked at|^test .* FAILED' "$log" | head -5
     return 1
   fi
 }
