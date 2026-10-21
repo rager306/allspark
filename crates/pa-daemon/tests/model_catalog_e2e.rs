@@ -174,13 +174,18 @@ fn write_models_json(agent_dir: &Path, base_url: &str) {
 
 #[test]
 fn offline_daemon_serves_the_bundled_catalog_fallback() {
+    // u64 arithmetic: a host with a PID past ~4.29M overflows u32 here,
+    // which panics in debug builds ("attempt to add with overflow") before
+    // the test can run at all.
     let dir = std::env::temp_dir().join(format!(
         "pa-model-catalog-{}",
-        std::process::id() * 1000
-            + std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.subsec_nanos())
-                .unwrap_or_default()
+        u64::from(std::process::id()) * 1000
+            + u64::from(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.subsec_nanos())
+                    .unwrap_or_default()
+            )
     ));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let agent_dir = dir.join("agent");
