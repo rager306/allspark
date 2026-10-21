@@ -374,6 +374,23 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
 
     let python_skills = super::runtime_wiring::kernel_python_skills(&resources.skills);
     let session_id = wiring.session.lock().await.get_session_id().to_string();
+    // The provider cache-key identity (TS `sessionId` on the Agent options):
+    // anthropic/google send it as the `session_id` header, mistral as
+    // `x-affinity`, and the OpenAI family as `prompt_cache_key` (+ codex
+    // request ids). The durable id leads over the engine manager's (the
+    // daemon worker's manager is per-build), and a subagent keys by its
+    // ROOT session so a spawn tree shares one cache routing group.
+    let provider_session_id = {
+        let own_id = config.semantic_edges.as_ref().map_or_else(
+            || session_id.clone(),
+            |identity| identity.session_id.clone(),
+        );
+        conversation_log
+            .as_deref()
+            .map(std::path::Path::new)
+            .and_then(crate::agent_traces::read_root_session_id)
+            .unwrap_or(own_id)
+    };
     let mut handlers = wiring.handlers.clone();
     if let Some(extra) = config.extra_host_handlers.clone() {
         handlers.merge(extra);
@@ -962,6 +979,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         should_stop_before_turn: config.queued_steering_probe.clone(),
         steering_mode: config.steering_mode,
         follow_up_mode: config.follow_up_mode,
+        session_id: Some(provider_session_id),
         ..Default::default()
     });
 

@@ -57,6 +57,9 @@ ignore = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
+# The provider session-id wire test runs the real provider transport
+# against `pa_ai::testing`'s mock inference server.
+pa-ai = { path = "../pa-ai", features = ["testing"] }
 proptest = { workspace = true }
 # The traces rate-gate test runs on paused tokio time (the 12s platform
 # interval auto-advances).

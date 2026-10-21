@@ -787,6 +787,14 @@ impl Agent {
         Agent { inner }
     }
 
+    /// The provider cache-key identity (TS `sessionId`): the id providers
+    /// key cache and transport affinity by. `None` only for agents built
+    /// without one (tests, harness rigs).
+    #[must_use]
+    pub fn session_id(&self) -> Option<&str> {
+        self.inner.session_id.as_deref()
+    }
+
     fn from_inner(inner: Arc<AgentInner>) -> Self {
         Agent { inner }
     }

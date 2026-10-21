@@ -194,6 +194,10 @@ pub async fn run_side_question(
         stream_fn: Some(stream_fn),
         before_tool_call: Some(before_tool_call),
         should_stop_after_turn: Some(should_stop_after_turn),
+        // Same provider identity as the parent loop: the side thread clones
+        // the main conversation for its KV-cacheable prefix, so its requests
+        // must key the same cache routing group.
+        session_id: parent.session_id().map(str::to_string),
         ..Default::default()
     }));
 

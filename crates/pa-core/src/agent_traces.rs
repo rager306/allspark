@@ -442,6 +442,15 @@ fn active_git_context(
     )
 }
 
+/// The durable id of the ROOT of a session's parent chain: subagent
+/// sessions key shared surfaces (trace upload, provider cache affinity)
+/// by the top-level session, not by the child. `None` when the session
+/// file's own header is unreadable.
+pub(crate) fn read_root_session_id(session_file: &Path) -> Option<String> {
+    let header = read_trace_session_header(session_file)?;
+    Some(resolve_trace_context(session_file, &header).0)
+}
+
 /// The trace id is the root of the parent chain (subagent sessions upload
 /// under their parent's id); the immediate parent feeds `X-Parent-Session`.
 fn resolve_trace_context(
