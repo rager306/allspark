@@ -72,6 +72,26 @@ pub struct ReceiptChain {
     receipts: Vec<WitnessReceipt>,
 }
 
+/// Hash a *sorted* `(path, content_hash)` list into one run identity.
+///
+/// Sorting first makes the digest independent of walk order, so two index runs
+/// over the same tree produce the same value even if the filesystem returned
+/// them differently. Length prefixes keep `("a","bc")` distinct from
+/// `("ab","c")`.
+#[must_use]
+pub fn hash_sorted_pairs(pairs: &[(String, String)]) -> String {
+    let mut sorted: Vec<&(String, String)> = pairs.iter().collect();
+    sorted.sort();
+    let mut hasher = blake3::Hasher::new();
+    for (path, hash) in sorted {
+        hasher.update(&(path.len() as u64).to_be_bytes());
+        hasher.update(path.as_bytes());
+        hasher.update(&(hash.len() as u64).to_be_bytes());
+        hasher.update(hash.as_bytes());
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
 impl ReceiptChain {
     /// An empty chain.
     #[must_use]

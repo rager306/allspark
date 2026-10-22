@@ -98,7 +98,6 @@ impl GraphStore {
             .unwrap_or_else(|_| root.as_ref().to_path_buf());
         let root_str = root.to_string_lossy().to_string();
         self.register_project(&opts.project, &root_str)?;
-        self.touch_project(&opts.project)?;
 
         let mut report = IndexReport {
             project: opts.project.clone(),
@@ -215,13 +214,31 @@ impl GraphStore {
         // The store dedupes insert attempts (`INSERT OR IGNORE`), so counting
         // attempts overstates the graph; report the store's actual edge count.
         report.edges = self.edge_count(&opts.project)?;
-        // Statistics decide index choice on every later query. A store that has
-        // never been analysed answers `trace` 472x slower (see `Store::analyze`).
-        self.analyze()?;
-        // Statistics decide index choice on every later query. A store that has
-        // never been analysed answers `trace` 472x slower (see `analyze`).
+        self.finish_run(&opts.project)?;
 
         Ok(report)
+    }
+
+    /// Close out a completed index run.
+    ///
+    /// Three steps, in order, and the order is load-bearing:
+    /// 1. `ANALYZE` — later queries pick their indexes from these statistics;
+    ///    without them `trace` walks the whole edge table (472x slower).
+    /// 2. `indexed_at` last — a run that fails or is interrupted must not look
+    ///    complete. It used to be stamped before any parsing began.
+    /// 3. A hash-linked receipt — the `witness` chain's first consumer. Two
+    ///    runs over an unchanged tree append the same `input_hash`.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    fn finish_run(&self, project: &str) -> Result<()> {
+        self.analyze()?;
+        self.touch_project(project)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        self.record_index_receipt(project, now)?;
+        Ok(())
     }
 
     /// Discover, read, and hash every candidate file, recording a coverage
@@ -616,6 +633,96 @@ mod tests {
             )
             .expect("stat tables");
         assert!(stats > 0, "indexing must leave planner statistics behind");
+    }
+
+    /// Two runs over an unchanged tree must produce the same input digest, and
+    /// the chain must verify. This is the `witness` module's first consumer.
+    #[test]
+    fn index_runs_record_a_verifiable_receipt_chain() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_tree(dir.path());
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("first");
+        let first: String = store
+            .connection()
+            .query_row(
+                "SELECT input_hash FROM index_receipts WHERE project = 'p'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("first receipt");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("second");
+        let hashes: Vec<String> = store
+            .connection()
+            .prepare("SELECT input_hash FROM index_receipts WHERE project = 'p' ORDER BY id")
+            .expect("stmt")
+            .query_map([], |r| r.get::<_, String>(0))
+            .expect("rows")
+            .map(|r| r.expect("row"))
+            .collect();
+        assert_eq!(hashes.len(), 2, "one receipt per completed run");
+        assert_eq!(
+            hashes[0], hashes[1],
+            "an unchanged tree must digest the same on both runs"
+        );
+        assert_eq!(hashes[0], first);
+        assert!(
+            store.verify_receipt_chain("p").expect("verify"),
+            "the chain must verify"
+        );
+    }
+
+    /// Editing a file changes the run digest: receipts are not just counters.
+    #[test]
+    fn a_content_change_changes_the_run_digest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_tree(dir.path());
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("first");
+        std::fs::write(dir.path().join("lib.rs"), "pub fn other() -> u32 { 2 }\n").expect("edit");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("second");
+        let hashes: Vec<String> = store
+            .connection()
+            .prepare("SELECT input_hash FROM index_receipts WHERE project = 'p' ORDER BY id")
+            .expect("stmt")
+            .query_map([], |r| r.get::<_, String>(0))
+            .expect("rows")
+            .map(|r| r.expect("row"))
+            .collect();
+        assert_ne!(
+            hashes[0], hashes[1],
+            "an edited tree must digest differently"
+        );
+    }
+
+    /// A rewritten receipt must be detected.
+    #[test]
+    fn a_tampered_receipt_breaks_verification() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_tree(dir.path());
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("index");
+        store
+            .connection()
+            .execute(
+                "UPDATE index_receipts SET input_hash = 'forged' WHERE project = 'p'",
+                [],
+            )
+            .expect("tamper");
+        assert!(
+            !store.verify_receipt_chain("p").expect("verify"),
+            "a rewritten input_hash must not verify"
+        );
     }
 
     #[test]

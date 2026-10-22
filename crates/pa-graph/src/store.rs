@@ -9,6 +9,7 @@ use crate::error::Result;
 use crate::hash::FileHash;
 use crate::schema;
 use crate::types::{Edge, EdgeType, FileChange, Label, Node};
+use crate::witness::WitnessReceipt;
 
 /// An open code-graph database.
 ///
@@ -328,6 +329,111 @@ impl GraphStore {
             |r| r.get(0),
         )?;
         Ok(n as usize)
+    }
+
+    /// The project's `indexed_at` stamp, or `None` when it was never stamped.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    pub fn indexed_at(&self, project: &str) -> Result<Option<String>> {
+        let value = self
+            .conn
+            .query_row(
+                "SELECT indexed_at FROM projects WHERE name = ?1",
+                params![project],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(value.filter(|v| !v.is_empty()))
+    }
+
+    /// Record this index run's inputs and outcome as a hash-linked receipt.
+    ///
+    /// The chain makes two runs comparable without storing their contents: each
+    /// receipt hashes the sorted `(rel_path, sha256)` pairs it saw, so two runs
+    /// over the same tree produce the same `input_hash` and two runs after an
+    /// edit differ. `chain_prev_hash` links them in order, so a rewritten or
+    /// dropped run breaks [`Self::verify_receipt_chain`].
+    ///
+    /// This is the `witness` module's first consumer: it was written in
+    /// `39c66260f` and never wired.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    pub fn record_index_receipt(&self, project: &str, timestamp: u64) -> Result<String> {
+        let pairs = self.indexed_input_pairs(project)?;
+        let input_hash = crate::witness::hash_sorted_pairs(&pairs);
+        let prev = self.receipt_head(project)?;
+        let receipt = WitnessReceipt::new(
+            format!("{project}:index"),
+            input_hash,
+            timestamp,
+            prev.clone(),
+        );
+        let hash = receipt.hash();
+        self.conn.execute(
+            "INSERT INTO index_receipts(project, hash, prev_hash, input_hash, at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![project, hash, prev, receipt.result_hash, timestamp as i64],
+        )?;
+        Ok(hash)
+    }
+
+    /// Whether every stored receipt still hashes to its recorded value and
+    /// links to its predecessor. `false` means the chain was edited.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    pub fn verify_receipt_chain(&self, project: &str) -> Result<bool> {
+        let mut stmt = self.conn.prepare(
+            "SELECT hash, prev_hash, input_hash, at FROM index_receipts
+             WHERE project = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![project], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)? as u64,
+            ))
+        })?;
+        let mut chain = crate::witness::ReceiptChain::new();
+        for row in rows {
+            let (hash, prev, input_hash, at) = row?;
+            let receipt = WitnessReceipt::new(format!("{project}:index"), input_hash, at, prev);
+            if receipt.hash() != hash {
+                return Ok(false);
+            }
+            // `append` recomputes the link from the chain head, so a receipt
+            // whose recorded `prev_hash` disagrees surfaces as a broken chain.
+            chain.append(receipt.query_hash.clone(), receipt.result_hash.clone(), at);
+        }
+        Ok(chain.verify_chain())
+    }
+
+    /// Hash of the newest receipt for `project`, or empty for a fresh chain.
+    fn receipt_head(&self, project: &str) -> Result<String> {
+        self.conn
+            .query_row(
+                "SELECT hash FROM index_receipts WHERE project = ?1 ORDER BY id DESC LIMIT 1",
+                params![project],
+                |r| r.get::<_, String>(0),
+            )
+            .or_else(|err| match err {
+                rusqlite::Error::QueryReturnedNoRows => Ok(String::new()),
+                other => Err(other.into()),
+            })
+    }
+
+    /// Sorted `(rel_path, sha256)` pairs of the project's indexed files.
+    fn indexed_input_pairs(&self, project: &str) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT rel_path, sha256 FROM file_hashes WHERE project = ?1 ORDER BY rel_path",
+        )?;
+        let rows = stmt.query_map(params![project], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// Refresh SQLite's query-planner statistics for the whole database.

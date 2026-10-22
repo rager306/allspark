@@ -82,6 +82,18 @@ pub const SCHEMA: &[&str] = &[
         PRIMARY KEY (project, rel_path)
     )",
     // Index coverage: honest accounting of what was skipped or partial.
+    // Hash-linked receipts of index runs (the `witness` chain). One row per
+    // completed run: `input_hash` is the sorted (rel_path, sha256) digest, so
+    // two runs over an unchanged tree agree and an edited tree does not.
+    r"CREATE TABLE IF NOT EXISTS index_receipts (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        project    TEXT NOT NULL REFERENCES projects(name) ON DELETE CASCADE,
+        hash       TEXT NOT NULL,
+        prev_hash  TEXT NOT NULL,
+        input_hash TEXT NOT NULL,
+        at         INTEGER NOT NULL
+    )",
+    r"CREATE INDEX IF NOT EXISTS idx_receipts_project ON index_receipts(project)",
     r"CREATE TABLE IF NOT EXISTS index_coverage (
         project  TEXT NOT NULL,
         rel_path TEXT NOT NULL,

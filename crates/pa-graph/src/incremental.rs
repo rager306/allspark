@@ -140,7 +140,6 @@ impl GraphStore {
             .unwrap_or_else(|_| root.as_ref().to_path_buf());
         let root_str = root.to_string_lossy().to_string();
         self.register_project(&opts.project, &root_str)?;
-        self.touch_project(&opts.project)?;
 
         let stored_hashes = self.all_file_hashes(&opts.project)?;
         let stored_surfaces = self.all_file_surfaces(&opts.project)?;
@@ -308,6 +307,9 @@ impl GraphStore {
             reindexed_paths: targets.iter().map(|t| t.rel.clone()).collect(),
             closure_paths: closure_targets.iter().map(|t| t.rel.clone()).collect(),
         };
+        // Stamped last, like the full index: an interrupted run must not look
+        // complete.
+        self.touch_project(&opts.project)?;
         Ok(report)
     }
 
