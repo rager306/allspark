@@ -249,7 +249,10 @@ impl GraphStore {
 
         // 4. Resolve cross-file edges now that every definition is known.
         let symbols = self.symbol_index(&opts.project)?;
-        let resolver = Resolver::new(symbols);
+        // Read the manifests once per run. A workspace without manifests yields an
+        // empty set, which simply means no call is attributed to a dependency.
+        let deps = crate::deps::DependencyCrates::from_workspace(&root).unwrap_or_default();
+        let resolver = Resolver::with_deps(symbols, deps);
         for (caller_qn, call) in &pending_calls {
             self.record_call_edge(&resolver, &opts.project, caller_qn, call)?;
         }
@@ -365,6 +368,29 @@ impl GraphStore {
     ) -> Result<()> {
         if let Some((source, target, props)) = resolver.resolve_call(caller_qn, call) {
             return self.insert_edge(project, source, target, EdgeType::Calls, &props);
+        }
+        // A path rooted at a workspace dependency names a definition that exists
+        // outside the indexed tree. Recording it as a CALLS edge to the caller with
+        // the dependency strategy is the difference between "we have no idea" and
+        // "we know exactly where this goes, and it is not in this repo".
+        if let (Some(crate_name), Some(source)) = (
+            crate::misses::dependency_root(call, resolver.deps()),
+            resolver.caller_id(caller_qn),
+        ) {
+            return self.insert_edge(
+                project,
+                source,
+                source,
+                EdgeType::Calls,
+                &json!({
+                    "callee": call.callee,
+                    "callee_path": call.callee_path,
+                    "crate": crate_name,
+                    "line": call.line,
+                    "confidence": CallStrategy::Dependency.base_confidence(),
+                    "strategy": CallStrategy::Dependency.as_str(),
+                }),
+            );
         }
         let Some(source) = resolver.caller_id(caller_qn) else {
             // The caller itself is unknown: that is an indexing bug, not a miss.
@@ -641,10 +667,24 @@ pub(crate) fn module_of(rel: &str) -> String {
 pub(crate) struct Resolver {
     by_qn: HashMap<String, i64>,
     by_name: HashMap<String, Vec<String>>,
+    /// External crates the workspace depends on, so a miss can say "this is a
+    /// dependency call" instead of guessing at the leaf name. Built once per run.
+    deps: crate::deps::DependencyCrates,
 }
 
 impl Resolver {
+    /// A resolver that knows no dependency crates: every miss falls back to the
+    /// std/trait corpora. Used where a root is not available (tests, incremental
+    /// paths that did not read manifests).
     pub(crate) fn new(by_qn: HashMap<String, i64>) -> Self {
+        Self::with_deps(by_qn, crate::deps::DependencyCrates::default())
+    }
+
+    /// A resolver that can attribute a path-rooted call to a workspace dependency.
+    pub(crate) fn with_deps(
+        by_qn: HashMap<String, i64>,
+        deps: crate::deps::DependencyCrates,
+    ) -> Self {
         let mut by_name: HashMap<String, Vec<String>> = HashMap::new();
         for qn in by_qn.keys() {
             let name = qn.rsplit("::").next().unwrap_or(qn).to_string();
@@ -653,7 +693,16 @@ impl Resolver {
         for v in by_name.values_mut() {
             v.sort();
         }
-        Self { by_qn, by_name }
+        Self {
+            by_qn,
+            by_name,
+            deps,
+        }
+    }
+
+    /// The external crates this resolver knows about.
+    pub(crate) fn deps(&self) -> &crate::deps::DependencyCrates {
+        &self.deps
     }
 
     /// The id of `caller_qn`, when it is a known definition.
@@ -677,7 +726,9 @@ impl Resolver {
             // not model yet (a path prefix, a trait method, an operator).
             return MissReason::ShapeNotModelled.as_str();
         }
-        if crate::misses::is_external_or_std(call) {
+        if crate::misses::is_external_or_std(call)
+            || crate::misses::dependency_root(call, &self.deps).is_some()
+        {
             return MissReason::ExternalOrStd.as_str();
         }
         MissReason::classify_unmatched(&call.callee).as_str()
@@ -1317,6 +1368,77 @@ mod tests {
         assert_eq!(rows.len(), 1, "one call site: {rows:?}");
         assert_eq!(rows[0].0, "suffix", "two same-named defs is a suffix guess");
         assert_eq!(rows[0].1, 2, "the edge records how many candidates existed");
+    }
+
+    /// A call whose path is rooted at a workspace dependency names a definition
+    /// outside the tree. It must be a CALLS edge with the `dependency` strategy,
+    /// not a miss: the reader needs to know where it goes, not that we failed.
+    #[test]
+    fn a_call_rooted_at_a_dependency_is_a_dependency_edge() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"t\"\nversion = \"0.1.0\"\n\n[dependencies]\ntempdir = \"3\"\n",
+        )
+        .expect("Cargo.toml");
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "pub fn caller() { tempdir::TempDir::new(); }\n",
+        )
+        .expect("a.rs");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("index");
+        let rows: Vec<(String, String, String)> = store
+            .connection()
+            .prepare(
+                "SELECT edge_type, json_extract(props_json,'$.strategy'),
+                        json_extract(props_json,'$.crate')
+                 FROM edges WHERE project='p' AND edge_type IN ('CALLS','USAGE')",
+            )
+            .expect("stmt")
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .expect("rows")
+            .map(|r| r.expect("row"))
+            .collect();
+        assert_eq!(rows.len(), 1, "one call site: {rows:?}");
+        assert_eq!(rows[0].0, "CALLS", "a dependency call is not a miss");
+        assert_eq!(rows[0].1, "dependency");
+        assert_eq!(rows[0].2, "tempdir");
+    }
+
+    /// A `crate::`/`self::` path is in-tree by definition and must stay a miss:
+    /// excusing it as a dependency would hide a real resolver gap.
+    #[test]
+    fn a_crate_local_path_is_not_a_dependency() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"t\"\nversion = \"0.1.0\"\n\n[dependencies]\ncrate = \"1\"\n",
+        )
+        .expect("Cargo.toml");
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "pub fn caller() { crate::elsewhere::thing(); }\n",
+        )
+        .expect("a.rs");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("index");
+        let strategies: Vec<String> = store
+            .connection()
+            .prepare("SELECT json_extract(props_json,'$.strategy') FROM edges WHERE project='p'")
+            .expect("stmt")
+            .query_map([], |r| r.get::<_, Option<String>>(0))
+            .expect("rows")
+            .filter_map(|r| r.expect("row"))
+            .collect();
+        assert!(
+            !strategies.iter().any(|s| s == "dependency"),
+            "a crate-local path must not be excused as a dependency: {strategies:?}"
+        );
     }
 
     #[test]

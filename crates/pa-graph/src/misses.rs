@@ -392,6 +392,33 @@ pub(crate) fn is_external_or_std(call: &CallSite) -> bool {
     STD_ROOTS.contains(&root)
 }
 
+/// Whether a miss names a crate the workspace depends on.
+///
+/// This is the case `callee_path` exists for: `tempdir::TempDir::new` truncates to
+/// `new` at extraction, so only the kept path can tell it apart from a local
+/// `new`. The `std`/`trait` classifier above cannot see it — `new` is not in any
+/// corpus — and calling it `type_unknown` would be true but useless.
+///
+/// Measured on a full index of this repository: 11,643 of 18,229 misses were
+/// std/trait/macro calls, and the dependency crates add those whose leaf name is
+/// not a well-known method.
+#[must_use]
+pub(crate) fn dependency_root(
+    call: &CallSite,
+    crates: &crate::deps::DependencyCrates,
+) -> Option<String> {
+    let path = call.callee_path.as_ref()?;
+    // `crate::`, `self::` and `super::` are in-tree by definition: a dependency
+    // set that ever contained them would excuse a real resolver gap.
+    let root = path.split("::").next().unwrap_or(path);
+    if matches!(root, "crate" | "self" | "super") {
+        return None;
+    }
+    // A turbofish or a generic argument is not part of the crate name.
+    let root = root.split('<').next().unwrap_or(root).trim();
+    crates.contains(root).then(|| root.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
