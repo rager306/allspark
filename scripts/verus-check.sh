@@ -31,3 +31,12 @@ if [ "$fail" -ne 0 ]; then
   exit 1
 fi
 echo "verus-check: all mirror specs verified"
+
+# A proof about a drifted mirror is a false assurance, and the verifier cannot see
+# the drift: it only ever reads the mirror. Check the constants the two files must
+# share, so the cheapest drift fails here rather than silently passing.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! python3 "$HERE/verus-mirror-check.py"; then
+  echo "verus-check: a mirror disagrees with its source" >&2
+  exit 1
+fi
