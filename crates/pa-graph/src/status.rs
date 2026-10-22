@@ -15,6 +15,7 @@ use std::path::Path;
 
 use crate::error::Result;
 use crate::indexer::Depth;
+use crate::misses::MissReason;
 use crate::store::GraphStore;
 
 /// How current the store is with respect to the working tree.
@@ -115,6 +116,75 @@ impl Coverage {
     }
 }
 
+/// Unresolved call sites, counted per reason.
+///
+/// The store keeps one `USAGE` edge per miss with its reason, so a count is a
+/// query away; the split is the point. A single "18,206 unresolved" number told
+/// a reader nothing about whether the resolver was broken or the code called
+/// `clone`, and that ambiguity is why the misses were classified in the first
+/// place. Only non-zero reasons are rendered: the line rides every graph
+/// answer, so it must not grow a fixed tail of zeros.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Misses {
+    /// The callee is a well-known std/trait method or a known macro.
+    pub external_or_std: usize,
+    /// A bare lowercase name whose receiver type extraction does not record.
+    pub type_unknown: usize,
+    /// Reserved bucket: extraction missed a definition that should exist.
+    pub not_extracted: usize,
+    /// The name exists but the call shape is not modelled.
+    pub shape_not_modelled: usize,
+    /// The fallback: the name looks genuinely absent.
+    pub no_definition_with_that_name: usize,
+}
+
+impl Misses {
+    /// Total unresolved call sites.
+    #[must_use]
+    pub const fn total(&self) -> usize {
+        self.external_or_std
+            + self.type_unknown
+            + self.not_extracted
+            + self.shape_not_modelled
+            + self.no_definition_with_that_name
+    }
+
+    /// `(wire name, count)` for every reason with a non-zero count, in the
+    /// order [`MissReason::ALL`] fixes.
+    #[must_use]
+    pub fn present(&self) -> Vec<(&'static str, usize)> {
+        MissReason::ALL
+            .iter()
+            .map(|reason| (*reason, self.count(*reason)))
+            .filter(|(_, count)| *count > 0)
+            .map(|(reason, count)| (reason.as_str(), count))
+            .collect()
+    }
+
+    /// Add `count` to `reason`'s bucket.
+    fn add(&mut self, reason: MissReason, count: usize) {
+        let slot = match reason {
+            MissReason::ExternalOrStd => &mut self.external_or_std,
+            MissReason::TypeUnknown => &mut self.type_unknown,
+            MissReason::NotExtracted => &mut self.not_extracted,
+            MissReason::ShapeNotModelled => &mut self.shape_not_modelled,
+            MissReason::NoDefinitionWithThatName => &mut self.no_definition_with_that_name,
+        };
+        *slot += count;
+    }
+
+    /// One reason's count.
+    fn count(&self, reason: MissReason) -> usize {
+        match reason {
+            MissReason::ExternalOrStd => self.external_or_std,
+            MissReason::TypeUnknown => self.type_unknown,
+            MissReason::NotExtracted => self.not_extracted,
+            MissReason::ShapeNotModelled => self.shape_not_modelled,
+            MissReason::NoDefinitionWithThatName => self.no_definition_with_that_name,
+        }
+    }
+}
+
 /// A project's status, as reported to an agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
@@ -130,6 +200,8 @@ pub struct Report {
     pub coverage: Coverage,
     /// How deep the stored graph is, inferred from what it holds.
     pub depth: Depth,
+    /// Unresolved call sites, split by reason.
+    pub misses: Misses,
 }
 
 impl Report {
@@ -159,6 +231,22 @@ impl Report {
         }
         if self.depth != Depth::Full {
             let _ = write!(out, ", {} depth", self.depth.as_str());
+        }
+        // The split, not just the total: "18,206 unresolved" could not say
+        // whether the resolver was broken or the code called `clone`.
+        if self.misses.total() > 0 {
+            let present: Vec<String> = self
+                .misses
+                .present()
+                .into_iter()
+                .map(|(reason, count)| format!("{count} {reason}"))
+                .collect();
+            let _ = write!(
+                out,
+                ", {} unresolved ({})",
+                self.misses.total(),
+                present.join(", "),
+            );
         }
         if !self.chain_ok {
             out.push_str(", receipts BROKEN");
@@ -337,7 +425,37 @@ pub fn report(store: &GraphStore, project: &str, root: &Path) -> Result<Report> 
         chain_ok: verdict.chain_ok,
         coverage,
         depth: infer_depth(store, project)?,
+        misses: misses(store, project)?,
     })
+}
+
+/// Count the unresolved call sites of `project`, split by stored reason.
+///
+/// One grouped query over the `USAGE` edges: the reason is already a stored
+/// property, so this adds no scan of the tree. An unrecognised stored reason
+/// (a store written by a newer indexer) counts toward the total under the
+/// fallback rather than being dropped — a miss that happened is still a miss.
+///
+/// # Errors
+/// Propagates SQLite errors.
+pub fn misses(store: &GraphStore, project: &str) -> Result<Misses> {
+    let mut stmt = store.connection().prepare(
+        "SELECT coalesce(json_extract(props_json, '$.reason'), ''),
+                count(*)
+         FROM edges
+         WHERE project = ?1 AND edge_type = 'USAGE'
+         GROUP BY 1",
+    )?;
+    let rows = stmt.query_map([project], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    let mut misses = Misses::default();
+    for row in rows {
+        let (stored, count) = row?;
+        let reason = MissReason::from_str(&stored).unwrap_or(MissReason::NoDefinitionWithThatName);
+        misses.add(reason, usize::try_from(count).unwrap_or(usize::MAX));
+    }
+    Ok(misses)
 }
 
 #[cfg(test)]
@@ -404,6 +522,7 @@ mod tests {
             chain_ok: true,
             coverage,
             depth: Depth::Full,
+            misses: Misses::default(),
         }
     }
 
@@ -468,6 +587,107 @@ mod tests {
         );
         r.chain_ok = false;
         assert!(r.line().contains("receipts BROKEN"), "{}", r.line());
+    }
+
+    /// The line carries the split, not just the total: "18,206 unresolved" was
+    /// the number that could not tell a broken resolver from ordinary `clone`
+    /// calls.
+    #[test]
+    fn the_line_splits_unresolved_calls_by_reason() {
+        let mut r = report_with(
+            Freshness::Fresh,
+            Coverage {
+                files: 12,
+                partial: 0,
+                unusable: 0,
+                skipped: 0,
+            },
+        );
+        r.misses = Misses {
+            external_or_std: 3_660,
+            type_unknown: 9_200,
+            not_extracted: 0,
+            shape_not_modelled: 900,
+            no_definition_with_that_name: 446,
+        };
+        let line = r.line();
+        assert!(
+            line.contains(
+                "14206 unresolved (3660 external_or_std, 9200 type_unknown, \
+900 shape_not_modelled, 446 no_definition_with_that_name)"
+            ),
+            "the split is rendered: {line}"
+        );
+        // Bounded: a reason with a zero count is not listed, so the tail cannot
+        // grow with the number of variants.
+        assert!(!line.contains("not_extracted"), "{line}");
+        assert!(!line.contains(", 0 "), "{line}");
+    }
+
+    /// No misses, no section: a complete answer must not carry an empty tail.
+    #[test]
+    fn a_store_with_no_misses_renders_no_split() {
+        let r = report_with(
+            Freshness::Fresh,
+            Coverage {
+                files: 12,
+                partial: 0,
+                unusable: 0,
+                skipped: 0,
+            },
+        );
+        let line = r.line();
+        assert!(!line.contains("unresolved"), "{line}");
+        assert_eq!(line, "[graph: fresh | 12 files]");
+    }
+
+    /// The counts come from the stored `USAGE` edges, so a store written before
+    /// the split still counts — under the fallback, never dropped.
+    #[test]
+    fn misses_are_counted_from_the_stored_reasons() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "pub fn one(s: String) { let _t = s.clone(); }\n\
+             pub fn two() { helper_fn(); }\n\
+             pub fn three() { other_unknown(); }\n",
+        )
+        .expect("a.rs");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("index");
+        // One legible old-style reason: it must land in the fallback bucket.
+        store
+            .connection()
+            .execute(
+                "UPDATE edges SET props_json = json_set(props_json, '$.reason', 'legacy_reason')
+                 WHERE project = 'p' AND edge_type = 'USAGE'
+                   AND json_extract(props_json, '$.callee') = 'other_unknown'",
+                [],
+            )
+            .expect("rewrite");
+        let misses = super::misses(&store, "p").expect("misses");
+        assert_eq!(
+            misses,
+            Misses {
+                external_or_std: 1,
+                type_unknown: 1,
+                not_extracted: 0,
+                shape_not_modelled: 0,
+                no_definition_with_that_name: 1,
+            },
+            "{misses:?}"
+        );
+        assert_eq!(misses.total(), 3);
+        // And the report - not just the raw count - carries the split.
+        let report = super::report(&store, "p", dir.path()).expect("report");
+        assert_eq!(report.misses, misses);
+        assert!(
+            report.line().contains("3 unresolved ("),
+            "{}",
+            report.line()
+        );
     }
 
     #[test]

@@ -19,6 +19,12 @@ Route a question, then issue the returned call yourself:
 
     # Then call the native graph tool with those parameters.
 
+Only the parameters listed in the graph tool's schema are accepted. Drop the
+`why` note (it is a comment for you, not a tool argument): the tool rejects any
+key it does not read, naming the accepted set in the error. That is deliberate -
+a misspelt key used to fall back to the default and answer as if the call had
+worked.
+
 ## The routing table
 
 | The question is about | Action | Why |

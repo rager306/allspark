@@ -18,6 +18,8 @@ use crate::coverage::{classify_source, ParseHealth, KIND_SKIPPED};
 use crate::error::Result;
 use crate::extract::{CallSite, ExtractedFile, ImportDef};
 use crate::hash::{hash_bytes, FileHash};
+use crate::misses::MissReason;
+
 use crate::store::GraphStore;
 use crate::tokenize::split_for_fts;
 use crate::types::{CallStrategy, EdgeType, FileChange, IndexReport, Label, Node};
@@ -662,20 +664,23 @@ impl Resolver {
         self.by_qn.get(caller_qn).copied()
     }
 
-    /// Why a call site did not resolve.
+    /// Why a call site did not resolve: see [`crate::misses`] for the split and
+    /// the heuristic behind it.
     ///
-    /// Two distinct failures hide behind `None` today, and they mean different
-    /// things to a reader: the caller was never indexed (our bug), or no
-    /// definition matches the callee name (the code's reality, or a missing
-    /// language rule). Naming them separately is what makes the count actionable.
+    /// The order matters. A name the tree knows but cannot resolve is a shape
+    /// problem, whatever it is called; only then does the external/std corpus
+    /// apply, and only for a miss — a resolved name never reaches here, so the
+    /// corpus cannot relabel a real CALLS edge.
     pub(crate) fn miss_reason(&self, call: &CallSite) -> &'static str {
         if self.by_name.contains_key(&call.callee) {
             // The name exists; the resolution failed for a structural reason we do
             // not model yet (a path prefix, a trait method, an operator).
-            "shape_not_modelled"
-        } else {
-            "no_definition_with_that_name"
+            return MissReason::ShapeNotModelled.as_str();
         }
+        if crate::misses::is_external_or_std(call) {
+            return MissReason::ExternalOrStd.as_str();
+        }
+        MissReason::classify_unmatched(&call.callee).as_str()
     }
 
     /// Resolve one call site to `(source_id, target_id, props)`.
@@ -1113,7 +1118,10 @@ mod tests {
             .collect();
         assert_eq!(rows.len(), 1, "one unresolved call site: {rows:?}");
         assert_eq!(rows[0].0, "totally_unknown_fn");
-        assert_eq!(rows[0].1, "no_definition_with_that_name");
+        // A plain lowercase identifier: it reads like a method call, and what a
+        // resolver needs (the receiver's type) is not recorded, so this is
+        // `type_unknown` rather than the old catch-all.
+        assert_eq!(rows[0].1, "type_unknown");
 
         // A resolved call is NOT also recorded as a miss.
         let calls: i64 = store
@@ -1125,6 +1133,125 @@ mod tests {
             )
             .expect("count");
         assert_eq!(calls, 0, "nothing in this fixture resolves");
+    }
+
+    /// The split, on the two shape groups that made it necessary: a trait
+    /// method (`clone`) and a constructor (`Some`), both of which call a
+    /// definition that lives outside the indexed tree.
+    ///
+    /// Measured on this repository before the split: 17,395 of 18,206 misses
+    /// shared one `no_definition_with_that_name` label, so the count could not
+    /// say whether the resolver was broken or the code called `clone`.
+    #[test]
+    fn a_std_method_and_a_constructor_are_classified_external() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("a.rs"),
+            // One unresolved call per caller: a miss is a self-loop `USAGE`
+            // edge and the store dedupes on (source, target, type), so two
+            // misses from one function collapse into one row.
+            "pub fn with_method(s: String) { let _t = s.clone(); }\n\
+             pub fn with_ctor() -> Option<u32> { Some(1) }\n\
+             pub fn with_from(s: String) -> String { String::from(s) }\n\
+             pub fn with_parse(s: String) -> Result<u32, std::num::ParseIntError> { s.parse() }\n",
+        )
+        .expect("a.rs");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("index");
+        let rows: Vec<(String, String)> = store
+            .connection()
+            .prepare(
+                "SELECT json_extract(props_json,'$.callee'), json_extract(props_json,'$.reason')
+                 FROM edges WHERE project='p' AND edge_type='USAGE' ORDER BY 1",
+            )
+            .expect("stmt")
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .expect("rows")
+            .map(|r| r.expect("row"))
+            .collect();
+        let reasons: std::collections::BTreeMap<String, String> = rows.into_iter().collect();
+        // `clone` is a std trait method; `Some` is a std variant; `from` is a
+        // conversion trait reached through a path. All of them name definitions
+        // outside the indexed tree, so all are external rather than "no
+        // definition with that name".
+        assert_eq!(
+            reasons.get("clone").map(String::as_str),
+            Some("external_or_std"),
+            "{reasons:?}"
+        );
+        assert_eq!(
+            reasons.get("Some").map(String::as_str),
+            Some("external_or_std"),
+            "{reasons:?}"
+        );
+        assert_eq!(
+            reasons.get("from").map(String::as_str),
+            Some("external_or_std"),
+            "{reasons:?}"
+        );
+        assert_eq!(
+            reasons.get("parse").map(String::as_str),
+            Some("external_or_std"),
+            "a FromStr trait method reached through a path: {reasons:?}"
+        );
+    }
+
+    /// A plain unknown `helper_fn()` is `type_unknown`, not `no_definition`:
+    /// a bare lowercase name cannot be told apart from `receiver.method()`
+    /// without the receiver's type, so the honest label names what is missing.
+    /// The fixture also shows the boundary — `Some` is external, `helper_fn` is
+    /// not, and they sit in the same function.
+    #[test]
+    fn a_plain_unknown_name_is_type_unknown() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "pub fn caller() { helper_fn(); }\n",
+        )
+        .expect("a.rs");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("index");
+        let reason: String = store
+            .connection()
+            .query_row(
+                "SELECT json_extract(props_json,'$.reason') FROM edges
+                 WHERE project='p' AND edge_type='USAGE'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("reason");
+        assert_eq!(reason, "type_unknown");
+    }
+
+    /// A name the tree knows, but a call shape resolution refuses, stays
+    /// `shape_not_modelled` — the one bucket that points back at our resolver
+    /// rather than at the code or at the standard library.
+    ///
+    /// The fixture uses self-recursion because that is the miss `resolve_call`
+    /// creates on purpose: an edge from a node to itself is not a call-graph
+    /// edge, so the miss is recorded instead.
+    #[test]
+    fn a_known_name_with_an_unmodelled_shape_stays_a_shape_problem() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.rs"), "pub fn caller() { caller(); }\n").expect("a.rs");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("index");
+        let reason: String = store
+            .connection()
+            .query_row(
+                "SELECT json_extract(props_json,'$.reason') FROM edges
+                 WHERE project='p' AND edge_type='USAGE'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("reason");
+        assert_eq!(reason, "shape_not_modelled");
     }
 
     /// A miss must be distinguishable from a hit in a count, and the wire name

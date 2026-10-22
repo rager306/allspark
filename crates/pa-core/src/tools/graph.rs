@@ -81,6 +81,98 @@ fn parse_edge_types(raw: Option<&str>) -> Vec<EdgeType> {
         .collect()
 }
 
+/// The parameter names each action accepts (`action` itself aside).
+///
+/// The tool reads parameters with `.get(..)`, so without this table a
+/// misspelt key silently falls back to the default and the call reports
+/// success — the `GitNexus` bug #3261, where a caller sent `depth` instead of
+/// `maxDepth`, got the default, and saw no error. The same shape was worse
+/// here: `depth` named two different things (the index build depth, a string,
+/// and the trace BFS depth, a number), so the wrong reading was silently
+/// *plausible* instead of merely wrong. `index` still accepts plain `depth`
+/// for compatibility; its canonical spelling is `index_depth`.
+const ACCEPTED_PARAMS: &[(&str, &[&str])] = &[
+    // `depth` here is the legacy spelling of `index_depth`.
+    ("index", &["path", "root", "force", "index_depth", "depth"]),
+    ("reindex", &["path", "root"]),
+    ("search", &["path", "root", "query", "limit"]),
+    (
+        "trace",
+        &[
+            "path",
+            "root",
+            "symbol",
+            "direction",
+            "depth",
+            "limit",
+            "edge_types",
+        ],
+    ),
+    ("architecture", &["path", "root", "view"]),
+    ("coverage", &["path", "root"]),
+    // `refA`/`refB` are the camelCase spellings the schema never documented;
+    // they stay accepted so an existing caller does not break.
+    (
+        "changes",
+        &["path", "root", "ref_a", "refA", "ref_b", "refB"],
+    ),
+    ("status", &["path", "root"]),
+    ("verify", &["path", "root"]),
+    (
+        "adr",
+        &[
+            "path",
+            "root",
+            "title",
+            "decision",
+            "context",
+            "consequences",
+            "status",
+            "supersedes",
+        ],
+    ),
+];
+
+/// The accepted parameter names for `action`, resolving the aliases
+/// (`arch`, `detect_changes`, `reindex_incremental`) to their canonical entry.
+fn accepted_params(action: &str) -> Option<&'static [&'static str]> {
+    let canonical = match action {
+        "arch" => "architecture",
+        "detect_changes" => "changes",
+        "reindex_incremental" => "reindex",
+        other => other,
+    };
+    ACCEPTED_PARAMS
+        .iter()
+        .find(|(name, _)| *name == canonical)
+        .map(|(_, accepted)| *accepted)
+}
+
+/// Reject any parameter `action` does not read.
+///
+/// The error names the offending key and lists the accepted ones: a caller
+/// that gets a default back cannot tell a typo from an empty result, and the
+/// next call repeats the mistake.
+fn reject_unknown_params(
+    action: &str,
+    accepted: &[&str],
+    params: &serde_json::Value,
+) -> anyhow::Result<()> {
+    let Some(object) = params.as_object() else {
+        return Ok(());
+    };
+    for key in object.keys() {
+        if key == "action" || accepted.contains(&key.as_str()) {
+            continue;
+        }
+        anyhow::bail!(
+            "unknown parameter {key:?} for action {action:?}: accepted are {}",
+            accepted.join(", "),
+        );
+    }
+    Ok(())
+}
+
 /// The native `graph` tool. `db_path` is the SQLite store; `cwd` is the
 /// default project root index/search/trace resolve against.
 pub struct GraphTool {
@@ -250,6 +342,11 @@ impl GraphTool {
         action: &str,
         params: &serde_json::Value,
     ) -> anyhow::Result<AgentToolResult> {
+        // An unknown *action* is the more fundamental error, so it keeps its own
+        // message: only a known action has a parameter set to check against.
+        if let Some(accepted) = accepted_params(action) {
+            reject_unknown_params(action, accepted, params)?;
+        }
         match action {
             "index" => self.action_index(params),
             "reindex" | "reindex_incremental" => self.action_reindex(params),
@@ -279,9 +376,18 @@ impl GraphTool {
         {
             opts = opts.with_force(true);
         }
-        // A skeleton depths lets an agent get a usable graph in about a second
+        // A skeleton depth lets an agent get a usable graph in about a second
         // instead of two minutes, then deepen it in the background.
-        if let Some(depth) = params.get("depth").and_then(serde_json::Value::as_str) {
+        //
+        // `index_depth` is the canonical spelling because plain `depth` means
+        // the trace BFS depth on `trace`; keeping one name for both was the
+        // ambiguity this tool now refuses to guess at. `depth` is still read
+        // here, for `index` only, so an existing caller keeps working.
+        let depth = params
+            .get("index_depth")
+            .or_else(|| params.get("depth"))
+            .and_then(serde_json::Value::as_str);
+        if let Some(depth) = depth {
             opts = opts.with_depth(pa_graph::indexer::Depth::from_str_or_default(depth));
         }
         let report = self.with_store(|store| {
@@ -951,11 +1057,16 @@ impl AgentTool for GraphTool {
     fn description(&self) -> &'static str {
         "Query and build the on-disk code graph for the working directory. \
          Actions: index (full or incremental build of the symbol/call/import \
-         graph), reindex (incremental closure repair), search (hybrid \
-         BM25/regex/degree symbol search), trace (callers/callees from a \
-         symbol), architecture (overview/structure/layers/clusters/cycles/\
+         graph; index_depth = skeleton|symbols|full, default full), reindex \
+         (incremental closure repair), search (hybrid BM25/regex/degree symbol \
+         search), trace (callers/callees from a symbol; depth = BFS hops, \
+         default 2), architecture (overview/structure/layers/clusters/cycles/\
          hotspots/entry_points/file_tree), coverage (index honesty report), \
-         changes (git-diff → affected symbols), status (store counts), verify (run receipts + quality of the last index run)."
+         changes (git-diff → affected symbols), status (store counts), verify \
+         (run receipts + quality of the last index run), adr (record or list \
+         architecture decisions). Each action reads only its own parameters: \
+         an unknown or misspelt one is an error naming the accepted set, never \
+         a silent default."
     }
 
     fn parameters(&self) -> &serde_json::Value {
@@ -1103,7 +1214,12 @@ pub fn params_schema() -> serde_json::Value {
             },
             "depth": {
                 "type": "integer",
-                "description": "Maximum trace BFS depth in hops (default 2)."
+                "description": "Maximum trace BFS depth in hops for action=\"trace\" (default 2). Not the index build depth - that is index_depth."
+            },
+            "index_depth": {
+                "type": "string",
+                "enum": ["skeleton", "symbols", "full"],
+                "description": "How deep to build on action=\"index\". skeleton records one node per file (~1 s on this repo) and resolves nothing; symbols adds definitions; full (the default) resolves calls and imports (~2 min). Plain \"depth\" is accepted as a legacy alias for index only."
             },
             "edge_types": {
                 "type": "string",
@@ -1125,10 +1241,9 @@ pub fn params_schema() -> serde_json::Value {
                 "type": "boolean",
                 "description": "Re-parse every file on action=\"index\", ignoring stored hashes."
             },
-            "depth": {
-                "type": "string",
-                "enum": ["skeleton", "symbols", "full"],
-                "description": "How deep to build on action=\"index\". skeleton records one node per file (~1 s on this repo) and resolves nothing; symbols adds definitions; full (the default) resolves calls and imports (~2 min)."
+            "supersedes": {
+                "type": "integer",
+                "description": "action=\"adr\": id of an earlier decision this one replaces."
             },
             "ref_a": {
                 "type": "string",
@@ -1441,6 +1556,208 @@ mod tests {
         assert_eq!(tool.name(), "graph");
         assert_eq!(tool.label(), "Graph");
         assert_eq!(tool.parameters()["required"][0], "action");
+    }
+
+    /// Every action rejects a parameter it does not read, and the message
+    /// names both the offender and the accepted set.
+    ///
+    /// Reading parameters with `.get(..)` means a misspelt key silently falls
+    /// back to the default: `GitNexus` #3261 is exactly that (a caller sent
+    /// `depth` instead of `maxDepth`, got the default and a 200), and here the
+    /// same shape was worse because `depth` meant two different things. A
+    /// caller cannot distinguish a typo from an empty result, so the tool must
+    /// say which key it did not understand.
+    #[tokio::test]
+    async fn an_unknown_parameter_is_an_error_naming_it() {
+        for action in [
+            "index",
+            "reindex",
+            "search",
+            "trace",
+            "architecture",
+            "coverage",
+            "changes",
+            "status",
+            "verify",
+            "adr",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let tool = std::sync::Arc::new(tool(dir.path()));
+            // `maxDepth` is the GitNexus spelling that started this: a plausible
+            // name no action reads.
+            let error = pa_agent::types::AgentTool::execute(
+                tool,
+                "call".to_string(),
+                serde_json::json!({ "action": action, "maxDepth": 3 }),
+                pa_agent::abort::AbortController::new().signal(),
+                std::sync::Arc::new(|_| {}),
+            )
+            .await
+            .expect_err("an unknown parameter must fail the call");
+            let message = error.to_string();
+            assert!(
+                message.contains("unknown parameter \"maxDepth\""),
+                "action {action:?} must name the offending key: {message}"
+            );
+            assert!(
+                message.contains(&format!("for action {action:?}")),
+                "the message must name the action: {message}"
+            );
+            assert!(
+                message.contains("accepted are "),
+                "the message must list the accepted keys: {message}"
+            );
+        }
+    }
+
+    /// The two depths are different parameters now, and the index one still
+    /// accepts its legacy spelling.
+    ///
+    /// Both used to be `depth`: a string on `index` and a number on `trace`. A
+    /// caller that learned one shape and used it on the other action got a
+    /// silent default instead of a type error.
+    #[tokio::test]
+    async fn the_index_depth_and_the_trace_depth_are_different_parameters() {
+        // Each case gets its own project: a skeleton pass replaces the graph, so
+        // a trace after it would have no symbol left to start from.
+        let skeleton_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            skeleton_dir.path().join("lib.rs"),
+            "pub fn one() -> u32 { 1 }\n",
+        )
+        .unwrap();
+        // `index_depth` is the canonical name: a skeleton pass records one file
+        // node and no symbol.
+        let skeleton = run_action(
+            skeleton_dir.path(),
+            "index",
+            serde_json::json!({ "index_depth": "skeleton" }),
+        )
+        .await
+        .expect("index_depth is accepted");
+        assert!(
+            text_of(&skeleton).contains("1 nodes"),
+            "a skeleton pass records one node: {}",
+            text_of(&skeleton)
+        );
+        // The legacy spelling still works on `index`, and only there.
+        let legacy_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            legacy_dir.path().join("lib.rs"),
+            "pub fn one() -> u32 { 1 }\n",
+        )
+        .unwrap();
+        let legacy = run_action(
+            legacy_dir.path(),
+            "index",
+            serde_json::json!({ "depth": "skeleton" }),
+        )
+        .await
+        .expect("legacy depth is still accepted on index");
+        assert!(
+            text_of(&legacy).contains("1 nodes"),
+            "the legacy spelling still means the build depth: {}",
+            text_of(&legacy)
+        );
+        // On `trace`, `depth` is the BFS hop count (an integer).
+        let trace_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            trace_dir.path().join("lib.rs"),
+            "pub fn one() -> u32 { two() }\npub fn two() -> u32 { 2 }\n",
+        )
+        .unwrap();
+        run_action(trace_dir.path(), "index", serde_json::json!({}))
+            .await
+            .expect("index");
+        let trace = run_action(
+            trace_dir.path(),
+            "trace",
+            serde_json::json!({ "symbol": "one", "depth": 1 }),
+        )
+        .await
+        .expect("trace reads depth as the BFS hop count");
+        assert!(
+            text_of(&trace).contains("Trace from"),
+            "{}",
+            text_of(&trace)
+        );
+        // Passing the index spelling to `trace` is now an error, not a default.
+        let error = run_action(
+            trace_dir.path(),
+            "trace",
+            serde_json::json!({ "index_depth": "full" }),
+        )
+        .await
+        .expect_err("trace must reject the index spelling");
+        assert!(
+            error
+                .to_string()
+                .contains("unknown parameter \"index_depth\""),
+            "{error}"
+        );
+    }
+
+    /// The advertised schema names every parameter the actions read, under the
+    /// same spelling. It used to declare `depth` twice — once as the trace
+    /// integer, once as the index string — so a JSON object had one surviving
+    /// key and the model saw whichever came last.
+    #[test]
+    fn the_schema_names_the_parameters_the_actions_read() {
+        let schema = params_schema();
+        let properties = schema["properties"].as_object().expect("properties");
+        for key in ["index_depth", "depth"] {
+            assert!(
+                properties.contains_key(key),
+                "the schema must declare {key}"
+            );
+        }
+        assert_eq!(
+            properties["index_depth"]["type"], "string",
+            "index_depth is the build depth",
+        );
+        assert_eq!(
+            properties["depth"]["type"], "integer",
+            "the remaining `depth` is the trace BFS hop count",
+        );
+        // Every schema property is read by some action; every canonical
+        // parameter of some action is in the schema. Aliases (`root`, `refA`,
+        // `refB`, the legacy `depth` on index) are deliberately schema-less.
+        let aliases = ["root", "refA", "refB", "depth", "action"];
+        let mut declared: Vec<&str> = properties.keys().map(String::as_str).collect();
+        declared.sort_unstable();
+        assert_eq!(
+            declared,
+            vec![
+                "action",
+                "consequences",
+                "context",
+                "decision",
+                "depth",
+                "direction",
+                "edge_types",
+                "force",
+                "index_depth",
+                "limit",
+                "path",
+                "query",
+                "ref_a",
+                "ref_b",
+                "status",
+                "supersedes",
+                "symbol",
+                "title",
+                "view",
+            ],
+            "the schema drifted from what the actions read",
+        );
+        for (action, accepted) in ACCEPTED_PARAMS {
+            for name in *accepted {
+                assert!(
+                    aliases.contains(name) || properties.contains_key(*name),
+                    "action {action:?} reads {name:?}, which the schema does not declare",
+                );
+            }
+        }
     }
 
     /// A query on a cold graph builds the index first, so the first answer is

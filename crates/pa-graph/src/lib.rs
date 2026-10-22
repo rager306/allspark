@@ -117,6 +117,7 @@ pub mod incremental;
 pub mod indexer;
 pub mod lsp_surface;
 pub mod minhash;
+pub mod misses;
 pub mod probe;
 pub mod repair;
 pub mod schema;
