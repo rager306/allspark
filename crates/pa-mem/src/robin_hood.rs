@@ -247,7 +247,13 @@ impl<K: Hash + Eq, V> RobinHoodMap<K, V> {
                 return Some(i);
             }
             i = (i + 1) & self.mask;
-            dib += 1;
+            // Saturate exactly as `insert` does. A plain increment overflows a `u8`
+            // past `MAX_DIB`: in debug that is a panic on a *lookup*, and in release
+            // it wraps to 0, which makes `dibs[i] < dib` false for every slot and
+            // turns a miss into a full-table walk. A cluster deeper than `MAX_DIB`
+            // is only reachable with adversarially colliding keys, but a lookup must
+            // not be the thing that breaks.
+            dib = dib.saturating_add(1);
         }
     }
 
@@ -309,6 +315,80 @@ impl<'a, K: Hash + Eq, V> IntoIterator for &'a RobinHoodMap<K, V> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A lookup must not overflow the probe counter on a deep cluster.
+    ///
+    /// `insert` saturates `dib` at `MAX_DIB`; `get_index` used a plain `+=` on the
+    /// same `u8`. Past 255 probe steps in one cluster that overflows: a panic in
+    /// debug, and a wrap to 0 in release, where `dibs[i] < dib` then holds for no
+    /// slot and a miss degrades into a full-table walk.
+    ///
+    /// These 300 keys share one home slot under `th64` at 512 buckets — found by
+    /// evaluating the hash over two million candidates — so they build a cluster
+    /// deeper than `MAX_DIB` without needing a different hasher. The table stays at
+    /// 512 buckets: 300 entries is below the 75% load factor.
+    #[test]
+    fn a_lookup_survives_a_cluster_deeper_than_max_dib() {
+        const COLLIDING: [u64; 300] = [
+            327, 1_878, 1_967, 2_143, 2_193, 2_396, 2_952, 2_954, 3_016, 3_770, 4_650, 5_808,
+            5_897, 6_244, 6_484, 7_166, 7_357, 8_022, 8_368, 8_507, 8_610, 8_925, 9_451, 9_657,
+            9_931, 10_389, 10_583, 10_632, 11_321, 11_805, 12_149, 13_056, 15_163, 15_240, 15_445,
+            16_853, 17_035, 17_337, 17_361, 17_817, 17_845, 17_889, 18_072, 18_701, 18_849, 19_227,
+            19_701, 20_154, 21_451, 22_644, 23_568, 23_945, 24_411, 25_592, 25_717, 25_729, 26_614,
+            27_144, 27_513, 27_598, 27_649, 27_684, 28_500, 29_212, 29_383, 29_678, 29_919, 30_348,
+            30_699, 31_143, 31_683, 31_700, 32_016, 32_289, 34_133, 34_159, 34_322, 34_488, 34_530,
+            34_943, 35_462, 35_632, 35_750, 35_771, 35_885, 36_671, 37_289, 37_365, 37_695, 38_316,
+            38_431, 38_534, 39_175, 40_079, 40_229, 40_307, 41_327, 41_443, 41_764, 42_582, 42_924,
+            44_915, 45_481, 45_669, 45_812, 46_455, 46_966, 46_975, 47_157, 47_159, 47_462, 47_750,
+            48_751, 48_804, 49_331, 49_333, 50_383, 50_517, 51_512, 52_006, 52_624, 52_717, 53_141,
+            53_478, 53_498, 53_565, 53_873, 53_921, 54_026, 54_471, 54_558, 54_777, 56_592, 56_720,
+            57_955, 58_003, 58_092, 58_101, 58_201, 58_301, 58_361, 58_889, 59_123, 59_424, 60_176,
+            61_071, 61_168, 61_577, 61_643, 61_762, 61_865, 61_923, 62_129, 62_249, 62_980, 64_167,
+            64_176, 64_332, 64_671, 64_913, 65_071, 65_076, 66_747, 68_172, 68_282, 69_133, 69_346,
+            69_581, 69_912, 70_112, 70_815, 71_449, 71_804, 72_107, 72_216, 72_572, 72_734, 73_643,
+            73_829, 74_436, 74_625, 75_145, 75_270, 75_372, 75_520, 76_159, 76_957, 77_240, 77_578,
+            77_768, 78_610, 79_640, 80_170, 80_823, 81_213, 81_341, 81_791, 82_097, 82_406, 83_037,
+            83_329, 84_046, 84_335, 84_689, 85_010, 85_172, 85_411, 85_979, 86_874, 86_933, 87_821,
+            87_945, 88_056, 88_653, 88_813, 89_197, 89_903, 89_956, 90_759, 91_117, 92_292, 92_358,
+            94_640, 95_002, 95_388, 95_881, 95_942, 96_308, 96_368, 96_381, 96_384, 97_474, 97_492,
+            98_371, 99_180, 99_439, 99_598, 99_777, 99_802, 99_852, 100_272, 100_424, 101_384,
+            101_511, 102_041, 103_259, 103_321, 103_358, 103_694, 104_708, 104_733, 104_810,
+            104_874, 105_176, 105_288, 107_491, 107_714, 109_304, 109_382, 109_459, 110_095,
+            110_302, 110_567, 111_381, 111_540, 112_237, 113_002, 113_004, 113_549, 113_627,
+            113_632, 114_051, 114_284, 114_302, 114_502, 114_530, 114_743, 115_121, 115_707,
+            116_232, 117_551, 117_570, 117_640, 117_843, 118_953, 119_786, 119_960, 120_004,
+            120_783, 120_995, 121_176, 121_307, 122_817, 123_682, 123_826, 124_241, 125_559,
+            125_652, 126_464, 127_076,
+        ];
+        let mut m: crate::robin_hood::RobinHoodMap<u64, u64> =
+            crate::robin_hood::RobinHoodMap::with_capacity(512);
+        for k in COLLIDING {
+            m.insert(k, k);
+        }
+        assert_eq!(
+            m.bucket_count(),
+            512,
+            "the fixture must not trigger a resize"
+        );
+        assert_eq!(
+            m.max_probe(),
+            255,
+            "the fixture must reach the saturation ceiling"
+        );
+        let lost: Vec<u64> = COLLIDING
+            .iter()
+            .copied()
+            .filter(|k| m.get(k).is_none())
+            .collect();
+        assert!(
+            lost.is_empty(),
+            "{} of 300 keys are unreachable; max_probe={}; first few: {:?}",
+            lost.len(),
+            m.max_probe(),
+            &lost[..lost.len().min(8)]
+        );
+    }
+
     use super::*;
 
     #[test]
