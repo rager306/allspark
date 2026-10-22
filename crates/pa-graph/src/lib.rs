@@ -98,6 +98,7 @@
 
 pub mod architecture;
 pub mod bm25;
+pub mod cascade;
 pub mod changes;
 pub mod condenser;
 pub mod coverage;
@@ -118,6 +119,7 @@ pub mod repair;
 pub mod schema;
 pub mod search;
 pub mod signals;
+pub mod status;
 pub mod store;
 pub mod strictness;
 pub mod surface;

@@ -442,23 +442,26 @@ fn clusters(edges: &[ModuleEdge]) -> Vec<Cluster> {
     // `connected_components` counts them; a BFS labels each node with its id so
     // the members can be grouped.
     let _ = connected_components(&ug);
+    // Communities, not merely connected components: a single component that
+    // spans the whole repository says nothing about its areas. `mincut`'s label
+    // propagation splits it by edge density, which is what the view is for.
+    let weighted: Vec<crate::sparsifier::WeightedEdge> = graph
+        .edge_indices()
+        .filter_map(|e| graph.edge_endpoints(e))
+        .map(|(a, b)| {
+            crate::sparsifier::WeightedEdge::new(
+                i64::try_from(a.index()).unwrap_or(0),
+                i64::try_from(b.index()).unwrap_or(0),
+                1.0,
+            )
+        })
+        .collect();
+    let community = crate::mincut::community_map(&weighted, 8);
     let mut comp_of: HashMap<usize, usize> = HashMap::new();
-    let mut comp_id = 0usize;
-    for start in ug.node_indices() {
-        if comp_of.contains_key(&ug[start]) {
-            continue;
-        }
-        let mut stack = vec![start];
-        comp_of.insert(ug[start], comp_id);
-        while let Some(node) = stack.pop() {
-            for nb in ug.neighbors(node) {
-                if let std::collections::hash_map::Entry::Vacant(e) = comp_of.entry(ug[nb]) {
-                    e.insert(comp_id);
-                    stack.push(nb);
-                }
-            }
-        }
-        comp_id += 1;
+    for n in graph.node_indices() {
+        let key = i64::try_from(n.index()).unwrap_or(0);
+        let cid = community.get(&key).copied().unwrap_or(0);
+        comp_of.insert(n.index(), cid);
     }
     let mut members: BTreeMap<usize, Vec<String>> = BTreeMap::new();
     for node in graph.node_indices() {
