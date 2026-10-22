@@ -61,6 +61,14 @@ either changes.
 - Tests must wait for observable readiness: flag fixed sleeps, polling loops, and retry-to-green wrappers used as readiness signals. A timeout may bound failure; it must not make the test pass.
 - Flag skipped or disabled tests without a reason stated at the test; flag tests that should use isolated ports and temporary paths but do not, and tests that leave shared state unrestored.
 
+## Formal verification (advisory)
+
+- Flag any attempt to make a Verus proof a merge gate, a `cargo test` target, or a CI job. `bash scripts/verus-check.sh` is advisory: it skips cleanly without the toolchain, and a proof that does not close must never block a merge.
+- Every file under `verus/` is a **mirror** of a shipped function, not the function itself; flag a mirror without its `// MIRROR OF: <source> (<what it mirrors>)` header, and flag a new shared constant that is not added to the `MIRRORS` table in `scripts/verus-mirror-check.py`.
+- Flag `#[verifier::external_body]` without a comment naming what it trusts and why vstd cannot express it.
+- Flag a spec left looking finished when an obligation does not close: the failing obligation must be named at the file, and a spec that resists 30 attempts is abandoned rather than grown.
+- Flag changes to shipped code made only to make it provable; the mirror is abandoned instead, or the invariant is stated as a test.
+
 ## Lint discipline
 
 - Zero-warning posture: the merge gates run clippy at `-D warnings`, so any new warning is a merge blocker. Flag new warnings and any suppression added to hide one.

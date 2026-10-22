@@ -182,6 +182,55 @@ cache payload at once, so an unbounded read is both a denial of service and a pe
 `MAX_CONTEXT_FILE_BYTES` and `MAX_SKILLS_INVENTORY*` are the current ceilings; a new input path
 must reuse `truncate_context_content` rather than reading whole.
 
+## Formal verification (Verus): soft, opt-in, never a gate on the product
+
+`verus/` holds **mirrors** of pure functions, written in Verus syntax, proved by
+`scripts/verus-check.sh`. A mirror is a copy of a function's logic in a form the verifier
+accepts — not the shipped code. The directory is deliberately **outside the cargo workspace**
+(no `Cargo.toml`, not a `members` entry), so no build, test or `cargo fmt` reads it. Verified
+by putting a deliberately broken `.rs` there: `cargo check` finished in 0.24 s, `cargo fmt`
+left it alone.
+
+**Why it exists at all.** A proof says "no input breaks this", a test says "these inputs did
+not". For pure arithmetic that difference is real: the `sun_path` off-by-one and the varint
+tenth-byte truncation were both provable in principle. Measuring the mirror's invariant has
+also found defects the suite could not see — reading the `dib` invariant surfaced a deletion
+bug in `RobinHoodMap` that needs an adversarial fixture to reproduce.
+
+**Rules.**
+
+- **Opt-in and removable.** `verus-check.sh` exits 0 when the toolchain is absent. `rm -rf verus/`
+  removes the whole practice with no effect on the product. Never add `vstd` to a shipped crate,
+  and never make a proof a merge gate.
+- **Mirrors, named as such.** Every file under `verus/` opens with `// MIRROR OF: <source path>
+  (<what it mirrors>)`. A proof about a drifted mirror is a false assurance, so
+  `scripts/verus-mirror-check.py` compares the constants both files must share, with the
+  source's arithmetic resolved (`MAX_INDEX = (1u64 << PTR_BITS) - 1` is evaluated, not matched
+  as text). Add a newly shared constant to its `MIRRORS` table.
+- **Write a mirror only where the invariant is already stated in prose.** If the code must be
+  rewritten to become provable, that is the signal not to write the mirror.
+- **State the trust surface.** `#[verifier::external_body]` asserts a postcondition without
+  checking it; each use needs a comment saying why and what it trusts. Keep the list short
+  enough to read.
+- **Report what does not close.** A spec that resists 30 attempts is abandoned with the failing
+  obligation named at the file, not left looking finished. Two known limits: `write_u64` did not
+  close in 16 attempts, and `read_u64` cannot be specified about the shipped error type without
+  abstracting `MemResult` to `Option` — which proves "refuses", not "refuses with `BadVarint`".
+- **What it does not reach.** Verus proves sequential functional properties. It cannot express
+  `async` (so `pa-core`, `pa-daemon`, `pa-lsp`, `pa-tui` are out), and proves nothing about
+  wall time or wire formats. Concurrency and protocol invariants are model-checking territory
+  (TLA+/Alloy), not this.
+
+**Cost, measured** (12 cores, `--num-threads 4`): one minimal mirror 1.6 s; the three existing
+files 5.6-6.6 s for 14 verified obligations. Spec cost is roughly one to two lines of
+spec+proof per line of logic: 79 lines carry the varint codec (`varint.rs`, ~51 lines of function
+body) and 108 carry `ptr48`'s encode/decode. The verifier saturates at 4 threads, so throughput
+comes from running independent files concurrently (2-3 at a time). Run it with
+`bash scripts/verus-check.sh`.
+
+Design notes and the per-crate judgement live in
+`.research/VERUS-SOFT-ADAPTATION.md` and `.research/VERUS-ADAPTATION-PLAN.md`.
+
 ## Lint discipline
 
 - Zero-warning posture: the merge gates run fmt + clippy + tests at `-D warnings`, so a `warn`
@@ -270,6 +319,10 @@ cleanup becomes another run's missing directory.
   the same gates; CI runs on the org's billing (`.github/workflows/continuous.yml` on `main`
   pushes; `release.yml` on version tags). The PR-only codebase-health check reports growth
   past 2,000 lines as review guidance; it never blocks a merge.
+- **Verus proofs are advisory, not a merge gate** (2026-10-22): `bash scripts/verus-check.sh`
+  verifies the mirrors under `verus/` and skips cleanly without the toolchain. It is not part of
+  `make check`, not part of `cargo test`, and not a CI job — a proof that does not close must never
+  block a merge. See "Formal verification (Verus)" above.
 - **Parity-diff evidence is advisory, not a merge gate** (fork change, 2026-10-19): the
   mandatory CI TS-parity step is disabled — upstream tests the TS reference itself, and the
   per-shard TS download doubled CI load. The parity scripts stay in `scripts/review_*_parity.py`
