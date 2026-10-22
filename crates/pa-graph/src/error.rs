@@ -36,6 +36,22 @@ pub enum GraphError {
     /// A source file is not in a language `pa-ast` can parse.
     #[error("unsupported language for: {0}")]
     UnsupportedLanguage(String),
+    /// The store on disk was written by a different schema version.
+    ///
+    /// The row is deliberately left as found: overwriting it with this build's
+    /// version is what turns a format mismatch into a healthy-looking store.
+    #[error(
+        "schema version mismatch at {store}: the store records {found:?}, this build reads \
+         {expected}; reindex into a fresh store"
+    )]
+    SchemaVersionMismatch {
+        /// Path of the store that carries the foreign version.
+        store: String,
+        /// The version as `store_meta` records it (not necessarily a number).
+        found: String,
+        /// The version this build's schema declares.
+        expected: i64,
+    },
 }
 
 /// Convenience alias for [`GraphError`].

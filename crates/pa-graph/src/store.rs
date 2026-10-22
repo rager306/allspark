@@ -85,14 +85,83 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Apply the DDL and reconcile `store_meta.schema_version` with it.
+    ///
+    /// The stored version decides what happens, and the decision is made before
+    /// any DDL when the meta table already exists — a store written by another
+    /// format must fail on its readable version, not on a statement whose
+    /// column or index that format renamed.
+    ///
+    /// - **Absent** (a brand-new store, or one written before the key existed):
+    ///   the DDL runs and this build's version is recorded. Adoption is the only
+    ///   migration this crate can honour — there is no migration engine, so a
+    ///   pre-existing store is assumed to match the current DDL, which
+    ///   `CREATE ... IF NOT EXISTS` leaves byte-identical.
+    /// - **Equal**: the DDL runs (filling any missing table or index) and the
+    ///   row is not written again, so a second open of a current store is a
+    ///   no-op.
+    /// - **Different**: the open fails with both versions and the store path.
+    ///   The row is left as found — overwriting it is what makes a mismatched
+    ///   store look healthy.
+    ///
+    /// # Errors
+    /// Returns [`GraphError::SchemaVersionMismatch`] for a foreign version and
+    /// propagates SQLite errors.
     fn apply_schema(&self) -> Result<()> {
-        schema::apply(&self.conn)?;
-        self.conn.execute(
-            "INSERT INTO store_meta(k, v) VALUES ('schema_version', ?1)
-             ON CONFLICT(k) DO UPDATE SET v = excluded.v",
-            params![schema::SCHEMA_VERSION.to_string()],
-        )?;
+        let stored: Option<String> = if self.meta_table_exists()? {
+            self.conn
+                .query_row(
+                    "SELECT v FROM store_meta WHERE k = ?1",
+                    params![schema::SCHEMA_VERSION_KEY],
+                    |r| r.get(0),
+                )
+                .optional()?
+        } else {
+            None
+        };
+        // An empty or non-numeric value is NOT adopted: it cannot be shown equal
+        // to this build's version, so it is a foreign store and fails closed
+        // with the raw value quoted back.
+        match stored {
+            Some(found) if found.parse::<i64>() == Ok(schema::SCHEMA_VERSION) => {
+                schema::apply(&self.conn)?;
+            }
+            Some(found) => {
+                return Err(crate::GraphError::SchemaVersionMismatch {
+                    store: self
+                        .path
+                        .as_ref()
+                        .map_or_else(|| "<memory>".to_string(), |p| p.display().to_string()),
+                    found,
+                    expected: schema::SCHEMA_VERSION,
+                });
+            }
+            None => {
+                schema::apply(&self.conn)?;
+                // DO NOTHING, not DO UPDATE: two processes may open a brand-new
+                // store at once, and the loser of that race must keep the
+                // winner's row rather than rewrite a value it did not check.
+                let version = schema::SCHEMA_VERSION.to_string();
+                self.conn.execute(
+                    "INSERT INTO store_meta(k, v) VALUES (?1, ?2) ON CONFLICT(k) DO NOTHING",
+                    params![schema::SCHEMA_VERSION_KEY, version],
+                )?;
+            }
+        }
         Ok(())
+    }
+
+    /// Whether this connection's database already has the `store_meta` table.
+    ///
+    /// A store too old to have one cannot record a version, so it takes the
+    /// adopt path; reading the table first would fail instead.
+    fn meta_table_exists(&self) -> Result<bool> {
+        let exists: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'store_meta')",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(exists)
     }
 
     /// Path of the backing database, or `None` for in-memory stores.
