@@ -125,7 +125,11 @@ impl GraphStore {
     ///
     /// # Errors
     /// Propagates I/O, walker, and SQLite errors. A single unparseable file is
-    /// skipped, never fatal.
+    /// skipped, never fatal. Fails with [`std::io::ErrorKind::TimedOut`] when
+    /// another process holds the writer lease for this database past
+    /// `opts.lease_wait`, and [`std::io::ErrorKind::Interrupted`] when
+    /// `opts.lease_cancel` fires — in both cases nothing is registered and
+    /// nothing is written.
     // The classification → closure → in-place-reindex → re-resolve pipeline is
     // one cohesive algorithm; splitting it would only scatter the invariants.
     #[allow(clippy::too_many_lines)]
@@ -134,6 +138,8 @@ impl GraphStore {
         root: impl AsRef<Path>,
         opts: &IndexOptions,
     ) -> Result<IncrementalReport> {
+        // Writer lease before any registration or parse, as in `index_project`.
+        let _lease = self.acquire_lease(opts)?;
         let root = root
             .as_ref()
             .canonicalize()

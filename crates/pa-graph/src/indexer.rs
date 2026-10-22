@@ -9,15 +9,17 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 use serde_json::json;
 
 use crate::coverage::{classify_source, ParseHealth, KIND_SKIPPED};
-use crate::error::Result;
+use crate::error::{GraphError, Result};
 use crate::extract::{CallSite, ExtractedFile, ImportDef};
 use crate::hash::{hash_bytes, FileHash};
+use crate::lease::{CancelToken, IndexLease, DEFAULT_LEASE_WAIT};
 use crate::misses::MissReason;
 
 use crate::store::GraphStore;
@@ -84,6 +86,12 @@ pub struct IndexOptions {
     pub respect_gitignore: bool,
     /// How much of the graph to build.
     pub depth: Depth,
+    /// How long to wait for another process's index run to release the writer
+    /// lease before failing. [`Duration::ZERO`] makes one attempt and gives up.
+    pub lease_wait: Duration,
+    /// Asked to stop waiting for the writer lease. A shutting-down session
+    /// cancels its token so a queued index run does not sit out the deadline.
+    pub lease_cancel: CancelToken,
 }
 
 impl IndexOptions {
@@ -97,6 +105,8 @@ impl IndexOptions {
             max_file_bytes: 2 << 20,
             respect_gitignore: true,
             depth: Depth::Full,
+            lease_wait: DEFAULT_LEASE_WAIT,
+            lease_cancel: CancelToken::new(),
         }
     }
 
@@ -127,6 +137,21 @@ impl IndexOptions {
         self.extensions = extensions;
         self
     }
+
+    /// Wait this long for another process's index run to release the writer
+    /// lease. [`Duration::ZERO`] turns a contended lease into an immediate error.
+    #[must_use]
+    pub fn with_lease_wait(mut self, wait: Duration) -> Self {
+        self.lease_wait = wait;
+        self
+    }
+
+    /// Stop waiting for the writer lease when `cancel` fires.
+    #[must_use]
+    pub fn with_lease_cancel(mut self, cancel: CancelToken) -> Self {
+        self.lease_cancel = cancel;
+        self
+    }
 }
 
 /// One file's read+hash work item.
@@ -143,12 +168,19 @@ impl GraphStore {
     ///
     /// # Errors
     /// Propagates SQLite, I/O, and walker errors. A single unparseable file is
-    /// recorded as coverage and skipped, never fatal.
+    /// recorded as coverage and skipped, never fatal. Fails with
+    /// [`std::io::ErrorKind::TimedOut`] when another process holds the writer
+    /// lease for this database past `opts.lease_wait`, and
+    /// [`std::io::ErrorKind::Interrupted`] when `opts.lease_cancel` fires —
+    /// in both cases nothing is registered and nothing is written.
     pub fn index_project(
         &mut self,
         root: impl AsRef<Path>,
         opts: &IndexOptions,
     ) -> Result<IndexReport> {
+        // The writer lease comes first: a second session must not register a
+        // project (a write) or start walking before it owns the right to write.
+        let _lease = self.acquire_lease(opts)?;
         let root = root
             .as_ref()
             .canonicalize()
@@ -271,6 +303,24 @@ impl GraphStore {
         self.finish_run(&opts.project, &root)?;
 
         Ok(report)
+    }
+
+    /// Take this database's writer lease, waiting for a live index run as
+    /// `opts` allows.
+    ///
+    /// The returned guard is dropped by the caller when it returns, so every
+    /// path out of an index run — including `?` on an error — releases the lock.
+    ///
+    /// # Errors
+    /// The lease failure folded into [`GraphError::Io`], which keeps the timeout
+    /// and cancellation error kinds distinct.
+    pub(crate) fn acquire_lease(&self, opts: &IndexOptions) -> Result<IndexLease> {
+        let Some(path) = self.path() else {
+            // An in-memory store has no other writer to serialise against.
+            return Ok(IndexLease::unshared());
+        };
+        IndexLease::acquire(path, opts.lease_wait, &opts.lease_cancel)
+            .map_err(|err| GraphError::Io(err.into()))
     }
 
     /// Close out a completed index run.

@@ -49,6 +49,8 @@
 //! - [`delta_index`] — incremental ANN index maintenance with Lazy/Eager/
 //!   Batched/Adaptive repair policies (R10).
 //! - [`condenser`] — lazy streaming condensation behind a dirty flag (R12).
+//! - [`lease`] — the cross-process writer lease (`<db>.index.lock`) that keeps
+//!   N sessions off the same tree.
 //! - [`fs_watcher`] — mtime-polling and native filesystem watchers emitting
 //!   LSP `didChangeWatchedFiles` (+ open/close for created files) (S16).
 //!
@@ -115,6 +117,7 @@ pub mod hash;
 pub mod hybrid;
 pub mod incremental;
 pub mod indexer;
+pub mod lease;
 pub mod lsp_surface;
 pub mod minhash;
 pub mod misses;
