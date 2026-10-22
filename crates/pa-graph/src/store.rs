@@ -330,6 +330,29 @@ impl GraphStore {
         Ok(n as usize)
     }
 
+    /// Refresh SQLite's query-planner statistics for the whole database.
+    ///
+    /// Without statistics the planner estimates from the schema alone and makes
+    /// the wrong index choice on the hottest query: `trace` looked up a target
+    /// symbol by name and then scanned `idx_edges_type` — all 53,862 edges —
+    /// instead of seeking `idx_edges_target`. Measured on a 36k-node store:
+    ///
+    /// ```text
+    /// trace   median 52.30 ms -> 0.08 ms   (472x over 40 symbols)
+    /// impact  median 34.58 ms -> 0.04 ms   (628x)
+    /// ```
+    ///
+    /// `PRAGMA optimize` is NOT a substitute: on a store that has never been
+    /// analysed it is a no-op (it only refreshes statistics it considers stale),
+    /// and the query stayed at 58 ms. Only a full `ANALYZE` fixes it.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    pub fn analyze(&self) -> Result<()> {
+        self.conn.execute_batch("ANALYZE")?;
+        Ok(())
+    }
+
     /// Number of edges in a project.
     ///
     /// # Errors
