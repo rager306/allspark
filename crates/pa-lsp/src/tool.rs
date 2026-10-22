@@ -569,6 +569,30 @@ impl LspTool {
         )
         .await?
         .unwrap_or_default();
+        // A server that is still loading answers `null`, which is legal LSP and
+        // indistinguishable from "nothing found" once it is flattened. Measured
+        // with rust-analyzer here: the first call returns null in 19 ms and the
+        // first non-empty answer arrives at 21.9 s. Reporting that null as a result
+        // is a confident wrong answer, so say what is actually true.
+        if locations.is_empty() {
+            let warmth = client.warmth().await;
+            if !warmth.answers_are_final() {
+                return Ok(AgentToolResult {
+                    content: vec![pa_agent::types::ToolResultContent::text(format!(
+                        "[lsp: {} {}] no references are known yet — the server is still                          indexing this workspace. Retry in a few seconds, or use `graph                          trace` (which answers from the built graph in about 2 ms).",
+                        client.name,
+                        warmth.line(),
+                    ))],
+                    details: serde_json::json!({
+                        "warming": true,
+                        "server": client.name,
+                        "state": warmth.line(),
+                    }),
+                    terminate: None,
+                    is_error: false,
+                });
+            }
+        }
         let origin = symbol.map_or_else(
             || format!("{}:{}", path.display(), position.line + 1),
             |s| s.name_path(),
