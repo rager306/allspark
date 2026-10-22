@@ -555,13 +555,21 @@ impl GraphTool {
         ));
         for step in &result.steps {
             lines.push(format!(
-                "- [depth {}] {} ({}:{}) via {} confidence={:.2}",
+                "- [depth {}] {} ({}:{}) via {} confidence={:.2}{}",
                 step.depth,
                 step.qualified_name,
                 step.file_path,
                 step.start_line,
                 step.via.as_str(),
                 step.confidence,
+                // An ambiguous edge is a guess among same-named definitions. Say so:
+                // measured worst case here is `new` with 400 candidates. GitNexus
+                // records this exact shape as its "wrong edge at full confidence" bug.
+                if step.candidates > 1 {
+                    format!(" (ambiguous: {} candidates)", step.candidates)
+                } else {
+                    String::new()
+                },
             ));
         }
         let steps: Vec<serde_json::Value> = result
@@ -578,6 +586,7 @@ impl GraphTool {
                     "via": step.via.as_str(),
                     "confidence": step.confidence,
                     "strategy": step.strategy,
+                    "candidates": step.candidates,
                     "risk_labels": step.risk_labels,
                 })
             })

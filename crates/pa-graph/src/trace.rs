@@ -48,6 +48,14 @@ pub struct TraceStep {
     pub confidence: f32,
     /// Resolution strategy of the traversed edge.
     pub strategy: String,
+    /// How many definitions shared this callee's name when the edge was resolved.
+    ///
+    /// A value of `1` means the name was unique. A large number means the edge is a
+    /// guess among that many same-named definitions: measured worst case on a real
+    /// repository is `new` with 400 candidates and 3,466 edges bound to one of them.
+    /// `GitNexus` records this shape as its `wrong edge, recorded at full confidence`
+    /// bug (issue #3038); surfacing the count is what lets a reader discount it.
+    pub candidates: u32,
     /// Risk labels attached to this step.
     pub risk_labels: Vec<String>,
     /// Argument expressions (data-flow), when the edge carried them.
@@ -187,7 +195,7 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
             if !visited.insert(edge.target) {
                 continue;
             }
-            let (confidence, strategy, args) = read_call_props(&edge.props);
+            let (confidence, strategy, candidates, args) = read_call_props(&edge.props);
             let path_conf = path_conf * confidence;
             if let Some(node) = store.node_by_id(edge.target)? {
                 let risk = risk_labels(confidence, &strategy, opts.confidence_floor);
@@ -201,6 +209,7 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
                     via: edge.edge_type,
                     confidence: path_conf,
                     strategy,
+                    candidates,
                     risk_labels: risk,
                     args,
                 });
@@ -343,7 +352,7 @@ fn query_edges(
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-fn read_call_props(props: &Value) -> (f32, String, Vec<Value>) {
+fn read_call_props(props: &Value) -> (f32, String, u32, Vec<Value>) {
     let confidence = props
         .get("confidence")
         .and_then(Value::as_f64)
@@ -353,12 +362,16 @@ fn read_call_props(props: &Value) -> (f32, String, Vec<Value>) {
         .and_then(Value::as_str)
         .unwrap_or("explicit")
         .to_string();
+    let candidates = props
+        .get("candidates")
+        .and_then(Value::as_u64)
+        .map_or(1, |n| u32::try_from(n).unwrap_or(u32::MAX));
     let args = props
         .get("args")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    (confidence, strategy, args)
+    (confidence, strategy, candidates, args)
 }
 
 fn risk_labels(confidence: f32, strategy: &str, floor: f32) -> Vec<String> {
@@ -425,6 +438,7 @@ pub fn degree_map(store: &GraphStore, project: &str) -> HashMap<i64, (usize, usi
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::store::GraphStore;
     use crate::types::{Label, Node};

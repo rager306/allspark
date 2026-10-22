@@ -1161,6 +1161,37 @@ mod tests {
         );
     }
 
+    /// An edge whose callee name had many candidates is a guess, and the line must
+    /// say so. Measured worst case on a real repository: `new` with 400 candidates.
+    #[test]
+    fn an_ambiguous_edge_names_its_candidate_count() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // `shared` is defined in b and c but not in a, so the call from a has no
+        // same-module candidate and must fall to the suffix rung.
+        std::fs::write(dir.path().join("a.rs"), "pub fn caller() { shared(); }\n").expect("a.rs");
+        std::fs::write(dir.path().join("b.rs"), "pub fn shared() {}\n").expect("b.rs");
+        std::fs::write(dir.path().join("c.rs"), "pub fn shared() {}\n").expect("c.rs");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("index");
+        let rows: Vec<(String, i64)> = store
+            .connection()
+            .prepare(
+                "SELECT json_extract(props_json,'$.strategy'),
+                        json_extract(props_json,'$.candidates')
+                 FROM edges WHERE project='p' AND edge_type='CALLS'",
+            )
+            .expect("stmt")
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .expect("rows")
+            .map(|r| r.expect("row"))
+            .collect();
+        assert_eq!(rows.len(), 1, "one call site: {rows:?}");
+        assert_eq!(rows[0].0, "suffix", "two same-named defs is a suffix guess");
+        assert_eq!(rows[0].1, 2, "the edge records how many candidates existed");
+    }
+
     #[test]
     fn second_index_is_incremental() {
         let dir = tempfile::tempdir().expect("tempdir");
