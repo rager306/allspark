@@ -249,9 +249,7 @@ impl GraphStore {
         let symbols = self.symbol_index(&opts.project)?;
         let resolver = Resolver::new(symbols);
         for (caller_qn, call) in &pending_calls {
-            if let Some((source, target, props)) = resolver.resolve_call(caller_qn, call) {
-                self.insert_edge(&opts.project, source, target, EdgeType::Calls, &props)?;
-            }
+            self.record_call_edge(&resolver, &opts.project, caller_qn, call)?;
         }
         for (rel, import) in &pending_imports {
             let Some(&file_id) = file_node_ids.get(rel) else {
@@ -344,6 +342,44 @@ impl GraphStore {
         keep.extend(extracted.symbols.iter().map(|s| s.qualified_name.clone()));
         self.delete_file_nodes_not_in(project, rel, &keep)?;
         Ok(())
+    }
+
+    /// Write one call site's edge: a CALLS edge when it resolved, a USAGE edge
+    /// carrying the reason when it did not.
+    ///
+    /// A miss is a fact, and discarding it is why the tool cannot answer "how many
+    /// call sites in this file failed, and why". `Uses` was declared and never
+    /// written until this; storing the miss is the `unresolved` class that
+    /// codebase-memory-mcp publishes.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    fn record_call_edge(
+        &self,
+        resolver: &Resolver,
+        project: &str,
+        caller_qn: &str,
+        call: &CallSite,
+    ) -> Result<()> {
+        if let Some((source, target, props)) = resolver.resolve_call(caller_qn, call) {
+            return self.insert_edge(project, source, target, EdgeType::Calls, &props);
+        }
+        let Some(source) = resolver.caller_id(caller_qn) else {
+            // The caller itself is unknown: that is an indexing bug, not a miss.
+            return Ok(());
+        };
+        self.insert_edge(
+            project,
+            source,
+            source,
+            EdgeType::Uses,
+            &json!({
+                "callee": call.callee,
+                "line": call.line,
+                "reason": resolver.miss_reason(call),
+                "confidence": 0.0,
+            }),
+        )
     }
 
     /// Write a file's definitions and CONTAINS edges, resolving nothing.
@@ -616,6 +652,30 @@ impl Resolver {
             v.sort();
         }
         Self { by_qn, by_name }
+    }
+
+    /// The id of `caller_qn`, when it is a known definition.
+    ///
+    /// A call site whose caller is unknown cannot be attributed at all, so a miss
+    /// there is not worth recording: the caller itself is the problem.
+    pub(crate) fn caller_id(&self, caller_qn: &str) -> Option<i64> {
+        self.by_qn.get(caller_qn).copied()
+    }
+
+    /// Why a call site did not resolve.
+    ///
+    /// Two distinct failures hide behind `None` today, and they mean different
+    /// things to a reader: the caller was never indexed (our bug), or no
+    /// definition matches the callee name (the code's reality, or a missing
+    /// language rule). Naming them separately is what makes the count actionable.
+    pub(crate) fn miss_reason(&self, call: &CallSite) -> &'static str {
+        if self.by_name.contains_key(&call.callee) {
+            // The name exists; the resolution failed for a structural reason we do
+            // not model yet (a path prefix, a trait method, an operator).
+            "shape_not_modelled"
+        } else {
+            "no_definition_with_that_name"
+        }
     }
 
     /// Resolve one call site to `(source_id, target_id, props)`.
@@ -1023,6 +1083,82 @@ mod tests {
         assert!(!Depth::Skeleton.resolves_edges());
         assert_eq!(Depth::from_str_or_default("skeleton"), Depth::Skeleton);
         assert_eq!(Depth::from_str_or_default("nonsense"), Depth::Full);
+    }
+
+    /// A call site that does not resolve must leave a record with a reason.
+    /// Discarding it is why the tool could not answer "how many calls here failed,
+    /// and why" — the metric codebase-memory-mcp publishes as `unresolved`.
+    #[test]
+    fn an_unresolved_call_site_is_recorded_with_a_reason() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "pub fn caller() { totally_unknown_fn(); }\npub fn known() {}\n",
+        )
+        .expect("a.rs");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("index");
+        let rows: Vec<(String, String)> = store
+            .connection()
+            .prepare(
+                "SELECT json_extract(props_json,'$.callee'), json_extract(props_json,'$.reason')
+                 FROM edges WHERE project='p' AND edge_type='USAGE'",
+            )
+            .expect("stmt")
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .expect("rows")
+            .map(|r| r.expect("row"))
+            .collect();
+        assert_eq!(rows.len(), 1, "one unresolved call site: {rows:?}");
+        assert_eq!(rows[0].0, "totally_unknown_fn");
+        assert_eq!(rows[0].1, "no_definition_with_that_name");
+
+        // A resolved call is NOT also recorded as a miss.
+        let calls: i64 = store
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM edges WHERE project='p' AND edge_type='CALLS'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(calls, 0, "nothing in this fixture resolves");
+    }
+
+    /// A miss must be distinguishable from a hit in a count, and the wire name
+    /// must be the one the schema writes (`USAGE`, not the enum variant's spelling).
+    #[test]
+    fn the_miss_edge_uses_the_stored_wire_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.rs"), "pub fn caller() { nope_fn(); }\n").expect("a.rs");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("index");
+        let usage: i64 = store
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM edges WHERE project='p' AND edge_type='USAGE'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(usage, 1, "the miss is stored under USAGE");
+        let mut stmt = store
+            .connection()
+            .prepare("SELECT DISTINCT edge_type FROM edges WHERE project='p'")
+            .expect("stmt");
+        let kinds: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .expect("rows")
+            .map(|r| r.expect("row"))
+            .collect();
+        assert!(
+            !kinds.iter().any(|k| k == "USES"),
+            "USES is the enum variant, not the wire name: {kinds:?}"
+        );
     }
 
     #[test]
