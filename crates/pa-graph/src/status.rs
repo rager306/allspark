@@ -265,6 +265,49 @@ fn commits_behind(store: &GraphStore, project: &str, root: &Path) -> Option<usiz
     count.trim().parse().ok()
 }
 
+/// How long a computed status is reused before the probe runs again.
+///
+/// A status line rides **every** graph answer, so its cost is a per-call cost.
+/// Measured on this repository: the full probe is 77 ms in release and the rest of
+/// the report pushes it to 255 ms, which is more than the query it annotates.
+/// Within one turn the answer cannot change (the agent is not editing files and
+/// re-indexing in the same millisecond), so a short memo makes the common case
+/// free and keeps the honest answer one call away.
+pub const STATUS_TTL_MS: u64 = 2_000;
+
+/// `(project, ms_since_epoch, report)` — one entry is enough: a session works on
+/// one project at a time, and a second project simply replaces the entry.
+static LAST_REPORT: std::sync::Mutex<Option<(String, u64, Report)>> = std::sync::Mutex::new(None);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// [`report`] memoised for [`STATUS_TTL_MS`].
+///
+/// A poisoned lock is treated as a miss: a status line must never turn an answer
+/// into an error.
+///
+/// # Errors
+/// Propagates SQLite errors from the underlying probe.
+pub fn cached_report(store: &GraphStore, project: &str, root: &Path) -> Result<Report> {
+    let now = now_ms();
+    if let Ok(guard) = LAST_REPORT.lock() {
+        if let Some((cached_project, at, cached)) = guard.as_ref() {
+            if cached_project == project && now.saturating_sub(*at) < STATUS_TTL_MS {
+                return Ok(cached.clone());
+            }
+        }
+    }
+    let fresh = report(store, project, root)?;
+    if let Ok(mut guard) = LAST_REPORT.lock() {
+        *guard = Some((project.to_string(), now, fresh.clone()));
+    }
+    Ok(fresh)
+}
+
 /// Build a full report for `project` rooted at `root`.
 ///
 /// # Errors

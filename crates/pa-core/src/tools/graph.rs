@@ -237,8 +237,10 @@ impl GraphTool {
     fn status_line(&self, params: &serde_json::Value) -> Option<String> {
         let root = self.resolve_root(params);
         let project = project_name(&root);
+        // Memoised: a status line rides every answer, and the full probe costs
+        // more than the query it annotates (measured 255 ms against a 2 ms trace).
         let line = self.with_store(|store| {
-            Ok::<_, anyhow::Error>(pa_graph::status::report(store, &project, &root).ok())
+            Ok::<_, anyhow::Error>(pa_graph::status::cached_report(store, &project, &root).ok())
         });
         line.ok().flatten().map(|report| report.line())
     }

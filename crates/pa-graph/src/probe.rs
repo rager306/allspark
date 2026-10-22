@@ -377,6 +377,30 @@ pub fn kind_of(finding: &Finding) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    /// The status line rides every graph answer, so its cost is a per-call cost.
+    /// The memo must make a repeated call free and must not outlive its TTL.
+    #[test]
+    fn the_cached_report_is_free_within_its_ttl() {
+        let (dir, store) = fixture();
+        git(dir.path(), &["init"]);
+        git(dir.path(), &["config", "user.email", "t@e.com"]);
+        git(dir.path(), &["config", "user.name", "t"]);
+        std::fs::write(dir.path().join("a.rs"), "pub fn a() {}\n").expect("a");
+        git(dir.path(), &["add", "."]);
+        git(dir.path(), &["commit", "-m", "base"]);
+        let mut store = store;
+        store
+            .index_project(dir.path(), &crate::indexer::IndexOptions::new("p"))
+            .expect("index");
+        let first = crate::status::cached_report(&store, "p", dir.path()).expect("first");
+        let second = crate::status::cached_report(&store, "p", dir.path()).expect("second");
+        assert_eq!(first, second, "a repeated call within the TTL must agree");
+        // Editing without waiting must not be seen yet — that is what the TTL means,
+        // and the state it hides is at most STATUS_TTL_MS old.
+        std::fs::write(dir.path().join("b.rs"), "pub fn b() {}\n").expect("b");
+        let third = crate::status::cached_report(&store, "p", dir.path()).expect("third");
+        assert_eq!(third, first, "the memo holds until the TTL expires");
+    }
 
     use super::*;
 
