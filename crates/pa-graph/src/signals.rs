@@ -467,7 +467,12 @@ fn diffusion_vector(node: &Node, graph: &SymbolGraph, seed: &[f32]) -> Vec<f32> 
     neighbours.dedup();
     for n in &neighbours {
         if graph.nodes.contains_key(n) {
-            let nbr_vec = tfidf_vector(&graph.docs.get(n).cloned().unwrap_or_default(), graph);
+            // Borrow the neighbour's tokens; cloning them here copied a whole
+            // token vector per neighbour per node (avg degree 6.4, max 426).
+            let nbr_vec = graph.docs.get(n).map_or_else(
+                || vec![0.0f32; LEX_DIM],
+                |tokens| tfidf_vector(tokens, graph),
+            );
             for (a, b) in acc.iter_mut().zip(nbr_vec.iter()) {
                 *a += *b;
             }
