@@ -325,42 +325,40 @@ pub fn render(probe: &Probe) -> String {
             probe.indexed, probe.elapsed_ms
         );
     }
-    let mut parts = Vec::new();
+    let renames = probe
+        .findings
+        .iter()
+        .filter(|f| matches!(f, Finding::Renamed { .. }))
+        .count();
+    let mut parts: Vec<String> = Vec::new();
     for finding in &probe.findings {
+        // A run of renames is reported once, not per pair.
+        if matches!(finding, Finding::Renamed { .. })
+            && renames > 0
+            && !parts.iter().any(|p| p.ends_with("renamed"))
+        {
+            parts.push(format!("{renames} renamed"));
+            continue;
+        }
+        if matches!(finding, Finding::Renamed { .. }) {
+            continue;
+        }
         parts.push(match finding {
             Finding::BehindHead { commits } => format!("behind {commits} commit(s)"),
             Finding::NotIndexed { paths } => format!("{} not indexed", paths.len()),
             Finding::Changed { paths } => format!("{} changed", paths.len()),
             Finding::Deleted { paths } => format!("{} deleted", paths.len()),
-            Finding::Renamed { .. } => {
-                let n = probe
-                    .findings
-                    .iter()
-                    .filter(|f| matches!(f, Finding::Renamed { .. }))
-                    .count();
-                format!("{n} renamed")
-            }
+            Finding::Renamed { .. } => unreachable!("handled above"),
             Finding::NotGit => "not a git repo".to_string(),
         });
     }
     let next = probe.next_step().unwrap_or("index");
     format!(
-        "[graph: {} of {} files | next: {next} | {} ms]",
+        "[graph: {} of {} files | {} | next: {next} | {} ms]",
         probe.indexed,
         probe.tracked.max(probe.indexed),
+        parts.join(", "),
         probe.elapsed_ms,
-        // Keep the interesting parts first but bounded.
-    )
-    .replace(
-        " | ",
-        &format!(
-            "{} | ",
-            if parts.is_empty() {
-                String::new()
-            } else {
-                format!("{} ", parts.join(", "))
-            }
-        ),
     )
 }
 
@@ -379,6 +377,7 @@ pub fn kind_of(finding: &Finding) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     fn fixture() -> (tempfile::TempDir, GraphStore) {
