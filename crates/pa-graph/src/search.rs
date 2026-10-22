@@ -9,6 +9,10 @@
 //! A regex channel and a payload [`Filter`] narrow the candidate set before
 //! ranking; an optional [`Embedder`] seam is reserved for a future dense
 //! channel, and [`SearchOptions::mmr_lambda`] applies MMR diversity reranking.
+//!
+//! Which of those channels do any work is decided by [`cascade::plan`] over the
+//! query's shape (see [`search_report`]), and the plan travels out with the
+//! results so a thin answer can be explained instead of guessed at.
 
 use std::collections::{HashMap, HashSet};
 
@@ -17,6 +21,7 @@ use rusqlite::{params, params_from_iter, Connection};
 use serde_json::Value;
 
 use crate::bm25::min_max_normalize;
+use crate::cascade::{self, Plan, QueryShape, SkipReason, Tier};
 use crate::error::{GraphError, Result};
 use crate::filter::{renumber_placeholders, Filter};
 use crate::hybrid::{rrf_fuse_weighted, MmrCandidate};
@@ -205,12 +210,113 @@ fn row_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<Row> {
 
 const ROW_COLS: &str = "id,label,name,qualified_name,file_path,start_line,end_line";
 
+/// What the cascade decided for one query: the tiers that ran, the tiers that
+/// did not, and why.
+///
+/// Travels out of the store unchanged on every call, including an error-free
+/// call with no hits, so a caller can tell "nothing matched" from "the channel
+/// that would have matched was not run".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CascadeReport {
+    /// The query shape the plan was made for.
+    pub shape: QueryShape,
+    /// The tiers that ran, in order.
+    pub running: Vec<Tier>,
+    /// Tier -> why it was skipped, for every tier that did not run.
+    pub skipped: Vec<(Tier, SkipReason)>,
+    /// Sum of the running tiers' `cost_weight`.
+    pub cost: u32,
+}
+
+impl CascadeReport {
+    fn of(plan: &Plan) -> Self {
+        Self {
+            shape: plan.shape,
+            running: plan.running(),
+            skipped: plan
+                .steps
+                .iter()
+                .filter_map(|step| step.reason.map(|reason| (step.tier, reason)))
+                .collect(),
+            cost: plan.cost,
+        }
+    }
+
+    /// Why `tier` did not run, or `None` when it did.
+    #[must_use]
+    pub fn skip_reason(&self, tier: Tier) -> Option<SkipReason> {
+        self.skipped
+            .iter()
+            .find(|(t, _)| *t == tier)
+            .map(|(_, reason)| *reason)
+    }
+
+    /// The report as JSON, the shape `details.cascade` carries.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        let skipped: serde_json::Map<String, serde_json::Value> = self
+            .skipped
+            .iter()
+            .map(|(tier, reason)| {
+                (
+                    tier.as_str().to_string(),
+                    serde_json::Value::from(reason.as_str()),
+                )
+            })
+            .collect();
+        serde_json::json!({
+            "shape": self.shape.as_str(),
+            "running": self.running.iter().map(|t| t.as_str()).collect::<Vec<_>>(),
+            "skipped": skipped,
+            "cost": self.cost,
+        })
+    }
+}
+
+/// Whether the cascade stopped at the exact-name answer.
+///
+/// This is the whole tier-to-channel mapping. Only one tier maps onto a channel
+/// honestly: `Tier::Name` gates the name channel, and every shape runs it, so
+/// the name channel always runs. `Tier::Signals` would be the natural home of
+/// the body channel, but `search` has no similarity channel today and this
+/// change does not invent one; `Tier::Structure` (the call-graph neighbourhood)
+/// belongs to `trace` and `Tier::Community` (the architecture view) to
+/// `architecture`, so both gate nothing here. They are left out of the mapping
+/// rather than pretended onto a channel.
+///
+/// What the plan does decide for `search` is whether anything beyond exact name
+/// lookup is worth doing: an identifier stops at `Name`, and a second pass over
+/// docstrings and comments cannot improve on an exact name hit.
+///
+/// The graph-degree channel is deliberately ungated: it is one extra ordering
+/// over the same FTS match, no tier describes it, and dropping it would change
+/// the RRF fusion for identifier queries.
+fn stops_at_exact_name(plan: &Plan) -> bool {
+    plan.running() == [Tier::Name]
+}
+
 /// Execute a search against `conn` for `query`.
 ///
 /// # Errors
 /// Returns [`GraphError::InvalidQuery`] for an unparseable regex or empty
 /// query, and propagates SQLite errors.
 pub fn search(conn: &Connection, query: &str, opts: &SearchOptions) -> Result<Vec<SearchHit>> {
+    search_report(conn, query, opts).map(|(hits, _)| hits)
+}
+
+/// Run a search and also return what the cascade decided for it.
+///
+/// Same query, same ranking, same order as [`search`]; the second element is the
+/// plan's outcome, for a caller that wants to show the decision (the `graph`
+/// tool's `details.cascade`) rather than just the hits.
+///
+/// # Errors
+/// As [`search`].
+pub fn search_report(
+    conn: &Connection,
+    query: &str,
+    opts: &SearchOptions,
+) -> Result<(Vec<SearchHit>, CascadeReport)> {
     let query = query.trim();
     if query.is_empty() {
         return Err(GraphError::InvalidQuery("empty query".into()));
@@ -223,13 +329,24 @@ pub fn search(conn: &Connection, query: &str, opts: &SearchOptions) -> Result<Ve
         None => None,
     };
 
+    // The cascade decides the work before any channel runs, so the plan is a
+    // property of the query alone — not of what the channels happened to find.
+    let plan = cascade::plan(QueryShape::classify(query), cascade::DEFAULT_BUDGET, &[]);
+    let report = CascadeReport::of(&plan);
+
     let pool = opts
         .limit
         .max(1)
         .saturating_mul(opts.candidate_multiplier.max(1));
 
     let name_channel = fts_channel(conn, query, "tokens", opts, pool)?;
-    let body_channel = fts_channel(conn, query, "body", opts, pool)?;
+    // Skipped when the plan stops at the exact-name answer: a docstring pass
+    // cannot say anything an exact name hit does not.
+    let body_channel = if stops_at_exact_name(&plan) {
+        Vec::new()
+    } else {
+        fts_channel(conn, query, "body", opts, pool)?
+    };
     let graph_channel = graph_channel(conn, query, opts, pool)?;
 
     let mut channels: Vec<(Vec<i64>, f32)> = vec![
@@ -309,7 +426,7 @@ pub fn search(conn: &Connection, query: &str, opts: &SearchOptions) -> Result<Ve
     } else {
         hits.truncate(opts.limit);
     }
-    Ok(hits)
+    Ok((hits, report))
 }
 
 struct RankMaps {
@@ -727,6 +844,81 @@ mod tests {
         let opts = SearchOptions::new("p").with_mmr(0.5).with_limit(2);
         let hits = search(store.connection(), "config", &opts).expect("search");
         assert!(hits.len() <= 2);
+    }
+
+    /// The cascade's first consumer: an identifier-shaped query stops at exact
+    /// name lookup, so the docstring/comment pass never runs.
+    #[test]
+    fn an_identifier_query_does_not_run_the_body_channel() {
+        let store = open();
+        let (hits, report) =
+            search_report(store.connection(), "parse_config", &SearchOptions::new("p"))
+                .expect("search");
+        assert_eq!(report.shape, QueryShape::Identifier);
+        assert_eq!(report.running, vec![Tier::Name]);
+        assert_eq!(report.skip_reason(Tier::Signals), Some(SkipReason::Shape));
+        // The gate, observed where it is visible: no hit carries a body rank,
+        // even though "Parse the config file" would match "config".
+        assert!(
+            hits.iter().all(|h| h.channels.body.is_none()),
+            "identifier query ran the body channel: {hits:?}"
+        );
+    }
+
+    /// The other half of the gate: a broad question still pays for both passes.
+    #[test]
+    fn a_broad_query_runs_the_body_channel() {
+        let store = open();
+        let (hits, report) = search_report(
+            store.connection(),
+            "config widget render draw",
+            &SearchOptions::new("p"),
+        )
+        .expect("search");
+        assert_eq!(report.shape, QueryShape::Broad);
+        assert!(report.running.contains(&Tier::Signals), "{report:?}");
+        let widget = hits
+            .iter()
+            .find(|h| h.name == "render_widget")
+            .expect("widget");
+        assert!(
+            widget.channels.body.is_some(),
+            "broad query skipped the body channel: {hits:?}"
+        );
+    }
+
+    /// `details.cascade`: the decision is reported, not implied. The ignored
+    /// tiers say why they were ignored, and `cost` is the running tiers' sum.
+    #[test]
+    fn the_report_names_the_skipped_tiers_and_their_reasons() {
+        let store = open();
+        let (_, report) =
+            search_report(store.connection(), "parse_config", &SearchOptions::new("p"))
+                .expect("search");
+        assert_eq!(
+            report.to_json(),
+            json!({
+                "shape": "identifier",
+                "running": ["name"],
+                "skipped": {"signals": "shape", "structure": "shape", "community": "shape"},
+                "cost": 1,
+            })
+        );
+    }
+
+    /// The gate is a gate on work, not on ranking: for a phrase-shaped query,
+    /// where both channels run, the plan adds no weight and no reordering, so
+    /// the order is the one the three-channel fusion already produced.
+    #[test]
+    fn the_plan_does_not_change_ranking() {
+        let store = open();
+        let (hits, report) =
+            search_report(store.connection(), "config file", &SearchOptions::new("p"))
+                .expect("search");
+        assert!(report.running.contains(&Tier::Signals), "{report:?}");
+        let names: Vec<&str> = hits.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, ["parse_config", "load_config"], "{hits:?}");
+        assert_eq!(report.cost, 401, "name + signals: {report:?}");
     }
 
     #[test]
