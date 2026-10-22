@@ -212,7 +212,43 @@ impl GraphTool {
             .and_then(serde_json::Value::as_str)
             .map_or("", str::trim)
             .to_ascii_lowercase();
-        match action.as_str() {
+        let mut result = self.dispatch_action(&action, params)?;
+        // Every answer carries the store's own state on its last line, so a
+        // stale or partial graph cannot answer as confidently as a fresh one.
+        // `index`/`reindex` skip it: the run they just performed defines the
+        // state they would report.
+        if !matches!(action.as_str(), "index" | "reindex" | "reindex_incremental") {
+            if let Some(line) = self.status_line(params) {
+                if let Some(pa_agent::types::ToolResultContent::Text(content)) =
+                    result.content.first_mut()
+                {
+                    content.text.push('\n');
+                    content.text.push_str(&line);
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    /// The `[graph: ...]` state line for the project a call targets.
+    ///
+    /// Returns `None` when the store cannot be read — a status failure must
+    /// never turn an answer into an error.
+    fn status_line(&self, params: &serde_json::Value) -> Option<String> {
+        let root = self.resolve_root(params);
+        let project = project_name(&root);
+        let line = self.with_store(|store| {
+            Ok::<_, anyhow::Error>(pa_graph::status::report(store, &project, &root).ok())
+        });
+        line.ok().flatten().map(|report| report.line())
+    }
+
+    fn dispatch_action(
+        &self,
+        action: &str,
+        params: &serde_json::Value,
+    ) -> anyhow::Result<AgentToolResult> {
+        match action {
             "index" => self.action_index(params),
             "reindex" | "reindex_incremental" => self.action_reindex(params),
             "search" => self.action_search(params),
@@ -240,6 +276,11 @@ impl GraphTool {
             .unwrap_or(false)
         {
             opts = opts.with_force(true);
+        }
+        // A skeleton depths lets an agent get a usable graph in about a second
+        // instead of two minutes, then deepen it in the background.
+        if let Some(depth) = params.get("depth").and_then(serde_json::Value::as_str) {
+            opts = opts.with_depth(pa_graph::indexer::Depth::from_str_or_default(depth));
         }
         let report = self.with_store(|store| {
             store
@@ -1072,6 +1113,11 @@ pub fn params_schema() -> serde_json::Value {
             "force": {
                 "type": "boolean",
                 "description": "Re-parse every file on action=\"index\", ignoring stored hashes."
+            },
+            "depth": {
+                "type": "string",
+                "enum": ["skeleton", "symbols", "full"],
+                "description": "How deep to build on action=\"index\". skeleton records one node per file (~1 s on this repo) and resolves nothing; symbols adds definitions; full (the default) resolves calls and imports (~2 min)."
             },
             "ref_a": {
                 "type": "string",

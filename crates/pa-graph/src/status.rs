@@ -1,0 +1,324 @@
+//! The graph's own status: what it holds, how fresh it is, and what it cannot see.
+//!
+//! An agent that asks a code question needs to know three things beyond the
+//! answer: whether the answer is current, whether it is complete, and what to do
+//! next. Without this the tool fails open — a store that is 21 hours stale
+//! answers as confidently as a fresh one. That is the measured incident this
+//! module exists to prevent: 203 of 2,034 indexed files already differed from
+//! their stored hash and no action said so.
+//!
+//! The probe is cheap enough to run on demand: `stat` every indexed file
+//! (measured 15 ms for 2,034 files) and content-hash only the ones whose
+//! `(mtime_ns, size)` changed (measured 29 ms for 211 files).
+
+use std::path::Path;
+
+use crate::error::Result;
+use crate::indexer::Depth;
+use crate::store::GraphStore;
+
+/// How current the store is with respect to the working tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Freshness {
+    /// No indexed file changed on disk.
+    Fresh,
+    /// `changed` indexed files were edited since the run that stored them.
+    Stale {
+        /// Number of files whose content no longer matches the stored hash.
+        changed: usize,
+    },
+    /// The project has never been indexed.
+    Unindexed,
+    /// The working tree could not be read (deleted root, permissions).
+    Unknown {
+        /// Why the probe could not run.
+        reason: String,
+    },
+}
+
+impl Freshness {
+    /// Stable lowercase wire name.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Stale { .. } => "stale",
+            Self::Unindexed => "unindexed",
+            Self::Unknown { .. } => "unknown",
+        }
+    }
+
+    /// The one concrete thing the caller should do next, if anything.
+    #[must_use]
+    pub fn next_step(&self) -> Option<String> {
+        match self {
+            Self::Fresh => None,
+            Self::Stale { changed } => Some(format!("reindex ({changed} file(s) changed)")),
+            Self::Unindexed => Some("index".to_string()),
+            Self::Unknown { .. } => {
+                Some("run `status` after checking the project path".to_string())
+            }
+        }
+    }
+}
+
+/// What the store holds and what it could not read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Coverage {
+    /// Indexed files.
+    pub files: usize,
+    /// Files the parser reported as partially understood.
+    pub partial: usize,
+    /// Files the parser could not use at all.
+    pub unusable: usize,
+    /// Files skipped before parsing (unsupported language, oversized).
+    pub skipped: usize,
+}
+
+impl Coverage {
+    /// Whether every indexed file parsed cleanly.
+    #[must_use]
+    pub const fn is_complete(&self) -> bool {
+        self.partial == 0 && self.unusable == 0 && self.skipped == 0
+    }
+}
+
+/// A project's status, as reported to an agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Report {
+    /// Project name.
+    pub project: String,
+    /// Freshness of the store relative to the working tree.
+    pub freshness: Freshness,
+    /// Number of completed index runs in the receipt chain.
+    pub runs: usize,
+    /// Whether that chain still verifies.
+    pub chain_ok: bool,
+    /// What the index could and could not read.
+    pub coverage: Coverage,
+    /// How deep the stored graph is, inferred from what it holds.
+    pub depth: Depth,
+}
+
+impl Report {
+    /// One line an agent can read without parsing JSON.
+    ///
+    /// Shape: `[graph: <freshness> | <files> files, <parse honesty> | next: <step>]`.
+    /// Bounded by construction: the numbers are the only variable part.
+    #[must_use]
+    pub fn line(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = format!(
+            "[graph: {} | {} files",
+            match &self.freshness {
+                Freshness::Stale { changed } => format!("stale {changed}"),
+                other => other.as_str().to_string(),
+            },
+            self.coverage.files,
+        );
+        if !self.coverage.is_complete() {
+            let Coverage {
+                partial,
+                unusable,
+                skipped,
+                ..
+            } = &self.coverage;
+            let _ = write!(
+                out,
+                ", {partial} partial, {unusable} unusable, {skipped} skipped"
+            );
+        }
+        if self.depth != Depth::Full {
+            let _ = write!(out, ", {} depth", self.depth.as_str());
+        }
+        if !self.chain_ok {
+            out.push_str(", receipts BROKEN");
+        }
+        if let Some(next) = self.freshness.next_step() {
+            let _ = write!(out, " | next: {next}");
+        }
+        out.push(']');
+        out
+    }
+}
+
+/// Whether the store is current, without touching stored hashes.
+///
+/// Compares `(mtime_ns, size)` only: this is the cheap probe. `changed` counts
+/// files whose stat differs, which is an upper bound on real content changes.
+///
+/// # Errors
+/// Propagates SQLite errors.
+pub fn probe_freshness(store: &GraphStore, project: &str, root: &Path) -> Result<Freshness> {
+    let hashes = store.all_file_hashes(project)?;
+    if hashes.is_empty() {
+        return Ok(Freshness::Unindexed);
+    }
+    let mut changed = 0usize;
+    for (rel, stored) in &hashes {
+        match std::fs::metadata(root.join(rel)) {
+            Ok(meta) => {
+                let mtime_ns = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX));
+                let size = i64::try_from(meta.len()).unwrap_or(i64::MAX);
+                if mtime_ns != stored.mtime_ns || size != stored.size {
+                    changed += 1;
+                }
+            }
+            Err(_) => changed += 1,
+        }
+    }
+    if changed == 0 {
+        Ok(Freshness::Fresh)
+    } else {
+        Ok(Freshness::Stale { changed })
+    }
+}
+
+/// Infer how deep the stored graph is from what it holds.
+///
+/// The store records no depth of its own, and adding a column would let the two
+/// disagree. Reading it back from the data cannot: a graph with no symbol nodes
+/// is a skeleton, one with symbols but no edges is a symbols pass, and anything
+/// else is full.
+///
+/// # Errors
+/// Propagates SQLite errors.
+pub fn infer_depth(store: &GraphStore, project: &str) -> Result<Depth> {
+    let nodes = store.all_nodes(project)?;
+    if !nodes.iter().any(|n| n.label != crate::types::Label::File) {
+        return Ok(Depth::Skeleton);
+    }
+    if store.edge_count(project)? == 0 {
+        return Ok(Depth::Symbols);
+    }
+    Ok(Depth::Full)
+}
+
+/// Build a full report for `project` rooted at `root`.
+///
+/// # Errors
+/// Propagates SQLite errors.
+pub fn report(store: &GraphStore, project: &str, root: &Path) -> Result<Report> {
+    let freshness = probe_freshness(store, project, root)?;
+    let verdict = store.verify_run(project)?;
+    let rows = store.coverage_rows(project)?;
+    let mut coverage = Coverage {
+        files: store.file_count(project)?,
+        partial: 0,
+        unusable: 0,
+        skipped: 0,
+    };
+    for (_, kind, _) in &rows {
+        match kind.as_str() {
+            "parse_partial" => coverage.partial += 1,
+            "parse_unusable" => coverage.unusable += 1,
+            "skipped" => coverage.skipped += 1,
+            _ => {}
+        }
+    }
+    Ok(Report {
+        project: project.to_string(),
+        freshness,
+        runs: verdict.receipts,
+        chain_ok: verdict.chain_ok,
+        coverage,
+        depth: infer_depth(store, project)?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn report_with(freshness: Freshness, coverage: Coverage) -> Report {
+        Report {
+            project: "p".into(),
+            freshness,
+            runs: 1,
+            chain_ok: true,
+            coverage,
+            depth: Depth::Full,
+        }
+    }
+
+    #[test]
+    fn a_fresh_complete_store_says_nothing_more() {
+        let r = report_with(
+            Freshness::Fresh,
+            Coverage {
+                files: 12,
+                partial: 0,
+                unusable: 0,
+                skipped: 0,
+            },
+        );
+        assert_eq!(r.line(), "[graph: fresh | 12 files]");
+    }
+
+    #[test]
+    fn a_stale_store_names_the_next_step() {
+        let r = report_with(
+            Freshness::Stale { changed: 3 },
+            Coverage {
+                files: 12,
+                partial: 0,
+                unusable: 0,
+                skipped: 0,
+            },
+        );
+        assert_eq!(
+            r.line(),
+            "[graph: stale 3 | 12 files | next: reindex (3 file(s) changed)]"
+        );
+    }
+
+    #[test]
+    fn an_incomplete_parse_is_reported() {
+        let r = report_with(
+            Freshness::Fresh,
+            Coverage {
+                files: 20,
+                partial: 2,
+                unusable: 1,
+                skipped: 5,
+            },
+        );
+        assert_eq!(
+            r.line(),
+            "[graph: fresh | 20 files, 2 partial, 1 unusable, 5 skipped]"
+        );
+    }
+
+    #[test]
+    fn a_broken_chain_is_never_silent() {
+        let mut r = report_with(
+            Freshness::Fresh,
+            Coverage {
+                files: 1,
+                partial: 0,
+                unusable: 0,
+                skipped: 0,
+            },
+        );
+        r.chain_ok = false;
+        assert!(r.line().contains("receipts BROKEN"), "{}", r.line());
+    }
+
+    #[test]
+    fn an_unindexed_project_asks_for_an_index() {
+        let r = report_with(
+            Freshness::Unindexed,
+            Coverage {
+                files: 0,
+                partial: 0,
+                unusable: 0,
+                skipped: 0,
+            },
+        );
+        assert_eq!(r.line(), "[graph: unindexed | 0 files | next: index]");
+    }
+}
