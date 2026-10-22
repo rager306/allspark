@@ -222,9 +222,10 @@ impl GraphTool {
             "changes" | "detect_changes" => self.action_changes(params),
             "status" => self.action_status(params),
             "verify" => self.action_verify(params),
+            "adr" => self.action_adr(params),
             other => anyhow::bail!(
                 "unknown graph action {other:?}: expected one of index, reindex, search, \
-                 trace, architecture, coverage, changes, status, verify"
+                 trace, architecture, coverage, changes, status, verify, adr"
             ),
         }
     }
@@ -749,6 +750,66 @@ impl GraphTool {
         })
     }
 
+    /// `adr`: record or list Architecture Decision Records.
+    ///
+    /// ADRs live in the same SQLite file as the graph, so a decision and the
+    /// code it describes cannot drift apart between files. This is the `adr`
+    /// module's first consumer; it was written in 39c66260f and never wired.
+    fn action_adr(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
+        let root = self.resolve_root(params);
+        let record = params.get("title").and_then(serde_json::Value::as_str);
+        let text = |key: &str| {
+            params
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let rows = self.with_store(|store| {
+            let adrs = pa_graph::adr::AdrStore::new(store.connection())
+                .map_err(|err| anyhow::anyhow!("adr store: {err}"))?;
+            if let Some(title) = record {
+                let mut adr = pa_graph::adr::Adr::new(
+                    title,
+                    text("context"),
+                    text("decision"),
+                    text("consequences"),
+                );
+                if let Some(status) = params.get("status").and_then(serde_json::Value::as_str) {
+                    adr = adr.with_status(pa_graph::adr::AdrStatus::from_str_or_default(status));
+                }
+                if let Some(supersedes) =
+                    params.get("supersedes").and_then(serde_json::Value::as_i64)
+                {
+                    adr = adr.superseding(supersedes);
+                }
+                adrs.record_adr(&adr)
+                    .map_err(|err| anyhow::anyhow!("record adr: {err}"))?;
+            }
+            adrs.query_adr(&pa_graph::adr::AdrQuery::new())
+                .map_err(|err| anyhow::anyhow!("query adr: {err}"))
+        })?;
+        let mut lines = vec![format!(
+            "ADRs for `{}`: {} record(s).",
+            project_name(&root),
+            rows.len()
+        )];
+        for adr in &rows {
+            lines.push(format!(
+                "- #{} [{}] {}",
+                adr.id,
+                adr.status.as_str(),
+                adr.title
+            ));
+        }
+        Ok(AgentToolResult {
+            content: vec![pa_agent::types::ToolResultContent::text(lines.join("\n"))],
+            details: serde_json::json!({ "count": rows.len() }),
+            terminate: None,
+            is_error: false,
+        })
+    }
+
     /// `verify`: check the run receipts, and the quality of the last run.
     ///
     /// The three modules this reports on — `witness` (receipts), `quality`
@@ -946,13 +1007,34 @@ pub fn params_schema() -> serde_json::Value {
                 "type": "string",
                 "enum": [
                     "index", "reindex", "search", "trace",
-                    "architecture", "coverage", "changes", "status"
+                    "architecture", "coverage", "changes", "status",
+                    "verify", "adr"
                 ],
                 "description": "The graph operation to run."
             },
             "path": {
                 "type": "string",
                 "description": "Project root to index/query, relative to the working directory (or absolute). Defaults to the working directory."
+            },
+            "title": {
+                "type": "string",
+                "description": "ADR title; when present the record is written, otherwise the list is returned."
+            },
+            "decision": {
+                "type": "string",
+                "description": "What was decided."
+            },
+            "context": {
+                "type": "string",
+                "description": "Why the decision was needed."
+            },
+            "consequences": {
+                "type": "string",
+                "description": "What follows from the decision."
+            },
+            "status": {
+                "type": "string",
+                "description": "Lifecycle status: proposed, accepted, rejected or superseded."
             },
             "query": {
                 "type": "string",
@@ -1395,6 +1477,38 @@ mod tests {
     /// model-visible `content` at a one-line stub — but providers only forward
     /// `content`, so the model never saw the architecture data. The report
     /// body must live in the content text itself.
+    /// `adr` is the `adr` module's first consumer: a decision and the code it
+    /// describes live in the same store, so they cannot drift apart.
+    #[tokio::test]
+    async fn adr_records_and_lists_decisions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let saved = run_action(
+            dir.path(),
+            "adr",
+            serde_json::json!({
+                "title": "Use one SQLite file for graph and decisions",
+                "decision": "Keep ADRs beside the graph",
+                "status": "accepted"
+            }),
+        )
+        .await
+        .expect("record");
+        let text = text_of(&saved).to_string();
+        assert!(text.contains("1 record"), "expected one record: {text}");
+        assert!(
+            text.contains("Use one SQLite file for graph and decisions"),
+            "the title must be listed: {text}"
+        );
+        assert!(text.contains("[accepted]"), "status must be shown: {text}");
+        let listed = run_action(dir.path(), "adr", serde_json::json!({}))
+            .await
+            .expect("list");
+        assert!(
+            text_of(&listed).to_string().contains("1 record"),
+            "the second call must not duplicate the record"
+        );
+    }
+
     #[tokio::test]
     async fn architecture_report_lives_in_content_not_details() {
         let dir = tempfile::tempdir().unwrap();
