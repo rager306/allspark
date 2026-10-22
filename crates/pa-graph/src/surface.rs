@@ -130,8 +130,10 @@ fn canonical_json(lang: SupportLang, module: &str, symbols: &[SurfaceSymbol]) ->
         out.push_str(&escape(&s.params));
         out.push_str("\",\"r\":\"");
         out.push_str(&escape(&s.ret));
-        // No line number: the surface is a signature set, not a layout.
-        out.push('}');
+        // No line number: the surface is a signature set, not a layout. The
+        // return-type string must be closed before the object: an unclosed
+        // `"r":"` made 82.7% of stored rows invalid JSON (1,683 of 2,034).
+        out.push_str("\"}");
     }
     out.push_str("]}");
     out
@@ -298,6 +300,28 @@ impl Config {
     }
 }
 ";
+
+    /// The canonical surface JSON must actually parse. Every previous test
+    /// compared hashes, so an unclosed string survived: 1,683 of 2,034 stored
+    /// rows were invalid JSON and nothing noticed because no reader existed yet.
+    #[test]
+    fn the_surface_json_parses() {
+        let surface = surface_of(SRC, SupportLang::Rust, "a::b");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&surface.surface_json).expect("surface JSON must parse");
+        assert_eq!(parsed["v"], 2);
+        assert_eq!(parsed["module"], "a::b");
+        let symbols = parsed["symbols"].as_array().expect("symbols array");
+        assert!(!symbols.is_empty(), "expected symbols: {parsed}");
+        for symbol in symbols {
+            for key in ["k", "n", "p", "r"] {
+                assert!(
+                    symbol.get(key).is_some_and(serde_json::Value::is_string),
+                    "symbol field {key} must be a string: {symbol}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn body_edit_leaves_surface_unchanged() {
