@@ -372,9 +372,33 @@ fn detect_changes_records_co_change_pairs() {
     );
 }
 
+/// The work-tree root git reports for `dir`, or `None` when it is not in one.
+fn git_work_tree(dir: &std::path::Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
 #[test]
 fn detect_changes_on_non_git_root_is_empty_not_error() {
     let dir = tempfile::tempdir().expect("tempdir");
+    // The fixture must not inherit a repository from its parent: `TMPDIR` may point
+    // inside the repo (the gate exports `<repo>/.tmp`), and then git answers for the
+    // tempdir and this test measures nothing. Same class as the probe test fixed in
+    // d1d019707.
+    if git_work_tree(dir.path()).is_some() {
+        eprintln!(
+            "skipping: {} is inside a git work tree (TMPDIR points into a repository)",
+            dir.path().display()
+        );
+        return;
+    }
     std::fs::write(dir.path().join("lib.rs"), "pub fn f() {}\n").expect("write");
     let mut store = GraphStore::open_in_memory().expect("open");
     store
