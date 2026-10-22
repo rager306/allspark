@@ -265,7 +265,7 @@ impl GraphStore {
         // The store dedupes insert attempts (`INSERT OR IGNORE`), so counting
         // attempts overstates the graph; report the store's actual edge count.
         report.edges = self.edge_count(&opts.project)?;
-        self.finish_run(&opts.project)?;
+        self.finish_run(&opts.project, &root)?;
 
         Ok(report)
     }
@@ -282,13 +282,21 @@ impl GraphStore {
     ///
     /// # Errors
     /// Propagates SQLite errors.
-    fn finish_run(&self, project: &str) -> Result<()> {
+    fn finish_run(&self, project: &str, root: &Path) -> Result<()> {
         self.analyze()?;
         self.touch_project(project)?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
         self.record_index_receipt(project, now)?;
+        // Record the commit this run was built at. A store behind HEAD is the
+        // drift neither a stat sweep nor `git status` can see.
+        if let Ok(head) = crate::changes::run_git(root, &["rev-parse", "HEAD"]) {
+            let head = head.trim();
+            if !head.is_empty() {
+                self.set_indexed_head(project, head)?;
+            }
+        }
         Ok(())
     }
 

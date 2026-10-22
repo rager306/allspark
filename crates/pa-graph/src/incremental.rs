@@ -310,6 +310,12 @@ impl GraphStore {
         // Stamped last, like the full index: an interrupted run must not look
         // complete.
         self.touch_project(&opts.project)?;
+        if let Ok(head) = crate::changes::run_git(&root, &["rev-parse", "HEAD"]) {
+            let head = head.trim();
+            if !head.is_empty() {
+                self.set_indexed_head(&opts.project, head)?;
+            }
+        }
         Ok(report)
     }
 

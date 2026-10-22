@@ -71,6 +71,17 @@ impl GraphStore {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        // A long-lived session (or a daemon) holds this connection for hours.
+        // WAL checkpoints on a live database are PASSIVE and never truncate, so
+        // without a size limit the -wal file only grows; this reclaims it on the
+        // next successful reset. 256 MiB is far above the healthy WAL, so normal
+        // indexing never triggers truncate/regrow churn. A TRUNCATE checkpoint
+        // here would be wrong: it can raise SIGBUS in a sibling process that has
+        // the database mmap'd.
+        conn.pragma_update(None, "journal_size_limit", 268_435_456i64)?;
+        // One writer, many readers: rusqlite's 5 s default is shorter than a real
+        // index run, so a waiter gives up on work that is already succeeding.
+        conn.busy_timeout(std::time::Duration::from_secs(10))?;
         Ok(())
     }
 
@@ -347,6 +358,39 @@ impl GraphStore {
             )
             .optional()?;
         Ok(value.filter(|v| !v.is_empty()))
+    }
+
+    /// The commit the project was last indexed at, if one was recorded.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    pub fn indexed_head(&self, project: &str) -> Result<Option<String>> {
+        let value: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT v FROM store_meta WHERE k = ?1",
+                params![format!("indexed_head:{project}")],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(value.filter(|v| !v.is_empty()))
+    }
+
+    /// Record the commit an index run was built at.
+    ///
+    /// Stored beside the receipts: a store that is behind HEAD is a fact about
+    /// the run, not about the files, and neither a stat sweep nor `git status`
+    /// can see it.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    pub fn set_indexed_head(&self, project: &str, commit: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO store_meta(k, v) VALUES (?1, ?2)
+             ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+            params![format!("indexed_head:{project}"), commit],
+        )?;
+        Ok(())
     }
 
     /// Record this index run's inputs and outcome as a hash-linked receipt.

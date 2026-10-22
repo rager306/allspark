@@ -27,6 +27,18 @@ pub enum Freshness {
         /// Number of files whose content no longer matches the stored hash.
         changed: usize,
     },
+    /// The store was built at an older commit. `commits` is how many commits
+    /// behind HEAD it is.
+    ///
+    /// This is the drift neither a stat sweep nor `git status` can see: the
+    /// working tree is clean, every changed file is committed, and the store
+    /// simply still holds the older content. Measured on this repository while
+    /// the graph was 5+ commits behind: `git status` reported 0 entries and 213
+    /// of 2,034 indexed files differed from their stored hashes.
+    BehindHead {
+        /// Number of commits between the indexed commit and HEAD.
+        commits: usize,
+    },
     /// The project has never been indexed.
     Unindexed,
     /// The working tree could not be read (deleted root, permissions).
@@ -37,12 +49,23 @@ pub enum Freshness {
 }
 
 impl Freshness {
+    /// The fragment used in the status line.
+    #[must_use]
+    pub fn line_suffix(&self) -> String {
+        match self {
+            Self::Stale { changed } => format!("stale {changed}"),
+            Self::BehindHead { commits } => format!("behind {commits}"),
+            other => other.as_str().to_string(),
+        }
+    }
+
     /// Stable lowercase wire name.
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Fresh => "fresh",
             Self::Stale { .. } => "stale",
+            Self::BehindHead { .. } => "behind",
             Self::Unindexed => "unindexed",
             Self::Unknown { .. } => "unknown",
         }
@@ -54,6 +77,7 @@ impl Freshness {
         match self {
             Self::Fresh => None,
             Self::Stale { changed } => Some(format!("reindex ({changed} file(s) changed)")),
+            Self::BehindHead { commits } => Some(format!("reindex ({commits} commit(s) behind)")),
             Self::Unindexed => Some("index".to_string()),
             Self::Unknown { .. } => {
                 Some("run `status` after checking the project path".to_string())
@@ -110,10 +134,7 @@ impl Report {
         use std::fmt::Write as _;
         let mut out = format!(
             "[graph: {} | {} files",
-            match &self.freshness {
-                Freshness::Stale { changed } => format!("stale {changed}"),
-                other => other.as_str().to_string(),
-            },
+            self.freshness.line_suffix(),
             self.coverage.files,
         );
         if !self.coverage.is_complete() {
@@ -153,6 +174,13 @@ pub fn probe_freshness(store: &GraphStore, project: &str, root: &Path) -> Result
     let hashes = store.all_file_hashes(project)?;
     if hashes.is_empty() {
         return Ok(Freshness::Unindexed);
+    }
+    // Committed drift first: it is invisible to both a stat sweep and
+    // `git status`, and it is the usual shape of a stale graph.
+    if let Some(behind) = commits_behind(store, project, root) {
+        if behind > 0 {
+            return Ok(Freshness::BehindHead { commits: behind });
+        }
     }
     let mut changed = 0usize;
     for (rel, stored) in &hashes {
@@ -198,6 +226,23 @@ pub fn infer_depth(store: &GraphStore, project: &str) -> Result<Depth> {
     Ok(Depth::Full)
 }
 
+/// How many commits HEAD is ahead of the commit the store was built at.
+///
+/// `None` when either side is unknown (not a git repo, no recorded commit, or
+/// git unavailable) — the caller then falls back to the stat sweep, never to a
+/// false "fresh".
+fn commits_behind(store: &GraphStore, project: &str, root: &Path) -> Option<usize> {
+    let indexed = store.indexed_head(project).ok().flatten()?;
+    let head = crate::changes::run_git(root, &["rev-parse", "HEAD"]).ok()?;
+    let head = head.trim();
+    if head.is_empty() || head == indexed {
+        return Some(0);
+    }
+    let range = format!("{indexed}..HEAD");
+    let count = crate::changes::run_git(root, &["rev-list", "--count", &range]).ok()?;
+    count.trim().parse().ok()
+}
+
 /// Build a full report for `project` rooted at `root`.
 ///
 /// # Errors
@@ -232,6 +277,58 @@ pub fn report(store: &GraphStore, project: &str, root: &Path) -> Result<Report> 
 
 #[cfg(test)]
 mod tests {
+    use crate::indexer::IndexOptions;
+
+    /// The drift a stat sweep and `git status` both miss: the working tree is
+    /// clean, every change is committed, and the store still holds older
+    /// content. Measured on this repository while the graph was 5+ commits
+    /// behind: `git status` reported 0 entries, 213 of 2,034 stored hashes
+    /// differed, and nothing said so.
+    #[test]
+    fn a_store_behind_head_reports_behind() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .output()
+                .expect("git")
+        };
+        if !run(&["init"]).status.success() {
+            return;
+        }
+        run(&["config", "user.email", "t@example.com"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(dir.path().join("a.rs"), "pub fn one() {}\n").expect("a.rs");
+        run(&["add", "."]);
+        run(&["commit", "-m", "one"]);
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("index");
+        let fresh = crate::status::probe_freshness(&store, "p", dir.path()).expect("probe");
+        assert_eq!(
+            fresh,
+            crate::status::Freshness::Fresh,
+            "clean tree is fresh"
+        );
+        std::fs::write(dir.path().join("a.rs"), "pub fn two() {}\n").expect("edit");
+        run(&["add", "."]);
+        run(&["commit", "-m", "two"]);
+        let behind = crate::status::probe_freshness(&store, "p", dir.path()).expect("probe");
+        assert_eq!(
+            behind,
+            crate::status::Freshness::BehindHead { commits: 1 },
+            "one commit ahead of the indexed head"
+        );
+        assert_eq!(
+            behind.line_suffix(),
+            "behind 1",
+            "the line names the axis that drifted"
+        );
+    }
+
     use super::*;
 
     fn report_with(freshness: Freshness, coverage: Coverage) -> Report {

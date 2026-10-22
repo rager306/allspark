@@ -430,7 +430,7 @@ fn write_provenance(store: &GraphStore, project: &str, report: &ChangeReport) ->
 /// and keep background index/refresh work from contending with the user's own
 /// git for lock files. A timeout bounds every invocation: `git log -p` on a
 /// large history can run for minutes, and nothing here can cancel it.
-fn git_command(root: &Path, args: &[&str]) -> std::process::Command {
+pub(crate) fn git_command(root: &Path, args: &[&str]) -> std::process::Command {
     let mut command = Command::new("git");
     command
         .arg("-C")
@@ -454,7 +454,7 @@ fn finish_git(args: &[&str], output: std::process::Output) -> Result<std::proces
 }
 
 /// Run `git -C root <args>` and return stdout as lossy UTF-8.
-fn run_git(root: &Path, args: &[&str]) -> Result<String> {
+pub(crate) fn run_git(root: &Path, args: &[&str]) -> Result<String> {
     let output = finish_git(
         args,
         git_command(root, args)
