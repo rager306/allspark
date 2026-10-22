@@ -1259,6 +1259,21 @@ impl GraphStore {
         crate::search::search(&self.conn, query, opts)
     }
 
+    /// Run a search and return what the cascade decided for it.
+    ///
+    /// The plan is a property of the query alone, so a caller that shows it is not
+    /// changing the answer — only making the decision visible.
+    ///
+    /// # Errors
+    /// As [`Self::search`].
+    pub fn search_report(
+        &self,
+        query: &str,
+        opts: &crate::search::SearchOptions,
+    ) -> Result<(Vec<crate::search::SearchHit>, crate::search::CascadeReport)> {
+        crate::search::search_report(&self.conn, query, opts)
+    }
+
     /// Trace the call graph from `opts.symbol`.
     ///
     /// # Errors

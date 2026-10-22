@@ -460,9 +460,9 @@ impl GraphTool {
         if let Some(limit) = params.get("limit").and_then(serde_json::Value::as_u64) {
             opts = opts.with_limit(limit as usize);
         }
-        let hits = self.with_store(|store| {
+        let (hits, cascade) = self.with_store(|store| {
             store
-                .search(query, &opts)
+                .search_report(query, &opts)
                 .map_err(|err| anyhow::anyhow!("search failed: {err}"))
         })?;
         let mut lines = Vec::new();
@@ -472,6 +472,27 @@ impl GraphTool {
                 report.nodes,
                 report.edges,
                 report.parsed,
+            ));
+        }
+        // The cascade decides which channels may run; say so when it pruned one, so a
+        // narrow result is attributable to the query's shape instead of looking like a
+        // miss. A plan that runs everything is the default and stays unmentioned.
+        if !cascade.skipped.is_empty() {
+            let skipped: Vec<String> = cascade
+                .skipped
+                .iter()
+                .map(|(tier, reason)| format!("{}({})", tier.as_str(), reason.as_str()))
+                .collect();
+            lines.push(format!(
+                "[cascade: {} query, ran {}; skipped {}]",
+                cascade.shape.as_str(),
+                cascade
+                    .running
+                    .iter()
+                    .map(|t| t.as_str())
+                    .collect::<Vec<_>>()
+                    .join("+"),
+                skipped.join(","),
             ));
         }
         lines.push(format!("{} hit(s) for {query:?}:", hits.len()));
@@ -504,7 +525,23 @@ impl GraphTool {
             .collect();
         Ok(AgentToolResult {
             content: vec![pa_agent::types::ToolResultContent::text(lines.join("\n"))],
-            details: serde_json::json!({ "hits": hits.len(), "results": results }),
+            details: serde_json::json!({
+                "hits": hits.len(),
+                "results": results,
+                "cascade": {
+                    "shape": cascade.shape.as_str(),
+                    "running": cascade.running.iter().map(|t| t.as_str()).collect::<Vec<_>>(),
+                    "skipped": cascade
+                        .skipped
+                        .iter()
+                        .map(|(tier, reason)| serde_json::json!({
+                            "tier": tier.as_str(),
+                            "reason": reason.as_str(),
+                        }))
+                        .collect::<Vec<_>>(),
+                    "cost": cascade.cost,
+                },
+            }),
             terminate: None,
             is_error: false,
         })
@@ -1880,6 +1917,42 @@ mod tests {
         assert!(
             text_of(&listed).to_string().contains("1 record"),
             "the second call must not duplicate the record"
+        );
+    }
+
+    /// The cascade's decision must reach the model: an identifier-shaped query
+    /// skips the signals tier, and the answer says so instead of looking narrow.
+    #[tokio::test]
+    async fn an_identifier_search_reports_the_plan_it_used() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "pub fn parse_config() {}\npub fn other() { parse_config(); }\n",
+        )
+        .expect("a.rs");
+        let result = run_action(
+            dir.path(),
+            "search",
+            serde_json::json!({"query": "parse_config"}),
+        )
+        .await
+        .expect("search");
+        let text = text_of(&result);
+        assert!(
+            text.contains("identifier query"),
+            "the line must name the shape the plan was made for: {text}"
+        );
+        assert!(
+            text.contains("signals(shape)"),
+            "the skipped tier and its reason must be named: {text}"
+        );
+        let cascade = &result.details["cascade"];
+        assert_eq!(cascade["shape"], "identifier");
+        assert_eq!(cascade["running"][0], "name");
+        assert!(
+            cascade["skipped"].as_array().is_some_and(|a| !a.is_empty()),
+            "details must carry the skip list: {}",
+            result.details
         );
     }
 
