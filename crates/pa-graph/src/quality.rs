@@ -6,7 +6,8 @@
 //! on "is this good enough?" rather than on a bare average.
 
 /// A reason a quality envelope looks degraded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DegradationFlag {
     /// The minimum sample fell below `min_acceptable`.
     LowMinimum,
@@ -92,7 +93,7 @@ impl QualityPolicy {
 }
 
 /// A summary of a quality sample set.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct QualityEnvelope {
     /// Number of samples.
     pub count: usize,

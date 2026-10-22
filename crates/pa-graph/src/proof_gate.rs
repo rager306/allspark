@@ -54,6 +54,15 @@ impl GateDecision {
     pub fn is_accept(&self) -> bool {
         matches!(self, Self::Accept)
     }
+
+    /// The rejection reason, or `None` when the decision accepts.
+    #[must_use]
+    pub const fn reason(&self) -> Option<RejectReason> {
+        match self {
+            Self::Accept => None,
+            Self::Reject(reason) => Some(*reason),
+        }
+    }
 }
 
 /// A gate that requires valid receipts and a healthy envelope.

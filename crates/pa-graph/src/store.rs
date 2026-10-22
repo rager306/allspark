@@ -7,6 +7,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::Result;
 use crate::hash::FileHash;
+use crate::proof_gate::{GateDecision, ProofGate};
+use crate::quality::{QualityEnvelope, QualityPolicy};
 use crate::schema;
 use crate::types::{Edge, EdgeType, FileChange, Label, Node};
 use crate::witness::WitnessReceipt;
@@ -436,7 +438,87 @@ impl GraphStore {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Refresh SQLite's query-planner statistics for the whole database.
+    /// Verify this project's run receipts and the quality of the last run.
+    ///
+    /// This is the `proof_gate` module's first consumer, and it closes the loop
+    /// the module set was written for: `quality` produces an envelope from the
+    /// run's own samples, `witness` supplies the hash-linked receipts, and
+    /// `ProofGate` decides. Nothing here is a self-assessment — every input is
+    /// either a stored hash or a measured number.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    pub fn verify_run(&self, project: &str) -> Result<RunVerdict> {
+        let chain_ok = self.verify_receipt_chain(project)?;
+        let receipts = self.receipt_rows(project)?;
+        let samples = self.run_quality_samples(project)?;
+        let envelope = QualityEnvelope::from_samples(&samples, &QualityPolicy::default());
+        let gate = ProofGate::new();
+        let pairs: Vec<(WitnessReceipt, String)> =
+            receipts.iter().map(|r| (r.clone(), r.hash())).collect();
+        // A broken chain outranks everything the receipts say: each receipt is
+        // checked against its *recomputed* hash, so a rewritten row would pass
+        // a self-consistent comparison. `chain_ok` re-derives the hashes from
+        // the stored fields and is the only test that can catch that.
+        let decision = if chain_ok {
+            gate.check(&pairs, Some(&envelope))
+        } else {
+            GateDecision::Reject(crate::proof_gate::RejectReason::BrokenChain)
+        };
+        Ok(RunVerdict {
+            project: project.to_string(),
+            receipts: receipts.len(),
+            chain_ok,
+            envelope,
+            decision,
+        })
+    }
+
+    /// Stored receipts for `project`, oldest first.
+    fn receipt_rows(&self, project: &str) -> Result<Vec<WitnessReceipt>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT hash, prev_hash, input_hash, at FROM index_receipts
+             WHERE project = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![project], |r| {
+            Ok((
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)? as u64,
+            ))
+        })?;
+        Ok(rows
+            .map(|row| {
+                row.map(|(prev, input_hash, at)| {
+                    WitnessReceipt::new(format!("{project}:index"), input_hash, at, prev)
+                })
+            })
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// The last run's measured quality samples: the share of files that parsed
+    /// cleanly. `1.0` is a fully parsed project, so a project whose files are
+    /// half-unreadable reports a low minimum and the gate rejects it.
+    fn run_quality_samples(&self, project: &str) -> Result<Vec<f64>> {
+        let total: i64 = self.conn.query_row(
+            "SELECT count(*) FROM file_hashes WHERE project = ?1",
+            params![project],
+            |r| r.get(0),
+        )?;
+        let clean: i64 = self.conn.query_row(
+            "SELECT count(*) FROM file_hashes h WHERE h.project = ?1 AND NOT EXISTS (
+                 SELECT 1 FROM index_coverage c
+                 WHERE c.project = h.project AND c.rel_path = h.rel_path)",
+            params![project],
+            |r| r.get(0),
+        )?;
+        if total == 0 {
+            return Ok(Vec::new());
+        }
+        Ok(vec![clean as f64 / total as f64])
+    }
+
+    /// Refresh SQLite's query-planner statistics for the whole database.    /// Refresh SQLite's query-planner statistics for the whole database.
     ///
     /// Without statistics the planner estimates from the schema alone and makes
     /// the wrong index choice on the hottest query: `trace` looked up a target
@@ -1159,5 +1241,41 @@ impl GraphStore {
     /// Propagates SQLite errors.
     pub fn cross_service(&self, project: &str) -> Result<Vec<crate::trace::CrossServiceEdge>> {
         crate::trace::cross_service(self, project)
+    }
+}
+
+/// Outcome of [`GraphStore::verify_run`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RunVerdict {
+    /// Project the verdict is about.
+    pub project: String,
+    /// Number of recorded runs in the chain.
+    pub receipts: usize,
+    /// Whether every receipt still hashes to its recorded value.
+    pub chain_ok: bool,
+    /// Quality of the last run's measured samples.
+    pub envelope: QualityEnvelope,
+    /// The gate's decision over the receipts and the envelope.
+    #[serde(serialize_with = "decision_json")]
+    pub decision: GateDecision,
+}
+
+/// Render a [`GateDecision`] as `{"accept": true}` or `{"reject": "reason"}`.
+fn decision_json<S: serde::Serializer>(
+    decision: &GateDecision,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    use serde::ser::SerializeMap as _;
+    match decision {
+        GateDecision::Accept => {
+            let mut map = serializer.serialize_map(Some(1))?;
+            map.serialize_entry("accept", &true)?;
+            map.end()
+        }
+        GateDecision::Reject(reason) => {
+            let mut map = serializer.serialize_map(Some(1))?;
+            map.serialize_entry("reject", reason.as_str())?;
+            map.end()
+        }
     }
 }

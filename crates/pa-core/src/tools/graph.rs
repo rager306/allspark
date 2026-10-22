@@ -221,9 +221,10 @@ impl GraphTool {
             "coverage" => self.action_coverage(params),
             "changes" | "detect_changes" => self.action_changes(params),
             "status" => self.action_status(params),
+            "verify" => self.action_verify(params),
             other => anyhow::bail!(
                 "unknown graph action {other:?}: expected one of index, reindex, search, \
-                 trace, architecture, coverage, changes, status"
+                 trace, architecture, coverage, changes, status, verify"
             ),
         }
     }
@@ -748,6 +749,51 @@ impl GraphTool {
         })
     }
 
+    /// `verify`: check the run receipts, and the quality of the last run.
+    ///
+    /// The three modules this reports on — `witness` (receipts), `quality`
+    /// (envelope) and `proof_gate` (decision) — were written together and had
+    /// no consumer until now. Every input is a stored hash or a measured
+    /// number, so the verdict is not a self-assessment.
+    fn action_verify(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
+        let root = self.resolve_root(params);
+        let project = project_name(&root);
+        let verdict = self.with_store(|store| {
+            store
+                .verify_run(&project)
+                .map_err(|err| anyhow::anyhow!("verify failed: {err}"))
+        })?;
+        let decision = if verdict.decision.is_accept() {
+            "accept".to_string()
+        } else {
+            verdict.decision.reason().map_or_else(
+                || "reject (unknown)".to_string(),
+                |r| format!("reject ({})", r.as_str()),
+            )
+        };
+        let flags: Vec<&str> = verdict.envelope.flags.iter().map(|f| f.as_str()).collect();
+        let flags = if flags.is_empty() {
+            "none".to_string()
+        } else {
+            flags.join(", ")
+        };
+        Ok(AgentToolResult {
+            content: vec![pa_agent::types::ToolResultContent::text(format!(
+                "Verify `{project}`: {decision} over {} run receipt(s), chain {}; \
+                 quality samples {} (min {:.2}, median {:.2}, max {:.2}), flags: {flags}.",
+                verdict.receipts,
+                if verdict.chain_ok { "intact" } else { "BROKEN" },
+                verdict.envelope.count,
+                verdict.envelope.min,
+                verdict.envelope.median,
+                verdict.envelope.max,
+            ))],
+            details: serde_json::to_value(&verdict).unwrap_or(serde_json::Value::Null),
+            terminate: None,
+            is_error: false,
+        })
+    }
+
     fn action_status(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
         let root = self.resolve_root(params);
         let project = project_name(&root);
@@ -796,7 +842,7 @@ impl AgentTool for GraphTool {
          BM25/regex/degree symbol search), trace (callers/callees from a \
          symbol), architecture (overview/structure/layers/clusters/cycles/\
          hotspots/entry_points/file_tree), coverage (index honesty report), \
-         changes (git-diff → affected symbols), status (store counts)."
+         changes (git-diff → affected symbols), status (store counts), verify (run receipts + quality of the last index run)."
     }
 
     fn parameters(&self) -> &serde_json::Value {

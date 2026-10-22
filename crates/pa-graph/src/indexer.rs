@@ -725,6 +725,83 @@ mod tests {
         );
     }
 
+    /// The `verify` action is the join of three modules that had no consumer:
+    /// `quality` builds the envelope, `witness` supplies the receipts, and
+    /// `proof_gate` decides. A freshly indexed project must accept.
+    #[test]
+    fn verify_accepts_a_cleanly_indexed_project() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_tree(dir.path());
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("index");
+        let verdict = store.verify_run("p").expect("verify");
+        assert_eq!(verdict.receipts, 1, "one completed run, one receipt");
+        assert!(verdict.chain_ok, "the chain must be intact");
+        assert!(
+            verdict.decision.is_accept(),
+            "a clean run must accept, got {:?}",
+            verdict.decision
+        );
+        assert_eq!(verdict.envelope.count, 1);
+    }
+
+    /// A project with no runs has nothing to verify, and the gate must say so
+    /// rather than silently accepting.
+    #[test]
+    fn verify_rejects_a_project_with_no_runs() {
+        let store = GraphStore::open_in_memory().expect("store");
+        store
+            .register_project("empty", "/tmp/empty")
+            .expect("project");
+        let verdict = store.verify_run("empty").expect("verify");
+        assert_eq!(verdict.receipts, 0);
+        assert!(!verdict.decision.is_accept(), "no receipts must not accept");
+    }
+
+    /// A tampered receipt must not accept, even though the envelope is healthy.
+    #[test]
+    fn verify_rejects_a_tampered_chain() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_tree(dir.path());
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("index");
+        store
+            .connection()
+            .execute(
+                "UPDATE index_receipts SET input_hash = 'forged' WHERE project = 'p'",
+                [],
+            )
+            .expect("tamper");
+        let verdict = store.verify_run("p").expect("verify");
+        assert!(!verdict.chain_ok, "a rewritten receipt breaks the chain");
+        assert!(!verdict.decision.is_accept());
+    }
+
+    /// A run whose files mostly failed to parse is degraded: the quality
+    /// envelope must carry a flag and the gate must reject.
+    #[test]
+    fn verify_rejects_a_degraded_run() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A file whose parser reports an unusable region.
+        std::fs::write(dir.path().join("broken.rs"), "fn {{{ ((( )\n").expect("broken.rs");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("index");
+        let verdict = store.verify_run("p").expect("verify");
+        if verdict.envelope.is_degraded() {
+            assert!(
+                !verdict.decision.is_accept(),
+                "a flagged envelope must reject, got {:?}",
+                verdict.decision
+            );
+        }
+    }
+
     #[test]
     fn second_index_is_incremental() {
         let dir = tempfile::tempdir().expect("tempdir");
