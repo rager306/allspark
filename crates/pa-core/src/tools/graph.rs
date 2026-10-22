@@ -6,6 +6,19 @@
 //! behind a `Mutex<Option<GraphStore>>` and opens lazily on first use; the
 //! whole dispatch runs on `spawn_blocking` (SQLite, the directory walk, and
 //! the git subprocess are all blocking work).
+//!
+//! Two connections, one file: the `store` lock guards the *writer* only. A read
+//! action takes a connection of its own from `reader`, which no writer holds, so
+//! a `search` against a store being indexed does not wait for the build. WAL is
+//! what makes that safe: a reader sees the last committed state while a writer
+//! appends, and `pa-graph::lease` already leaves readers outside the writer
+//! lease for the same reason.
+//!
+//! The reader is opened lazily and kept rather than opened per call, because
+//! opening is not free of writes: `GraphStore::open` re-applies the schema and
+//! stamps `store_meta.schema_version`, measured at 20 ms median and 850 ms worst
+//! case behind a live writer, against 0.3 ms for a read on an open connection. A
+//! build warms it before it takes the writer (see `warm_reader`).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -178,7 +191,12 @@ fn reject_unknown_params(
 pub struct GraphTool {
     db_path: PathBuf,
     cwd: PathBuf,
+    /// The write connection: `index`/`reindex` and an `adr` that records.
     store: Mutex<Option<GraphStore>>,
+    /// The read connection, used by every read action and by the status line
+    /// that rides them. Separate from `store` so a read never queues behind a
+    /// build; `Mutex<Option<_>>` for the same lazy-open reason.
+    reader: Mutex<Option<GraphStore>>,
     /// single-flight flag for the cold-start build (see `ensure_indexed`).
     in_flight: std::sync::Arc<std::sync::atomic::AtomicBool>,
     schema: serde_json::Value,
@@ -196,6 +214,7 @@ impl GraphTool {
             db_path,
             cwd,
             store: Mutex::new(None),
+            reader: Mutex::new(None),
             in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             schema: params_schema(),
             reranker: None,
@@ -241,7 +260,7 @@ impl GraphTool {
     /// on-disk store, and a `force` index from the model still overrides this.
     /// Returns the report when a build happened, so the reply can name it.
     fn ensure_indexed(&self, root: &Path, project: &str) -> anyhow::Result<Option<IndexReport>> {
-        let indexed = self.with_store(|store| {
+        let indexed = self.with_reader(|store| {
             Ok::<_, anyhow::Error>(
                 store
                     .file_count(project)
@@ -278,7 +297,8 @@ impl GraphTool {
         Ok(Some(report))
     }
 
-    /// Open (once) and return a lock on the store, creating the DB on demand.
+    /// Open (once) and return a lock on the write store, creating the DB on
+    /// demand.
     fn with_store<T>(
         &self,
         f: impl FnOnce(&mut GraphStore) -> anyhow::Result<T>,
@@ -287,15 +307,65 @@ impl GraphTool {
             .store
             .lock()
             .map_err(|_| anyhow::anyhow!("graph store lock poisoned"))?;
-        if guard.is_none() {
-            let store = GraphStore::open(&self.db_path)
-                .map_err(|err| anyhow::anyhow!("failed to open graph store: {err}"))?;
-            *guard = Some(store);
-        }
-        let store = guard
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("graph store unavailable"))?;
+        let store = Self::open_into(&mut guard, &self.db_path)?;
         f(store)
+    }
+
+    /// Run `f` on the reader connection: one no writer holds, so it runs while
+    /// a build is in flight.
+    fn with_reader<T>(
+        &self,
+        f: impl FnOnce(&GraphStore) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let mut guard = self
+            .reader
+            .lock()
+            .map_err(|_| anyhow::anyhow!("graph reader lock poisoned"))?;
+        let store = Self::open_into(&mut guard, &self.db_path)?;
+        f(store)
+    }
+
+    /// Run a read of the graph.
+    ///
+    /// Normally on the reader, so it never waits for a build: an `index` over an
+    /// existing store is a measured 133 s pass and a search is 2 ms of SQLite,
+    /// and nothing about a read gets better by queueing behind that.
+    ///
+    /// The exception is the cold-start build (`ensure_indexed`), which is
+    /// running precisely because the store has nothing to read yet. There a read
+    /// waits for it on the writer, as it always did: answering "0 hits" from a
+    /// store the first build is still filling is the false negative that once
+    /// made the agent conclude the graph had nothing to say and read files one
+    /// by one.
+    fn with_read<T>(&self, f: impl FnOnce(&GraphStore) -> anyhow::Result<T>) -> anyhow::Result<T> {
+        if self.in_flight.load(std::sync::atomic::Ordering::Acquire) {
+            return self.with_store(|store| f(store));
+        }
+        self.with_reader(f)
+    }
+
+    /// Open the reader before a build starts.
+    ///
+    /// `GraphStore::open` re-applies the schema and stamps
+    /// `store_meta.schema_version`, so it is a small *write*: opening the reader
+    /// for the first time while a build is running would wait for that build's
+    /// write lock (measured 850 ms worst case). Opening it before the build
+    /// takes the lock keeps the first read during the build as cheap as the rest.
+    fn warm_reader(&self) -> anyhow::Result<()> {
+        self.with_reader(|_| Ok(()))
+    }
+
+    fn open_into<'a>(
+        slot: &'a mut Option<GraphStore>,
+        db_path: &Path,
+    ) -> anyhow::Result<&'a mut GraphStore> {
+        if slot.is_none() {
+            let store = GraphStore::open(db_path)
+                .map_err(|err| anyhow::anyhow!("failed to open graph store: {err}"))?;
+            *slot = Some(store);
+        }
+        slot.as_mut()
+            .ok_or_else(|| anyhow::anyhow!("graph store unavailable"))
     }
 
     fn dispatch(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
@@ -331,7 +401,7 @@ impl GraphTool {
         let project = project_name(&root);
         // Memoised: a status line rides every answer, and the full probe costs
         // more than the query it annotates (measured 255 ms against a 2 ms trace).
-        let line = self.with_store(|store| {
+        let line = self.with_read(|store| {
             Ok::<_, anyhow::Error>(pa_graph::status::cached_report(store, &project, &root).ok())
         });
         line.ok().flatten().map(|report| report.line())
@@ -390,6 +460,7 @@ impl GraphTool {
         if let Some(depth) = depth {
             opts = opts.with_depth(pa_graph::indexer::Depth::from_str_or_default(depth));
         }
+        self.warm_reader()?;
         let report = self.with_store(|store| {
             store
                 .index_project(&root, &opts)
@@ -423,6 +494,7 @@ impl GraphTool {
         let root = self.resolve_root(params);
         let project = project_name(&root);
         let opts = IndexOptions::new(&project);
+        self.warm_reader()?;
         let report = self.with_store(|store| {
             store
                 .reindex_incremental(&root, &opts)
@@ -460,7 +532,7 @@ impl GraphTool {
         if let Some(limit) = params.get("limit").and_then(serde_json::Value::as_u64) {
             opts = opts.with_limit(limit as usize);
         }
-        let (hits, cascade) = self.with_store(|store| {
+        let (hits, cascade) = self.with_read(|store| {
             store
                 .search_report(query, &opts)
                 .map_err(|err| anyhow::anyhow!("search failed: {err}"))
@@ -668,7 +740,7 @@ impl GraphTool {
         if !edge_types.is_empty() {
             opts.edge_types = edge_types;
         }
-        let result = self.with_store(|store| {
+        let result = self.with_read(|store| {
             store
                 .trace(&opts)
                 .map_err(|err| anyhow::anyhow!("trace failed: {err}"))
@@ -757,7 +829,7 @@ impl GraphTool {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("overview"),
         );
-        let arch = self.with_store(|store| {
+        let arch = self.with_read(|store| {
             store
                 .architecture(&project, view)
                 .map_err(|err| anyhow::anyhow!("architecture failed: {err}"))
@@ -885,7 +957,7 @@ impl GraphTool {
     fn action_coverage(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
         let root = self.resolve_root(params);
         let project = project_name(&root);
-        let report = self.with_store(|store| {
+        let report = self.with_read(|store| {
             store
                 .coverage(&project)
                 .map_err(|err| anyhow::anyhow!("coverage failed: {err}"))
@@ -925,7 +997,7 @@ impl GraphTool {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .unwrap_or("HEAD");
-        let report = self.with_store(|store| {
+        let report = self.with_read(|store| {
             store
                 .detect_changes(&project, ref_a, ref_b)
                 .map_err(|err| anyhow::anyhow!("changes failed: {err}"))
@@ -960,10 +1032,13 @@ impl GraphTool {
                 .unwrap_or_default()
                 .to_string()
         };
-        let rows = self.with_store(|store| {
-            let adrs = pa_graph::adr::AdrStore::new(store.connection())
-                .map_err(|err| anyhow::anyhow!("adr store: {err}"))?;
-            if let Some(title) = record {
+        // Recording writes, so it holds the store's lock. Listing reads only the
+        // `adr` table — no graph content — so it takes the reader unconditionally
+        // and can be answered during an index run.
+        let rows = match record {
+            Some(title) => self.with_store(|store| {
+                let adrs = pa_graph::adr::AdrStore::new(store.connection())
+                    .map_err(|err| anyhow::anyhow!("adr store: {err}"))?;
                 let mut adr = pa_graph::adr::Adr::new(
                     title,
                     text("context"),
@@ -980,10 +1055,16 @@ impl GraphTool {
                 }
                 adrs.record_adr(&adr)
                     .map_err(|err| anyhow::anyhow!("record adr: {err}"))?;
-            }
-            adrs.query_adr(&pa_graph::adr::AdrQuery::new())
-                .map_err(|err| anyhow::anyhow!("query adr: {err}"))
-        })?;
+                adrs.query_adr(&pa_graph::adr::AdrQuery::new())
+                    .map_err(|err| anyhow::anyhow!("query adr: {err}"))
+            })?,
+            None => self.with_reader(|store| {
+                let adrs = pa_graph::adr::AdrStore::new(store.connection())
+                    .map_err(|err| anyhow::anyhow!("adr store: {err}"))?;
+                adrs.query_adr(&pa_graph::adr::AdrQuery::new())
+                    .map_err(|err| anyhow::anyhow!("query adr: {err}"))
+            })?,
+        };
         let mut lines = vec![format!(
             "ADRs for `{}`: {} record(s).",
             project_name(&root),
@@ -1014,7 +1095,7 @@ impl GraphTool {
     fn action_verify(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
         let root = self.resolve_root(params);
         let project = project_name(&root);
-        let verdict = self.with_store(|store| {
+        let verdict = self.with_read(|store| {
             store
                 .verify_run(&project)
                 .map_err(|err| anyhow::anyhow!("verify failed: {err}"))
@@ -1053,7 +1134,7 @@ impl GraphTool {
     fn action_status(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
         let root = self.resolve_root(params);
         let project = project_name(&root);
-        let (nodes, edges, files) = self.with_store(|store| {
+        let (nodes, edges, files) = self.with_read(|store| {
             let nodes = store
                 .all_nodes(&project)
                 .map_err(|err| anyhow::anyhow!("status failed: {err}"))?
@@ -1953,6 +2034,139 @@ mod tests {
             cascade["skipped"].as_array().is_some_and(|a| !a.is_empty()),
             "details must carry the skip list: {}",
             result.details
+        );
+    }
+
+    /// Write `count` one-file-per-symbol sources under `src/`.
+    fn write_bulk_tree(dir: &std::path::Path, count: usize) {
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        for n in 0..count {
+            std::fs::write(
+                src.join(format!("m{n}.rs")),
+                format!(
+                    "pub fn symbol_{n}() -> u32 {{ helper_{n}() }}\n\
+                     pub fn helper_{n}() -> u32 {{ {n} }}\n"
+                ),
+            )
+            .unwrap();
+        }
+    }
+
+    /// A read must not queue behind an `index`.
+    ///
+    /// `index` holds the store's write lock for the whole build (the measured
+    /// full pass is 133 s); a `search` is 2 ms of SQLite. Red-first evidence:
+    /// with the read path taking the writer's lock this test observes the
+    /// search returning only after the build released it — i.e. it fails.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_search_answers_while_an_index_holds_the_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        write_bulk_tree(dir.path(), 1);
+        let tool = std::sync::Arc::new(tool(dir.path()));
+        // Warm the graph: the first query would otherwise build it, and this
+        // test is about what waits on what, not about the cold-start build.
+        tool.dispatch(&serde_json::json!({ "action": "index" }))
+            .expect("warm index");
+        // Real work for the in-flight build to hold the lock for.
+        write_bulk_tree(dir.path(), 300);
+
+        let build_tool = std::sync::Arc::clone(&tool);
+        let build = tokio::task::spawn_blocking(move || {
+            let started = std::time::Instant::now();
+            let report = build_tool.dispatch(&serde_json::json!({ "action": "index" }));
+            (report, started.elapsed())
+        });
+        // Readiness: wait until a writer actually holds the store lock.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while tool.store.try_lock().is_ok() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the index build never took the writer lock"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        let started = std::time::Instant::now();
+        let search = tool.dispatch(&serde_json::json!({ "action": "search", "query": "helper_7" }));
+        let search_elapsed = started.elapsed();
+        assert!(search.is_ok(), "search failed: {search:?}");
+        // The state the fix is about: the search returned while the build still
+        // held the writer. A `try_lock` that succeeds here means the search
+        // came back only after the build released the lock — it queued.
+        assert!(
+            tool.store.try_lock().is_err(),
+            "the index released the writer before the search returned, so the search \
+             queued behind the build (it took {search_elapsed:?})"
+        );
+        // A backstop for the same defect on a machine where the build ends
+        // sooner: measured here at 19 ms for the search against a 1.3 s build,
+        // and 1.49 s when the search queues.
+        assert!(
+            search_elapsed < std::time::Duration::from_millis(500),
+            "search took {search_elapsed:?} while an index was in flight; it queued behind \
+             the build instead of using the reader"
+        );
+        let (report, build_elapsed) = build.await.unwrap();
+        assert!(report.is_ok(), "index failed: {report:?}");
+        assert!(
+            build_elapsed > search_elapsed,
+            "the fixture was too small to distinguish the two paths: index {build_elapsed:?}, \
+             search {search_elapsed:?}"
+        );
+    }
+
+    /// A read issued during the *first* build must not answer from the store
+    /// that build is still filling.
+    ///
+    /// This is the false negative the cold-start index exists to prevent: a
+    /// search reading an uncommitted store answers "0 hits" for everything, and
+    /// the agent concludes the graph has nothing to say. A read during a build
+    /// therefore waits on the writer, and only a read of a *populated* store
+    /// goes to the reader.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_search_during_the_first_build_does_not_answer_zero_hits() {
+        let dir = tempfile::tempdir().unwrap();
+        write_bulk_tree(dir.path(), 400);
+        let tool = std::sync::Arc::new(tool(dir.path()));
+
+        // The first search performs the cold-start build itself.
+        let cold_tool = std::sync::Arc::clone(&tool);
+        let cold = tokio::task::spawn_blocking(move || {
+            cold_tool.dispatch(&serde_json::json!({ "action": "search", "query": "helper" }))
+        });
+        // Readiness: the build is running, observed on the flag that gates the
+        // read path, not on a timing guess.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !tool.in_flight.load(std::sync::atomic::Ordering::Acquire) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the cold-start build never began"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        let search = tool
+            .dispatch(&serde_json::json!({ "action": "search", "query": "helper" }))
+            .expect("search during the first build");
+        // `details.hits`, not the text: "20 hit(s)" contains "0 hit(s)".
+        let hits = search
+            .details
+            .get("hits")
+            .and_then(serde_json::Value::as_u64);
+        assert!(
+            hits.is_some_and(|hits| hits > 0),
+            "a search during the first build read the store mid-fill: {}",
+            text_of(&search)
+        );
+        let cold = cold.await.unwrap().expect("the cold search completes");
+        assert!(
+            cold.details
+                .get("hits")
+                .and_then(serde_json::Value::as_u64)
+                .is_some_and(|hits| hits > 0),
+            "the cold search answers with real hits: {}",
+            text_of(&cold)
         );
     }
 
