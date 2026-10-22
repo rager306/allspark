@@ -30,6 +30,7 @@
 //! - [`strictness`] — the `ast-grep` strictness ladder.
 //! - [`changes`] — git-diff → affected symbols, with branch/co-change provenance.
 //! - [`coverage`](mod@coverage) — honest index-coverage accounting (`parse_partial` etc.).
+//! - [`deps`] — the workspace's external crate names, for naming dependency calls.
 //! - [`architecture`](mod@architecture) — overview/structure/layers/clusters/cycles/hotspots.
 //! - [`repair`] — parse-regression auto-repair, accepted only if it re-parses.
 //! - [`surface`] / [`incremental`] — surface/body hashes and depth-1 closure
@@ -105,6 +106,7 @@ pub mod coverage;
 pub mod delta;
 pub mod delta_graph;
 pub mod delta_index;
+pub mod deps;
 pub mod error;
 pub mod extract;
 pub mod filter;
@@ -193,6 +195,7 @@ pub use delta_graph::{
     NodeDelta, NodeOp, TraversalOrder, TraversalResult,
 };
 pub use delta_index::{AnnGraph, IncrementalUpdater, QualityMonitor, RepairPolicy};
+pub use deps::DependencyCrates;
 pub use error::{GraphError, Result};
 pub use extract::{CallSite, ExtractedFile, ImportDef, SymbolDef};
 pub use filter::{Condition, Filter, Op};

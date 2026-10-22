@@ -207,6 +207,10 @@ pub enum CallStrategy {
     UniqueName,
     /// Several definitions share a name suffix; the closest one was chosen.
     Suffix,
+    /// The callee is not defined in the indexed tree: it names a std or trait
+    /// method, or a call rooted at a dependency crate. The edge points at the
+    /// caller, so a reader can tell "known external" from "no idea".
+    Dependency,
 }
 
 impl CallStrategy {
@@ -218,6 +222,7 @@ impl CallStrategy {
             Self::SameModule => "same_module",
             Self::UniqueName => "unique",
             Self::Suffix => "suffix",
+            Self::Dependency => "dependency",
         }
     }
 
@@ -230,6 +235,9 @@ impl CallStrategy {
             Self::SameModule => 0.90,
             Self::UniqueName => 0.75,
             Self::Suffix => 0.55,
+            // Above `Suffix`: the name is known to be external, rather than
+            // guessed among same-name definitions.
+            Self::Dependency => 0.80,
         }
     }
 }

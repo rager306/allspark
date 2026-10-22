@@ -34,8 +34,14 @@ pub struct SymbolDef {
 pub struct CallSite {
     /// Qualified name of the enclosing function/method.
     pub caller_qn: String,
-    /// Name of the callee as written at the call site.
+    /// Name of the callee as written at the call site, truncated to its last
+    /// segment (`extcrate::do_thing()` -> `do_thing`). Resolution keys on this.
     pub callee: String,
+    /// The callee expression as written before truncation, when it is a path
+    /// (`extcrate::do_thing`). The resolver needs the root segment to tell a
+    /// dependency call from an unknown name, and truncation has already thrown
+    /// it away by the time `callee` exists. `None` for a bare name.
+    pub callee_path: Option<String>,
     /// 1-based source line.
     pub line: u32,
     /// Positional argument expressions.
@@ -185,10 +191,11 @@ fn visit(node: Node<'_>, src: &[u8], module: &str, scope: &mut Scope, out: &mut 
         }
     } else if is_call_kind(kind) {
         if let Some(caller) = scope.names.last() {
-            if let Some(callee) = callee_name(node, src) {
+            if let Some((callee, callee_path)) = callee_name(node, src) {
                 out.calls.push(CallSite {
                     caller_qn: qualified(module, &scope.names[..scope.names.len() - 1], caller),
                     callee,
+                    callee_path,
                     line: line(node.start_position().row),
                     args: call_args(node, src),
                 });
@@ -260,12 +267,22 @@ fn node_name(node: Node<'_>, src: &[u8]) -> Option<String> {
     None
 }
 
-/// Extract the callee name from a call node's `function`/callee child.
-fn callee_name(call: Node<'_>, src: &[u8]) -> Option<String> {
+/// Extract the callee's short name and, when the call is written as a path, the
+/// path expression that rooted it.
+///
+/// Both come from one read of the call node because truncation is lossy: a
+/// resolver told only `do_thing` cannot know the call was `extcrate::do_thing`,
+/// and re-parsing to recover the root would repeat extraction's cost.
+fn callee_name(call: Node<'_>, src: &[u8]) -> Option<(String, Option<String>)> {
     let func = call
         .child_by_field_name("function")
         .or_else(|| call.child_by_field_name("callee"))?;
-    Some(last_segment(&text(func, src)))
+    let expr = text(func, src);
+    // The same argument-list strip `last_segment` applies, so `f(a::b)` keeps
+    // the root of the callee rather than of an argument.
+    let head = expr.split(['(', '<']).next().unwrap_or(&expr).trim();
+    let path = (head.contains("::") || head.contains('.')).then(|| head.to_string());
+    Some((last_segment(&expr), path))
 }
 
 /// Take the last identifier-like segment of an expression text.

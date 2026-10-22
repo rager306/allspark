@@ -1414,6 +1414,7 @@ mod tests {
         let call = CallSite {
             caller_qn: "a::m::caller".to_string(),
             callee: "foo".to_string(),
+            callee_path: None,
             line: 1,
             args: Vec::new(),
         };
@@ -1437,6 +1438,7 @@ mod tests {
         let call = CallSite {
             caller_qn: "a::caller".to_string(),
             callee: "solo".to_string(),
+            callee_path: None,
             line: 1,
             args: Vec::new(),
         };
