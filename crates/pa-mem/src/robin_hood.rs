@@ -12,6 +12,18 @@
 //! Keys are hashed with the crate's [`crate::hash::th64`] rather than the
 //! standard library's randomly seeded `SipHash`, so placement is reproducible
 //! across runs — the property the sharded map and the tests both rely on.
+//!
+//! The probe counter (`dib`, distance to bucket) is two bytes per slot here,
+//! where pogocache packs it into one: a one-byte counter cannot record a
+//! cluster deeper than 255, and backward-shift deletion needs the true
+//! displacement to keep `dibs` monotone. The wider counter adds one byte per
+//! slot (its own `Vec`, parallel to the buckets): `dibs` is 5.9% of a
+//! `u64`/`u64` table's footprint, where it was 3.0%. The share holds at every
+//! size because the buckets and `dibs` both scale with the bucket count —
+//! 64 slots: 2 176 vs 2 112 bytes; 1 024: 34 816 vs 33 792; 65 536: 2 228 224
+//! vs 2 162 688. An `Option<Slot<u64, u64>>` is 32 bytes, not 24: 16 of payload
+//! plus a discriminant, `u64` having no niche to steal. See [`MAX_DIB`] for the
+//! ceiling this buys.
 
 use std::hash::{Hash, Hasher};
 
@@ -53,10 +65,19 @@ struct Slot<K, V> {
     value: V,
 }
 
-/// The deepest probe a `u8` `dib` can record. pogocache's bucket stores `dib`
-/// in one byte for the same reason; a good hash keeps clusters far below this,
-/// and a cluster that reaches it saturates instead of overflowing.
-pub const MAX_DIB: u8 = u8::MAX;
+/// The deepest probe a `u16` `dib` can record.
+///
+/// pogocache packs `dib` into one byte (the 10-byte bucket in [`crate::ptr48`]
+/// still does); here it is two, because a one-byte counter cannot describe a
+/// cluster deeper than 255 and backward-shift deletion needs the true
+/// displacement to keep `dibs` monotone along a cluster. A good hash keeps
+/// probes in the low tens, and the load-factor cap keeps them there; a cluster
+/// that somehow reaches this ceiling still saturates instead of overflowing.
+///
+/// Reaching the ceiling would take a 65 536-entry cluster, and every key in it
+/// on one home slot — at least 87 000 slots at the 75% load factor, which is an
+/// adversarial hash, not a workload.
+pub const MAX_DIB: u16 = u16::MAX;
 
 /// An open-addressed hash map with Robin Hood probing.
 ///
@@ -64,15 +85,17 @@ pub const MAX_DIB: u8 = u8::MAX;
 /// bucket count is always a power of two, so the home slot is a mask rather
 /// than a modulo.
 ///
-/// `dib` is one byte wide, exactly like pogocache's bucket field. That bounds
-/// the usable probe distance at [`MAX_DIB`]; the load-factor cap keeps real
-/// probe lengths in the low tens, and the counter saturates rather than
+/// `dib` is two bytes wide, one byte more than pogocache's bucket field, so the
+/// displacement a 512-bucket-sized cluster needs (hundreds) is recordable and
+/// backward-shift deletion keeps working. That bounds the usable probe distance
+/// at [`MAX_DIB`], which is unreachable in practice; the load-factor cap keeps
+/// real probe lengths in the low tens, and the counter saturates rather than
 /// wrapping on pathological input.
 #[derive(Debug)]
 pub struct RobinHoodMap<K, V> {
     buckets: Vec<Option<Slot<K, V>>>,
     /// `dib` per bucket, parallel to `buckets`; `0` marks an empty slot.
-    dibs: Vec<u8>,
+    dibs: Vec<u16>,
     mask: usize,
     len: usize,
 }
@@ -129,7 +152,7 @@ impl<K: Hash + Eq, V> RobinHoodMap<K, V> {
     /// one number. A well-mixed table keeps this small; the ceiling is
     /// [`MAX_DIB`].
     #[must_use]
-    pub fn max_probe(&self) -> u8 {
+    pub fn max_probe(&self) -> u16 {
         self.dibs.iter().copied().max().unwrap_or(0)
     }
 
@@ -146,7 +169,7 @@ impl<K: Hash + Eq, V> RobinHoodMap<K, V> {
         }
         let hash = hash_of(&key);
         let mut carried = Slot { hash, key, value };
-        let mut dib = 1u8;
+        let mut dib = 1u16;
         let mut i = (hash as usize) & self.mask;
         loop {
             if self.buckets[i].is_none() {
@@ -178,11 +201,11 @@ impl<K: Hash + Eq, V> RobinHoodMap<K, V> {
                 self.buckets[i] = Some(occupant);
             }
             i = (i + 1) & self.mask;
-            // `dib` is a `u8`, as in pogocache's bucket: a cluster deeper than
-            // `MAX_DIB` saturates rather than wrapping. With a real hash
-            // (crate::hash::th64) the load-factor cap keeps probes in the low
-            // tens, so this only bites on adversarially colliding keys — see
-            // the `MAX_DIB` note on the type.
+            // `dib` is a `u16`: a cluster deeper than `MAX_DIB` saturates
+            // rather than wrapping. With a real hash (crate::hash::th64) the
+            // load-factor cap keeps probes in the low tens, so this only bites
+            // on adversarially colliding keys — see the `MAX_DIB` note on the
+            // type.
             dib = dib.saturating_add(1);
         }
     }
@@ -237,7 +260,7 @@ impl<K: Hash + Eq, V> RobinHoodMap<K, V> {
     fn get_index(&self, key: &K) -> Option<usize> {
         let hash = hash_of(key);
         let mut i = (hash as usize) & self.mask;
-        let mut dib = 1u8;
+        let mut dib = 1u16;
         loop {
             let slot = self.buckets[i].as_ref()?;
             if self.dibs[i] < dib {
@@ -247,12 +270,12 @@ impl<K: Hash + Eq, V> RobinHoodMap<K, V> {
                 return Some(i);
             }
             i = (i + 1) & self.mask;
-            // Saturate exactly as `insert` does. A plain increment overflows a `u8`
-            // past `MAX_DIB`: in debug that is a panic on a *lookup*, and in release
-            // it wraps to 0, which makes `dibs[i] < dib` false for every slot and
-            // turns a miss into a full-table walk. A cluster deeper than `MAX_DIB`
-            // is only reachable with adversarially colliding keys, but a lookup must
-            // not be the thing that breaks.
+            // Saturate exactly as `insert` does. A plain increment overflows past
+            // `MAX_DIB`: in debug that is a panic on a *lookup*, and in release it
+            // wraps to 0, which makes `dibs[i] < dib` false for every slot and turns
+            // a miss into a full-table walk. A cluster deeper than `MAX_DIB` is only
+            // reachable with adversarially colliding keys, but a lookup must not be
+            // the thing that breaks.
             dib = dib.saturating_add(1);
         }
     }
@@ -315,20 +338,30 @@ impl<'a, K: Hash + Eq, V> IntoIterator for &'a RobinHoodMap<K, V> {
 
 #[cfg(test)]
 mod tests {
-    /// Deleting from a saturated cluster makes other stored keys unreachable.
+    /// Deleting from a deep cluster must not make other stored keys unreachable.
     ///
-    /// `dib` is a `u8`, so a cluster deeper than `MAX_DIB` cannot record its true
-    /// displacements: `dibs` saturates at 255. `backward_shift` then sets
-    /// `dibs[hole] = dibs[next] - 1`, which under-reports the shifted entry's
-    /// displacement, and `dibs` stops being monotone along the cluster. Once that
-    /// happens `get_index`'s early stop (`dibs[i] < dib`) fires on a slot that still
-    /// holds the key, so the key is stored and unreachable.
+    /// Regression: `dib` used to be a `u8`, so a cluster deeper than 255 could not
+    /// record its true displacements and `dibs` saturated at 255. `backward_shift`
+    /// then set `dibs[hole] = dibs[next] - 1`, under-reporting the shifted entry's
+    /// displacement, and `dibs` stopped being monotone along the cluster. Once that
+    /// happened `get_index`'s early stop (`dibs[i] < dib`) fired on a slot that
+    /// still held the key: 45 of 295 keys were stored and unreachable. `dib` is
+    /// `u16` now, so the displacement of a cluster this size fits and the shifted
+    /// `dibs` stay monotone.
     ///
     /// This is reachable through the public API alone — no unsafe, no test hooks:
     /// 300 keys sharing one home slot under `th64` at 512 buckets (58% load, so no
     /// resize), then five removals.
+    ///
+    /// The fixture must actually build a cluster deeper than the old one-byte
+    /// ceiling, or it proves nothing: peak `dib` here is 300 (with every key on a
+    /// single home slot the n-th inserted key sits n−1 steps from home, and `dib`
+    /// is 1-based, so n keys record 300 — whatever the table size), which the old
+    /// `u8` `dib` could not record. The new ceiling `MAX_DIB` is
+    /// 65 535 — a cluster that deep needs every key on one home slot of a table
+    /// with at least 87 000 slots at the 75% load factor, so the ceiling is
+    /// unreachable in practice and this fixture sits far below it.
     #[test]
-    #[ignore = "known defect: see the doc comment; fix tracked separately"]
     fn deleting_from_a_saturated_cluster_loses_keys() {
         const COLLIDING: [u64; 300] = [
             327, 1_878, 1_967, 2_143, 2_193, 2_396, 2_952, 2_954, 3_016, 3_770, 4_650, 5_808,
@@ -366,11 +399,7 @@ mod tests {
         for k in COLLIDING {
             m.insert(k, k);
         }
-        assert_eq!(
-            m.max_probe(),
-            255,
-            "the fixture must reach the saturation ceiling"
-        );
+        let peak = m.max_probe();
         for k in &COLLIDING[..5] {
             m.remove(k);
         }
@@ -385,21 +414,38 @@ mod tests {
             lost.len(),
             &lost[..lost.len().min(8)]
         );
+        // The property comes first so that a regression shows up as the message
+        // that names it; the fixture checks run after, and hold only because the
+        // property does.
+        //
+        // 300 keys on one home slot: `dib` is 1-based, so the last sits at
+        // displacement 300 (299 probe steps past home). The old one-byte `dib`
+        // saturated at 255, so this cluster is past it.
+        assert_eq!(
+            peak, 300,
+            "the fixture must build a cluster deeper than the old u8 ceiling (255)"
+        );
+        assert!(
+            peak < crate::robin_hood::MAX_DIB,
+            "the fixture must stay below the current ceiling, MAX_DIB = {}",
+            crate::robin_hood::MAX_DIB
+        );
     }
 
     /// A lookup must not overflow the probe counter on a deep cluster.
     ///
-    /// `insert` saturates `dib` at `MAX_DIB`; `get_index` used a plain `+=` on the
-    /// same `u8`. Past 255 probe steps in one cluster that overflows: a panic in
-    /// debug, and a wrap to 0 in release, where `dibs[i] < dib` then holds for no
-    /// slot and a miss degrades into a full-table walk.
+    /// Regression: `get_index` advanced `dib` with a plain `+=` while `insert`
+    /// saturated. Past the old one-byte ceiling (255) that overflowed: a panic in
+    /// debug, and a wrap to 0 in release, where `dibs[i] < dib` then held for no
+    /// slot and a miss degraded into a full-table walk. Both sides saturate now.
     ///
     /// These 300 keys share one home slot under `th64` at 512 buckets — found by
-    /// evaluating the hash over two million candidates — so they build a cluster
-    /// deeper than `MAX_DIB` without needing a different hasher. The table stays at
-    /// 512 buckets: 300 entries is below the 75% load factor.
+    /// evaluating the hash over two million candidates — so they build a
+    /// 300-deep cluster without needing a different hasher. That is past the old
+    /// one-byte ceiling and far below [`MAX_DIB`]; the table stays at 512 buckets
+    /// because 300 entries is below the 75% load factor.
     #[test]
-    fn a_lookup_survives_a_cluster_deeper_than_max_dib() {
+    fn a_lookup_survives_a_cluster_deeper_than_the_old_probe_ceiling() {
         const COLLIDING: [u64; 300] = [
             327, 1_878, 1_967, 2_143, 2_193, 2_396, 2_952, 2_954, 3_016, 3_770, 4_650, 5_808,
             5_897, 6_244, 6_484, 7_166, 7_357, 8_022, 8_368, 8_507, 8_610, 8_925, 9_451, 9_657,
@@ -443,8 +489,8 @@ mod tests {
         );
         assert_eq!(
             m.max_probe(),
-            255,
-            "the fixture must reach the saturation ceiling"
+            300,
+            "the fixture must build a cluster past the old u8 ceiling (255)"
         );
         let lost: Vec<u64> = COLLIDING
             .iter()
@@ -545,9 +591,11 @@ mod tests {
                 state.write_u8(0);
             }
         }
-        // One cluster deep enough to exercise the probe path, but short enough
-        // to stay under the u8 `dib` ceiling (`MAX_DIB`) that a single cluster
-        // cannot exceed without saturating.
+        // One cluster deep enough to exercise the probe path. 200 keys on one
+        // home slot leave the last at displacement 199, below even the old
+        // one-byte `dib` ceiling; the ceiling itself is exercised by
+        // `a_lookup_survives_a_cluster_deeper_than_the_old_probe_ceiling` and
+        // `deleting_from_a_saturated_cluster_loses_keys`.
         const N: u32 = 200;
         let mut map = RobinHoodMap::new();
         for i in 0..N {
