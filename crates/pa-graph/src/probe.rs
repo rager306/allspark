@@ -419,9 +419,24 @@ mod tests {
             .expect("git");
     }
 
+    /// A directory that is not a repository reports `NotGit`.
+    ///
+    /// The fixture must not inherit a repository from its parent: `TMPDIR` may point
+    /// inside the repo (the gate exports `<repo>/.tmp`), in which case a plain
+    /// tempdir is already inside a work tree and git answers for it. A nested
+    /// `git init` would make it a repository too. So the test skips when the
+    /// fixture is inside one, and says why rather than failing for an unrelated
+    /// reason.
     #[test]
     fn a_non_git_directory_reports_not_git() {
         let (dir, store) = fixture();
+        if crate::changes::run_git(dir.path(), &["rev-parse", "--show-toplevel"]).is_ok() {
+            eprintln!(
+                "skipping: {} is inside a git work tree (TMPDIR points into a repository)",
+                dir.path().display()
+            );
+            return;
+        }
         std::fs::write(dir.path().join("a.rs"), "pub fn a() {}").expect("a.rs");
         let p = probe(&store, "p", dir.path()).expect("probe");
         assert!(
