@@ -465,7 +465,7 @@ pub(crate) fn run_git(root: &Path, args: &[&str]) -> Result<String> {
 }
 
 /// Run `git -C root <args>` and return raw stdout bytes.
-fn run_git_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
+pub(crate) fn run_git_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let output = finish_git(
         args,
         git_command(root, args)

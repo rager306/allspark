@@ -39,6 +39,11 @@ pub enum Freshness {
         /// Number of commits between the indexed commit and HEAD.
         commits: usize,
     },
+    /// Stored paths were renamed on disk while their content stayed the same.
+    Renamed {
+        /// Number of paired renames.
+        count: usize,
+    },
     /// The project has never been indexed.
     Unindexed,
     /// The working tree could not be read (deleted root, permissions).
@@ -55,6 +60,7 @@ impl Freshness {
         match self {
             Self::Stale { changed } => format!("stale {changed}"),
             Self::BehindHead { commits } => format!("behind {commits}"),
+            Self::Renamed { count } => format!("{count} renamed"),
             other => other.as_str().to_string(),
         }
     }
@@ -66,6 +72,7 @@ impl Freshness {
             Self::Fresh => "fresh",
             Self::Stale { .. } => "stale",
             Self::BehindHead { .. } => "behind",
+            Self::Renamed { .. } => "renamed",
             Self::Unindexed => "unindexed",
             Self::Unknown { .. } => "unknown",
         }
@@ -78,6 +85,7 @@ impl Freshness {
             Self::Fresh => None,
             Self::Stale { changed } => Some(format!("reindex ({changed} file(s) changed)")),
             Self::BehindHead { commits } => Some(format!("reindex ({commits} commit(s) behind)")),
+            Self::Renamed { count } => Some(format!("reindex ({count} rename(s) to reattach)")),
             Self::Unindexed => Some("index".to_string()),
             Self::Unknown { .. } => {
                 Some("run `status` after checking the project path".to_string())
@@ -180,6 +188,20 @@ pub fn probe_freshness(store: &GraphStore, project: &str, root: &Path) -> Result
     if let Some(behind) = commits_behind(store, project, root) {
         if behind > 0 {
             return Ok(Freshness::BehindHead { commits: behind });
+        }
+    }
+    // A renamed file is stale in a way a stat count cannot express: the number is
+    // small but the answer is wrong for every caller of the old path.
+    if let Ok(probe) = crate::probe::probe(store, project, root) {
+        if let Some(renames) = probe
+            .findings
+            .iter()
+            .filter(|f| matches!(f, crate::probe::Finding::Renamed { .. }))
+            .count()
+            .checked_sub(0)
+            .filter(|n| *n > 0)
+        {
+            return Ok(Freshness::Renamed { count: renames });
         }
     }
     let mut changed = 0usize;
