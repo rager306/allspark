@@ -143,6 +143,37 @@ jobs:
           cp target/catalog-assets/models.bundled.json \
              target/catalog-assets/mcp-services.bundled.json \
              "package/${root}/libexec/"
+          # The kernel runtime and the built-in skills are NOT optional payload:
+          # the bootstrap resolves them from the executable's own directory
+          # (`package_dir()/prime-agent-runtime`, `package_dir()/skills`), so a
+          # tarball without them installs a binary with no Python kernel and no
+          # bundled skills — `--version` works, every REPL call fails. fork.009
+          # shipped exactly that way. The same curated copy as the upstream
+          # assembler (`copy_runtime_tree`, RUNTIME_EXCLUDED_*), because the
+          # pytest suite and a dev `.venv` must not ride the payload.
+          python3 - "${root}" <<'PY'
+          import shutil, sys
+          from pathlib import Path
+
+          sys.path.insert(0, "scripts/release")
+          from assemble_artifacts import RUNTIME_EXCLUDED_NAMES, RUNTIME_EXCLUDED_SUFFIXES
+
+          root = Path("package") / sys.argv[1] / "libexec"
+          dest = root / "prime-agent-runtime"
+          source = Path("prime-agent-runtime")
+          if not (source / "pyproject.toml").is_file():
+              sys.exit(f"kernel runtime sidecar not found at {source}")
+
+          def ignore(directory, names):
+              return {
+                  name for name in names
+                  if name in RUNTIME_EXCLUDED_NAMES
+                  or name.endswith(RUNTIME_EXCLUDED_SUFFIXES)
+              }
+
+          shutil.copytree(source, dest, ignore=ignore)
+          shutil.copytree(Path("skills"), root / "skills")
+          PY
           chmod 755 "package/${root}/bin/allspark" "package/${root}/libexec/prime-agent"
           tar -C package -czf "${root}.tar.gz" "${root}"
           sha256sum "${root}.tar.gz" > SHA256SUMS
@@ -160,6 +191,13 @@ jobs:
           # catalog, so assert them on the unpacked archive.
           test -f "unpack/${root}/libexec/models.bundled.json"
           test -f "unpack/${root}/libexec/mcp-services.bundled.json"
+          # A tarball without the kernel runtime installs a binary that cannot
+          # run Python at all, and without `skills` it loses every built-in
+          # skill; both are resolved from the executable's directory, so they
+          # belong beside libexec/prime-agent. fork.009 shipped without them.
+          test -f "unpack/${root}/libexec/prime-agent-runtime/pyproject.toml"
+          test -d "unpack/${root}/libexec/skills"
+          test -n "$(ls -A "unpack/${root}/libexec/skills")"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: fork-payload
