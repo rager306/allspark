@@ -1263,16 +1263,27 @@ mod tests {
     #[tokio::test]
     async fn threshold_hold_mints_before_the_compaction_and_runs_after() {
         let _guard = FAUX_TEST_LOCK.lock().await;
-        // A small output budget keeps the 20k window's combined input+output
-        // ceiling satisfiable (threshold 13_904 = window - 2_000 budget - 4_096
-        // estimate floor).
+        // The estimate counts the harness's system prompt, which varies with the
+        // installed skills inventory (measured 9k and 14k estimated tokens in
+        // this bed). Size the window so the prompt cannot decide the outcome.
+        // The threshold is 53 904 (60 000 - 2 000 output budget - 4 096 estimate
+        // floor). The crossing turn's estimate is its own usage: ~50k of history
+        // plus the prompt (measured 67 089 at a 14k prompt). The post-compaction
+        // estimate is the prompt plus summary and retained tail (measured
+        // 17 447). So the crossing is seen while the prompt exceeds ~3.9k tokens,
+        // and the compacted context falls back under the threshold while the
+        // prompt stays below ~50k: a prompt anywhere in roughly 4k-50k tokens
+        // exercises the arm. An earlier 20 000-token window put the threshold at
+        // 13 904, under the measured 17 447 post-compaction estimate, so the
+        // boundary found itself due again, compacted and minted once more, and
+        // the held turn never ran.
         let mut model_script = script(
             &json!([
                 "crossing reply",
                 "the compaction summary",
                 "continuation reply",
             ]),
-            20_000,
+            60_000,
         );
         model_script["maxTokens"] = json!(2_000);
         let bed = goal_bed_with_resumed_goal(
@@ -1411,9 +1422,10 @@ mod tests {
             .append_message(pa_types::session::AgentMessage::User(
                 pa_types::ai::UserMessage {
                     content: pa_types::ai::UserContent::Text(
-                        // A large history turn: it crosses the reserve headroom on the crossing
-                        // turn's request estimate, and the compaction summarizes it away.
-                        String::from("a resumed history turn ") + &"x".repeat(60000),
+                        // The history turn: 50k estimated tokens, just under the 53 904
+                        // threshold on its own, so only a turn whose usage includes the
+                        // system prompt crosses it. The compaction summarizes it away.
+                        String::from("a resumed history turn ") + &"x".repeat(200_000),
                     ),
                     timestamp: 1,
                     rest: serde_json::Map::default(),

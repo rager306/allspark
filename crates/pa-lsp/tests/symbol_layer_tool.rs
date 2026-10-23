@@ -180,13 +180,26 @@ fn insert_after_symbol_places_content_below() {
 /// live callers whenever the server was cold, restarting, or timed out, because
 /// an empty `references` reply looked like proof of no callers. Deletion is
 /// irreversible, so the default is to refuse and name the escape hatch.
+///
+/// The fixture must have NO language server, or the lookup really does answer:
+/// a bare `.rs` file spawns the rust-analyzer that `pa-lsp` tests install, and
+/// its `references` reply for this symbol is a truthful "none", which the tool
+/// is right to delete on. Java parses with the native tree-sitter grammar
+/// (`pa-ast`) but the server table has no `java` entry, so the lookup is
+/// unavailable on every machine and this test proves the refusal itself.
 #[test]
 fn safe_delete_refuses_when_references_cannot_be_checked() {
-    let (dir, tool) = project();
+    const JAVA: &str = "public class Foo {\n    public int bar() {\n        return 1;\n    }\n}\n";
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Foo.java"), JAVA).unwrap();
+    let tool = Arc::new(LspTool::new(
+        Arc::new(LspManager::new()),
+        dir.path().to_path_buf(),
+    ));
     let result = run(
         &tool,
         serde_json::json!({
-            "action": "safe_delete_symbol", "file": "lib.rs",
+            "action": "safe_delete_symbol", "file": "Foo.java",
             "symbol": "Foo/bar", "apply": true
         }),
     );
@@ -196,8 +209,8 @@ fn safe_delete_refuses_when_references_cannot_be_checked() {
         text.contains("force: true"),
         "the escape hatch is named: {text}"
     );
-    let after = std::fs::read_to_string(dir.path().join("lib.rs")).unwrap();
-    assert_eq!(after, RUST, "the file must be untouched: {after}");
+    let after = std::fs::read_to_string(dir.path().join("Foo.java")).unwrap();
+    assert_eq!(after, JAVA, "the file must be untouched: {after}");
 }
 
 /// `force: true` keeps the old behaviour available for a caller that has
