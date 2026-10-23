@@ -24,9 +24,10 @@ profiles and rate-limit-aware admission; `readme-fork.md` covers that.
 
 ## Where the work lives
 
-- Tags: `allspark-v<version>-fork.NNN` (zero-padded three digits); newest
-  `allspark-v0.10.1-beta.38-fork.009`. Three single-digit tags (`-fork.1`, `-fork.2`,
-  `-fork.3`) are pre-numbering artifacts of the abandoned in-binary rebrand.
+- Tags: `allspark-v<version>-fork.NNN`, zero-padded, `fork.001`..`fork.009`; newest
+  `allspark-v0.10.1-beta.38-fork.009`. Twelve `allspark*` tags exist: those nine plus
+  `-fork.1`/`-fork.2` (only on the abandoned `feat/allspark-identity` branch) and `-fork.3`
+  (on `main`, same commit as `fork.002`, no changelog entry). Take `fork.009` as the release.
 - Build stamp: `ALLSPARK_FORK_BUILD=fork.NNN cargo build --profile dist --bin prime-agent`.
 - The binary keeps the upstream name `prime-agent` **on purpose**, so upstream merges and
   TS-parity diffs stay clean. The user-facing entry is `allspark`
@@ -42,10 +43,9 @@ allspark --version
 # allspark <version> (fork build fork.NNN; upstream prime-agent <version>)
 ```
 
-An unstamped local build prints `fork build dev`. The line is in
-`crates/pa-cli/src/lib.rs`; the id is `option_env!("ALLSPARK_FORK_BUILD")`.
-Both halves are checkable: `git ls-tree -d --name-only upstream/main crates/` lists no
-`pa-ast`/`pa-graph`/... and `git tag --list 'allspark*' | sort -V | tail -1` gives fork.009.
+An unstamped build prints `fork build dev`; the line is in `crates/pa-cli/src/lib.rs`, the id
+is `option_env!("ALLSPARK_FORK_BUILD")`. Check it: `git ls-tree -d --name-only upstream/main
+crates/` lists none of the seven crates.
 
 ## Where to read more
 
