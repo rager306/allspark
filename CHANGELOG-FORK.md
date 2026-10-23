@@ -75,6 +75,11 @@ the fork-only crates stay in it.
   Measured: 1540s of 3232s was per-unit `cargo` freshness checks. Now 1519s.
   `--lib --tests --bins`, not `--all-targets`: examples and benches are
   never run, and linking them exhausted the disk.
+- `360ba7f0b` — the native `edit` tool declares a sequential execution
+  constraint. An edit is a read→stage→write cycle and the loop dispatches tools
+  in parallel by default, so two edits in one batch both staged from the same
+  version and the second write discarded the first; a per-file write queue does
+  not close it, because by then both reads have happened.
 - `9f47dc612` — two roots with the same directory name no longer share one
   graph project. The name is the root's last path component and `projects.name`
   is the primary key, so registration moved the row to the second root while the
