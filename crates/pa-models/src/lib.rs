@@ -8,6 +8,7 @@ pub mod cache;
 pub mod compat;
 pub mod fetch;
 pub mod offline;
+pub mod opencode_models;
 pub mod pinning;
 pub mod prime_inference;
 pub mod schema;

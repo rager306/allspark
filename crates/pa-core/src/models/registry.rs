@@ -631,6 +631,82 @@ impl ModelRegistry {
         built_in
     }
 
+    /// Refresh the `OpenCode` free-tier snapshot when it is due, and apply its
+    /// measured limits to the fork table.
+    ///
+    /// `opencode` serves which models exist but not what they can do, so the
+    /// capabilities come from `models.dev` while existence comes from the live
+    /// list (`pa_models::opencode_models`). The refresh is daily and conditional
+    /// (`If-None-Match`; an unchanged catalog costs one 304), and every failure is
+    /// swallowed: the hand-written table keeps deciding offline, which is the
+    /// documented contract.
+    async fn refresh_opencode_free_tier(&mut self, force: bool) {
+        let Some(models_json_path) = self.models_json_path.clone() else {
+            return;
+        };
+        let Some(models_dir) = models_json_path.parent() else {
+            return;
+        };
+        let cached = pa_models::opencode_models::read_snapshot(models_dir);
+        if !force {
+            if let Some(cached) = &cached {
+                let fresh =
+                    std::fs::metadata(pa_models::opencode_models::snapshot_path(models_dir))
+                        .and_then(|metadata| metadata.modified())
+                        .ok()
+                        .and_then(|modified| modified.elapsed().ok())
+                        .is_some_and(|age| age < pa_models::opencode_models::REFRESH_INTERVAL);
+                if fresh {
+                    self.apply_opencode_snapshot(cached);
+                    return;
+                }
+            }
+        }
+        let fetcher = pa_models::fetch::CatalogFetcher::new();
+        let known = |id: &str| {
+            pa_ai::models_fork::fork_provider_models()
+                .into_iter()
+                .find(|model| {
+                    model.provider == pa_models::opencode_models::PROVIDER && model.id == id
+                })
+                .map(|model| pa_models::opencode_models::KnownCapabilities {
+                    context_window: model.context_window,
+                    max_output: model.max_tokens,
+                })
+        };
+        // A failed refresh keeps whatever the cache held.
+        if let Ok(snapshot) =
+            pa_models::opencode_models::refresh(&fetcher, models_dir, &known, String::new()).await
+        {
+            self.apply_opencode_snapshot(&snapshot);
+        } else if let Some(cached) = cached {
+            self.apply_opencode_snapshot(&cached);
+        }
+    }
+
+    /// Apply a snapshot's measured limits to the loaded fork models.
+    ///
+    /// Only ids the live list still serves keep their entry: a model the
+    /// endpoint stopped serving would answer every request with an error, so
+    /// discovery must stop offering it. A snapshot with estimated capabilities
+    /// leaves the table's numbers alone.
+    fn apply_opencode_snapshot(&mut self, snapshot: &pa_models::opencode_models::OpenCodeSnapshot) {
+        for model in &mut self.models {
+            if model.provider != pa_models::opencode_models::PROVIDER {
+                continue;
+            }
+            let Some(live) = snapshot.models.iter().find(|live| live.id == model.id) else {
+                continue;
+            };
+            if let Some(context) = live.context_window {
+                model.context_window = context;
+            }
+            if let Some(output) = live.max_output {
+                model.max_tokens = output;
+            }
+        }
+    }
+
     /// Reload local state and refresh entitlements (live catalog + private
     /// auth). Both fetches are awaited, so the resolved catalog reflects
     /// them when the call returns.
@@ -649,8 +725,10 @@ impl ModelRegistry {
     }
 
     /// The awaited refresh body: reload, the gated-or-forced chain fetch, the
-    /// private-authorization refresh, then the auth-filtered catalog.
+    /// `OpenCode` free-tier metadata, the private-authorization refresh, then the
+    /// auth-filtered catalog.
     async fn refresh_available_models_forced(&mut self, force: bool) -> Vec<Model> {
+        self.refresh_opencode_free_tier(force).await;
         let previous_ids = self.authorized_private_ids.clone();
         let previous_team = self.authorized_team_id.clone();
         let previous_models = self.authorized_private_models.clone();
