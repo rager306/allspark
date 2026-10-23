@@ -145,7 +145,7 @@ impl GraphStore {
             .canonicalize()
             .unwrap_or_else(|_| root.as_ref().to_path_buf());
         let root_str = root.to_string_lossy().to_string();
-        self.register_project(&opts.project, &root_str)?;
+        self.register_project_at(&opts.project, &root_str)?;
 
         let stored_hashes = self.all_file_hashes(&opts.project)?;
         let stored_surfaces = self.all_file_surfaces(&opts.project)?;

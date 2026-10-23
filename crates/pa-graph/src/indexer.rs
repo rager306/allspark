@@ -209,7 +209,7 @@ impl GraphStore {
             .canonicalize()
             .unwrap_or_else(|_| root.as_ref().to_path_buf());
         let root_str = root.to_string_lossy().to_string();
-        self.register_project(&opts.project, &root_str)?;
+        self.register_project_at(&opts.project, &root_str)?;
 
         let mut report = IndexReport {
             project: opts.project.clone(),

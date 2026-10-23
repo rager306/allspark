@@ -21,6 +21,23 @@ pub enum GraphError {
     /// The requested project is not registered.
     #[error("project not registered: {0}")]
     ProjectNotFound(String),
+    /// The project name belongs to a DIFFERENT root than the one asked for.
+    ///
+    /// The store keys a project by name, and the tool derives that name from the
+    /// root's last path component, so `/work/a/repo` and `/work/b/repo` collide.
+    /// Serving the second from the first's index answers confidently about the
+    /// wrong tree, so the mismatch is refused instead — naming both roots, because
+    /// the caller has to know which one the store actually holds.
+    #[error(
+        "project {project} in this store is rooted at {stored}, not {requested}: \
+         two roots with the same directory name share one project name; \
+         index the second under its own graph.dbPath"
+    )]
+    ProjectRootMismatch {
+        project: String,
+        stored: String,
+        requested: String,
+    },
     /// No node matched the requested symbol.
     #[error("symbol not found: {0}")]
     SymbolNotFound(String),

@@ -192,6 +192,39 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Register `name` for `root`, refusing when the name already belongs to a
+    /// DIFFERENT root.
+    ///
+    /// [`Self::register_project`] overwrites the row, so a second root silently
+    /// takes over the first's project: its queries then answer from the other tree
+    /// while the first root's nodes stay behind as orphans. Callers that derived
+    /// the name from the path (every tool action does) must use this instead — a
+    /// name collision is a caller-visible conflict, not a rename.
+    ///
+    /// The comparison canonicalizes both sides, so a symlinked spelling of the
+    /// SAME tree is not a conflict.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::GraphError::ProjectRootMismatch`] when the name is rooted elsewhere.
+    pub fn register_project_at(&self, name: &str, root: &str) -> Result<()> {
+        if let Some(stored) = self.project_root(name)? {
+            let same = stored == root
+                || match (std::fs::canonicalize(&stored), std::fs::canonicalize(root)) {
+                    (Ok(stored), Ok(requested)) => stored == requested,
+                    _ => false,
+                };
+            if !same {
+                return Err(crate::GraphError::ProjectRootMismatch {
+                    project: name.to_string(),
+                    stored,
+                    requested: root.to_string(),
+                });
+            }
+        }
+        self.register_project(name, root)
+    }
+
     /// Mark a project's index as freshly written.
     ///
     /// # Errors

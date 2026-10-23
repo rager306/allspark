@@ -1053,3 +1053,58 @@ fn an_incremental_index_reports_the_store_size_not_the_work_performed() {
         inc.nodes
     );
 }
+
+/// Two roots with the same directory name must not share one project.
+///
+/// The tool derives the project name from the root's last path component, so
+/// `/a/repo` and `/b/repo` both become `repo`. Registration used to overwrite
+/// the row, after which the second root's queries answered from the first's
+/// index and the first's nodes stayed behind as orphans. The refusal names both
+/// roots, because the caller has to know which one the store actually holds.
+#[test]
+fn a_second_root_with_the_same_name_is_refused_not_adopted() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("a/repo");
+    let second = dir.path().join("b/repo");
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::create_dir_all(&second).unwrap();
+    let mut store = GraphStore::open(dir.path().join("g.db")).unwrap();
+
+    store
+        .index_project(&first, &IndexOptions::new("repo"))
+        .expect("first root indexes");
+    let refusal = store
+        .index_project(&second, &IndexOptions::new("repo"))
+        .expect_err("the second root must not adopt the first's project");
+    let text = refusal.to_string();
+    assert!(
+        text.contains("share one project name"),
+        "the refusal must say what happened: {text}"
+    );
+    assert!(
+        text.contains("a/repo") && text.contains("b/repo"),
+        "the refusal must name both roots: {text}"
+    );
+    // The first root still owns the name.
+    let stored = store.project_root("repo").unwrap().expect("registered");
+    assert!(stored.ends_with("a/repo"), "kept root: {stored}");
+}
+
+/// A symlinked spelling of the SAME tree is not a conflict.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_spelling_of_the_same_root_still_registers() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("real/repo");
+    std::fs::create_dir_all(&real).unwrap();
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(dir.path().join("real"), &link).unwrap();
+    let mut store = GraphStore::open(dir.path().join("g.db")).unwrap();
+    store
+        .index_project(&real, &IndexOptions::new("repo"))
+        .expect("real root indexes");
+    // index_project canonicalizes, so this must land on the same path.
+    store
+        .index_project(link.join("repo"), &IndexOptions::new("repo"))
+        .expect("the same tree through a symlink is not a conflict");
+}
