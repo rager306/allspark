@@ -75,7 +75,20 @@ fn autonomous_gate_pass_and_failure_drive_the_loop() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     // The gate passes only on its second run (a counter file in the cwd).
+    //
+    // A failed gate is not re-run over a workspace unchanged since the failure,
+    // and "unchanged" is a git snapshot of the session cwd. The fixture must sit
+    // where git cannot describe a work tree at all: a bare repository is refused
+    // in every environment, while a plain tempdir is not — `TMPDIR` may point
+    // inside a repository (the gate exports `<repo>/.tmp`), and that repository
+    // ignores the path, so git answers with an unchanging empty status and the
+    // gate is held instead of re-run.
     let dir = tempfile::TempDir::new().unwrap();
+    std::process::Command::new("git")
+        .args(["init", "-q", "--bare"])
+        .current_dir(dir.path())
+        .status()
+        .expect("git init");
     let gate = format!(
         "n=$(cat {0}/cnt 2>/dev/null || echo 0); echo $((n+1)) > {0}/cnt; [ $n -ge 1 ]",
         dir.path().display()

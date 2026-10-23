@@ -1062,3 +1062,43 @@ fn approving_review_while_a_turn_streams_defers_its_refinement() {
     let (has_compaction, _) = session_chain(&session_dir);
     assert!(has_compaction, "the compaction entry persisted");
 }
+
+/// The request classifiers the ignored contracts count on, pinned on real
+/// bodies.
+///
+/// Every test in this file seeds megabytes and is `#[ignore]`d, so nextest runs
+/// nothing in this binary and exits 4 — which the gate reads as a failed unit.
+/// The classifiers below are what those contracts' counts are made of (one
+/// review call, one refinement-plan call), and a mix-up between them would make
+/// the ignored assertions pass for the wrong reason, so the distinction is
+/// worth one cheap test that always runs.
+#[test]
+fn the_request_classifiers_separate_the_calls_their_contracts_count() {
+    let review = json!({ "messages": [
+        { "role": "system", "content": "the automatic /refine review gate" },
+        { "role": "user", "content": "review" },
+    ] });
+    let plan = json!({ "messages": [
+        { "role": "system", "content": "<user_refine_instructions>apply it" },
+        { "role": "user", "content": "plan" },
+    ] });
+    let summarizer = json!({ "messages": [
+        { "role": "system", "content": "the context summarization assistant" },
+    ] });
+    let turn = json!({ "messages": [{ "role": "user", "content": "build it" }] });
+    assert!(is_review_request(&review));
+    assert!(!is_refine_plan_request(&review));
+    assert!(is_refine_plan_request(&plan));
+    assert!(!is_review_request(&plan));
+    assert!(is_summarizer_request(&summarizer));
+    assert!(!is_status_line_request(&summarizer));
+    for body in [&review, &plan, &summarizer, &turn] {
+        assert!(!is_status_line_request(body), "status line: {body}");
+    }
+    assert!(
+        ![&review, &plan, &summarizer]
+            .iter()
+            .any(|body| is_summarizer_request(body) && is_review_request(body)),
+        "a summary request must never be counted as a review"
+    );
+}

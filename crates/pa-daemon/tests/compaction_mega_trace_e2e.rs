@@ -550,3 +550,39 @@ fn mega_session_threshold_compaction_phase_measurement() {
         println!("artifacts copied to {out_dir:?}");
     }
 }
+
+/// The phase-trace reader the measurement depends on, pinned on a real trace
+/// line.
+///
+/// The measurement itself seeds ~50MB and is `#[ignore]`d, so nextest runs
+/// nothing in this binary and exits 4 — which the gate reads as a failed unit.
+/// What the measurement prints comes entirely from [`read_trace`]: a line that
+/// no longer parses is silently dropped there, and the phase table would then
+/// report a compaction that "never" crossed a boundary. One cheap always-run
+/// test keeps that reader honest.
+#[test]
+fn the_phase_trace_reader_keeps_parsed_phases_and_drops_the_rest() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("compaction-trace.log");
+    std::fs::write(
+        &path,
+        concat!(
+            "compaction-trace: {\"phase\":\"threshold_start\",\"elapsedMicros\":12,",
+            "\"detail\":{\"reason\":\"threshold\"}}\n",
+            "not a trace line\n",
+            "compaction-trace: {\"phase\":\"summary_done\",\"elapsedMicros\":345}\n",
+            "compaction-trace: {\"phase\":\"missing_elapsed\"}\n",
+        ),
+    )
+    .expect("write trace");
+    let phases = read_trace(&path);
+    assert_eq!(
+        phases
+            .iter()
+            .map(|(phase, elapsed, _)| (phase.as_str(), *elapsed))
+            .collect::<Vec<_>>(),
+        vec![("threshold_start", 12u128), ("summary_done", 345u128)]
+    );
+    assert_eq!(phases[0].2["reason"], "threshold");
+    assert!(phases[1].2.is_null(), "no detail reads as a null detail");
+}

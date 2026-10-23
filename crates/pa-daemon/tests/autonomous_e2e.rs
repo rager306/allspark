@@ -187,6 +187,18 @@ fn setup(name: &str, responses: &Value) -> Harness {
         json!({ "engine": "faux", "responses": responses }).to_string(),
     )
     .expect("write faux script");
+    // A failed gate is not re-run over a workspace unchanged since the failure, and
+    // "unchanged" is a git snapshot of the session cwd. The harness must sit where git
+    // cannot describe a work tree at all: a bare repository is refused in every
+    // environment, while a plain tempdir is not — `TMPDIR` may point inside a
+    // repository (the gate exports `<repo>/.tmp`), and that repository ignores the
+    // path, so git answers with an unchanging empty status and the gate is held
+    // instead of re-run.
+    std::process::Command::new("git")
+        .args(["init", "-q", "--bare"])
+        .current_dir(dir.path())
+        .status()
+        .expect("git init");
     // The gate consults a counter file in the temp dir (absolute paths: the engine's
     // cwd is the worker process cwd). It fails the first consult and passes from the
     // second on.

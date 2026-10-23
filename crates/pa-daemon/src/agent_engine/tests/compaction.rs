@@ -7,6 +7,47 @@ use super::*;
 /// alongside the headroom (the combined input+output ceiling).
 const FAUX_REQUEST_BUDGET: u64 = 16_384;
 
+/// The context the fixture's seed turn already fills, measured on a probe
+/// engine built the same way and over the same ambient tree.
+///
+/// `TMPDIR` may point inside a repository (the gate exports `<repo>/.tmp`), and
+/// ancestor context-file discovery then adds that tree's `AGENTS.md` to the
+/// system prompt — ~7.9k tokens for this repo's. A hard-coded reserve would put
+/// the threshold below the seed context and a compaction would fire at the
+/// pre-turn check instead of at the crossing under test. Measuring the seed
+/// context on the fixture's own environment makes the crossing independent of
+/// what the ambient tree contributes.
+fn seed_context_tokens() -> u64 {
+    let (probe, _dir) = faux_engine_with_settings(
+        &serde_json::json!({ "responses": [{"text": "seed reply"}] }),
+        1,
+    );
+    let mut events: Vec<EngineEvent> = Vec::new();
+    admit(&probe, "seed".to_string(), &mut events);
+    events
+        .iter()
+        .find_map(|event| match event {
+            EngineEvent::AssistantMessage(message) => message["usage"]["totalTokens"].as_u64(),
+            _ => None,
+        })
+        .expect("the probe seed turn reports usage")
+}
+
+/// The reserve that leaves the combined-limit threshold `headroom` above the
+/// measured seed context: `128_000 - output budget - reserve` is the ceiling,
+/// so the run's crossing turn (the tool turn below) is the first thing to
+/// exceed it.
+fn reserve_above(seed: u64, headroom: u64) -> u64 {
+    let reserve = 128_000u64
+        .saturating_sub(FAUX_REQUEST_BUDGET + seed)
+        .saturating_sub(headroom);
+    assert!(
+        reserve > 4_096,
+        "the fixture needs a real reserve, not the headroom floor: seed={seed} headroom={headroom}"
+    );
+    reserve
+}
+
 /// The automatic threshold compaction at the turn boundary. The faux
 /// provider estimates usage from the serialized context, so the headroom
 /// sits halfway between a baseline turn and the baseline plus the big prompt.
@@ -1118,7 +1159,7 @@ fn threshold_crossing_inside_one_run_compacts_before_the_next_model_turn() {
                 {"text":"task finished"}
             ]
         }),
-        128_000 - FAUX_REQUEST_BUDGET - 20_000,
+        reserve_above(seed_context_tokens(), 10_000),
     );
     let mut events = Vec::new();
     admit(&engine, "seed".into(), &mut events);
@@ -1161,7 +1202,7 @@ fn failed_mid_run_compaction_resumes_without_retrying_each_tool_round() {
                 {"text":"task finished"}
             ]
         }),
-        128_000 - FAUX_REQUEST_BUDGET - 20_000,
+        reserve_above(seed_context_tokens(), 10_000),
     );
     let mut events = Vec::new();
     admit(&engine, "seed".into(), &mut events);
