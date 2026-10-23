@@ -141,10 +141,45 @@ fn keeps_ssh_remote_url_verbatim_when_unnormalizable() {
     );
 }
 
+/// A directory with no repository at or above it captures no git context.
+///
+/// A plain `tempfile::tempdir()` cannot prove this: `TMPDIR` may point inside a
+/// work tree (the gate exports `<repo>/.tmp`), and git then answers for the
+/// fixture. A bare repository is no better here, unlike the probes that ask
+/// `--show-toplevel`: `rev-parse HEAD` echoes the unborn `HEAD` and
+/// `branch --show-current` prints the default branch, both exit 0, so the
+/// capture reports them instead of `None`.
+///
+/// The unconditional case therefore stops git's upward discovery at the fixture
+/// itself: a `.git` file naming a gitdir that does not exist makes every probe
+/// fail with "not a git repository" in any environment. The plain-directory
+/// case, the shape a real caller hits, runs whenever the fixture is genuinely
+/// outside a work tree.
 #[test]
 fn returns_none_outside_a_git_repo() {
-    let dir = tempfile::tempdir().unwrap();
-    assert_eq!(capture_git_context(dir.path()), None);
+    let dangling = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dangling.path().join(".git"),
+        format!("gitdir: {}\n", dangling.path().join("absent").display()),
+    )
+    .unwrap();
+    assert_eq!(capture_git_context(dangling.path()), None);
+
+    let plain = tempfile::tempdir().unwrap();
+    let inside_a_worktree = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(plain.path())
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if inside_a_worktree {
+        eprintln!(
+            "skipping the plain-directory half: {} is inside a git work tree \
+             (TMPDIR points into a repository)",
+            plain.path().display()
+        );
+        return;
+    }
+    assert_eq!(capture_git_context(plain.path()), None);
 }
 
 #[test]
