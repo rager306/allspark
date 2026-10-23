@@ -104,6 +104,35 @@ if (( free_gb < MIN_FREE_GB )); then
   exit 2
 fi
 
+step "test binaries (one build for every unit)"
+# ONE build for the whole workspace before any unit runs. Each of the ~230 units
+# otherwise pays its own `cargo` freshness check: measured on the 2026-10-23 gate
+# run, 220 units spent 1540s in "Finished `test` profile ... in Ns" against 1692s
+# of actual test time — half the suite's wall clock was the cargo CLI re-deciding
+# there was nothing to do. `--all-targets` builds test/bin/example targets;
+# doctests stay on `cargo test` below, which builds its own.
+# `--all-targets` links EVERY test binary at once, which is more concurrent disk
+# than the per-unit scheme ever needed: measured 2026-10-23, the build filled the
+# last 13G with "rustc-LLVM ERROR: IO failure on output stream: No space left on
+# device" and the gate reported a red that was not about the code. Refuse up front
+# with a number instead of letting a compiler crash stand in for the diagnosis.
+BUILD_MIN_FREE_GB="${GATE_BUILD_MIN_FREE_GB:-25}"
+build_free_gb=$(df -BG --output=avail "$ROOT" | tail -1 | tr -dc '0-9')
+if (( build_free_gb < BUILD_MIN_FREE_GB )); then
+  echo "GATE SKIPPED: ${build_free_gb}G free, need ${BUILD_MIN_FREE_GB}G to build the test targets"
+  echo "(clean target artifacts, or set GATE_BUILD_MIN_FREE_GB to override)"
+  exit 2
+fi
+# NOT `--all-targets`: that also links every example and bench, which this gate
+# never runs (the units are lib/test/bin, enumerated below) — and the extra link
+# jobs are what exhausted the disk on 2026-10-23. `--lib --tests --bins` is exactly
+# the set the sharded run then executes.
+if ! cargo build --workspace --lib --tests --bins --locked >"$OUT/build-tests.log" 2>&1; then
+  echo "test build: FAILED (see $OUT/build-tests.log)"
+  tail -20 "$OUT/build-tests.log"
+  exit 1
+fi
+
 step "tests (sharded, $JOBS parallel, ${free_gb}G free)"
 # ci_test_shard.py enumerates exactly what `cargo test --workspace` covers;
 # we split that list across worker processes instead of shards-per-runner.
@@ -160,21 +189,19 @@ run_unit() {
     # `--color never`: nextest colourises each word, which splits "Starting 0 tests"
     # into escape-interleaved fragments, so the zero-test check below never matched
     # in the gate's own log while matching in a clean one.
+    # `--no-tests=warn` states the "every test is #[ignore]d" case directly: warn
+    # and exit 0, instead of exit 4 that has to be told apart from a failure.
     if [[ "$kind" == "lib" ]]; then
-      cargo nextest run --locked --color never -p "$pkg" --lib >"$log" 2>&1
+      cargo nextest run --locked --no-tests=warn --color never -p "$pkg" --lib >"$log" 2>&1
     else
-      cargo nextest run --locked --color never -p "$pkg" --test "$name" >"$log" 2>&1
+      cargo nextest run --locked --no-tests=warn --color never -p "$pkg" --test "$name" >"$log" 2>&1
     fi
     local status=$?
-    # nextest exits 4 when the filter ran ZERO tests, which is what a unit whose
-    # every test is `#[ignore]` reports: a networked live-smoke file that CI never
-    # runs. Counting that as a failure made `pa-core#test:jev_live_eval` and
-    # `pa-jev#test:live_subq` permanently red for a reason unrelated to the code.
-    # "No test ran" is reported, never silently green: a file that lost all its
-    # tests should be visible in the gate's output.
     if [[ $status -eq 0 ]]; then
       ok=1
     elif [[ $status -eq 4 ]] && rg -q --fixed-strings 'Starting 0 tests' "$log"; then
+      # Belt for an older nextest without `--no-tests`: an empty unit is reported,
+      # never silently green, because a file that LOST its tests must stay visible.
       echo "skip $pkg $kind $name  (every test is #[ignore]d)"
       return 0
     fi
