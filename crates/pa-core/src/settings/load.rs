@@ -67,7 +67,6 @@ const KNOWN_FIELDS: &[&str] = &[
     "jev",
     // FORK-ONLY: the model router's gate and mode (default off).
     "routing",
-
     "pythonCellTimeoutMs",
 ];
 

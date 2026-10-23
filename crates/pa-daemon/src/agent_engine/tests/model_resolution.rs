@@ -306,6 +306,69 @@ fn session_file_pinning_model(
     path
 }
 
+/// Every provider's key env vars, plus the ADC ones the provider table cannot
+/// see. `std::env::set_var` is unsafe in edition 2024, and mutating the process
+/// environment would leak into sibling tests, so the ambient vars are REMOVED for
+/// the length of this guard and restored after.
+///
+/// Why it matters here: "which provider is available" reads env keys, so on a
+/// machine with any of them exported an unrelated provider ranks ahead of a
+/// fixture's own models.json model — and a fallback assertion then fails for a
+/// reason it does not own.
+struct WithoutAmbientProviderEnv {
+    saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    /// Serialises with the crate's other env-mutating guards.
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+impl WithoutAmbientProviderEnv {
+    fn take() -> Self {
+        let mut names: Vec<&'static str> = Vec::new();
+        for provider in pa_ai::models_generated::get_providers() {
+            if let Some(vars) = pa_ai::env_api_keys::get_api_key_env_vars(provider) {
+                names.extend(vars);
+            }
+        }
+        names.extend([
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "GOOGLE_CLOUD_PROJECT",
+            "GCLOUD_PROJECT",
+            "GOOGLE_CLOUD_LOCATION",
+            "AWS_PROFILE",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_BEARER_TOKEN_BEDROCK",
+        ]);
+        names.sort_unstable();
+        names.dedup();
+        let saved = names
+            .into_iter()
+            .map(|name| (name, std::env::var_os(name)))
+            .collect();
+        let guard = WithoutAmbientProviderEnv {
+            saved,
+            _guard: crate::test_support::TELEMETRY_ENV_MUTEX
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        };
+        for (name, _) in &guard.saved {
+            std::env::remove_var(name);
+        }
+        guard
+    }
+}
+
+impl Drop for WithoutAmbientProviderEnv {
+    fn drop(&mut self) {
+        for (name, value) in &self.saved {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+}
+
 fn restore_test_engine(
     dir: &std::path::Path,
     provider: Option<&str>,
@@ -1417,6 +1480,7 @@ fn an_explicit_scope_with_no_matches_does_not_warn_about_an_excluded_default() {
         json!({"defaultProvider": "anthropic", "defaultModel": "excluded-default"}).to_string(),
     )
     .unwrap();
+    let _env = WithoutAmbientProviderEnv::take();
     let engine = restore_test_engine(dir.path(), None, None);
     *engine.startup_scope.lock().unwrap() = Some(StartupScope {
         scoped_models: Vec::new(),
