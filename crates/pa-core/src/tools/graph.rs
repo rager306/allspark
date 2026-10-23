@@ -3625,6 +3625,20 @@ mod tests {
             "a satisfied allowlist says nothing extra: {}",
             text_of(&matched)
         );
+
+        // `reindex` shares discovery and the writer lease, so it reads the same
+        // three knobs: the echo proves the values reached its run, not just the
+        // schema.
+        let reindexed = run_action(
+            dir.path(),
+            "reindex",
+            serde_json::json!({"extensions": "rs", "lease_wait": 0, "max_file_bytes": 4096}),
+        )
+        .await
+        .expect("reindex reads the same scope");
+        assert_eq!(reindexed.details["extensions"], serde_json::json!(["rs"]));
+        assert_eq!(reindexed.details["lease_wait"], 0);
+        assert_eq!(reindexed.details["max_file_bytes"], 4096);
     }
 
     /// `max_file_bytes` excludes an oversized file, and the skip is visible.
