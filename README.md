@@ -33,6 +33,25 @@ Prime Agent: A Self-Improving RLM Harness
   </a>
 </p>
 
+---
+
+## This is the allspark fork
+
+This repository is the **allspark** fork of [PrimeIntellect-ai/prime-agent](https://github.com/PrimeIntellect-ai/prime-agent).
+It is a downstream fork, not upstream: it adds seven fork-only crates — a native LSP tool, a
+SQLite code graph, an edit engine, and the parsing, diff, memory and typed-judgment layers
+under them (79,331 lines of Rust).
+
+The binary deliberately keeps the upstream name `prime-agent`; the user-facing entry is the
+`allspark` launcher (`scripts/allspark-launcher.sh`), which isolates all state under
+`$HOME/.allspark-home` and never reads `~/.prime`.
+
+**[`FORK.md`](FORK.md)** maps the fork in one page: the crates, the tag scheme, the entry
+points, and where to read next. Everything below this banner documents upstream Prime Agent,
+and all of it still applies to the fork.
+
+---
+
 Prime Agent is an open-source coding and research agent for general and long-running work. It is designed around two core abstractions:
 
 - The **[Recursive Language Model (RLM)](https://www.primeintellect.ai/blog/rlm)** treats context as variables (*prompt-as-a-variable*) and tools like recursive subagents as function calls (*programmatic tool /sub-agent calling*) inside a persistent REPL.

@@ -3,6 +3,15 @@
 Development rules for Prime Agent (Rust) on PrimeIntellect-ai/prime-agent, branch `main`.
 Every contributor (human or agent) must read this before working on this repo.
 
+## Fork map
+
+- This tree is the **allspark fork** of `PrimeIntellect-ai/prime-agent`; root `README.md` is
+  **upstream's text** and does not describe the fork — read `FORK.md` first.
+- Seven fork-only crates, all `// FORK-ONLY`, never pushed upstream: `pa-graph` 30,969 lines,
+  `pa-edit` 25,444, `pa-lsp` 9,024, `pa-ast` 5,798, `pa-mem` 5,661, `pa-jev` 1,325, `pa-diff` 1,110.
+- Docs: `FORK.md` (map) → `readme-fork.md` (deep) → `CHANGELOG-FORK.md` (releases);
+  `docs/fork-identity.md` (isolation), `.research/INDEX.md` (research).
+
 ## Repository
 
 - **Never set git identity for commits to this repo's history.** Agents must not set
