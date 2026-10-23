@@ -69,6 +69,10 @@ pub struct HttpResponse {
     /// The request's connection-error profile: body-read failures on the AWS http2 profile surface
     /// the TS bedrock transport's mid-stream texts.
     pub(crate) connection: ConnectionErrorProfile,
+    /// The head was a success, so this body is a live stream: a read failure is a
+    /// dropped stream, not an HTTP error (which is why its status must not be
+    /// reported as one). Derived from the status at construction.
+    is_streaming_body: bool,
 }
 
 impl HttpResponse {
@@ -174,6 +178,18 @@ impl HttpResponse {
                 profile: self.connection.clone(),
                 cause: error.to_string(),
             });
+        }
+        // A body that dies after the head arrived is a dropped STREAM, not an HTTP
+        // error with status 200: keeping `Some(self.status)` here made
+        // `classify_stream_failure` answer `Unknown`, so the disclosure read as a
+        // client-side decode bug. The retry behaviour is unchanged (both classes
+        // are retryable) — only the classification and the message are.
+        if self.is_streaming_body {
+            return ProviderError::StreamFailure(
+                crate::utils_inner::stream_failure::stream_body_read_failure(&format!(
+                    "the provider's body failed mid-stream: {error}"
+                )),
+            );
         }
         ProviderError::Http(ProviderHttpError {
             message: format!("Failed to read provider response body: {error}"),
@@ -343,6 +359,7 @@ pub async fn send(request: RequestOptions) -> Result<HttpResponse, ProviderError
         utf8_tail: Vec::new(),
         idle_timeout: STREAM_IDLE_TIMEOUT,
         connection: request.connection,
+        is_streaming_body: (200..300).contains(&status),
     })
 }
 
@@ -434,6 +451,85 @@ mod tests {
             text.push_str(&chunk);
         }
         assert_eq!(text, "hi 你!");
+    }
+
+    /// A body that dies after a successful head is a DROPPED STREAM, not an HTTP
+    /// error carrying status 200.
+    ///
+    /// The fixture announces more bytes than it sends and then closes, so reqwest
+    /// fails while reading the body. Before this, the failure kept `Some(200)`,
+    /// `classify_stream_failure` saw no malformed text and no 5xx, answered
+    /// `Unknown`, and the disclosure showed the raw reqwest string — which is what
+    /// made a dropped stream read like a client-side decode bug in the field
+    /// (`Retry failed after 3 attempts: Failed to read provider response body:
+    /// error decoding response body`).
+    #[tokio::test]
+    async fn a_body_that_dies_after_the_head_is_a_stream_drop_not_status_200() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0u8; 4096];
+            let mut head = String::new();
+            loop {
+                let read = socket.read(&mut buffer).await.unwrap();
+                if read == 0 {
+                    return;
+                }
+                head.push_str(&String::from_utf8_lossy(&buffer[..read]));
+                if head.contains("\r\n\r\n") {
+                    break;
+                }
+            }
+            // Promise 64 bytes, send 5, close: the body read fails.
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 64\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            socket.write_all(b"hello").await.unwrap();
+        });
+
+        let mut response = send(RequestOptions::new(
+            reqwest::Method::GET,
+            format!("http://{addr}/"),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(response.status, 200, "the head did succeed");
+
+        let error = loop {
+            match response.next_bytes().await {
+                Ok(Some(_)) => {}
+                Ok(None) => panic!("the body must fail, not end cleanly"),
+                Err(error) => break error,
+            }
+        };
+        match error {
+            ProviderError::StreamFailure(failure) => {
+                assert_eq!(
+                    failure.info.kind,
+                    crate::utils_inner::stream_failure::StreamFailureKind::StreamDrop,
+                    "a mid-stream body failure is a dropped stream"
+                );
+                assert_eq!(
+                    failure.info.provider_error_type.as_deref(),
+                    Some("stream_drop"),
+                    "the disclosure names the class, not the reqwest string"
+                );
+                assert!(
+                    failure.info.status.is_none(),
+                    "a body that died after 200 has no HTTP status to report: {:?}",
+                    failure.info.status
+                );
+                assert!(
+                    failure.message.contains("mid-stream"),
+                    "the detail says what happened: {}",
+                    failure.message
+                );
+            }
+            other => panic!("expected a stream failure, got {other:?}"),
+        }
     }
 
     /// A request that carries a live abort signal AND a timeout still times out on a stalled

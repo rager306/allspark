@@ -666,6 +666,28 @@ pub(crate) fn stream_drop_failure(open_block: OpenStreamBlock) -> StreamFailureE
 /// may simply be re-issued — with the stall disclosed as the detail.
 #[must_use]
 pub(crate) fn stream_idle_timeout_failure(idle_timeout: std::time::Duration) -> StreamFailureError {
+    let window_ms = idle_timeout.as_millis();
+    mid_stream_body_failure(&format!(
+        "no body chunk arrived within {window_ms}ms; the provider stalled mid-stream"
+    ))
+}
+
+/// A body that failed mid-stream (a decode/reset error after the head arrived).
+///
+/// Without this the failure kept the 200 status of the head, so
+/// `classify_stream_failure` found no malformed text and no 5xx and answered
+/// `Unknown`; the disclosure then showed the raw reqwest string, which reads like
+/// a client bug rather than a dropped stream. Both are the same class, so both
+/// now say `stream_drop`.
+#[must_use]
+pub(crate) fn stream_body_read_failure(detail: &str) -> StreamFailureError {
+    mid_stream_body_failure(detail)
+}
+
+/// The shared shape of every "the head arrived, the body did not finish" failure:
+/// retryable, `stream_drop`, no status (there is no HTTP status for a body that
+/// died after 200), with the cause disclosed as the message detail.
+fn mid_stream_body_failure(detail: &str) -> StreamFailureError {
     let info = StreamFailureInfo {
         kind: StreamFailureKind::StreamDrop,
         provider_error_type: Some("stream_drop".to_string()),
@@ -674,14 +696,8 @@ pub(crate) fn stream_idle_timeout_failure(idle_timeout: std::time::Duration) -> 
         retry_after_ms: None,
         raw: None,
     };
-    let window_ms = idle_timeout.as_millis();
     StreamFailureError {
-        message: stream_failure_message(
-            &info,
-            Some(&format!(
-                "no body chunk arrived within {window_ms}ms; the provider stalled mid-stream"
-            )),
-        ),
+        message: stream_failure_message(&info, Some(detail)),
         info,
     }
 }
