@@ -307,6 +307,36 @@ pub async fn capture_git_worktree_snapshot(cwd: &Path) -> Option<GitWorktreeSnap
         cwd,
     )
     .await?;
+    // An empty status only means "nothing changed" when git is looking at the
+    // files. A workspace git skips reports nothing whatever the agent writes, so
+    // its every snapshot is empty; consumed as evidence it would suppress every
+    // gate re-run and spend the retry window on gates that never re-ran. That is
+    // captured-nothing, which always re-runs. `--no-index` asks the ignore rules
+    // alone, without the tracked-file override, so a workspace nested in an
+    // ignored path is caught whether or not git tracks a file in it. Exit 0 is
+    // the only "skipped" answer: a missing git or a non-repository leaves the
+    // snapshot standing.
+    if status.is_empty() && diff.is_empty() {
+        let mut command = tokio::process::Command::new("git");
+        command
+            .args(["check-ignore", "--quiet", "--no-index", "--", "."])
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        let skipped = matches!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(SNAPSHOT_TIMEOUT_MS),
+                command.status()
+            )
+            .await,
+            Ok(Ok(status)) if status.code() == Some(0)
+        );
+        if skipped {
+            return None;
+        }
+    }
     let untracked_hash = hash_untracked_files(cwd, &status);
     Some(GitWorktreeSnapshot {
         status,
@@ -723,5 +753,65 @@ mod tests {
         );
         let digest = hash_untracked_path(&dir.path().join("untracked.txt"));
         assert!(digest.starts_with("file:"));
+    }
+
+    /// A workspace git skips reports nothing whatever is written into it, so its
+    /// snapshot is empty on every capture. Consumed as evidence it would suppress
+    /// every gate re-run over an unchanged snapshot and spend the retry window and
+    /// budget on gates that never re-ran; it is captured-nothing instead, which
+    /// always re-runs the gate.
+    #[tokio::test]
+    async fn an_ignored_workspace_has_no_snapshot_to_compare() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let run = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(dir.path())
+                    .output()
+                    .unwrap()
+                    .status
+                    .success(),
+                "git {args:?}"
+            );
+        };
+        run(&["init", "-q"]);
+        std::fs::write(dir.path().join(".gitignore"), "workspace/\n").unwrap();
+        run(&["add", ".gitignore"]);
+        run(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "-m",
+            "init",
+        ]);
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let runner = ShellGateRunner::new(&workspace);
+        std::fs::write(workspace.join("gate-marker"), "done").unwrap();
+        assert!(
+            runner.capture_snapshot().await.is_none(),
+            "an ignored workspace reports its files as absent: no snapshot to compare"
+        );
+        // A tracked file inside the ignored directory is reported by git, and the
+        // snapshot keeps working there.
+        std::fs::write(workspace.join("tracked.txt"), "one\n").unwrap();
+        run(&["add", "--force", "--", "workspace/tracked.txt"]);
+        run(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "-m",
+            "tracked",
+        ]);
+        std::fs::write(workspace.join("tracked.txt"), "two\n").unwrap();
+        let tracked = runner.capture_snapshot().await.unwrap();
+        assert!(tracked.diff.contains("+two"));
     }
 }
