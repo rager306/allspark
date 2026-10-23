@@ -270,10 +270,15 @@ pub struct GraphSettings {
     ///
     /// Unset reads as `auto`: the first `search`/`trace`/`architecture` query
     /// builds the graph on demand (see `GraphTool::ensure_indexed`) and a
-    /// background task refreshes it while the session works. `"watch"` also
-    /// keeps a filesystem watcher on the tree, so edits re-index incrementally
-    /// instead of waiting for the next query. `"off"` disables both, leaving
-    /// the explicit `index` action as the only build path.
+    /// background task refreshes it while the session works. `"off"` disables
+    /// both, leaving the explicit `index` action as the only build path.
+    ///
+    /// `"watch"` is accepted and behaves exactly like `auto`: the filesystem
+    /// watcher it names is not wired into a session (`pa-graph::fs_watcher` exists
+    /// and is exercised only by its own tests), so edits reach the graph when the
+    /// next query finds it stale, not live. Kept as an accepted value rather than
+    /// rejected so an existing `settings.json` does not start failing; see
+    /// `.research/GRAPH-VISIBILITY-BOUNDARIES.md` for what wiring it would take.
     pub auto: Option<GraphAuto>,
 }
 
@@ -284,7 +289,8 @@ pub enum GraphAuto {
     /// Build in the background at session start; refresh on query when stale.
     #[default]
     Auto,
-    /// `auto`, plus a filesystem watcher that re-indexes changed files live.
+    /// Accepted, and behaves like [`Self::Auto`] today: the watcher is not wired
+    /// into a session. See `GraphSettings::auto`.
     Watch,
     /// Never build on its own; the explicit `index` action is the only path.
     Off,

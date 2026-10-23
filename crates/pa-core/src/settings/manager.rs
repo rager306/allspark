@@ -948,8 +948,9 @@ impl SettingsManager {
     /// The graph's background build/refresh policy (`graph.auto`).
     ///
     /// Unset reads as [`GraphAuto::Auto`]: the first query builds on demand and
-    /// a background task refreshes while the session works. `watch` adds the
-    /// filesystem watcher; `off` leaves only the explicit `index` action.
+    /// a background task refreshes while the session works. `watch` is accepted and
+    /// behaves like `auto` (its filesystem watcher is not wired into a session);
+    /// `off` leaves only the explicit `index` action.
     #[must_use]
     pub fn get_graph_auto(&self) -> super::types::GraphAuto {
         self.merged
