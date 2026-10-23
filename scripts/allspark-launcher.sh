@@ -47,6 +47,15 @@ export PRIME_AGENT_SESSION_DIR="$ALLSPARK_HOME/.prime/agent/sessions"
 
 # Pin the daemon socket to the fork's own file so it cannot fight the
 # upstream daemon (which uses the product default $TMPDIR/prime-agent-<uid>).
-export PRIME_AGENT_DAEMON_SOCKET="${PRIME_AGENT_DAEMON_SOCKET:-${TMPDIR:-/tmp}/allspark-daemon.sock}"
+#
+# UNCONDITIONAL, never `${VAR:-default}`: an upstream session exports
+# PRIME_AGENT_DAEMON_SOCKET to its workers, so an inherited value would point
+# the fork's daemon at the upstream one's socket. Measured 2026-10-23: launching
+# the fork from inside an upstream session passed
+# /tmp/prime-agent-rust-0/daemon.sock straight through, and the next
+# `allspark update` stopped the upstream daemon (both supervisors received
+# `installer-shutdown` 3.4s apart). ALLSPARK_DAEMON_SOCKET is the explicit
+# override for a fork that really wants a different file.
+export PRIME_AGENT_DAEMON_SOCKET="${ALLSPARK_DAEMON_SOCKET:-${TMPDIR:-/tmp}/allspark-daemon.sock}"
 
 exec "$PAYLOAD" "$@"
