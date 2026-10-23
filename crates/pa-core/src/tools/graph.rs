@@ -29,8 +29,8 @@ use crate::jev::graph_rerank::{GraphReranker, RerankCandidate, VERIFIED_MARKER};
 use pa_agent::abort::AbortSignal;
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
 use pa_graph::{
-    ArchitectureView, Direction, EdgeType, GraphStore, IndexOptions, IndexReport, SearchOptions,
-    TraceOptions, TreeNode,
+    ArchitectureView, Direction, EdgeType, GraphStore, IndexOptions, IndexReport, Label,
+    SearchOptions, TraceOptions, TreeNode,
 };
 
 /// Project name a store rooted at `root` indexes under (its final path
@@ -94,6 +94,88 @@ fn parse_edge_types(raw: Option<&str>) -> Vec<EdgeType> {
         .collect()
 }
 
+/// The `label` vocabulary `search` accepts, as `(request spelling, node label)`.
+///
+/// Lowercase and explicit rather than `Label::from_str_or_default`, which maps
+/// anything unknown to `Function`: a typo would silently search functions
+/// instead of failing, the same class of bug as a misspelt parameter.
+const SEARCH_LABELS: &[(&str, Label)] = &[
+    ("function", Label::Function),
+    ("method", Label::Method),
+    ("class", Label::Class),
+    ("struct", Label::Struct),
+    ("enum", Label::Enum),
+    ("interface", Label::Interface),
+    ("module", Label::Module),
+    ("file", Label::File),
+    ("folder", Label::Folder),
+    ("branch", Label::Branch),
+];
+
+/// Read `mmr` as a diversity weight, refusing anything outside `[0, 1]`.
+///
+/// The range is checked here rather than clamped, because the store clamps
+/// silently: a caller that asked for 2 would get 1 and never learn why the
+/// result stopped looking like relevance ranking. Returned as the `f64` the
+/// caller wrote, so `details.search` echoes 0.3 rather than the `f32` nearest
+/// to it.
+fn parse_mmr(raw: &serde_json::Value) -> anyhow::Result<f64> {
+    let diversity = raw
+        .as_f64()
+        .ok_or_else(|| anyhow::anyhow!("`mmr` must be a number in [0, 1], got {raw}"))?;
+    if !(0.0..=1.0).contains(&diversity) {
+        anyhow::bail!(
+            "`mmr` must be in [0, 1] (0 = no diversity reranking, 1 = maximum spread), got {diversity}"
+        );
+    }
+    Ok(diversity)
+}
+
+/// Parse `label` into node labels, naming the accepted spellings on a miss.
+fn parse_labels(raw: &str) -> anyhow::Result<(Vec<Label>, Vec<String>)> {
+    let mut labels: Vec<Label> = Vec::new();
+    for name in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        let wanted = name.to_ascii_lowercase();
+        let Some((_, label)) = SEARCH_LABELS
+            .iter()
+            .find(|(spelling, _)| *spelling == wanted)
+        else {
+            let accepted: Vec<&str> = SEARCH_LABELS
+                .iter()
+                .map(|(spelling, _)| *spelling)
+                .collect();
+            anyhow::bail!(
+                "unknown label {name:?}: accepted are {}",
+                accepted.join(", ")
+            );
+        };
+        if !labels.contains(label) {
+            labels.push(*label);
+        }
+    }
+    let names = labels
+        .iter()
+        .map(|label| label.as_str().to_string())
+        .collect();
+    Ok((labels, names))
+}
+
+/// Read `candidate_multiplier` as a pool factor of at least 1.
+fn parse_candidate_multiplier(raw: &serde_json::Value) -> anyhow::Result<usize> {
+    let multiplier = raw
+        .as_u64()
+        .filter(|multiplier| *multiplier >= 1)
+        .ok_or_else(|| {
+            anyhow::anyhow!("`candidate_multiplier` must be an integer >= 1, got {raw}")
+        })?;
+    usize::try_from(multiplier)
+        .map_err(|_| anyhow::anyhow!("`candidate_multiplier` is too large: {multiplier}"))
+}
+
 /// The parameter names each action accepts (`action` itself aside).
 ///
 /// The tool reads parameters with `.get(..)`, so without this table a
@@ -108,7 +190,19 @@ const ACCEPTED_PARAMS: &[(&str, &[&str])] = &[
     // `depth` here is the legacy spelling of `index_depth`.
     ("index", &["path", "root", "force", "index_depth", "depth"]),
     ("reindex", &["path", "root"]),
-    ("search", &["path", "root", "query", "limit"]),
+    (
+        "search",
+        &[
+            "path",
+            "root",
+            "query",
+            "limit",
+            "mmr",
+            "label",
+            "regex",
+            "candidate_multiplier",
+        ],
+    ),
     (
         "trace",
         &[
@@ -532,6 +626,61 @@ impl GraphTool {
         if let Some(limit) = params.get("limit").and_then(serde_json::Value::as_u64) {
             opts = opts.with_limit(limit as usize);
         }
+        // The store can already diversify (MMR), restrict by label and filter by
+        // regex, but nothing could ask it to: every knob was reachable only from
+        // Rust. These four read the model's request into the same builder, so a
+        // tool call can use what `SearchOptions` carries.
+        //
+        // What was asked is echoed in `details.search`, and only the keys the
+        // caller actually set are recorded: a call that sets no knob produces no
+        // `search` object at all, so its answer stays exactly what it was before
+        // these knobs existed.
+        let mut applied = serde_json::Map::new();
+        if let Some(raw) = params.get("mmr") {
+            let diversity = parse_mmr(raw)?;
+            applied.insert("mmr".to_string(), serde_json::json!(diversity));
+            // The parameter is a *diversity* weight (0 = none), while the store's
+            // lambda is a *relevance* weight (1.0 = pure relevance); the two are
+            // complements. `0` also leaves the store on its plain path instead of
+            // reranking at lambda 1.0: "no diversity reranking" must mean the same
+            // order as asking for nothing, not a re-sort that happens to ignore
+            // diversity.
+            if diversity > 0.0 {
+                // In `[0, 1]` by `parse_mmr`, so the cosine weighting is exact
+                // enough and the narrowing cast is safe.
+                #[allow(clippy::cast_possible_truncation)]
+                let lambda = (1.0 - diversity) as f32;
+                opts = opts.with_mmr(lambda);
+            }
+        }
+        if let Some(raw) = params.get("label") {
+            let raw = raw.as_str().ok_or_else(|| {
+                anyhow::anyhow!("`label` must be a comma-separated string, got {raw}")
+            })?;
+            let (labels, names) = parse_labels(raw)?;
+            if !labels.is_empty() {
+                applied.insert("labels".to_string(), serde_json::json!(names));
+                opts = opts.with_labels(labels);
+            }
+        }
+        if let Some(raw) = params.get("regex") {
+            let pattern = raw
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("`regex` must be a string pattern, got {raw}"))?
+                .trim();
+            if !pattern.is_empty() {
+                applied.insert("regex".to_string(), serde_json::json!(pattern));
+                opts = opts.with_regex(pattern);
+            }
+        }
+        if let Some(raw) = params.get("candidate_multiplier") {
+            let multiplier = parse_candidate_multiplier(raw)?;
+            applied.insert(
+                "candidate_multiplier".to_string(),
+                serde_json::json!(multiplier),
+            );
+            opts.candidate_multiplier = multiplier;
+        }
         let (hits, cascade) = self.with_read(|store| {
             store
                 .search_report(query, &opts)
@@ -595,25 +744,38 @@ impl GraphTool {
                 })
             })
             .collect();
+        // `details.search` sits between the hits and the cascade: the store's
+        // answer, then what was asked of it, then how the plan was chosen.
+        let mut details = serde_json::Map::new();
+        details.insert("hits".to_string(), serde_json::json!(hits.len()));
+        details.insert("results".to_string(), serde_json::Value::Array(results));
+        if !applied.is_empty() {
+            // A knob was set, so the echo is useful: it leads with the effective
+            // limit, which bounds every other knob, then the knobs themselves.
+            let mut echo = serde_json::Map::new();
+            echo.insert("limit".to_string(), serde_json::json!(opts.limit));
+            echo.append(&mut applied);
+            details.insert("search".to_string(), serde_json::Value::Object(echo));
+        }
+        details.insert(
+            "cascade".to_string(),
+            serde_json::json!({
+                "shape": cascade.shape.as_str(),
+                "running": cascade.running.iter().map(|t| t.as_str()).collect::<Vec<_>>(),
+                "skipped": cascade
+                    .skipped
+                    .iter()
+                    .map(|(tier, reason)| serde_json::json!({
+                        "tier": tier.as_str(),
+                        "reason": reason.as_str(),
+                    }))
+                    .collect::<Vec<_>>(),
+                "cost": cascade.cost,
+            }),
+        );
         Ok(AgentToolResult {
             content: vec![pa_agent::types::ToolResultContent::text(lines.join("\n"))],
-            details: serde_json::json!({
-                "hits": hits.len(),
-                "results": results,
-                "cascade": {
-                    "shape": cascade.shape.as_str(),
-                    "running": cascade.running.iter().map(|t| t.as_str()).collect::<Vec<_>>(),
-                    "skipped": cascade
-                        .skipped
-                        .iter()
-                        .map(|(tier, reason)| serde_json::json!({
-                            "tier": tier.as_str(),
-                            "reason": reason.as_str(),
-                        }))
-                        .collect::<Vec<_>>(),
-                    "cost": cascade.cost,
-                },
-            }),
+            details: serde_json::Value::Object(details),
             terminate: None,
             is_error: false,
         })
@@ -1355,6 +1517,25 @@ pub fn params_schema() -> serde_json::Value {
                 "type": "integer",
                 "description": "Result cap for search/trace."
             },
+            "mmr": {
+                "type": "number",
+                "minimum": 0.0,
+                "maximum": 1.0,
+                "description": "action=\"search\": diversity reranking weight in [0, 1]. 0 keeps pure relevance and 1 keeps the most spread-out set; 0.5-0.7 is the useful band when the top hits are near-duplicate names (overloaded methods, generated wrappers) and you want one representative of each instead of five spellings of the same idea. Omit to keep the store's own order."
+            },
+            "label": {
+                "type": "string",
+                "description": "action=\"search\": comma-separated node labels to restrict the result to, e.g. \"function,method\" or \"struct\". Accepted: function, method, class, struct, enum, interface, module, file, folder, branch. Use it when the answer must be a definition of one kind (\"which structs do this\") instead of any symbol whose name matches. An unknown label is an error naming the accepted ones."
+            },
+            "regex": {
+                "type": "string",
+                "description": "action=\"search\": Rust regex applied as a filter over the hit's name, qualified name and file path, e.g. \"^render_\" or \"/crates/pa-graph/\". Use it to narrow a broad query when you know the spelling or the directory; it filters the ranked candidates rather than replacing the text query. An invalid pattern is an error carrying the compiler's message and position."
+            },
+            "candidate_multiplier": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "action=\"search\": how many candidates each retrieval channel fetches per requested hit before fusion (default 4, i.e. limit x 4). Raise it when a filter, regex or mmr drops candidates after ranking and the answer comes back short; it costs recall work, not accuracy."
+            },
             "force": {
                 "type": "boolean",
                 "description": "Re-parse every file on action=\"index\", ignoring stored hashes."
@@ -1847,6 +2028,7 @@ mod tests {
             declared,
             vec![
                 "action",
+                "candidate_multiplier",
                 "consequences",
                 "context",
                 "decision",
@@ -1855,11 +2037,14 @@ mod tests {
                 "edge_types",
                 "force",
                 "index_depth",
+                "label",
                 "limit",
+                "mmr",
                 "path",
                 "query",
                 "ref_a",
                 "ref_b",
+                "regex",
                 "status",
                 "supersedes",
                 "symbol",
@@ -2037,7 +2222,441 @@ mod tests {
         );
     }
 
-    /// Write `count` one-file-per-symbol sources under `src/`.
+    /// A fixture whose answers collide: four symbols share the words "parse
+    /// config", three of them with near-identical names, plus one that only
+    /// shares the docstring words. This is what MMR exists to spread out.
+    fn write_near_duplicates(dir: &std::path::Path) {
+        std::fs::write(
+            dir.join("a.rs"),
+            "/// parse the config file\n\
+             pub fn read_settings() -> u32 { 0 }\n\
+             pub fn parse_config_file() -> u32 { 0 }\n\
+             pub fn parse_config_path() -> u32 { 0 }\n\
+             pub fn parse_config_dir() -> u32 { 0 }\n\
+             pub fn load_config() -> u32 { 0 }\n",
+        )
+        .expect("a.rs");
+    }
+
+    /// Qualified names of the hits, in the order the tool returned them.
+    fn hit_names(result: &AgentToolResult) -> Vec<String> {
+        result.details["results"]
+            .as_array()
+            .expect("results")
+            .iter()
+            .map(|row| {
+                row["qualified_name"]
+                    .as_str()
+                    .expect("qualified_name")
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// `mmr` reaches the store's diversity reranking, and its absence does not.
+    ///
+    /// Red-first: with the `mmr` read removed, every case below returns the
+    /// plain relevance order and the assertions on 0.5 and 1.0 fail. The
+    /// parameter is a *diversity* weight, the complement of the store's lambda,
+    /// so a larger value must reorder toward the distinct hit rather than away
+    /// from it.
+    #[tokio::test]
+    async fn mmr_diversifies_a_near_duplicate_result_set() {
+        let plain_dir = tempfile::tempdir().expect("tempdir");
+        write_near_duplicates(plain_dir.path());
+        let plain = run_action(
+            plain_dir.path(),
+            "search",
+            serde_json::json!({"query": "parse config file", "limit": 3}),
+        )
+        .await
+        .expect("search");
+        assert_eq!(
+            hit_names(&plain),
+            [
+                "a::parse_config_file",
+                "a::parse_config_path",
+                "a::parse_config_dir",
+            ],
+            "without mmr the three near-duplicate names lead: {}",
+            text_of(&plain)
+        );
+
+        let mid_dir = tempfile::tempdir().expect("tempdir");
+        write_near_duplicates(mid_dir.path());
+        let mid = run_action(
+            mid_dir.path(),
+            "search",
+            serde_json::json!({"query": "parse config file", "limit": 3, "mmr": 0.5}),
+        )
+        .await
+        .expect("search");
+        assert_ne!(
+            hit_names(&mid),
+            hit_names(&plain),
+            "mmr=0.5 must change the order on a near-duplicate set: {}",
+            text_of(&mid)
+        );
+        assert_eq!(mid.details["search"]["mmr"], 0.5, "the weight is echoed");
+
+        let full_dir = tempfile::tempdir().expect("tempdir");
+        write_near_duplicates(full_dir.path());
+        let full = run_action(
+            full_dir.path(),
+            "search",
+            serde_json::json!({"query": "parse config file", "limit": 3, "mmr": 1.0}),
+        )
+        .await
+        .expect("search");
+        // The most distinct hit is the one that shares only the docstring
+        // words; pure diversity must pull it into the top three.
+        assert_eq!(
+            hit_names(&full)[1],
+            "a::read_settings",
+            "mmr=1.0 must promote the distinct hit: {}",
+            text_of(&full)
+        );
+        // mmr=0 is "no reranking", not "rerank at lambda 1": the order must be
+        // the plain one, so a caller can ask for it explicitly without getting
+        // a different answer.
+        let zero_dir = tempfile::tempdir().expect("tempdir");
+        write_near_duplicates(zero_dir.path());
+        let zero = run_action(
+            zero_dir.path(),
+            "search",
+            serde_json::json!({"query": "parse config file", "limit": 3, "mmr": 0.0}),
+        )
+        .await
+        .expect("search");
+        assert_eq!(
+            hit_names(&zero),
+            hit_names(&plain),
+            "mmr=0 must mean no reranking: {}",
+            text_of(&zero)
+        );
+    }
+
+    /// An out-of-range `mmr` is refused with the range in the message.
+    ///
+    /// The store clamps instead (`hybrid::mmr_rerank` calls `.clamp(0, 1)`), so
+    /// without the check the caller would get a silently different ranking and
+    /// never learn which value actually ran.
+    #[tokio::test]
+    async fn an_out_of_range_mmr_is_refused_naming_the_range() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_near_duplicates(dir.path());
+        for value in [serde_json::json!(1.5), serde_json::json!(-0.1)] {
+            let error = run_action(
+                dir.path(),
+                "search",
+                serde_json::json!({"query": "parse config", "mmr": value}),
+            )
+            .await
+            .expect_err("an out-of-range mmr must fail the call");
+            let message = error.to_string();
+            assert!(
+                message.contains("`mmr` must be in [0, 1]"),
+                "the message must name the range: {message}"
+            );
+            assert!(
+                message.contains(&value.to_string()),
+                "the message must name the rejected value {value}: {message}"
+            );
+        }
+    }
+
+    /// `label` restricts the result to the requested node kinds.
+    ///
+    /// Red-first: with the `label` read removed, the struct and the functions
+    /// both come back and the one-hit assertion fails.
+    #[tokio::test]
+    async fn label_restricts_the_result_set() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "pub fn parse_config(path: &str) -> u32 { 0 }\n\
+             pub struct Config { pub path: String }\n\
+             pub fn config_path() -> u32 { 0 }\n",
+        )
+        .expect("a.rs");
+        let all = run_action(dir.path(), "search", serde_json::json!({"query": "config"}))
+            .await
+            .expect("search");
+        assert!(
+            hit_names(&all).len() > 1,
+            "the unfiltered query must see more than the struct: {}",
+            text_of(&all)
+        );
+        let structs = run_action(
+            dir.path(),
+            "search",
+            serde_json::json!({"query": "config", "label": "struct"}),
+        )
+        .await
+        .expect("search");
+        assert_eq!(
+            hit_names(&structs),
+            ["a::Config"],
+            "label=struct must keep only the struct: {}",
+            text_of(&structs)
+        );
+        assert_eq!(
+            structs.details["search"]["labels"],
+            serde_json::json!(["Struct"])
+        );
+        // Two labels, mixed case and loose spacing: the accepted spelling is
+        // case-insensitive, and a second label widens the set back.
+        let both = run_action(
+            dir.path(),
+            "search",
+            serde_json::json!({"query": "config", "label": "Struct, function"}),
+        )
+        .await
+        .expect("search");
+        assert_eq!(
+            hit_names(&both).len(),
+            hit_names(&all).len(),
+            "struct+function must cover every hit here: {}",
+            text_of(&both)
+        );
+    }
+
+    /// An unknown label is refused with the accepted spellings listed.
+    ///
+    /// `Label::from_str_or_default` maps anything unknown to `Function`, so a
+    /// typo would quietly search functions; this error is what stops that.
+    #[tokio::test]
+    async fn an_unknown_label_is_refused_listing_the_accepted_ones() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_near_duplicates(dir.path());
+        let error = run_action(
+            dir.path(),
+            "search",
+            serde_json::json!({"query": "config", "label": "strct"}),
+        )
+        .await
+        .expect_err("an unknown label must fail the call");
+        let message = error.to_string();
+        assert!(
+            message.contains("unknown label \"strct\""),
+            "the message must name the offending label: {message}"
+        );
+        for accepted in ["function", "method", "struct", "enum", "file"] {
+            assert!(
+                message.contains(accepted),
+                "the message must list {accepted}: {message}"
+            );
+        }
+    }
+
+    /// An invalid `regex` is refused with the compiler's diagnosis, position
+    /// included, and a valid one filters the hits.
+    ///
+    /// Red-first: with the `regex` read removed, the invalid pattern is never
+    /// compiled and the call succeeds, so the `expect_err` fails.
+    #[tokio::test]
+    async fn a_regex_filters_the_hits_and_an_invalid_one_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "pub fn config_path() -> u32 { 0 }\n\
+             pub fn load_config() -> u32 { 0 }\n",
+        )
+        .expect("a.rs");
+        let filtered = run_action(
+            dir.path(),
+            "search",
+            serde_json::json!({"query": "config", "regex": "^config_"}),
+        )
+        .await
+        .expect("search");
+        assert_eq!(
+            hit_names(&filtered),
+            ["a::config_path"],
+            "the regex must filter the ranked candidates: {}",
+            text_of(&filtered)
+        );
+        assert_eq!(
+            filtered.details["search"]["regex"], "^config_",
+            "the pattern is echoed"
+        );
+        let error = run_action(
+            dir.path(),
+            "search",
+            serde_json::json!({"query": "config", "regex": "("}),
+        )
+        .await
+        .expect_err("an invalid regex must fail the call");
+        let message = error.to_string();
+        assert!(
+            message.contains("unclosed group"),
+            "the compiler's own diagnosis must reach the caller: {message}"
+        );
+        assert!(
+            message.contains('^'),
+            "the position caret must reach the caller: {message}"
+        );
+    }
+
+    /// `candidate_multiplier` is accepted and echoed, and a value below one is
+    /// refused: the store silently floors it (`max(1)`), so a caller that asked
+    /// for 0 would never learn the pool did not shrink.
+    #[tokio::test]
+    async fn the_candidate_multiplier_is_echoed_and_must_be_at_least_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_near_duplicates(dir.path());
+        let result = run_action(
+            dir.path(),
+            "search",
+            serde_json::json!({"query": "config", "candidate_multiplier": 9}),
+        )
+        .await
+        .expect("search");
+        assert_eq!(result.details["search"]["candidate_multiplier"], 9);
+        let error = run_action(
+            dir.path(),
+            "search",
+            serde_json::json!({"query": "config", "candidate_multiplier": 0}),
+        )
+        .await
+        .expect_err("a zero multiplier must fail the call");
+        assert!(
+            error
+                .to_string()
+                .contains("`candidate_multiplier` must be an integer >= 1"),
+            "{error}"
+        );
+    }
+
+    /// A call that sets no new knob answers exactly as it did before the knobs
+    /// existed: the same order, the same scores, the same rendered lines, and no
+    /// `search` echo in `details`.
+    ///
+    /// The baseline is the store itself: the tool's answer for a bare
+    /// `limit`-only call must equal `GraphStore::search_report` with default
+    /// options, which is the whole of what `action_search` used to do. Pinning
+    /// the store's live output, then the exact rendered text, keeps the
+    /// assertion honest without hard-coding BM25 constants an unrelated indexer
+    /// change would move.
+    ///
+    /// The fixture has more hits than the limit on purpose: on a set that fits
+    /// the limit, MMR keeps every hit and a leaked default can hide.
+    ///
+    /// Red-first: make any knob apply when it was not asked for (a bare
+    /// `opts = opts.with_mmr(0.5)`, or an unconditional echo) and this fails.
+    #[tokio::test]
+    async fn a_search_without_knobs_matches_the_store_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_near_duplicates(dir.path());
+        let result = run_action(
+            dir.path(),
+            "search",
+            serde_json::json!({"query": "parse config file", "limit": 3}),
+        )
+        .await
+        .expect("search");
+        assert!(
+            result.details.get("search").is_none(),
+            "no knob must mean no `details.search`: {}",
+            result.details
+        );
+        // What the tool was supposed to do: the store's own defaults, nothing more.
+        let store = GraphStore::open(dir.path().join("graph.db")).expect("open");
+        let (hits, cascade) = store
+            .search_report(
+                "parse config file",
+                &SearchOptions::new(project_name(dir.path())).with_limit(3),
+            )
+            .expect("store search");
+        let expected_results: Vec<serde_json::Value> = hits
+            .iter()
+            .map(|hit| {
+                serde_json::json!({
+                    "id": hit.id,
+                    "label": hit.label.as_str(),
+                    "name": hit.name,
+                    "qualified_name": hit.qualified_name,
+                    "file_path": hit.file_path,
+                    "start_line": hit.start_line,
+                    "end_line": hit.end_line,
+                    "score": hit.score,
+                    "in_degree": hit.in_degree,
+                    "out_degree": hit.out_degree,
+                })
+            })
+            .collect();
+        let mut details = result.details.clone();
+        details
+            .as_object_mut()
+            .expect("details object")
+            .remove("durationMs");
+        assert_eq!(
+            details,
+            serde_json::json!({
+                "hits": hits.len(),
+                "results": expected_results,
+                "cascade": {
+                    "shape": cascade.shape.as_str(),
+                    "running": cascade.running.iter().map(|t| t.as_str()).collect::<Vec<_>>(),
+                    "skipped": cascade
+                        .skipped
+                        .iter()
+                        .map(|(tier, reason)| serde_json::json!({
+                            "tier": tier.as_str(),
+                            "reason": reason.as_str(),
+                        }))
+                        .collect::<Vec<_>>(),
+                    "cost": cascade.cost,
+                },
+            }),
+            "the unknobbed answer drifted from the store's defaults: {}",
+            text_of(&result)
+        );
+        // The rendered lines are the model's view of that answer and are part of
+        // the contract too, so pin them exactly.
+        assert_eq!(
+            text_of(&result),
+            "The graph was empty, so this query indexed the project first: 6 nodes, \
+             5 edges,                  1 files parsed.\n\
+             [cascade: phrase query, ran name+signals; skipped structure(shape),\
+             community(shape)]\n\
+             3 hit(s) for \"parse config file\":\n\
+             - a::parse_config_file (a.rs:3) [Function] score=0.020\n\
+             - a::parse_config_path (a.rs:4) [Function] score=0.020\n\
+             - a::parse_config_dir (a.rs:5) [Function] score=0.020\n\
+             [graph: fresh | 1 files]",
+            "the rendered answer drifted"
+        );
+    }
+
+    /// V1 (`fts5_camelcase`): a `camelCase` query reaches the `snake_case`
+    /// symbol, through the split-token column rather than by luck: the raw
+    /// query term does not occur in the stored name.
+    #[tokio::test]
+    async fn a_camel_case_query_finds_the_snake_case_symbol() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "pub fn parse_config(path: &str) -> u32 { 0 }\n\
+             pub fn other() -> u32 { 0 }\n",
+        )
+        .expect("a.rs");
+        let result = run_action(
+            dir.path(),
+            "search",
+            serde_json::json!({"query": "parseConfig"}),
+        )
+        .await
+        .expect("search");
+        assert_eq!(
+            hit_names(&result).first().map(String::as_str),
+            Some("a::parse_config"),
+            "a camelCase query must find the snake_case symbol: {}",
+            text_of(&result)
+        );
+    }
+
+    /// Write `count` one-file-per-symbol sources under `src/.`.
     fn write_bulk_tree(dir: &std::path::Path, count: usize) {
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
