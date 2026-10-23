@@ -1339,7 +1339,8 @@ impl AgentTool for GraphTool {
          Actions: index (full or incremental build of the symbol/call/import \
          graph; index_depth = skeleton|symbols|full, default full), reindex \
          (incremental closure repair), search (hybrid BM25/regex/degree symbol \
-         search), trace (callers/callees from a symbol; depth = BFS hops, \
+         search; mmr, label, regex and candidate_multiplier tune it), trace \
+         (callers/callees from a symbol; depth = BFS hops, \
          default 2), architecture (overview/structure/layers/clusters/cycles/\
          hotspots/entry_points/file_tree), coverage (index honesty report), \
          changes (git-diff → affected symbols), status (store counts), verify \
