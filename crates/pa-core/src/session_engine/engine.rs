@@ -627,7 +627,15 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                         Ok(store) => store,
                         Err(err) => return Err(format!("graph store: {err}")),
                     };
-                    pa_graph::indexer::index_project(&mut store, &index_root, &project)
+                    // The session's own build is LEAN. It runs before anyone
+                    // asked for a graph, so startup must not pay for the ignored
+                    // set (measured here: ~2.3 s of walk against ~300 ms lean)
+                    // nor let every symbol appear again in `target/` and in
+                    // scratch copies of the tree. A caller who wants the wide
+                    // view runs the `index` action, which defaults to it.
+                    let opts = pa_graph::IndexOptions::new(&project).with_respect_gitignore(true);
+                    store
+                        .index_project(&index_root, &opts)
                         .map(|report| {
                             format!(
                                 "graph auto-index: {} nodes, {} edges, {} files parsed",

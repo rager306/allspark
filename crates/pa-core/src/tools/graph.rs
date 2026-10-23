@@ -164,6 +164,57 @@ fn parse_labels(raw: &str) -> anyhow::Result<(Vec<Label>, Vec<String>)> {
     Ok((labels, names))
 }
 
+/// Read `respect_gitignore` as a boolean, defaulting to `false`.
+///
+/// `false` is [`IndexOptions::new`]'s own default — index what is on disk — so an
+/// absent parameter and an explicit `false` must mean the same run. A non-boolean
+/// value is an error rather than a silent `false`, because the two modes produce
+/// different file sets and a caller that wrote `"true"` would otherwise index the
+/// other one without learning it.
+fn parse_respect_gitignore(params: &serde_json::Value) -> anyhow::Result<bool> {
+    match params.get("respect_gitignore") {
+        None => Ok(false),
+        Some(raw) => raw
+            .as_bool()
+            .ok_or_else(|| anyhow::anyhow!("`respect_gitignore` must be a boolean, got {raw}")),
+    }
+}
+
+/// The run report plus the ignore mode that produced it, for `details`.
+///
+/// `index`/`reindex` answers used to carry the report alone, so a caller could not
+/// tell which file set the numbers describe: the same tree reports different
+/// `added`/`removed`/`skipped` counts in the two modes, and `removed` in particular
+/// is how a lean pass over a wide store shows that it dropped the ignored files.
+fn with_effective_ignore(
+    report: &impl serde::Serialize,
+    respect_gitignore: bool,
+) -> serde_json::Value {
+    let mut details = serde_json::to_value(report).unwrap_or(serde_json::Value::Null);
+    if let Some(object) = details.as_object_mut() {
+        object.insert(
+            "respect_gitignore".to_string(),
+            serde_json::json!(respect_gitignore),
+        );
+    }
+    details
+}
+
+/// The note that names a cold-start build, and the mode it ran in.
+///
+/// `search`, `trace` and `architecture` each build the graph when it is empty. The
+/// note belongs to the build rather than to the action, so it is written once here
+/// and says which files the build could see: an implicit build is lean, and a lean
+/// build must not let a symbol under an ignore rule read as a miss.
+fn cold_build_note(report: &IndexReport) -> String {
+    format!(
+        "The graph was empty, so this call indexed the project first: {} nodes, {} edges, \
+         {} files parsed. This build is lean: files the project's gitignore rules exclude are \
+         not in it (run `index` to include them).",
+        report.nodes, report.edges, report.parsed,
+    )
+}
+
 /// Read `candidate_multiplier` as a pool factor of at least 1.
 fn parse_candidate_multiplier(raw: &serde_json::Value) -> anyhow::Result<usize> {
     let multiplier = raw
@@ -188,8 +239,20 @@ fn parse_candidate_multiplier(raw: &serde_json::Value) -> anyhow::Result<usize> 
 /// for compatibility; its canonical spelling is `index_depth`.
 const ACCEPTED_PARAMS: &[(&str, &[&str])] = &[
     // `depth` here is the legacy spelling of `index_depth`.
-    ("index", &["path", "root", "force", "index_depth", "depth"]),
-    ("reindex", &["path", "root"]),
+    (
+        "index",
+        &[
+            "path",
+            "root",
+            "force",
+            "index_depth",
+            "depth",
+            "respect_gitignore",
+        ],
+    ),
+    // Discovery is shared with `index` (`reindex_incremental` calls the same
+    // `discover`), so the ignore mode decides the new-file set here too.
+    ("reindex", &["path", "root", "respect_gitignore"]),
     (
         "search",
         &[
@@ -382,7 +445,12 @@ impl GraphTool {
             return Ok(None);
         }
         let _guard = crate::tools::graph_in_flight::InFlightGuard(self.in_flight.clone());
-        let opts = IndexOptions::new(project);
+        // Implicit builds are lean. This one runs because a query arrived, not
+        // because anyone asked for an index: the answer must not carry the same
+        // symbol twice, and the walk must not drag in `target/` or a scratch copy of
+        // the tree. A caller who wants the ignored files in the graph runs the
+        // `index` action, which defaults to them.
+        let opts = IndexOptions::new(project).with_respect_gitignore(true);
         let report = self.with_store(|store| {
             store
                 .index_project(root, &opts)
@@ -554,6 +622,12 @@ impl GraphTool {
         if let Some(depth) = depth {
             opts = opts.with_depth(pa_graph::indexer::Depth::from_str_or_default(depth));
         }
+        // `false` (the default) indexes what is on disk, ignored files included;
+        // `true` is the lean view. The mode decides the whole discovered set, so
+        // switching it also widens or prunes what the run reports: a lean pass over
+        // a store built with `false` drops the ignored files it can no longer see.
+        let respect_gitignore = parse_respect_gitignore(params)?;
+        opts = opts.with_respect_gitignore(respect_gitignore);
         self.warm_reader()?;
         let report = self.with_store(|store| {
             store
@@ -578,7 +652,7 @@ impl GraphTool {
                 report.unusable,
                 report.skipped,
             ))],
-            details: serde_json::to_value(&report).unwrap_or(serde_json::Value::Null),
+            details: with_effective_ignore(&report, respect_gitignore),
             terminate: None,
             is_error: false,
         })
@@ -587,7 +661,8 @@ impl GraphTool {
     fn action_reindex(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
         let root = self.resolve_root(params);
         let project = project_name(&root);
-        let opts = IndexOptions::new(&project);
+        let respect_gitignore = parse_respect_gitignore(params)?;
+        let opts = IndexOptions::new(&project).with_respect_gitignore(respect_gitignore);
         self.warm_reader()?;
         let report = self.with_store(|store| {
             store
@@ -604,7 +679,7 @@ impl GraphTool {
                 report.unchanged,
                 report.reason,
             ))],
-            details: serde_json::to_value(&report).unwrap_or(serde_json::Value::Null),
+            details: with_effective_ignore(&report, respect_gitignore),
             terminate: None,
             is_error: false,
         })
@@ -688,12 +763,7 @@ impl GraphTool {
         })?;
         let mut lines = Vec::new();
         if let Some(report) = &indexed_now {
-            lines.push(format!(
-                "The graph was empty, so this query indexed the project first: {} nodes, {} edges,                  {} files parsed.",
-                report.nodes,
-                report.edges,
-                report.parsed,
-            ));
+            lines.push(cold_build_note(report));
         }
         // The cascade decides which channels may run; say so when it pruned one, so a
         // narrow result is attributable to the query's shape instead of looking like a
@@ -909,12 +979,7 @@ impl GraphTool {
         })?;
         let mut lines = Vec::new();
         if let Some(report) = &indexed_now {
-            lines.push(format!(
-                "The graph was empty, so this trace indexed the project first: {} nodes, {} edges,                  {} files parsed.",
-                report.nodes,
-                report.edges,
-                report.parsed,
-            ));
+            lines.push(cold_build_note(report));
         }
         lines.push(format!(
             "Trace from {} ({} step(s)){}:",
@@ -1003,13 +1068,7 @@ impl GraphTool {
         // renders exactly that view.
         let mut lines = Vec::new();
         if let Some(report) = &indexed_now {
-            lines.push(format!(
-                "The graph was empty, so this query indexed the project first: {} nodes, {} edges, \
-                 {} files parsed.",
-                report.nodes,
-                report.edges,
-                report.parsed,
-            ));
+            lines.push(cold_build_note(report));
         }
         lines.push(format!(
             "Architecture view `{}` for project `{}`:",
@@ -1337,7 +1396,8 @@ impl AgentTool for GraphTool {
     fn description(&self) -> &'static str {
         "Query and build the on-disk code graph for the working directory. \
          Actions: index (full or incremental build of the symbol/call/import \
-         graph; index_depth = skeleton|symbols|full, default full), reindex \
+         graph; index_depth = skeleton|symbols|full, default full; \
+         respect_gitignore = default false, true hides ignored files), reindex \
          (incremental closure repair), search (hybrid BM25/regex/degree symbol \
          search; mmr, label, regex and candidate_multiplier tune it), trace \
          (callers/callees from a symbol; depth = BFS hops, \
@@ -1540,6 +1600,10 @@ pub fn params_schema() -> serde_json::Value {
             "force": {
                 "type": "boolean",
                 "description": "Re-parse every file on action=\"index\", ignoring stored hashes."
+            },
+            "respect_gitignore": {
+                "type": "boolean",
+                "description": "action=\"index\"/\"reindex\": whether to hide files the project's gitignore rules exclude (.gitignore, .git/info/exclude, the global gitignore, and those of parent directories). Default false: index what is on disk, so a scratch file or deliberately ignored but authored code is visible and searchable. true is the lean view: where the ignored set is build output or copies of the same sources, it removes the duplicate hits and most of the walk. The mode decides the discovered set, so a run in the other mode adds or removes the files only it can see (`removed` counts them). .git is always skipped; `.ignore` files are honoured in both modes. On a large tree, measure both before choosing: the difference can be an order of magnitude of files."
             },
             "supersedes": {
                 "type": "integer",
@@ -2046,6 +2110,7 @@ mod tests {
                 "ref_a",
                 "ref_b",
                 "regex",
+                "respect_gitignore",
                 "status",
                 "supersedes",
                 "symbol",
@@ -2062,6 +2127,181 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A tree with one visible source and two under a `.gitignore`, plus the
+    /// bare `.git` directory the `ignore` crate needs before it applies git's
+    /// rules at all.
+    fn ignored_fixture(dir: &std::path::Path) {
+        std::fs::create_dir(dir.join(".git")).unwrap();
+        std::fs::write(dir.join(".gitignore"), "scratch/\ngen/\n").unwrap();
+        std::fs::write(dir.join("a.rs"), "pub fn tracked() -> u32 { 1 }\n").unwrap();
+        std::fs::create_dir(dir.join("scratch")).unwrap();
+        std::fs::write(dir.join("scratch/b.rs"), "pub fn scratch() -> u32 { 2 }\n").unwrap();
+        std::fs::create_dir(dir.join("gen")).unwrap();
+        std::fs::write(dir.join("gen/c.rs"), "pub fn generated() -> u32 { 3 }\n").unwrap();
+    }
+
+    /// The ignored set is the parameter's whole point, and both modes must be
+    /// reachable from the tool: `index` defaults to what is on disk, `true` is the
+    /// lean view, and `details` says which mode ran so the counts are readable.
+    #[tokio::test]
+    async fn index_indexes_ignored_files_unless_asked_not_to() {
+        let wide_dir = tempfile::tempdir().unwrap();
+        ignored_fixture(wide_dir.path());
+        let wide = run_action(wide_dir.path(), "index", serde_json::json!({}))
+            .await
+            .expect("index");
+        assert_eq!(
+            wide.details["added"], 3,
+            "the default indexes what is on disk: {}",
+            wide.details
+        );
+        assert_eq!(
+            wide.details["respect_gitignore"], false,
+            "the effective mode is echoed: {}",
+            wide.details
+        );
+        assert!(
+            text_of(&wide).contains("3 files parsed"),
+            "{}",
+            text_of(&wide)
+        );
+
+        let lean_dir = tempfile::tempdir().unwrap();
+        ignored_fixture(lean_dir.path());
+        let lean = run_action(
+            lean_dir.path(),
+            "index",
+            serde_json::json!({ "respect_gitignore": true }),
+        )
+        .await
+        .expect("index");
+        assert_eq!(
+            lean.details["added"], 1,
+            "the lean mode hides the ignored files: {}",
+            lean.details
+        );
+        assert_eq!(lean.details["respect_gitignore"], true);
+        let search = run_action(
+            lean_dir.path(),
+            "search",
+            serde_json::json!({ "query": "generated" }),
+        )
+        .await
+        .expect("search");
+        assert!(
+            text_of(&search).contains("0 hit(s)"),
+            "an ignored symbol must not be in a lean graph: {}",
+            text_of(&search)
+        );
+    }
+
+    /// `reindex` shares `index`'s discovery, so the parameter decides its new-file
+    /// set too: a file that appears under an ignore rule is picked up in the
+    /// default mode and skipped in the lean one.
+    #[tokio::test]
+    async fn reindex_reads_the_same_ignore_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        ignored_fixture(dir.path());
+        run_action(dir.path(), "index", serde_json::json!({}))
+            .await
+            .expect("index");
+        std::fs::write(
+            dir.path().join("scratch/late.rs"),
+            "pub fn late() -> u32 { 4 }\n",
+        )
+        .unwrap();
+
+        let wide = run_action(dir.path(), "reindex", serde_json::json!({}))
+            .await
+            .expect("reindex");
+        assert!(
+            wide.details["reindexed_paths"]
+                .as_array()
+                .is_some_and(|paths| paths.iter().any(|p| p == "scratch/late.rs")),
+            "the default mode finds the new ignored file: {}",
+            wide.details
+        );
+
+        std::fs::write(
+            dir.path().join("scratch/later.rs"),
+            "pub fn later() -> u32 { 5 }\n",
+        )
+        .unwrap();
+        let lean = run_action(
+            dir.path(),
+            "reindex",
+            serde_json::json!({ "respect_gitignore": true }),
+        )
+        .await
+        .expect("reindex");
+        assert!(
+            lean.details["reindexed_paths"]
+                .as_array()
+                .is_some_and(Vec::is_empty),
+            "the lean mode does not see the new ignored file: {}",
+            lean.details
+        );
+        assert_eq!(lean.details["respect_gitignore"], true);
+        // ... and it pruned what the wide pass had indexed.
+        assert_eq!(
+            lean.details["removed"], 3,
+            "the lean pass drops the files only it cannot see: {}",
+            lean.details
+        );
+    }
+
+    /// A value the mode cannot read is an error naming the type, not a silent
+    /// `false`: the two modes index different file sets, so guessing would hide
+    /// which one ran.
+    #[tokio::test]
+    async fn a_non_boolean_respect_gitignore_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        ignored_fixture(dir.path());
+        let error = run_action(
+            dir.path(),
+            "index",
+            serde_json::json!({ "respect_gitignore": "true" }),
+        )
+        .await
+        .expect_err("a string is not a boolean");
+        assert!(error.to_string().contains("`respect_gitignore`"), "{error}");
+    }
+
+    /// An implicit build is lean by construction: a cold query walks the tree
+    /// before anyone asked for a graph, so it must not index the ignored set (on a
+    /// real tree that set is generated output and copies of the same sources, so
+    /// every symbol would answer twice). The wide view stays one explicit `index`
+    /// away.
+    #[tokio::test]
+    async fn the_cold_start_build_is_lean() {
+        let dir = tempfile::tempdir().unwrap();
+        ignored_fixture(dir.path());
+        let result = run_action(
+            dir.path(),
+            "search",
+            serde_json::json!({ "query": "tracked" }),
+        )
+        .await
+        .expect("cold search");
+        assert!(
+            text_of(&result).contains("indexed the project first"),
+            "{}",
+            text_of(&result)
+        );
+        let ignored = run_action(
+            dir.path(),
+            "search",
+            serde_json::json!({ "query": "generated" }),
+        )
+        .await
+        .expect("search");
+        assert!(
+            text_of(&ignored).contains("0 hit(s)"),
+            "the cold build indexed an ignored file: {}",
+            text_of(&ignored)
+        );
     }
 
     /// A query on a cold graph builds the index first, so the first answer is
@@ -2617,8 +2857,9 @@ mod tests {
         // the contract too, so pin them exactly.
         assert_eq!(
             text_of(&result),
-            "The graph was empty, so this query indexed the project first: 6 nodes, \
-             5 edges,                  1 files parsed.\n\
+            "The graph was empty, so this call indexed the project first: 6 nodes, \
+             5 edges, 1 files parsed. This build is lean: files the project's \
+             gitignore rules exclude are not in it (run `index` to include them).\n\
              [cascade: phrase query, ran name+signals; skipped structure(shape),\
              community(shape)]\n\
              3 hit(s) for \"parse config file\":\n\

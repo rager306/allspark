@@ -82,7 +82,21 @@ pub struct IndexOptions {
     pub force: bool,
     /// Maximum file size in bytes to index.
     pub max_file_bytes: u64,
-    /// Honour `.gitignore` (via the `ignore` crate).
+    /// Honour the project's gitignore-family rules (`.gitignore`, `.git/info/exclude`,
+    /// the global gitignore, and those of parent directories) via the `ignore` crate.
+    ///
+    /// `false` — the default — walks what is on disk. `true` is the lean view: it
+    /// hides the ignored set. On a tree whose ignored files are build output or
+    /// copies of the same sources, that set dwarfs the authored one and indexing it
+    /// returns every symbol two or three times — measured on this repository, the
+    /// walk alone is 2,058 files in ~300 ms lean against 37,131 in ~2.3 s wide, and
+    /// the wide set is dominated by `target/` and `.tmp/` payload copies. So `true`
+    /// is what an implicit build (session start, a cold query) wants, and `false` is
+    /// what a caller who knows it has authored code under an ignore rule wants.
+    ///
+    /// Two things are independent of this flag: `.git` is skipped outright, and
+    /// `.ignore` files (ripgrep's own format, not git's) stay honoured in both
+    /// modes.
     pub respect_gitignore: bool,
     /// How much of the graph to build.
     pub depth: Depth,
@@ -103,7 +117,7 @@ impl IndexOptions {
             extensions: Vec::new(),
             force: false,
             max_file_bytes: 2 << 20,
-            respect_gitignore: true,
+            respect_gitignore: false,
             depth: Depth::Full,
             lease_wait: DEFAULT_LEASE_WAIT,
             lease_cancel: CancelToken::new(),
@@ -128,6 +142,15 @@ impl IndexOptions {
     #[must_use]
     pub fn with_max_file_bytes(mut self, bytes: u64) -> Self {
         self.max_file_bytes = bytes;
+        self
+    }
+
+    /// Honour the gitignore-family rules, or ignore them.
+    ///
+    /// See [`IndexOptions::respect_gitignore`] for what the two modes trade.
+    #[must_use]
+    pub fn with_respect_gitignore(mut self, respect: bool) -> Self {
+        self.respect_gitignore = respect;
         self
     }
 
@@ -873,6 +896,131 @@ mod tests {
             "pub fn parse_config(path: &str) -> u32 { load(path) }\npub fn load(path: &str) -> u32 { path.len() as u32 }\n",
         )
         .expect("lib.rs");
+    }
+
+    /// Write a tree with one visible source and two under ignore rules.
+    ///
+    /// `.git` must exist as a directory: the `ignore` crate applies `.gitignore`
+    /// only inside a repository (`require_git` is on by default), and its own test
+    /// suite pins that (`gitignore_no_git`). The indexer skips `.git` in either
+    /// mode, so an empty one is enough.
+    fn write_ignored_tree(dir: &Path) {
+        std::fs::create_dir(dir.join(".git")).expect(".git");
+        std::fs::write(dir.join(".gitignore"), "scratch/\ngen/\n").expect(".gitignore");
+        std::fs::write(dir.join("a.rs"), "pub fn tracked() {}\n").expect("a.rs");
+        std::fs::create_dir(dir.join("scratch")).expect("scratch");
+        std::fs::write(dir.join("scratch/b.rs"), "pub fn scratch() {}\n").expect("b.rs");
+        std::fs::create_dir(dir.join("gen")).expect("gen");
+        std::fs::write(dir.join("gen/c.rs"), "pub fn generated() {}\n").expect("c.rs");
+    }
+
+    fn indexed_files(store: &GraphStore, project: &str) -> Vec<String> {
+        let mut files: Vec<String> = store
+            .all_file_hashes(project)
+            .expect("hashes")
+            .into_keys()
+            .collect();
+        files.sort();
+        files
+    }
+
+    /// The ignore mode decides the discovered set, and both modes are worth
+    /// reaching: `false` (the default) indexes what is on disk, `true` hides the
+    /// ignored files. A lean run over a wide store drops what it can no longer
+    /// see and reports it as `removed` rather than leaving orphans behind.
+    #[test]
+    fn the_ignore_mode_decides_the_discovered_file_set() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_ignored_tree(dir.path());
+        let mut store = GraphStore::open_in_memory().expect("store");
+
+        let wide = store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("wide index");
+        assert_eq!(
+            wide.added, 3,
+            "the default mode walks what is on disk: {wide:?}"
+        );
+        assert_eq!(
+            indexed_files(&store, "p"),
+            vec!["a.rs", "gen/c.rs", "scratch/b.rs"],
+        );
+
+        let lean = store
+            .index_project(
+                dir.path(),
+                &IndexOptions::new("p").with_respect_gitignore(true),
+            )
+            .expect("lean index");
+        assert_eq!(lean.parsed, 0, "a.rs itself did not change: {lean:?}");
+        assert_eq!(
+            lean.removed, 2,
+            "the ignored files leave the store: {lean:?}"
+        );
+        assert_eq!(indexed_files(&store, "p"), vec!["a.rs"]);
+        // A lean pass must not leave the dropped files' symbols searchable.
+        let hits = crate::search::search(
+            store.connection(),
+            "generated",
+            &crate::search::SearchOptions::new("p"),
+        )
+        .expect("search");
+        assert!(
+            hits.is_empty(),
+            "pruned symbols stayed searchable: {hits:?}"
+        );
+    }
+
+    /// The extension allowlist is orthogonal to the ignore mode: a file the
+    /// options exclude stays out in both, so flipping the mode cannot smuggle
+    /// something past the filter.
+    /// `.ignore` is ripgrep's own ignore format, not git's, and the mode only
+    /// speaks about git's rules. It stays honoured in both: a caller flipping
+    /// `respect_gitignore` must not also start indexing a directory the project
+    /// marked with `.ignore`.
+    #[test]
+    fn the_ripgrep_ignore_file_is_honoured_in_both_modes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join(".ignore"), "vendor/\n").expect(".ignore");
+        std::fs::write(dir.path().join("a.rs"), "pub fn tracked() {}\n").expect("a.rs");
+        std::fs::create_dir(dir.path().join("vendor")).expect("vendor");
+        std::fs::write(dir.path().join("vendor/v.rs"), "pub fn vendored() {}\n").expect("v.rs");
+        for respect in [false, true] {
+            let mut store = GraphStore::open_in_memory().expect("store");
+            store
+                .index_project(
+                    dir.path(),
+                    &IndexOptions::new("p").with_respect_gitignore(respect),
+                )
+                .expect("index");
+            assert_eq!(
+                indexed_files(&store, "p"),
+                vec!["a.rs"],
+                "respect_gitignore={respect} dropped the `.ignore` rule",
+            );
+        }
+    }
+
+    #[test]
+    fn the_extension_filter_applies_in_both_ignore_modes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_ignored_tree(dir.path());
+        std::fs::write(dir.path().join("visible.py"), "def tracked():\n    pass\n").expect("py");
+        std::fs::write(dir.path().join("gen/c.py"), "def generated():\n    pass\n").expect("py");
+        let rust_only = || IndexOptions::new("p").with_extensions(vec!["rs".to_string()]);
+        for respect in [false, true] {
+            let mut store = GraphStore::open_in_memory().expect("store");
+            store
+                .index_project(dir.path(), &rust_only().with_respect_gitignore(respect))
+                .expect("index");
+            let files = indexed_files(&store, "p");
+            assert!(
+                !files
+                    .iter()
+                    .any(|file| std::path::Path::new(file).extension() == Some("py".as_ref())),
+                "respect_gitignore={respect} let a filtered extension through: {files:?}"
+            );
+        }
     }
 
     #[test]
