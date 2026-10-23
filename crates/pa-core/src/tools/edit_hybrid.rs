@@ -295,6 +295,19 @@ impl AgentTool for EditHybridTool {
         "edit"
     }
 
+    /// Editing is a read→stage→write cycle, so two edits in one parallel batch can
+    /// both stage from the same version and the second write silently discards the
+    /// first (audit F01). The loop's parallel dispatch is the default; declaring
+    /// `Sequential` is what makes the whole cycle — not merely the write — ordered.
+    ///
+    /// A per-file write queue alone is NOT enough: it orders the writes while both
+    /// reads have already happened, so the lost update survives. The cost of
+    /// ordering is that edits in one batch do not overlap; they are already
+    /// I/O-bound and small.
+    fn execution_mode(&self) -> Option<pa_agent::types::ToolExecutionMode> {
+        Some(pa_agent::types::ToolExecutionMode::Sequential)
+    }
+
     fn description(&self) -> &'static str {
         // A short, static headline; the mode list is appended at runtime via
         // `label`/schema. The static form keeps the `&'static str` contract.
@@ -686,5 +699,28 @@ mod tests {
         let enum_values = schema["properties"]["mode"]["enum"].as_array().unwrap();
         let names: Vec<&str> = enum_values.iter().filter_map(|v| v.as_str()).collect();
         assert_eq!(names, vec!["replace", "hashline"]);
+    }
+    /// The native `edit` tool must declare a sequential execution constraint.
+    ///
+    /// The loop's parallel dispatch is the default, and an edit is a
+    /// read→stage→write cycle: two edits in one batch both stage from V and the
+    /// second write discards the first. Serialising only the WRITE does not help —
+    /// both reads have already happened — which is why the constraint is on the
+    /// tool and not on the writer.
+    #[test]
+    fn the_edit_tool_declares_a_sequential_execution_constraint() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = EditHybridTool::new(
+            Arc::new(Mutex::new(pa_edit::EditStore::new())),
+            None,
+            dir.path().to_path_buf(),
+            EditMode::Replace,
+            vec![EditMode::Replace],
+        );
+        assert_eq!(
+            tool.execution_mode(),
+            Some(pa_agent::types::ToolExecutionMode::Sequential),
+            "an edit batch must not run its tools in parallel"
+        );
     }
 }
