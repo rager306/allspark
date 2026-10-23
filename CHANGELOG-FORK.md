@@ -13,6 +13,69 @@ branch (`feat/allspark-identity`). `fork.3` points at the SAME commit as `fork.2
 (`375ad95cf`) and is a duplicate tag, not a separate release — it has no entry here
 because nothing shipped between them. `FORK.md` carries the same correction.
 
+## fork.010 — upstream v0.10.2-beta.3
+
+- Tag: `allspark-v0.10.2-beta.3-fork.010` (2026-10-23)
+- Base: `5a3df6fc9` (fork.009) — the first fork release built on an upstream
+  NIGHTLY rather than a stable tag: `v0.10.2-beta.3` (`9eb29e29b`) is a
+  tag-only snapshot of upstream `main`, 27 commits past `v0.10.1`.
+
+**Upstream merge (26 commits).** Measured before starting: 17 real content
+conflicts out of 1 415 files this fork has changed, and zero in the fork-only
+crates (`pa-graph`, `pa-lsp`, `pa-ast`, `pa-edit`, `pa-mem`, `pa-jev`,
+`pa-diff`). Four of these fixes close the highest-priority findings of the
+2026-10-23 architecture audit, which had recorded them as still open in the
+fork:
+
+- **`dd384e3a2`** — a spawned child is admitted only after its task prompt
+  lands (#3708). Previously `prompt_admitted` was set before `prompt_child`
+  finished, so a parallel collect could read the idle pre-prompt worker as
+  done and declare a task complete with no answer.
+- **`71beca947`** — child cancellation records a semantic parent→child edge
+  and restores live status when the abort fails (#3680). The registry used to
+  publish `cancelled` and ignore the Abort result.
+- **`c20f93f67`** — print mode wires background bash, heartbeats, skills and
+  late receipts like the daemon (#3580). Headless used to pass `None` for the
+  cron store and completion callbacks, then fabricate a private store.
+- **`00ec2549e`** — compaction summaries preserve outstanding orchestration
+  state (#3685), so a compaction no longer loses pending verifiers or
+  background handles.
+
+Also merged: persistent `bash()` shells that survive kernel and daemon
+restarts (#3640); a per-cell `python_repl` watchdog (#3691); TUI
+escape-sequence safety and reader-position preservation (#3698); the stale
+"await commands before ending the turn" prompt rule dropped (#3511); ACP
+transport-failure classification (#3679); transcript page locking (#3705);
+the session archive removed (#3657); the webpki-roots RUSTSEC-2026-0381
+deny cleared (#3694, which independently made the same change the fork had
+already documented as its reason).
+
+**How the conflicts were resolved.** Settings (`types`, `mod`, `load`,
+`manager`) took a union: upstream's `pythonCellTimeoutMs` plus the fork's
+`graph`, `toolProfile`, `jev`, `editHybrid`, `lsp`, `agents`, `debugLog`,
+`routing`. The session-archive constants went with the archive. The engine
+took the fork's native-tool gates plus upstream's per-cell timeout.
+`engine/tests.rs` is upstream's file with the fork's five unique tests
+appended. The kernel readiness probe merged segment-by-segment into 57
+checks (upstream's persistent-shell assertions plus the fork's
+`pid`/`command` fields). The CI lifecycle leg took upstream's deletion over
+the fork's `if: false`. `Cargo.lock` was regenerated from the fork's lock so
+the fork-only crates stay in it.
+
+**Fork fixes in the same release:**
+
+- `c47178fdc` — a model-resolution fixture no longer inherits ambient
+  provider keys. Upstream #3628's test asserts a fallback to the fixture's
+  own model; on a machine exporting `GOOGLE_*`/`ANTHROPIC_*`, five providers
+  looked credentialed and the fixture's model ranked fifth.
+- `6a7ab294e` — the gate's zero-test skip survives nextest's colour (it
+  colourises each word, splitting the marker), and the `websearch` core
+  bullet upstream #3677 deleted stays deleted.
+- `1bf52d878` — the gate builds every test target once instead of 229 times.
+  Measured: 1540s of 3232s was per-unit `cargo` freshness checks. Now 1519s.
+  `--lib --tests --bins`, not `--all-targets`: examples and benches are
+  never run, and linking them exhausted the disk.
+
 ## fork.009 — upstream v0.10.1-beta.38
 
 - Tag: `allspark-v0.10.1-beta.38-fork.009` (2026-10-20)
