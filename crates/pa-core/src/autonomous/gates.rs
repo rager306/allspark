@@ -667,7 +667,20 @@ mod tests {
         let timed_out = runner.run_gate("sleep 5", 50).await.unwrap();
         assert!(timed_out.timed_out);
         assert_eq!(format_process_exit(&timed_out), "timed out");
-        assert!(runner.capture_snapshot().await.is_none());
+        // A workspace git cannot describe yields no snapshot, and `None` means
+        // the gate always re-runs. A bare repository is refused by git in every
+        // environment; a plain tempdir is not, because `TMPDIR` may point inside
+        // a work tree (the gate exports `<repo>/.tmp`), where git answers for the
+        // fixture instead of failing.
+        let bare = tempfile::TempDir::new().unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q", "--bare"])
+            .current_dir(bare.path())
+            .status()
+            .unwrap()
+            .success());
+        let unbounded = ShellGateRunner::new(bare.path());
+        assert!(unbounded.capture_snapshot().await.is_none());
     }
 
     #[tokio::test]

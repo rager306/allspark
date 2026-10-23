@@ -346,6 +346,16 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// Ancestor discovery starts at the global file and then walks the cwd chain
+    /// root-most first.
+    ///
+    /// The walk continues past the fixture to the filesystem root, so the
+    /// fixture cannot own every entry: when `TMPDIR` points inside a tree that
+    /// carries an `AGENTS.md` (the gate exports `<repo>/.tmp`, and the
+    /// repository root has one) those ancestors contribute their own file ahead
+    /// of the fixture's. Positions, not the whole list, are therefore what this
+    /// test asserts: the global file first, then the fixture's chain root-most
+    /// first, ending at the cwd's own file.
     #[test]
     fn context_files_global_then_ancestors_root_first() {
         let tmp = tempfile::tempdir().unwrap();
@@ -358,7 +368,8 @@ mod tests {
         fs::write(deep.join("AGENTS.md"), "deep").unwrap();
         let files = load_project_context_files(&deep, &agent_dir);
         let contents: Vec<&str> = files.iter().map(|f| f.content.as_str()).collect();
-        assert_eq!(contents, vec!["global", "level-a", "deep"]);
+        assert_eq!(contents.first(), Some(&"global"));
+        assert_eq!(&contents[contents.len() - 2..], ["level-a", "deep"]);
     }
 
     #[test]
@@ -421,8 +432,26 @@ mod tests {
         .unwrap();
         assert!(resources.skills.iter().any(|s| s.name == "alpha"));
         assert!(resources.prompts.iter().any(|p| p.name == "fix"));
-        assert_eq!(resources.agents_files.len(), 1);
-        assert_eq!(resources.agents_files[0].content, "Project rules");
+        // Ancestor discovery walks past the fixture to the filesystem root, so a
+        // `TMPDIR` inside a tree that carries its own `AGENTS.md` (the gate
+        // exports `<repo>/.tmp`) adds ancestors this fixture does not own. Only
+        // the fixture's own entry is asserted, and it is last: the ancestor
+        // chain is emitted root-most first, so the cwd's file comes after every
+        // ancestor that discovery picks up ahead of it.
+        let owned: Vec<&str> = resources
+            .agents_files
+            .iter()
+            .filter(|file| file.path.starts_with(tmp.path()))
+            .map(|file| file.content.as_str())
+            .collect();
+        assert_eq!(owned, vec!["Project rules"]);
+        assert_eq!(
+            resources
+                .agents_files
+                .last()
+                .map(|file| file.content.as_str()),
+            Some("Project rules")
+        );
         assert_eq!(resources.system_prompt.as_deref(), Some("custom system"));
         assert_eq!(resources.append_system_prompt.len(), 0);
     }

@@ -1172,10 +1172,48 @@ async fn staging_and_staged_files_are_owner_private() {
     assert_eq!(mode_of(&staging), 0o700);
 }
 
+/// A location with no work tree is refused, and nothing is staged.
+///
+/// The fixture cannot assume it sits outside a repository: `TMPDIR` may point
+/// inside one (the gate exports `<repo>/.tmp`), and then git answers for a plain
+/// tempdir and the snapshot gets far enough to refuse the *staging* directory
+/// instead. A bare repository has no work tree in any environment, so it carries
+/// the unconditional case; the plain-directory case, which is the shape a real
+/// caller hits, runs whenever the fixture is genuinely outside one.
 #[cfg(unix)]
 #[tokio::test]
 async fn snapshot_requires_a_git_worktree() {
+    let bare = tempfile::tempdir().unwrap();
+    git(bare.path(), &["init", "-q", "--bare"]);
+    let staging = tempfile::tempdir().unwrap();
+    let error = create_workspace_snapshot(
+        bare.path(),
+        staging.path(),
+        BaselineMode::HeadTree,
+        &limits(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(error, SnapshotError::NotAWorktree { .. }),
+        "{error}"
+    );
+    assert!(staging.path().join("manifest.json").read_dir().is_err());
+
     let plain = tempfile::tempdir().unwrap();
+    let inside_a_worktree = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(plain.path())
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if inside_a_worktree {
+        eprintln!(
+            "skipping the non-repository half: {} is inside a git work tree \
+             (TMPDIR points into a repository)",
+            plain.path().display()
+        );
+        return;
+    }
     let staging = tempfile::tempdir().unwrap();
     let error = create_workspace_snapshot(
         plain.path(),
