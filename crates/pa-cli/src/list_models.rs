@@ -21,7 +21,17 @@ async fn list(options: &RunOptions) -> Result<i32, String> {
     if let Some(error) = registry.get_error() {
         eprintln!("Warning: errors loading models.json:\n{error}");
     }
-    let models = registry.refresh_available_models().await;
+    // Discovery, not failover: a native free model needs no configured provider,
+    // so it belongs in the list even though `get_available` keeps it out of the
+    // default/failover set.
+    let models: Vec<pa_types::ai::Model> = {
+        registry.refresh_available_models().await;
+        registry
+            .get_discoverable_models()
+            .into_iter()
+            .cloned()
+            .collect()
+    };
     if models.is_empty() {
         println!("{}", no_models_available_message());
         return Ok(0);

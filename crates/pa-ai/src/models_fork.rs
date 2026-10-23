@@ -193,10 +193,15 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         base_url: "https://opencode.ai/inference/v1",
         reasoning: true,
         thinking_levels: EFFORT_NO_OFF,
-        input: &[ModelInput::Text],
+        input: &[ModelInput::Text, ModelInput::Image],
         cost: (0.0, 0.0, 0.0, 0.0),
-        context_window: 128_000,
-        max_tokens: 8_192,
+        // 200K/32K, not the 128K/8K first recorded: models.dev
+        // (opencode provider entry, verified 2026-10-23) gives
+        // limit.context 200000 and limit.output 32000, and lists `image`
+        // among the input modalities. Under-reading the window made
+        // compaction fire 36% early.
+        context_window: 200_000,
+        max_tokens: 32_000,
         headers: &[],
         supports_developer_role: None,
         max_tokens_field: None,
@@ -211,8 +216,10 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         thinking_levels: EFFORT_NO_OFF,
         input: &[ModelInput::Text, ModelInput::Image],
         cost: (0.0, 0.0, 0.0, 0.0),
-        context_window: 128_000,
-        max_tokens: 8_192,
+        // Same correction as above: models.dev reports 200K context and
+        // 32K output for this id.
+        context_window: 200_000,
+        max_tokens: 32_000,
         headers: &[],
         supports_developer_role: None,
         max_tokens_field: None,
@@ -871,6 +878,10 @@ pub fn fork_providers() -> &'static [&'static str] {
         "genspark",
         "subquadratic",
         "ninerouter",
+        // The free-tier natives. Their models were already in FORK_MODELS while
+        // the provider id was absent here, so anything keyed off this list had no
+        // entry for them (issue #9).
+        "opencode",
     ]
 }
 

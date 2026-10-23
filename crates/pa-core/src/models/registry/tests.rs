@@ -86,6 +86,22 @@ fn native_free_models_do_not_configure_a_provider_or_enter_default_candidates() 
     );
     assert!(!registry.has_configured_auth(free));
     assert_eq!(registry.get_available().len(), 0);
+    // Discovery is the other question (issue #9): the model sends its own public
+    // credential, so a picker should offer it even though it is not a failover
+    // candidate. Keeping these two apart is what lets the free tier be visible
+    // without becoming a default.
+    assert!(
+        registry
+            .get_discoverable_models()
+            .iter()
+            .any(|model| model.provider == "opencode" && model.id == "deepseek-v4.1-flash-free"),
+        "the native free model must be discoverable: {:?}",
+        registry
+            .get_discoverable_models()
+            .iter()
+            .map(|m| (m.provider.as_str(), m.id.as_str()))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]

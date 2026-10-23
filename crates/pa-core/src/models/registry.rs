@@ -225,11 +225,40 @@ impl ModelRegistry {
             .collect()
     }
 
+    /// Models a discovery surface may offer: the [`Self::get_available`] set
+    /// plus the native free models, which send their own public credential and
+    /// need no configured provider.
+    ///
+    /// `get_available` deliberately stays narrow — it feeds default selection and
+    /// failover, where a provider that was never signed in must not become a
+    /// candidate (`native_free_models_do_not_configure_a_provider_or_enter_default_candidates`
+    /// pins that). Discovery is the other question: a model the user can pick by
+    /// id, and that works without any credential, is exactly what a picker should
+    /// show. Offering it here cannot make it a failover target.
+    pub fn get_discoverable_models(&self) -> Vec<&Model> {
+        let available: Vec<&Model> = self.get_available();
+        let known: std::collections::HashSet<(&str, &str)> = available
+            .iter()
+            .map(|model| (model.provider.as_str(), model.id.as_str()))
+            .collect();
+        let mut discoverable = available;
+        discoverable.extend(
+            self.models
+                .iter()
+                .filter(|model| {
+                    !known.contains(&(model.provider.as_str(), model.id.as_str()))
+                        && native_free_api_key(model).is_some()
+                })
+                .filter(|model| !is_private_prime_inference_model(model)),
+        );
+        discoverable
+    }
+
     /// Models `rlm.find_models` may search: auth-configured, and not on a
     /// stale or expired provider credential (probe answered once per provider).
     pub fn get_rlm_searchable_models(&self) -> Vec<&Model> {
         let mut status_by_provider: HashMap<&str, bool> = HashMap::new();
-        self.get_available()
+        self.get_discoverable_models()
             .into_iter()
             .filter(|model| {
                 *status_by_provider

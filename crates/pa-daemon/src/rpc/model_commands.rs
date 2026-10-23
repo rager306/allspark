@@ -151,7 +151,14 @@ pub(crate) async fn cycle_model(state: &Arc<RpcState>) -> Result<ResponseData, S
 /// `get_available_models`: the refreshed available catalog.
 pub(crate) async fn get_available_models(state: &Arc<RpcState>) -> Result<ResponseData, String> {
     let mut registry = registry(state);
-    let models = registry.refresh_available_models().await;
+    registry.refresh_available_models().await;
+    // The picker's discovery set: native free models included (no provider auth
+    // needed), default/failover candidates unchanged.
+    let models: Vec<pa_types::ai::Model> = registry
+        .get_discoverable_models()
+        .into_iter()
+        .cloned()
+        .collect();
     Ok(ResponseData::Present(json!({ "models": models })))
 }
 
