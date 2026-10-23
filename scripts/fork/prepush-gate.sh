@@ -108,10 +108,24 @@ step "tests (sharded, $JOBS parallel, ${free_gb}G free)"
 # ci_test_shard.py enumerates exactly what `cargo test --workspace` covers;
 # we split that list across worker processes instead of shards-per-runner.
 rm -rf "$OUT/tests"; mkdir -p "$OUT/tests"
-python3 scripts/ci_test_shard.py --shard 1 --total 1 --list 2>/dev/null \
-  | grep 'shard 1:' | sed 's/^ *shard 1: //' > "$OUT/tests/units.txt"
+# The enumeration's exit status decides whether the run is meaningful. It was
+# discarded, so a failing enumerator produced an empty list and the gate printed
+# "GATE GREEN" with zero units — a green that proves nothing (audit F16; measured
+# with a stub: enumeration exit 42 -> "GATE GREEN (0 test units)" rc=0).
+if ! python3 scripts/ci_test_shard.py --shard 1 --total 1 --list 2>"$OUT/enumerate.err" \
+  | grep 'shard 1:' | sed 's/^ *shard 1: //' > "$OUT/tests/units.txt"; then
+  echo "GATE RED (test enumeration failed; see $OUT/enumerate.err)"
+  sed -n '1,10p' "$OUT/enumerate.err"
+  exit 1
+fi
 units=$(wc -l < "$OUT/tests/units.txt")
 echo "units: $units"
+# An enumeration that succeeds but lists nothing is a broken enumerator or a
+# filter bug, never "no tests to run": the workspace always has units.
+if [ "$units" -eq 0 ]; then
+  echo "GATE RED (test enumeration listed 0 units; see $OUT/tests/units.txt)"
+  exit 1
+fi
 
 run_unit() {
   local unit="$1" pkg rest kind name args
@@ -192,21 +206,40 @@ printf '%s\n' "$SERIAL_UNITS" > "$OUT/tests/serial.txt"
 grep -vxF -f "$OUT/tests/serial.txt" "$OUT/tests/units.txt" > "$OUT/tests/parallel.txt"
 echo "parallel: $(wc -l < "$OUT/tests/parallel.txt"), serial tail: $(wc -l < "$OUT/tests/serial.txt")"
 
+# `xargs` exits 123 when any invocation failed, 124/125 for its own failures.
+# The status was discarded, so a launcher that died without writing a FAIL line
+# still produced a green gate (audit F16; measured with a stub: one unit listed,
+# launcher exit 42 -> "GATE GREEN (1 test units)" rc=0). The grep below can only
+# see units that RAN.
 xargs -P "$JOBS" -I{} bash -c 'run_unit "$@"' _ {} < "$OUT/tests/parallel.txt" \
   >"$OUT/tests/summary.log" 2>&1
+xargs_status=$?
 echo "--- serial tail" >> "$OUT/tests/summary.log"
 while IFS= read -r unit; do
   [[ -z "$unit" ]] && continue
   run_unit "$unit" >> "$OUT/tests/summary.log" 2>&1
 done < "$OUT/tests/serial.txt"
 test_fail=$(grep -c '^FAIL' "$OUT/tests/summary.log" || true)
+# Every unit must have produced a verdict, and the launcher must have succeeded.
+# "No FAIL line" is not proof that a unit ran: the verdict is now the COUNT of
+# results against the count of units, plus the launcher's own status.
+ran_ok=$(grep -c '^ok ' "$OUT/tests/summary.log" || true)
+ran_skip=$(grep -c '^skip ' "$OUT/tests/summary.log" || true)
+ran=$((ran_ok + ran_skip))
 tail -3 "$OUT/tests/summary.log"
-if [[ "$test_fail" -gt 0 ]]; then
+if [[ "$xargs_status" -ne 0 ]]; then
+  echo "tests: the parallel launcher failed (exit $xargs_status) after $ran of $units units"
+  fail=1
+elif [[ "$test_fail" -gt 0 ]]; then
   echo "tests: $test_fail failing units"
   grep '^FAIL' "$OUT/tests/summary.log"
   fail=1
+elif [[ "$ran" -ne "$units" ]]; then
+  echo "tests: $ran of $units units reported a verdict — the fleet lost units"
+  grep -E '^FAIL' "$OUT/tests/summary.log" | head -5
+  fail=1
 else
-  echo "tests: all $units units green"
+  echo "tests: all $units units green ($ran_ok ok, $ran_skip skipped)"
 fi
 
 if [[ $fail -ne 0 ]]; then
