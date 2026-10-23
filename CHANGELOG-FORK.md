@@ -7,9 +7,11 @@ binary's `--version` carries the same id via `ALLSPARK_FORK_BUILD` at build
 time. Update this file in the same change that cuts a release; the GitHub
 release notes for a version are generated from its entry here.
 
-Pre-numbering history: two single-digit tags (fork.1, fork.2, 2026-10-13)
-marked the abandoned in-binary rebrand branch (`feat/allspark-identity`);
-they were local-only artifacts and are superseded by the NNN scheme below.
+Pre-numbering history: three single-digit tags, all superseded by the NNN scheme
+below. `fork.1` and `fork.2` (2026-10-13) marked the abandoned in-binary rebrand
+branch (`feat/allspark-identity`). `fork.3` points at the SAME commit as `fork.2`
+(`375ad95cf`) and is a duplicate tag, not a separate release — it has no entry here
+because nothing shipped between them. `FORK.md` carries the same correction.
 
 ## fork.009 — upstream v0.10.1-beta.38
 
