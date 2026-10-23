@@ -144,9 +144,22 @@ run_unit() {
   local ok=0
   if [[ "$kind" == "lib" || "$kind" == "test" ]] && command -v cargo-nextest >/dev/null 2>&1; then
     if [[ "$kind" == "lib" ]]; then
-      cargo nextest run --locked -p "$pkg" --lib >"$log" 2>&1 && ok=1
+      cargo nextest run --locked -p "$pkg" --lib >"$log" 2>&1
     else
-      cargo nextest run --locked -p "$pkg" --test "$name" >"$log" 2>&1 && ok=1
+      cargo nextest run --locked -p "$pkg" --test "$name" >"$log" 2>&1
+    fi
+    local status=$?
+    # nextest exits 4 when the filter ran ZERO tests, which is what a unit whose
+    # every test is `#[ignore]` reports: a networked live-smoke file that CI never
+    # runs. Counting that as a failure made `pa-core#test:jev_live_eval` and
+    # `pa-jev#test:live_subq` permanently red for a reason unrelated to the code.
+    # "No test ran" is reported, never silently green: a file that lost all its
+    # tests should be visible in the gate's output.
+    if [[ $status -eq 0 ]]; then
+      ok=1
+    elif [[ $status -eq 4 ]] && grep -q 'Starting 0 tests' "$log"; then
+      echo "skip $pkg $kind $name  (every test is #[ignore]d)"
+      return 0
     fi
   else
     cargo test --locked -p "$pkg" "${args[@]}" >"$log" 2>&1 && ok=1
