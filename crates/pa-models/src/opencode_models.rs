@@ -178,7 +178,7 @@ fn relative_gap(current: u64, upstream: u64) -> f64 {
 pub fn build_snapshot(
     live: &[u8],
     models_dev: Option<&[u8]>,
-    known: &dyn Fn(&str) -> Option<KnownCapabilities>,
+    known: &(dyn Fn(&str) -> Option<KnownCapabilities> + Send + Sync),
     models_dev_etag: Option<String>,
     synced_at: String,
 ) -> Option<OpenCodeSnapshot> {
@@ -302,7 +302,7 @@ pub fn write_snapshot(models_dir: &Path, snapshot: &OpenCodeSnapshot) -> std::io
 pub async fn refresh(
     fetcher: &CatalogFetcher,
     models_dir: &Path,
-    known: &dyn Fn(&str) -> Option<KnownCapabilities>,
+    known: &(dyn Fn(&str) -> Option<KnownCapabilities> + Send + Sync),
     synced_at: String,
 ) -> Result<OpenCodeSnapshot, FetchError> {
     let live = match fetcher.fetch(OPENCODE_MODELS_URL, None).await? {
