@@ -77,9 +77,33 @@ pub struct TraceOptions {
     pub edge_types: Vec<EdgeType>,
     /// Maximum nodes to return.
     pub limit: usize,
-    /// Confidence below which a step is labelled `low_confidence`.
-    pub confidence_floor: f32,
+    /// Keep only steps at least this confident, or `None` to keep them all.
+    ///
+    /// A step's confidence is the product of the edge confidences along its path
+    /// from the origin — the number `trace` prints and puts in each step — so it
+    /// only falls with depth and one guessed edge discounts everything below it.
+    ///
+    /// `None` — the default — drops nothing: a step below
+    /// [`DEFAULT_CONFIDENCE_FLOOR`] is labelled `low_confidence` instead, because
+    /// a caller that asked for no floor must not silently lose steps it never
+    /// asked to hide.
+    ///
+    /// `Some(floor)` drops every step below `floor` and counts them in
+    /// [`TraceResult::filtered`]; the floor also becomes the labelling threshold,
+    /// since a step the caller chose to keep is not "low" by the caller's own
+    /// standard.
+    ///
+    /// A step whose edge recorded **no** confidence is not "below" anything: the
+    /// indexer writes a confidence on every edge it resolves, so an absent value
+    /// belongs to an edge that never claimed one — a hand-built seed, a `USAGE`
+    /// edge, an `IMPORTS` edge. Such an edge is read as full confidence (1.0, in
+    /// `read_call_props`), so no floor drops it.
+    pub confidence_floor: Option<f32>,
 }
+
+/// Confidence below which a step is labelled `low_confidence` when the caller
+/// set no [`TraceOptions::confidence_floor`].
+pub const DEFAULT_CONFIDENCE_FLOOR: f32 = 0.6;
 
 impl TraceOptions {
     /// Default options (outgoing CALLS, depth 2).
@@ -92,8 +116,27 @@ impl TraceOptions {
             depth: 2,
             edge_types: Vec::new(),
             limit: 200,
-            confidence_floor: 0.6,
+            confidence_floor: None,
         }
+    }
+
+    /// Keep only steps whose path confidence is at least `floor` (`[0, 1]`).
+    ///
+    /// This is a filter over the confidence `trace` already computes, not a new
+    /// signal: the value is the product of the edge confidences from the origin.
+    /// [`None`] keeps every step and only labels the weak ones; see the field's
+    /// documentation for what "no confidence recorded" means.
+    #[must_use]
+    pub fn with_confidence_floor(mut self, floor: Option<f32>) -> Self {
+        self.confidence_floor = floor;
+        self
+    }
+
+    /// The floor used for the `low_confidence` label: the caller's, or the
+    /// default when the caller asked to filter nothing.
+    #[must_use]
+    pub fn label_floor(&self) -> f32 {
+        self.confidence_floor.unwrap_or(DEFAULT_CONFIDENCE_FLOOR)
     }
 
     /// Set the walk direction.
@@ -144,6 +187,14 @@ pub struct TraceResult {
     /// `trace` reports `truncated: true` and the furthest reachable node, so a
     /// capped walk is never mistaken for an exhaustive one.
     pub truncated: bool,
+    /// Steps whose confidence was below [`TraceOptions::confidence_floor`].
+    ///
+    /// Non-zero only when the caller set a floor. Reported so a short listing is
+    /// attributable to the floor rather than reading as a symbol that calls
+    /// almost nothing — the same reason [`TraceResult::truncated`] exists. A
+    /// filtered step is still walked through, so its callees are judged on their
+    /// own confidence and counted in `steps` if they pass.
+    pub filtered: usize,
 }
 
 impl TraceResult {
@@ -170,6 +221,7 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
     let mut visited: HashSet<i64> = HashSet::new();
     visited.insert(origin);
     let mut steps = Vec::new();
+    let mut filtered = 0usize;
     let mut queue: VecDeque<(i64, usize, f32)> = VecDeque::new();
     queue.push_back((origin, 0, 1.0));
 
@@ -197,8 +249,19 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
             }
             let (confidence, strategy, candidates, args) = read_call_props(&edge.props);
             let path_conf = path_conf * confidence;
+            // The floor filters the listing, not the walk: the node is still
+            // queued, so its own callees are reached and judged on their own
+            // confidence. Pruning the subtree would be wrong here, because
+            // nothing guarantees an edge's recorded confidence is at most 1 —
+            // the indexer's ladder is, a hand-built store's need not be — and a
+            // pruned subtree could then hide a step that does pass the floor.
+            if opts.confidence_floor.is_some_and(|floor| path_conf < floor) {
+                filtered += 1;
+                queue.push_back((edge.target, depth + 1, path_conf));
+                continue;
+            }
             if let Some(node) = store.node_by_id(edge.target)? {
-                let risk = risk_labels(confidence, &strategy, opts.confidence_floor);
+                let risk = risk_labels(confidence, &strategy, opts.label_floor());
                 steps.push(TraceStep {
                     id: node.id,
                     name: node.name.clone(),
@@ -233,6 +296,7 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
         origin: opts.symbol.clone(),
         steps,
         truncated,
+        filtered,
     })
 }
 
@@ -528,6 +592,84 @@ mod tests {
         assert!(load
             .risk_labels
             .contains(&"heuristic_resolution".to_string()));
+    }
+
+    /// A floor filters the listing and counts what it dropped.
+    ///
+    /// Red-first: with the `confidence_floor` comparison removed from `trace`,
+    /// both steps come back and `filtered` stays 0.
+    #[test]
+    fn the_confidence_floor_filters_steps_and_counts_them() {
+        let store = seed();
+        // main -> parse is 0.9, parse -> load is 0.9 * 0.5 = 0.45.
+        let r = trace(
+            &store,
+            &TraceOptions::new("p", "p::main")
+                .with_depth(2)
+                .with_confidence_floor(Some(0.5)),
+        )
+        .expect("trace");
+        let names: Vec<&str> = r.steps.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["parse"], "load is below the floor: {names:?}");
+        assert_eq!(r.filtered, 1, "the dropped step is counted");
+
+        // A floor under every step keeps the whole walk and counts nothing.
+        let all = trace(
+            &store,
+            &TraceOptions::new("p", "p::main")
+                .with_depth(2)
+                .with_confidence_floor(Some(0.0)),
+        )
+        .expect("trace");
+        assert_eq!(all.steps.len(), 2);
+        assert_eq!(all.filtered, 0);
+    }
+
+    /// An edge that recorded no confidence is not "below" anything.
+    ///
+    /// The indexer writes a confidence on every edge it resolves, so an absent
+    /// one belongs to an edge that never claimed it (a hand-built seed, a
+    /// `USAGE`/`IMPORTS` edge). It is read as full confidence, so even a floor of
+    /// 1.0 keeps it — this is the decision the parameter's documentation states.
+    #[test]
+    fn a_step_without_a_recorded_confidence_is_never_below_the_floor() {
+        let store = GraphStore::open_in_memory().expect("store");
+        store.register_project("p", "/tmp").expect("project");
+        let mk = |name: &str| {
+            store
+                .upsert_node(&Node {
+                    id: 0,
+                    project: "p".into(),
+                    label: Label::Function,
+                    name: name.into(),
+                    qualified_name: format!("p::{name}"),
+                    file_path: "src/lib.rs".into(),
+                    start_line: 1,
+                    end_line: 3,
+                    props: json!({}),
+                })
+                .expect("node")
+        };
+        let root = mk("root");
+        let silent = mk("silent");
+        // No `confidence` key at all: the edge never claimed one.
+        store
+            .insert_edge("p", root, silent, EdgeType::Calls, &json!({}))
+            .expect("edge");
+        let r = trace(
+            &store,
+            &TraceOptions::new("p", "p::root")
+                .with_depth(1)
+                .with_confidence_floor(Some(1.0)),
+        )
+        .expect("trace");
+        let names: Vec<&str> = r.steps.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["silent"],
+            "an unclaimed confidence is full confidence, not zero"
+        );
+        assert_eq!(r.filtered, 0);
     }
 
     #[test]

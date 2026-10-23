@@ -180,15 +180,18 @@ fn parse_respect_gitignore(params: &serde_json::Value) -> anyhow::Result<bool> {
     }
 }
 
-/// The run report plus the ignore mode that produced it, for `details`.
+/// The run report plus the scope that produced it, for `details`.
 ///
 /// `index`/`reindex` answers used to carry the report alone, so a caller could not
 /// tell which file set the numbers describe: the same tree reports different
 /// `added`/`removed`/`skipped` counts in the two modes, and `removed` in particular
 /// is how a lean pass over a wide store shows that it dropped the ignored files.
+/// `applied` carries the other scope knobs the caller set, and is empty when it
+/// set none — so a run with no knob keeps the answer it always had.
 fn with_effective_ignore(
     report: &impl serde::Serialize,
     respect_gitignore: bool,
+    applied: serde_json::Map<String, serde_json::Value>,
 ) -> serde_json::Value {
     let mut details = serde_json::to_value(report).unwrap_or(serde_json::Value::Null);
     if let Some(object) = details.as_object_mut() {
@@ -196,8 +199,209 @@ fn with_effective_ignore(
             "respect_gitignore".to_string(),
             serde_json::json!(respect_gitignore),
         );
+        object.extend(applied);
     }
     details
+}
+
+/// Read `confidence_floor` as a number in `[0, 1]`, or `None` when absent.
+///
+/// Out of range is an error naming the range, for the reason `mmr` is: a clamp
+/// would answer 2 with the same listing 1 gives and never say that the value the
+/// caller wrote did not run. `0` is a legitimate floor (`>= 0` keeps everything
+/// the walk reached), so it is not treated as "unset".
+fn parse_confidence_floor(params: &serde_json::Value) -> anyhow::Result<Option<f64>> {
+    match params.get("confidence_floor") {
+        None => Ok(None),
+        Some(raw) => {
+            let floor = raw.as_f64().ok_or_else(|| {
+                anyhow::anyhow!("`confidence_floor` must be a number in [0, 1], got {raw}")
+            })?;
+            if !(0.0..=1.0).contains(&floor) {
+                anyhow::bail!(
+                    "`confidence_floor` must be in [0, 1] (0 keeps every step the walk reached, \
+                     1 keeps only fully certain ones), got {floor}"
+                );
+            }
+            Ok(Some(floor))
+        }
+    }
+}
+
+/// Read `lease_wait` as a millisecond count (`0` = one attempt, then give up).
+///
+/// The store's own contract is [`std::time::Duration`], where zero means "try
+/// once": the milliseconds here are that same quantity, so `0` is not a special
+/// case in the tool, it is the store's existing meaning.
+fn parse_lease_wait(params: &serde_json::Value) -> anyhow::Result<Option<u64>> {
+    match params.get("lease_wait") {
+        None => Ok(None),
+        Some(raw) => raw.as_u64().map(Some).ok_or_else(|| {
+            anyhow::anyhow!(
+                "`lease_wait` must be an integer number of milliseconds >= 0, got {raw}"
+            )
+        }),
+    }
+}
+
+/// Read `extensions` as a lowercase allowlist, or `None` when absent.
+///
+/// A leading dot and case are normalised (`.RS` and `rs` name the same files),
+/// because the walk compares the extension exactly: a caller that wrote `.rs`
+/// would otherwise restrict the run to nothing and read the empty graph as an
+/// empty codebase. An unknown extension is *not* an error — see
+/// [`unmatched_extensions`] for how it is reported instead.
+fn parse_extensions(params: &serde_json::Value) -> anyhow::Result<Option<Vec<String>>> {
+    let Some(raw) = params.get("extensions") else {
+        return Ok(None);
+    };
+    let raw = raw.as_str().ok_or_else(|| {
+        anyhow::anyhow!("`extensions` must be a comma-separated string, got {raw}")
+    })?;
+    let mut extensions: Vec<String> = Vec::new();
+    for name in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        let name = name.trim_start_matches('.').to_ascii_lowercase();
+        if name.is_empty() {
+            anyhow::bail!("`extensions` has an empty entry in {raw:?}: write e.g. \"rs,ts\"");
+        }
+        if !extensions.contains(&name) {
+            extensions.push(name);
+        }
+    }
+    if extensions.is_empty() {
+        anyhow::bail!("`extensions` must name at least one extension, e.g. \"rs,ts\": got {raw:?}");
+    }
+    Ok(Some(extensions))
+}
+
+/// Read `max_file_bytes` as a size of at least one byte.
+fn parse_max_file_bytes(params: &serde_json::Value) -> anyhow::Result<Option<u64>> {
+    match params.get("max_file_bytes") {
+        None => Ok(None),
+        Some(raw) => raw
+            .as_u64()
+            .filter(|bytes| *bytes >= 1)
+            .map(Some)
+            .ok_or_else(|| anyhow::anyhow!("`max_file_bytes` must be an integer >= 1, got {raw}")),
+    }
+}
+
+/// Which requested extensions indexed no file.
+///
+/// The walk's allowlist is exact, so a misspelt or absent extension silently
+/// yields the empty set — the answer then reads as "this codebase has no such
+/// file", which is the same false negative the cold-start build exists to
+/// prevent. Reporting the misses turns that into a stated fact. The set is read
+/// back from the store, so it describes what this run left indexed rather than
+/// what the walk was asked for.
+fn unmatched_extensions(
+    store: &GraphStore,
+    project: &str,
+    extensions: &[String],
+) -> anyhow::Result<Vec<String>> {
+    let files = store
+        .all_file_hashes(project)
+        .map_err(|err| anyhow::anyhow!("failed to read the indexed file set: {err}"))?;
+    let matched: std::collections::HashSet<&str> = files
+        .keys()
+        .filter_map(|rel| Path::new(rel).extension().and_then(|ext| ext.to_str()))
+        .collect();
+    Ok(extensions
+        .iter()
+        .filter(|ext| !matched.contains(ext.as_str()))
+        .cloned()
+        .collect())
+}
+
+/// The index-scope knobs a caller set, read once for `index` and `reindex`.
+///
+/// All three reach the store through `IndexOptions` builders that already
+/// existed; the gap was that no tool call could set them. Kept as one struct so
+/// the two actions that share `discover`/the writer lease read them the same way
+/// and neither drifts from the other.
+#[derive(Debug, Default)]
+struct IndexScope {
+    /// Milliseconds to wait for another index run's writer lease.
+    lease_wait: Option<u64>,
+    /// Extension allowlist, normalised.
+    extensions: Option<Vec<String>>,
+    /// Largest file to index.
+    max_file_bytes: Option<u64>,
+}
+
+impl IndexScope {
+    /// Read the three knobs from a call's parameters.
+    fn read(params: &serde_json::Value) -> anyhow::Result<Self> {
+        Ok(Self {
+            lease_wait: parse_lease_wait(params)?,
+            extensions: parse_extensions(params)?,
+            max_file_bytes: parse_max_file_bytes(params)?,
+        })
+    }
+
+    /// Apply the knobs the caller set to `opts`.
+    fn apply(&self, mut opts: IndexOptions) -> IndexOptions {
+        if let Some(ms) = self.lease_wait {
+            opts = opts.with_lease_wait(std::time::Duration::from_millis(ms));
+        }
+        if let Some(extensions) = &self.extensions {
+            opts = opts.with_extensions(extensions.clone());
+        }
+        if let Some(bytes) = self.max_file_bytes {
+            opts = opts.with_max_file_bytes(bytes);
+        }
+        opts
+    }
+
+    /// The `details` echo, recording only the knobs the caller set.
+    fn details(&self, unmatched: &[String]) -> serde_json::Map<String, serde_json::Value> {
+        let mut applied = serde_json::Map::new();
+        if let Some(ms) = self.lease_wait {
+            applied.insert("lease_wait".to_string(), serde_json::json!(ms));
+        }
+        if let Some(bytes) = self.max_file_bytes {
+            applied.insert("max_file_bytes".to_string(), serde_json::json!(bytes));
+        }
+        if let Some(extensions) = &self.extensions {
+            applied.insert("extensions".to_string(), serde_json::json!(extensions));
+            applied.insert(
+                "extensions_unmatched".to_string(),
+                serde_json::json!(unmatched),
+            );
+        }
+        applied
+    }
+
+    /// Extensions that matched no file, or an empty list when none were set.
+    fn unmatched(&self, store: &GraphStore, project: &str) -> anyhow::Result<Vec<String>> {
+        match &self.extensions {
+            None => Ok(Vec::new()),
+            Some(extensions) => unmatched_extensions(store, project, extensions),
+        }
+    }
+}
+
+/// The note a caller must see in the answer's own text, or `None`.
+///
+/// `details` is not what a provider forwards to the model, so an empty result
+/// caused by a misspelt extension has to say so where the model reads: "0
+/// files" and "no `.rs` file here" are the same answer otherwise, and the empty
+/// graph then reads as an empty codebase. An unscoped run produces no note, so
+/// its text stays exactly what it was.
+fn unmatched_note(unmatched: &[String]) -> Option<String> {
+    if unmatched.is_empty() {
+        return None;
+    }
+    let missed = unmatched.join(", ");
+    Some(format!(
+        "Requested extension(s) {missed} matched no indexed file: this run left the index \
+         with none of them, so an empty answer here means the allowlist excluded everything, \
+         not that the code is absent."
+    ))
 }
 
 /// The note that names a cold-start build, and the mode it ran in.
@@ -248,11 +452,25 @@ const ACCEPTED_PARAMS: &[(&str, &[&str])] = &[
             "index_depth",
             "depth",
             "respect_gitignore",
+            "lease_wait",
+            "extensions",
+            "max_file_bytes",
         ],
     ),
     // Discovery is shared with `index` (`reindex_incremental` calls the same
-    // `discover`), so the ignore mode decides the new-file set here too.
-    ("reindex", &["path", "root", "respect_gitignore"]),
+    // `discover`) and so is the writer lease, so the ignore mode and the three
+    // scope knobs decide this run the same way.
+    (
+        "reindex",
+        &[
+            "path",
+            "root",
+            "respect_gitignore",
+            "lease_wait",
+            "extensions",
+            "max_file_bytes",
+        ],
+    ),
     (
         "search",
         &[
@@ -276,6 +494,7 @@ const ACCEPTED_PARAMS: &[(&str, &[&str])] = &[
             "depth",
             "limit",
             "edge_types",
+            "confidence_floor",
         ],
     ),
     ("architecture", &["path", "root", "view"]),
@@ -628,32 +847,48 @@ impl GraphTool {
         // a store built with `false` drops the ignored files it can no longer see.
         let respect_gitignore = parse_respect_gitignore(params)?;
         opts = opts.with_respect_gitignore(respect_gitignore);
+        // The store could already narrow the walk to an extension allowlist, cap a
+        // file's size, and wait for another session's writer lease. None of the
+        // three was reachable from a tool call, so the model could not scope a build
+        // to one language, keep a vendored multi-megabyte file out, or ask a
+        // contended build to wait instead of fail.
+        let scope = IndexScope::read(params)?;
+        opts = scope.apply(opts);
         self.warm_reader()?;
-        let report = self.with_store(|store| {
-            store
+        let (report, unmatched) = self.with_store(|store| {
+            let report = store
                 .index_project(&root, &opts)
-                .map_err(|err| anyhow::anyhow!("index failed: {err}"))
+                .map_err(|err| anyhow::anyhow!("index failed: {err}"))?;
+            // Read the misses back from the store: the honest answer to "which
+            // extension matched nothing" is about the files this run left indexed.
+            let unmatched = scope.unmatched(store, &project)?;
+            Ok((report, unmatched))
         })?;
+        let mut text = format!(
+            "Indexed project `{project}` at {}: {} nodes in the store, {} edges, \
+             {} files parsed ({} added, {} modified, {} removed, {} unchanged, {} failed, \
+             {} partial, {} unusable, {} skipped; {} node(s) written this run).",
+            root.display(),
+            report.store_nodes,
+            report.edges,
+            report.parsed,
+            report.added,
+            report.modified,
+            report.removed,
+            report.unchanged,
+            report.failed,
+            report.partial,
+            report.unusable,
+            report.skipped,
+            report.nodes,
+        );
+        if let Some(note) = unmatched_note(&unmatched) {
+            text.push('\n');
+            text.push_str(&note);
+        }
         Ok(AgentToolResult {
-            content: vec![pa_agent::types::ToolResultContent::text(format!(
-                "Indexed project `{project}` at {}: {} nodes in the store, {} edges, \
-                 {} files parsed ({} added, {} modified, {} removed, {} unchanged, {} failed, \
-                 {} partial, {} unusable, {} skipped; {} node(s) written this run).",
-                root.display(),
-                report.store_nodes,
-                report.edges,
-                report.parsed,
-                report.added,
-                report.modified,
-                report.removed,
-                report.unchanged,
-                report.failed,
-                report.partial,
-                report.unusable,
-                report.skipped,
-                report.nodes,
-            ))],
-            details: with_effective_ignore(&report, respect_gitignore),
+            content: vec![pa_agent::types::ToolResultContent::text(text)],
+            details: with_effective_ignore(&report, respect_gitignore, scope.details(&unmatched)),
             terminate: None,
             is_error: false,
         })
@@ -663,24 +898,35 @@ impl GraphTool {
         let root = self.resolve_root(params);
         let project = project_name(&root);
         let respect_gitignore = parse_respect_gitignore(params)?;
-        let opts = IndexOptions::new(&project).with_respect_gitignore(respect_gitignore);
+        // The incremental path shares discovery with `index` and takes the same
+        // writer lease, so it reads the same three scope knobs.
+        let scope = IndexScope::read(params)?;
+        let opts =
+            scope.apply(IndexOptions::new(&project).with_respect_gitignore(respect_gitignore));
         self.warm_reader()?;
-        let report = self.with_store(|store| {
-            store
+        let (report, unmatched) = self.with_store(|store| {
+            let report = store
                 .reindex_incremental(&root, &opts)
-                .map_err(|err| anyhow::anyhow!("reindex failed: {err}"))
+                .map_err(|err| anyhow::anyhow!("reindex failed: {err}"))?;
+            let unmatched = scope.unmatched(store, &project)?;
+            Ok((report, unmatched))
         })?;
+        let mut text = format!(
+            "Incrementally reindexed project `{project}`: {} files reindexed, {} closure \
+             dependents, {} removed, {} unchanged (reason: {:?}).",
+            report.files_reindexed,
+            report.closure_files,
+            report.removed,
+            report.unchanged,
+            report.reason,
+        );
+        if let Some(note) = unmatched_note(&unmatched) {
+            text.push('\n');
+            text.push_str(&note);
+        }
         Ok(AgentToolResult {
-            content: vec![pa_agent::types::ToolResultContent::text(format!(
-                "Incrementally reindexed project `{project}`: {} files reindexed, {} closure \
-                 dependents, {} removed, {} unchanged (reason: {:?}).",
-                report.files_reindexed,
-                report.closure_files,
-                report.removed,
-                report.unchanged,
-                report.reason,
-            ))],
-            details: with_effective_ignore(&report, respect_gitignore),
+            content: vec![pa_agent::types::ToolResultContent::text(text)],
+            details: with_effective_ignore(&report, respect_gitignore, scope.details(&unmatched)),
             terminate: None,
             is_error: false,
         })
@@ -973,6 +1219,18 @@ impl GraphTool {
         if !edge_types.is_empty() {
             opts.edge_types = edge_types;
         }
+        // The store already computed a confidence per step and already labelled
+        // the weak ones; nothing could ask it to hide them. A floor is a filter
+        // over that existing number, not a new signal, so it costs one comparison
+        // per step and lets a caller read only the edges worth trusting.
+        let confidence_floor = parse_confidence_floor(params)?;
+        if let Some(floor) = confidence_floor {
+            // In `[0, 1]` by `parse_confidence_floor`, so the narrowing cast keeps
+            // every value the caller can write.
+            #[allow(clippy::cast_possible_truncation)]
+            let floor = floor as f32;
+            opts = opts.with_confidence_floor(Some(floor));
+        }
         let result = self.with_read(|store| {
             store
                 .trace(&opts)
@@ -983,7 +1241,7 @@ impl GraphTool {
             lines.push(cold_build_note(report));
         }
         lines.push(format!(
-            "Trace from {} ({} step(s)){}:",
+            "Trace from {} ({} step(s)){}{}:",
             result.origin,
             result.steps.len(),
             if result.truncated {
@@ -994,7 +1252,17 @@ impl GraphTool {
                 )
             } else {
                 String::new()
-            }
+            },
+            // A floor makes a short listing ambiguous unless the drops are named:
+            // "2 steps" from a symbol that calls twenty reads as a small symbol.
+            if result.filtered > 0 {
+                format!(
+                    " — {} step(s) below the confidence floor were filtered out;                      lower `confidence_floor` to see them",
+                    result.filtered
+                )
+            } else {
+                String::new()
+            },
         ));
         for step in &result.steps {
             lines.push(format!(
@@ -1034,14 +1302,20 @@ impl GraphTool {
                 })
             })
             .collect();
+        let mut details = serde_json::Map::new();
+        details.insert("origin_id".to_string(), serde_json::json!(result.origin_id));
+        details.insert("origin".to_string(), serde_json::json!(result.origin));
+        details.insert("steps".to_string(), serde_json::Value::Array(steps));
+        details.insert("truncated".to_string(), serde_json::json!(result.truncated));
+        // Only a call that set a floor carries the echo, so a plain trace keeps
+        // exactly the answer it had before the parameter existed.
+        if let Some(floor) = confidence_floor {
+            details.insert("confidence_floor".to_string(), serde_json::json!(floor));
+            details.insert("filtered".to_string(), serde_json::json!(result.filtered));
+        }
         Ok(AgentToolResult {
             content: vec![pa_agent::types::ToolResultContent::text(lines.join("\n"))],
-            details: serde_json::json!({
-                "origin_id": result.origin_id,
-                "origin": result.origin,
-                "steps": steps,
-                "truncated": result.truncated,
-            }),
+            details: serde_json::Value::Object(details),
             terminate: None,
             is_error: false,
         })
@@ -1567,6 +1841,12 @@ pub fn params_schema() -> serde_json::Value {
                 "type": "string",
                 "description": "Comma-separated edge filter for trace, e.g. \"calls,imports\" (default calls)."
             },
+            "confidence_floor": {
+                "type": "number",
+                "minimum": 0.0,
+                "maximum": 1.0,
+                "description": "action=\"trace\": keep only steps whose confidence is at least this, in [0, 1]. A step's confidence is the product of the edge confidences along its path from the start symbol, so it falls with depth and one guessed edge discounts everything reached through it. Each edge's baseline is set by how it was resolved: an imported callee 0.95, one in the same module 0.90, a known external 0.80, a project-wide unique name 0.75, a suffix guess 0.55. A floor of 0.6 therefore keeps direct calls and drops anything reached through a guess; because the values multiply, a deep path through only-resolved edges falls fastest, so lower the floor or check the printed per-step confidence before concluding a deep path is absent. The trace header states how many steps the floor removed. Omit to keep every step and only label the weak ones. An edge that recorded no confidence counts as fully confident and is never dropped: the indexer writes a confidence on every edge it resolves, so an absent one belongs to an edge that never claimed it."
+            },
             "view": {
                 "type": "string",
                 "enum": [
@@ -1601,6 +1881,20 @@ pub fn params_schema() -> serde_json::Value {
             "force": {
                 "type": "boolean",
                 "description": "Re-parse every file on action=\"index\", ignoring stored hashes."
+            },
+            "lease_wait": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "action=\"index\"/\"reindex\": how many milliseconds to wait for another session's index run to release the database's single writer before failing, instead of failing at once. A full pass over a large tree is measured at over two minutes, so a second session arriving mid-build usually wants to wait and then find the work already done. 0 means one attempt, then give up (the default). Raise it when two sessions may index the same project; the call then comes back with the finished graph instead of a timeout."
+            },
+            "extensions": {
+                "type": "string",
+                "description": "action=\"index\"/\"reindex\": comma-separated extension allowlist, e.g. \"rs,ts\". Case and a leading dot are ignored (.RS is rs). Use it to scope a build to one language in a mixed tree, so a query is not diluted by generated or vendored files in another language. An extension that matches nothing is NOT an error - the answer says which ones matched no file, because an empty graph from a misspelled extension would otherwise read as an empty codebase."
+            },
+            "max_file_bytes": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "action=\"index\"/\"reindex\": largest file to index, in bytes (default 2 MiB). Use it to keep a huge generated or minified file out of the graph. On `index` the file is read just far enough to measure it, then skipped: `skipped` counts it and the coverage notes name it as `oversized: N bytes`, so a symbol that is missing from the graph has a stated reason. `reindex` applies the same cap to its repair set and leaves such a file alone rather than re-parsing it, but reports no per-file skip."
             },
             "respect_gitignore": {
                 "type": "boolean",
@@ -2095,16 +2389,20 @@ mod tests {
             vec![
                 "action",
                 "candidate_multiplier",
+                "confidence_floor",
                 "consequences",
                 "context",
                 "decision",
                 "depth",
                 "direction",
                 "edge_types",
+                "extensions",
                 "force",
                 "index_depth",
                 "label",
+                "lease_wait",
                 "limit",
+                "max_file_bytes",
                 "mmr",
                 "path",
                 "query",
@@ -3105,6 +3403,339 @@ mod tests {
         assert!(
             !text.contains("see details"),
             "no stub for the default view either: {text}"
+        );
+    }
+
+    /// `confidence_floor` filters the trace, echoes its value, and refuses a
+    /// value outside `[0, 1]` naming the range.
+    ///
+    /// Red-first: with the `confidence_floor` read removed from `action_trace`,
+    /// both steps come back, `details.confidence_floor` is absent and the
+    /// "filtered out" line never appears — every assertion below fails.
+    #[tokio::test]
+    async fn the_confidence_floor_filters_steps_and_refuses_a_value_outside_the_range() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Each callee name is unique in the project, so both edges resolve at the
+        // `unique` confidence 0.75: `b` lands at 0.75 and `c` at 0.5625, and a
+        // floor of 0.6 splits them.
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "pub fn a() -> u32 { b() }\npub fn b() -> u32 { c() }\npub fn c() -> u32 { 1 }\n",
+        )
+        .expect("lib.rs");
+        let plain = run_action(
+            dir.path(),
+            "trace",
+            serde_json::json!({"symbol": "a", "depth": 2}),
+        )
+        .await
+        .expect("trace");
+        assert_eq!(
+            plain.details["steps"].as_array().map(Vec::len),
+            Some(2),
+            "no floor keeps every step: {}",
+            text_of(&plain)
+        );
+
+        let floored = run_action(
+            dir.path(),
+            "trace",
+            serde_json::json!({"symbol": "a", "depth": 2, "confidence_floor": 0.6}),
+        )
+        .await
+        .expect("a floor in range is accepted");
+        let names: Vec<&str> = floored.details["steps"]
+            .as_array()
+            .expect("steps")
+            .iter()
+            .map(|step| step["name"].as_str().expect("name"))
+            .collect();
+        assert_eq!(names, vec!["b"], "c at 0.5625 is below 0.6: {names:?}");
+        assert_eq!(floored.details["confidence_floor"], 0.6);
+        assert_eq!(floored.details["filtered"], 1);
+        let text = text_of(&floored);
+        assert!(
+            text.contains("below the confidence floor were filtered out"),
+            "a short listing must say why it is short: {text}"
+        );
+        assert!(
+            text.contains("1 step(s)"),
+            "the header counts the kept steps: {text}"
+        );
+
+        // Out of range: an error, not a clamp, and it names the range.
+        for bad in [serde_json::json!(1.5), serde_json::json!(-0.1)] {
+            let error = run_action(
+                dir.path(),
+                "trace",
+                serde_json::json!({"symbol": "a", "confidence_floor": bad}),
+            )
+            .await
+            .expect_err("an out-of-range floor must be refused");
+            let message = error.to_string();
+            assert!(
+                message.contains("`confidence_floor` must be in [0, 1]") && message.contains("got"),
+                "the error names the range and the value: {message}"
+            );
+        }
+    }
+
+    /// `lease_wait` reaches the writer lease: `0` means one attempt, so a second
+    /// index during a build fails instead of waiting it out.
+    ///
+    /// Red-first: with the `lease_wait` read removed, the default 300 s wait
+    /// applies, so the contended call below returns after the build released the
+    /// lease — `expect_err` panics.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_lease_wait_is_echoed_and_zero_means_one_attempt() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_bulk_tree(dir.path(), 1);
+        // Two tools on one database, as two sessions would be. Both are warmed
+        // before the build so the contended call measures the lease, not a cold
+        // open.
+        let builder = std::sync::Arc::new(tool(dir.path()));
+        let waiter = std::sync::Arc::new(tool(dir.path()));
+        for warming in [&builder, &waiter] {
+            warming
+                .dispatch(&serde_json::json!({ "action": "index" }))
+                .expect("warm index");
+        }
+        write_bulk_tree(dir.path(), 400);
+
+        let build_tool = std::sync::Arc::clone(&builder);
+        let build = tokio::task::spawn_blocking(move || {
+            build_tool.dispatch(&serde_json::json!({ "action": "index" }))
+        });
+        // Readiness on the lease itself, not a sleep: this probe only fails once
+        // another holder owns the lock file, so it cannot pass early.
+        let db = dir.path().join("graph.db");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while pa_graph::lease::IndexLease::acquire(
+            &db,
+            std::time::Duration::ZERO,
+            &pa_graph::lease::CancelToken::new(),
+        )
+        .is_ok()
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the build never took the writer lease"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        let started = std::time::Instant::now();
+        let contended = waiter.dispatch(&serde_json::json!({"action": "index", "lease_wait": 0}));
+        let elapsed = started.elapsed();
+        let error = contended.expect_err("lease_wait 0 must not wait for the build");
+        let message = error.to_string();
+        assert!(
+            message.contains("index writer lease") && message.contains("timed out"),
+            "the failure is the lease timeout: {message}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "lease_wait 0 took {elapsed:?}: it waited instead of trying once"
+        );
+        assert!(
+            !build.is_finished(),
+            "the fixture was too small: the build ended before the contended call"
+        );
+        build
+            .await
+            .expect("the build task joins")
+            .expect("the build itself succeeds");
+
+        // And the value is echoed once the lease is free.
+        let after = run_action(dir.path(), "index", serde_json::json!({"lease_wait": 0}))
+            .await
+            .expect("an uncontended index with lease_wait 0");
+        assert_eq!(
+            after.details["lease_wait"], 0,
+            "the wait is echoed in milliseconds"
+        );
+    }
+
+    /// `extensions` restricts the parsed set, and a requested extension that
+    /// matched nothing is named rather than reading as an empty codebase.
+    ///
+    /// Red-first: with the `with_extensions` call removed, the Python file is
+    /// indexed and both the file-set and the unmatched-list assertions fail.
+    #[tokio::test]
+    async fn the_extension_allowlist_restricts_the_set_and_names_the_unmatched() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "pub fn rust_symbol() -> u32 { 1 }\n",
+        )
+        .expect("a.rs");
+        std::fs::write(
+            dir.path().join("b.py"),
+            "def python_symbol():\n    return 1\n",
+        )
+        .expect("b.py");
+
+        // `tsx` matches nothing here: not an error, but it must be named.
+        let scoped = run_action(
+            dir.path(),
+            "index",
+            serde_json::json!({"extensions": ".RS, tsx"}),
+        )
+        .await
+        .expect("an unknown extension must not error");
+        assert_eq!(
+            scoped.details["extensions"],
+            serde_json::json!(["rs", "tsx"]),
+            "the echo is normalised: {}",
+            scoped.details
+        );
+        assert_eq!(
+            scoped.details["extensions_unmatched"],
+            serde_json::json!(["tsx"]),
+            "the extension that matched nothing is reported: {}",
+            scoped.details
+        );
+        let text = text_of(&scoped);
+        assert!(
+            text.contains("tsx") && text.contains("matched no indexed file"),
+            "the model reads why the set is narrow: {text}"
+        );
+
+        let store = GraphStore::open(dir.path().join("graph.db")).expect("open");
+        let mut files: Vec<String> = store
+            .all_file_hashes(&project_name(dir.path()))
+            .expect("hashes")
+            .into_keys()
+            .collect();
+        files.sort();
+        assert_eq!(files, vec!["a.rs"], "only the allowed extension is parsed");
+
+        // A second scoped run whose extension exists reports nothing unmatched.
+        let matched = run_action(dir.path(), "index", serde_json::json!({"extensions": "rs"}))
+            .await
+            .expect("index");
+        assert_eq!(
+            matched.details["extensions_unmatched"],
+            serde_json::json!([]),
+            "{}",
+            matched.details
+        );
+        assert!(
+            !text_of(&matched).contains("matched no indexed file"),
+            "a satisfied allowlist says nothing extra: {}",
+            text_of(&matched)
+        );
+    }
+
+    /// `max_file_bytes` excludes an oversized file, and the skip is visible.
+    ///
+    /// Red-first: with the `with_max_file_bytes` call removed, `big.rs` is
+    /// indexed, so both the file-set and the coverage assertions fail.
+    #[tokio::test]
+    async fn the_max_file_bytes_excludes_an_oversized_file_and_the_skip_is_visible() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.rs"), "pub fn small() -> u32 { 1 }\n").expect("a.rs");
+        let padding = "// padding padding padding padding padding padding padding padding\n";
+        std::fs::write(
+            dir.path().join("big.rs"),
+            format!("{padding}{padding}pub fn big() -> u32 {{ 2 }}\n"),
+        )
+        .expect("big.rs");
+
+        let scoped = run_action(
+            dir.path(),
+            "index",
+            serde_json::json!({"max_file_bytes": 64}),
+        )
+        .await
+        .expect("a size cap is accepted");
+        assert_eq!(scoped.details["max_file_bytes"], 64);
+
+        let store = GraphStore::open(dir.path().join("graph.db")).expect("open");
+        let project = project_name(dir.path());
+        let mut indexed: Vec<String> = store
+            .all_file_hashes(&project)
+            .expect("hashes")
+            .into_keys()
+            .collect();
+        indexed.sort();
+        assert_eq!(indexed, vec!["a.rs"], "the oversized file is not indexed");
+
+        // The skip is in the report's own numbers and names its reason.
+        let report = &scoped.details;
+        assert_eq!(report["skipped"], 1, "{report}");
+        let notes = store.coverage_rows(&project).expect("coverage rows");
+        let big = notes
+            .iter()
+            .find(|(rel, _, _)| rel == "big.rs")
+            .unwrap_or_else(|| panic!("no coverage note for big.rs: {notes:?}"));
+        assert_eq!(big.1, "skipped");
+        assert!(
+            big.2.starts_with("oversized: ") && big.2.ends_with(" bytes"),
+            "the note says why: {big:?}"
+        );
+    }
+
+    /// With none of the four knobs set, `details` carries no new keys and the
+    /// answer keeps its old shape.
+    ///
+    /// This is the compatibility half: the four parameters are additions, so a
+    /// call that uses none of them must be indistinguishable from one made
+    /// before they existed.
+    #[tokio::test]
+    async fn a_run_with_no_scope_knob_carries_no_new_keys() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "pub fn one() -> u32 { two() }\npub fn two() -> u32 { 2 }\n",
+        )
+        .expect("lib.rs");
+        let index = run_action(dir.path(), "index", serde_json::json!({}))
+            .await
+            .expect("index");
+        let mut keys: Vec<&str> = index
+            .details
+            .as_object()
+            .expect("details object")
+            .keys()
+            .map(String::as_str)
+            .filter(|key| *key != "durationMs")
+            .collect();
+        keys.sort_unstable();
+        // The report's own fields, plus the ignore mode (there since that parameter
+        // landed) -- and nothing else.
+        let default_report = serde_json::to_value(IndexReport::default()).expect("report json");
+        let mut expected: Vec<&str> = default_report
+            .as_object()
+            .expect("report object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        expected.push("respect_gitignore");
+        expected.sort_unstable();
+        assert_eq!(keys, expected, "an unscoped index grew new details keys");
+        assert!(!text_of(&index).contains("matched no indexed file"));
+
+        let trace = run_action(
+            dir.path(),
+            "trace",
+            serde_json::json!({"symbol": "one", "depth": 1}),
+        )
+        .await
+        .expect("trace");
+        let mut trace_keys: Vec<&str> = trace
+            .details
+            .as_object()
+            .expect("details object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        trace_keys.sort_unstable();
+        assert_eq!(
+            trace_keys,
+            vec!["durationMs", "origin", "origin_id", "steps", "truncated"],
+            "an unfiltered trace grew new details keys: {}",
+            trace.details
         );
     }
 }
