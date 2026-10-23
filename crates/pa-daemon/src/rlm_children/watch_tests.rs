@@ -33,6 +33,9 @@ enum FakeChild {
     /// Unreachable; the watcher's give-up poll parks until the test
     /// lands a reader's verdict.
     UnreachableUntilVerdict,
+    /// The child's last turn DIED (retry exhaustion): idle, with an error row
+    /// and no answer text.
+    FailedTurn,
 }
 
 /// A scripted JSONL supervisor for the watcher tests: creates one child
@@ -218,7 +221,20 @@ async fn spawn_fake_supervisor(
                             // answer hand-off and reads no text (a None
                             // capture), later reads answer.
                             let reads = child_subagents.answer_reads.fetch_add(1, Ordering::SeqCst);
-                            if matches!(child, FakeChild::TextLate) && reads == 0 {
+                            if matches!(child, FakeChild::FailedTurn) {
+                                // A turn that died from retry exhaustion: no
+                                // text, a terminal stopReason, the diagnostic in
+                                // its own field.
+                                response_success(
+                                    Some(&id),
+                                    command_type,
+                                    Some(json!({
+                                        "text": null,
+                                        "failed": true,
+                                        "error": "Retry failed after 3 attempts: provider down"
+                                    })),
+                                )
+                            } else if matches!(child, FakeChild::TextLate) && reads == 0 {
                                 response_success(Some(&id), command_type, Some(json!({})))
                             } else {
                                 response_success(
@@ -759,6 +775,48 @@ async fn a_worker_leaving_inside_the_settle_grace_keeps_the_verdict() {
     assert!(notice["customMessage"]["content"]
         .as_str()
         .is_some_and(|content| content.contains("the child final answer")));
+}
+
+/// A child whose last turn DIED must settle as `error`, not `done`, and its
+/// diagnostic must reach the parent.
+///
+/// The watcher settles a child on idle and used to record every idle child as
+/// `done`. A turn that died with "retry failed" is idle, has no answer text (the
+/// diagnostic lives in `errorMessage`, which `get_last_assistant_text` never
+/// read), so the parent saw a SUCCESS with an empty answer — the failure was
+/// erased exactly at the boundary that was supposed to report it. Reproduced in
+/// the field: a verify subagent lost 266 messages of work and the parent got
+/// nothing.
+#[tokio::test]
+async fn a_child_whose_turn_died_settles_as_error_and_carries_its_diagnostic() {
+    let (follow_up_tx, _follow_up_rx) = mpsc::unbounded_channel();
+    let (sessions, _kill_rx) =
+        sessions_with_fake_supervisor(follow_up_tx, 0, FakeKill::Success, FakeChild::FailedTurn)
+            .await;
+    let settled = sessions.settle_notified();
+    let handle = spawn_child(&sessions).await;
+    sessions.notify_turn_done();
+    tokio::time::timeout(Duration::from_secs(10), settled)
+        .await
+        .expect("the child settles");
+
+    let roster = sessions.list_subagents().await.expect("child roster");
+    let row = roster
+        .iter()
+        .find(|child| child.rlm_child_id == handle.rlm_child_id)
+        .expect("the child row");
+    assert_eq!(
+        row.status, "error",
+        "a turn that died is not a completed run: {:?}",
+        row.status
+    );
+    assert!(
+        row.answer_preview
+            .as_deref()
+            .is_some_and(|preview| preview.contains("provider down")),
+        "the diagnostic is the only thing the parent can be given: {:?}",
+        row.answer_preview
+    );
 }
 
 #[tokio::test]

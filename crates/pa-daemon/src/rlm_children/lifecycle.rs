@@ -370,17 +370,39 @@ impl SupervisorChildSessionsInner {
     /// [`ANSWER_TEXT_MAX_CHARS`] instead, so the whole fenced JSON a
     /// settle binds from survives).
     async fn child_answer_raw(&self, active_session_id: &str) -> Result<Option<String>> {
+        Ok(self.child_last_answer(active_session_id).await?.0)
+    }
+
+    /// The child's last assistant text and whether that turn DIED.
+    ///
+    /// One round trip on purpose: the settle verdict and the answer are two facts
+    /// about the SAME row, and reading them separately let a failed turn reach the
+    /// parent as a success with an empty answer.
+    async fn child_last_answer(
+        &self,
+        active_session_id: &str,
+    ) -> Result<(Option<String>, bool, Option<String>)> {
         let command = DaemonCommand::GetLastAssistantText {
             id: None,
             active_session_id: active_session_id.to_string(),
             rest: Map::default(),
         };
         let answer = self.command(&command, STATE_TIMEOUT_MS).await?;
-        Ok(answer
+        let text = answer
             .get("text")
             .and_then(Value::as_str)
             .filter(|text| !text.is_empty())
-            .map(str::to_string))
+            .map(str::to_string);
+        let failed = answer
+            .get("failed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let error = answer
+            .get("error")
+            .and_then(Value::as_str)
+            .filter(|error| !error.is_empty())
+            .map(str::to_string);
+        Ok((text, failed, error))
     }
 
     /// Best-effort bounded wait for one child and its descendants to go
@@ -447,15 +469,20 @@ impl SupervisorChildSessionsInner {
         // a link round trip): one fetch yields the raw text both lanes
         // derive from — the compact preview for the roster rows and the
         // full text for the collect envelope's binding lane.
-        let raw_answer = self
-            .child_answer_raw(&active_session_id)
-            .await
-            .ok()
-            .flatten();
-        let answer = raw_answer.as_deref().map(compact_rlm_text);
-        let answer_text = raw_answer
-            .as_deref()
-            .map(|text| cap_text(text, ANSWER_TEXT_MAX_CHARS));
+        let observed = self.child_last_answer(&active_session_id).await.ok();
+        let raw_answer = observed.as_ref().and_then(|(text, _, _)| text.clone());
+        let child_failed = observed.as_ref().is_some_and(|(_, failed, _)| *failed);
+        let child_failure = observed.and_then(|(_, _, error)| error);
+        // A died turn has no text, so the diagnostic stands in for it here: the
+        // preview lanes are the only channel the parent reads, and an empty
+        // envelope is what made the failure invisible.
+        let surfaced = raw_answer.as_deref().or_else(|| {
+            child_failure
+                .as_deref()
+                .filter(|failure| !failure.is_empty())
+        });
+        let answer = surfaced.map(compact_rlm_text);
+        let answer_text = surfaced.map(|text| cap_text(text, ANSWER_TEXT_MAX_CHARS));
         let mut record = record.lock().await;
         // The settle verdict is one-shot, the answer capture is not: a
         // `None` first capture (the settle raced the worker's answer
@@ -466,8 +493,14 @@ impl SupervisorChildSessionsInner {
         // writes when the fresh round trip produced a text AND the row has
         // no answer yet, so a settled preview is still never overwritten
         // with a later miss.
+        // A child whose last turn DIED is not `done`: it settled (it is idle) but
+        // it produced no answer, and recording it as a success is how a parent
+        // came to believe a subagent finished while it had actually hit retry
+        // exhaustion (issue: the parent "gets nothing" and has no signal).
+        // `error` keeps the collect envelope honest and lets a caller decide to
+        // re-spawn.
         if record.settled_status.is_none() {
-            record.settled_status = Some("done");
+            record.settled_status = Some(if child_failed { "error" } else { "done" });
         }
         if (!record.answer_captured || record.answer_preview.is_none()) && answer.is_some() {
             record.answer_preview = answer;

@@ -660,18 +660,34 @@ impl Worker {
             return response;
         }
         let core = self.core.lock().unwrap();
-        let text = core.store.as_ref().and_then(|store| {
-            store
+        // The last assistant row AND whether it is a terminal failure. A parent
+        // watcher settles a child on idle and used to record every idle child as
+        // `done`, so a turn that died with "retry failed" reached the parent as a
+        // SUCCESS with an empty answer — the failure was erased at the boundary.
+        // The error lives in `errorMessage`, a field `message_text` does not read,
+        // so the row is reported alongside the text rather than inferred from it.
+        let (text, failed, error) = core.store.as_ref().map_or((None, false, None), |store| {
+            let last = store
                 .messages()
                 .into_iter()
                 .rev()
-                .find(|message| crate::types::message_role(message) == Some("assistant"))
-                .map(|message| crate::types::message_text(&message))
+                .find(|message| crate::types::message_role(message) == Some("assistant"));
+            let failed = last
+                .as_ref()
+                .is_some_and(|message| crate::types::message_stop_reason(message) == Some("error"));
+            let error = if failed {
+                last.as_ref()
+                    .and_then(|message| crate::types::message_error_message(message))
+                    .map(str::to_string)
+            } else {
+                None
+            };
+            (last.as_ref().map(crate::types::message_text), failed, error)
         });
         response_success(
             None,
             "get_last_assistant_text",
-            Some(json!({ "text": text })),
+            Some(json!({ "text": text, "failed": failed, "error": error })),
         )
     }
 

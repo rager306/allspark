@@ -8,6 +8,27 @@ use serde_json::Value;
 
 pub type AgentMessage = Value;
 
+/// An assistant row's `stopReason` ("error" or "aborted" means the turn died), or
+/// `None` when the row carries none.
+///
+/// Separate from [`message_text`] because the failure reason is not in `content`:
+/// a turn that died from retry exhaustion has `content: []` and the diagnostic in
+/// `errorMessage`, so reading only the text made it indistinguishable from an
+/// empty successful answer.
+#[must_use]
+pub fn message_stop_reason(message: &Value) -> Option<&str> {
+    message.get("stopReason").and_then(Value::as_str)
+}
+
+/// The diagnostic of a failed assistant row, when it carries one.
+#[must_use]
+pub fn message_error_message(message: &Value) -> Option<&str> {
+    message
+        .get("errorMessage")
+        .and_then(Value::as_str)
+        .filter(|error| !error.is_empty())
+}
+
 /// Extract the text of a message content field (string or content blocks).
 #[must_use]
 pub fn message_text(message: &Value) -> String {
