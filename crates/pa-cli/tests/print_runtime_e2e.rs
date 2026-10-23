@@ -854,10 +854,6 @@ fn print_mode_json_streams_the_threshold_compaction_pair() {
         events[start_at],
         serde_json::json!({ "type": "compaction_start", "reason": "threshold" })
     );
-    let last_agent_end = events
-        .iter()
-        .rposition(|event| event["type"] == "agent_end")
-        .expect("the last agent_end");
     // The invariant is that a threshold compaction never runs INSIDE a turn: it
     // starts after an `agent_end` (the runtime's own rule — compaction is a turn
     // boundary, not a step within one). The old assertion demanded the FIRST
