@@ -51,11 +51,11 @@ rustls = { version = "0.23", default-features = false, features = [
 ] }
 rustls-native-certs = "0.8"
 webpki-roots = "1"
-# The webpki-roots feature is dropped on purpose: our WS_CONFIG in
-# utils_inner/tls.rs already extends the root store with
-# webpki_roots::TLS_SERVER_ROOTS, and the feature would pull the 0.26
-# compatibility shim, which RUSTSEC-2026-0381 flags by version number
-# even though it re-exports the patched corpus.
+# The webpki-roots feature is dropped on purpose (kept as the reason after
+# upstream #3694 made the same change): our WS_CONFIG in utils_inner/tls.rs
+# already extends the root store with webpki_roots::TLS_SERVER_ROOTS, and the
+# feature would pull the 0.26 compatibility shim, which RUSTSEC-2026-0381 flags
+# by version number even though it re-exports the patched corpus.
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake", "rustls-tls-native-roots"] }
 http = "1"
 

@@ -82,6 +82,7 @@ pub struct Reconstructed {
     /// The session's effective service tier (`state.serviceTier`), the
     /// `/fast` toggle's baseline.
     pub service_tier: Option<String>,
+    pub model_fallback_message: Option<String>,
     /// The tail's oldest row when older history exists (the page cursor).
     pub history_before_entry_id: Option<String>,
     pub(crate) backfill_seam: BackfillSeam,
@@ -307,10 +308,20 @@ fn pop_superseded_attempts(chat: &mut Vec<ChatEntry>) {
     }
 }
 
-pub(crate) fn join_backfilled_entries(head: &mut Vec<ChatEntry>, seam: BackfillSeam) {
-    if matches!(seam, BackfillSeam::RetryOutcome) {
-        pop_superseded_attempts(head);
+/// How many rows at the end of `head` the rows after it supersede.
+pub(crate) fn superseded_by_seam(head: &[ChatEntry], seam: BackfillSeam) -> usize {
+    match seam {
+        BackfillSeam::Preserve => 0,
+        BackfillSeam::RetryOutcome => head
+            .iter()
+            .rev()
+            .take_while(|entry| is_superseded_attempt_row(entry))
+            .count(),
     }
+}
+
+pub(crate) fn join_backfilled_entries(head: &mut Vec<ChatEntry>, seam: BackfillSeam) {
+    head.truncate(head.len() - superseded_by_seam(head, seam));
 }
 
 pub fn reconstruct(attach: &AttachData) -> Reconstructed {
@@ -388,6 +399,11 @@ pub fn reconstruct(attach: &AttachData) -> Reconstructed {
         .and_then(|state| state.get("serviceTier"))
         .and_then(Value::as_str)
         .map(str::to_string);
+    let model_fallback_message = snapshot
+        .get("summary")
+        .and_then(|summary| summary.get("modelFallbackMessage"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let history_before_entry_id = snapshot
         .get("historyBeforeEntryId")
         .and_then(Value::as_str)
@@ -422,6 +438,7 @@ pub fn reconstruct(attach: &AttachData) -> Reconstructed {
         cursor_present,
         queued,
         service_tier,
+        model_fallback_message,
         last_user_prompt_ms,
         history_before_entry_id,
         backfill_seam,

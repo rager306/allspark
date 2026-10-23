@@ -168,6 +168,9 @@ pub const KNOWN_COMMAND_TYPES: &[&str] = &[
     "mark_anthropic_warning_shown",
     // FORK-ONLY Rust-native frames (not in the TS accept list).
     "get_cache_stats",
+    "list_persistent_shells",
+    "tail_persistent_shell",
+    "kill_persistent_shell",
 ];
 
 /// Parsed client command envelope.
@@ -339,6 +342,7 @@ pub fn default_server_capabilities() -> Vec<DaemonServerCapability> {
                 "side_question_transcript",
                 "transient_bash",
                 "kernel_bash_activity",
+                "persistent_shells",
                 "factory_activity",
                 "session_input_admission",
                 "prompt_admission_cancellation",
@@ -933,6 +937,9 @@ pub fn command_active_session_id(command: &DaemonCommand) -> Option<&str> {
         | DaemonCommand::PrepareUpdateRestart { .. }
         | DaemonCommand::CommitUpdateRestart { .. }
         | DaemonCommand::UpdateRestoreStatus { .. }
+        | DaemonCommand::ListPersistentShells { .. }
+        | DaemonCommand::TailPersistentShell { .. }
+        | DaemonCommand::KillPersistentShell { .. }
         | DaemonCommand::Restart { .. }
         | DaemonCommand::Shutdown { .. } => None,
     }
@@ -982,6 +989,9 @@ pub fn command_type_name(command: &DaemonCommand) -> &'static str {
         DaemonCommand::ListKernelBash { .. } => "list_kernel_bash",
         DaemonCommand::TailKernelBash { .. } => "tail_kernel_bash",
         DaemonCommand::KillKernelBash { .. } => "kill_kernel_bash",
+        DaemonCommand::ListPersistentShells { .. } => "list_persistent_shells",
+        DaemonCommand::TailPersistentShell { .. } => "tail_persistent_shell",
+        DaemonCommand::KillPersistentShell { .. } => "kill_persistent_shell",
         DaemonCommand::CancelRlmChild { .. } => "cancel_rlm_child",
         DaemonCommand::FactoryActivity { .. } => "factory_activity",
         DaemonCommand::DeleteRlmSubagent { .. } => "delete_rlm_subagent",

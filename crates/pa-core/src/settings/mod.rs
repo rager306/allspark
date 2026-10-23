@@ -12,9 +12,8 @@ pub(crate) mod types;
 mod persistence_tests;
 
 pub use manager::{
-    DebugLogConfig, IdleEviction, SessionArchivePolicy, SettingsError, SettingsManager,
-    DEFAULT_IDLE_EVICTION_MINUTES, DEFAULT_PROVIDER_CONCURRENCY_LIMIT,
-    DEFAULT_SESSION_ARCHIVE_MAX_AGE_DAYS, DEFAULT_SESSION_ARCHIVE_MAX_SESSIONS,
+    DebugLogConfig, IdleEviction, SettingsError, SettingsManager, DEFAULT_IDLE_EVICTION_MINUTES,
+    DEFAULT_PROVIDER_CONCURRENCY_LIMIT,
 };
 pub use storage::{
     FileSettingsStorage, InMemorySettingsStorage, SettingsScope, SettingsStorage, CONFIG_DIR_NAME,

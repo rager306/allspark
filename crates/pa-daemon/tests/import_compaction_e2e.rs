@@ -280,17 +280,11 @@ fn session_rows(harness: &Harness, type_: &str) -> Vec<Value> {
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .find(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                // The windowed store (#3674) writes `{session}.window-cache.json`
-                // beside the transcript; the imported rows live in the `.jsonl`.
-                .is_some_and(|name| {
-                    name.starts_with("grown-import")
-                        && std::path::Path::new(name)
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            == Some("jsonl")
-                })
+            path.extension().is_some_and(|ext| ext == "jsonl")
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("grown-import"))
         })
         .expect("the imported session's copy in the session dir");
     std::fs::read_to_string(file)
