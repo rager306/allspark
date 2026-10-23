@@ -266,8 +266,14 @@ pub struct IndexReport {
     pub parsed: usize,
     /// Files whose hashes were unchanged and skipped.
     pub unchanged: usize,
-    /// Nodes written.
+    /// Nodes written by this run. A run that parses one file writes that file's
+    /// nodes, so this is work performed, not the project's size — `store_nodes`
+    /// is the size. The two differ by everything an earlier run wrote and this
+    /// one left alone, which is why reporting this one as "the graph has N
+    /// nodes" read as data loss after a one-file edit (issue #2.1).
     pub nodes: usize,
+    /// Nodes in the store after this run, the same count `status` reports.
+    pub store_nodes: usize,
     /// Edges in the store after this run (insert attempts are deduped by the
     /// store, so this is the graph's true size, not the attempts count).
     pub edges: usize,

@@ -1005,3 +1005,51 @@ fn adr_store_persists_across_reopen() {
     assert_eq!(accepted.len(), 1);
     assert_eq!(accepted[0].title, "Use WAL");
 }
+
+/// Issue #2.1: after a one-file edit, the reported SIZE must not shrink.
+///
+/// `IndexReport` used to answer `nodes` with "nodes written this run" while
+/// `edges` came from the store, so a single-file edit printed
+/// `4 nodes, 7 edges` for a 7-node graph and read as 25% data loss. The two
+/// size figures now come from the same instant (`store_nodes`/`edges`), and
+/// `nodes` is documented as work performed — this test pins both halves so a
+/// future change cannot silently re-mix the units.
+#[test]
+fn an_incremental_index_reports_the_store_size_not_the_work_performed() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path().to_path_buf();
+    std::fs::write(
+        root.join("a.rs"),
+        "pub struct S { pub v: u32 }\nimpl S { pub fn get(&self) -> u32 { self.v } }\npub fn caller(s: &S) -> u32 { s.get() }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("b.rs"),
+        "pub fn use_it() -> u32 { 1 }\npub fn again() -> u32 { use_it() }\n",
+    )
+    .unwrap();
+
+    let db = root.join("g.db");
+    let mut store = pa_graph::GraphStore::open(&db).unwrap();
+    let full = store
+        .index_project(&root, &pa_graph::IndexOptions::new("p").with_force(true))
+        .unwrap();
+    assert_eq!(full.store_nodes, 7, "full build size");
+
+    let a = root.join("a.rs");
+    let original = std::fs::read_to_string(&a).unwrap();
+    std::fs::write(&a, format!("{original}// one comment line\n")).unwrap();
+    let inc = store
+        .index_project(&root, &pa_graph::IndexOptions::new("p"))
+        .unwrap();
+    assert_eq!(
+        inc.store_nodes, 7,
+        "the SIZE must not shrink after one edit (issue #2.1)"
+    );
+    assert_eq!(inc.edges, 7);
+    assert!(
+        inc.nodes > 0 && inc.nodes < 7,
+        "nodes is work-performed, not size: {}",
+        inc.nodes
+    );
+}

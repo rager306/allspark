@@ -211,7 +211,7 @@ fn cold_build_note(report: &IndexReport) -> String {
         "The graph was empty, so this call indexed the project first: {} nodes, {} edges, \
          {} files parsed. This build is lean: files the project's gitignore rules exclude are \
          not in it (run `index` to include them).",
-        report.nodes, report.edges, report.parsed,
+        report.store_nodes, report.edges, report.parsed,
     )
 }
 
@@ -636,11 +636,11 @@ impl GraphTool {
         })?;
         Ok(AgentToolResult {
             content: vec![pa_agent::types::ToolResultContent::text(format!(
-                "Indexed project `{project}` at {}: {} nodes, {} edges, {} files parsed \
-                 ({} added, {} modified, {} removed, {} unchanged, {} failed, {} partial, \
-                 {} unusable, {} skipped).",
+                "Indexed project `{project}` at {}: {} nodes in the store, {} edges, \
+                 {} files parsed ({} added, {} modified, {} removed, {} unchanged, {} failed, \
+                 {} partial, {} unusable, {} skipped; {} node(s) written this run).",
                 root.display(),
-                report.nodes,
+                report.store_nodes,
                 report.edges,
                 report.parsed,
                 report.added,
@@ -651,6 +651,7 @@ impl GraphTool {
                 report.partial,
                 report.unusable,
                 report.skipped,
+                report.nodes,
             ))],
             details: with_effective_ignore(&report, respect_gitignore),
             terminate: None,

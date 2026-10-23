@@ -639,7 +639,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                         .map(|report| {
                             format!(
                                 "graph auto-index: {} nodes, {} edges, {} files parsed",
-                                report.nodes, report.edges, report.parsed
+                                report.store_nodes, report.edges, report.parsed
                             )
                         })
                         .map_err(|err| format!("graph index: {err}"))

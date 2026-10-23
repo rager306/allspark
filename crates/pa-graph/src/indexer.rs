@@ -322,7 +322,12 @@ impl GraphStore {
 
         // The store dedupes insert attempts (`INSERT OR IGNORE`), so counting
         // attempts overstates the graph; report the store's actual edge count.
+        // `store_nodes` is set in the same breath so the two size figures always
+        // describe the same instant: `nodes` above counts what THIS run wrote,
+        // and printing it beside the store's edge total read as a graph that
+        // shrank by 25% after a one-file edit (issue #2.1).
         report.edges = self.edge_count(&opts.project)?;
+        report.store_nodes = self.node_count(&opts.project)?;
         self.finish_run(&opts.project, &root)?;
 
         Ok(report)
