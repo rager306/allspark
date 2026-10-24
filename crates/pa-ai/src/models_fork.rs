@@ -868,6 +868,20 @@ pub fn fork_provider_models() -> Vec<Model> {
     FORK_MODELS.clone()
 }
 
+/// Most judgment questions one request may carry for `provider`.
+///
+/// An endpoint fact, not a chain fact: `SubQ Snap` answers 422 to a 17-question
+/// request, so its batches must be split. `None` means "no known cap" — the
+/// caller sends the request whole. Kept beside the catalog entry that documents
+/// the number so the two cannot drift.
+#[must_use]
+pub fn judgment_question_cap(provider: &str) -> Option<usize> {
+    match provider {
+        "subquadratic" => Some(16),
+        _ => None,
+    }
+}
+
 /// The fork's provider ids (the display-name and env-key maps stay in sync
 /// with this list).
 #[must_use]
@@ -902,6 +916,17 @@ mod tests {
                 model.id
             );
         }
+    }
+
+    /// The cap is what makes a >16-question batch legal against `SubQ Snap`:
+    /// the endpoint answers 422 to 17 (`models_fork.rs` entry comment). A
+    /// provider without a known cap must stay uncapped rather than inherit
+    /// another endpoint's limit.
+    #[test]
+    fn only_the_endpoint_that_caps_questions_reports_one() {
+        assert_eq!(judgment_question_cap("subquadratic"), Some(16));
+        assert_eq!(judgment_question_cap("typesafe"), None);
+        assert_eq!(judgment_question_cap("muse"), None);
     }
 
     #[test]

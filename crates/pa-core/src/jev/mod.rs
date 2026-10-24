@@ -270,6 +270,11 @@ fn resolve_candidate(
         );
         config.timeout = settings.timeout;
         config.extra_headers = headers;
+        // The endpoint's question cap: `SubQ Snap` rejects a 17-question request
+        // with 422, so a chain that can reach it must split larger batches.
+        // An unknown provider keeps `None` (send whole), which is what every
+        // other endpoint in the chain accepts.
+        config.max_questions = pa_ai::models_fork::judgment_question_cap(provider);
         // Price the tokens at THIS endpoint's rate: the chain mixes TypeSafe
         // (0.042/MTok) with SubQ Snap (0.05/MTok), so a single chain-wide
         // constant would bill one provider's tokens at another's price.
