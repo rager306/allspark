@@ -135,6 +135,13 @@ the fork-only crates stay in it.
 - `20a4e3d99` — OpenCode retirements are recorded, dated, and kept resolvable instead
   of being silently offered after the endpoint stopped serving them (the discovery
   contract, `docs/model-discovery-contract.md`).
+- `effab4122` — stall diagnostics name a clean stop that announced an action it did not
+  take (`stall_diagnostic`, transcript-only; muse-spark announced a next step and
+  stopped in 22 of its 44 stops).
+- `84016ab29` — muse contributor models stop replaying prior reasoning items: the
+  upstream Console backend rejects their `encrypted_content` across rotated accounts,
+  which surfaced as a turn that printed its next action and died (9router `eafac37d`,
+  ported as mechanism).
 
 ## fork.009 — upstream v0.10.1-beta.38
 
