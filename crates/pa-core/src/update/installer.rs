@@ -255,9 +255,64 @@ pub async fn run_installer(
     channel: Option<&'static str>,
     output: InstallerOutput,
 ) -> std::result::Result<Installed, UpdateFailure> {
+    ensure_this_build_can_update()?;
     let prefix = install_prefix();
     let channel = channel.or_else(|| installed_channel(&prefix));
     run_installer_from(&installer_script_url(channel), &prefix, channel, output).await
+}
+
+/// Refuse to run the upstream installer from a fork build.
+///
+/// Every URL this funnel can reach belongs to upstream: the download base is
+/// upstream's R2 bucket and the non-beta script is served from
+/// `app.primeintellect.ai`. Nothing here chooses a channel by product — the
+/// fork marker only ever reaches the installer's daemon-stop probe — so a fork
+/// build that updates itself installs UPSTREAM into whatever prefix it resolves,
+/// silently replacing the fork's payload with a build that lacks the fork-only
+/// crates.
+///
+/// Until a fork release manifest exists (identity, version, checksums, atomic
+/// activation), refusing is the honest answer: a clear "not supported" beats an
+/// update that appears to succeed and changes the product underneath. The escape
+/// hatch stays for a deliberate cross-install: setting the installer URL or the
+/// download base routes the funnel somewhere this build does not own, and that is
+/// the caller's decision to make, not a default.
+fn ensure_this_build_can_update() -> std::result::Result<(), UpdateFailure> {
+    let url_override = std::env::var(ENV_INSTALLER_URL).ok();
+    let base_override = std::env::var(ENV_DOWNLOAD_BASE_URL).ok();
+    fork_update_refusal(
+        option_env!("ALLSPARK_FORK_BUILD"),
+        url_override.as_deref(),
+        base_override.as_deref(),
+    )
+}
+
+/// The decision behind [`ensure_this_build_can_update`], pure over its inputs so a
+/// test can exercise both products without a rebuilt binary.
+///
+/// # Errors
+///
+/// [`UpdateFailure`] when this is a fork build and neither override is set.
+fn fork_update_refusal(
+    fork_build: Option<&str>,
+    installer_url: Option<&str>,
+    download_base: Option<&str>,
+) -> std::result::Result<(), UpdateFailure> {
+    if fork_build.is_none() {
+        return Ok(());
+    }
+    let configured = |value: Option<&str>| value.is_some_and(|value| !value.trim().is_empty());
+    if configured(installer_url) || configured(download_base) {
+        return Ok(());
+    }
+    Err(UpdateFailure {
+        message: "this is an allspark fork build, and no fork update channel is configured: \
+                  the updater's default endpoints belong to upstream prime-agent, so updating \
+                  would replace this build with one that lacks the fork crates. Point \
+                  PRIME_AGENT_RUST_INSTALLER_URL (or PRIME_AGENT_DOWNLOAD_BASE_URL) at a fork \
+                  release, or install the new allspark release manually."
+            .to_string(),
+    })
 }
 
 /// Run the takeover update from one explicit script URL and install
@@ -1591,5 +1646,53 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
         let mut permissions = std::fs::metadata(path).expect("metadata").permissions();
         permissions.set_mode(permissions.mode() | 0o755);
         std::fs::set_permissions(path, permissions).expect("chmod");
+    }
+    /// A fork build must refuse the updater before it fetches anything.
+    ///
+    /// Every endpoint the funnel can reach belongs to upstream (the R2 download
+    /// base, the `app.primeintellect.ai` script), and nothing in the path chooses a
+    /// channel by product — so a fork build that "updates" installs upstream over
+    /// itself. Until a fork release manifest exists, the honest answer is a refusal
+    /// that says so; the overrides stay for a deliberate cross-install.
+    #[test]
+    fn a_fork_build_refuses_the_upstream_updater() {
+        let refusal = fork_update_refusal(Some("fork.010"), None, None)
+            .expect_err("a fork build must not update from the upstream channel");
+        assert!(
+            refusal.message.contains("allspark fork build"),
+            "the message must name the product: {}",
+            refusal.message
+        );
+        assert!(
+            refusal.message.contains("fork crates"),
+            "the message must say what would be lost: {}",
+            refusal.message
+        );
+        assert!(
+            refusal.message.contains(ENV_INSTALLER_URL)
+                && refusal.message.contains(ENV_DOWNLOAD_BASE_URL),
+            "the message must name both escape hatches: {}",
+            refusal.message
+        );
+    }
+
+    /// An upstream build keeps the updater it always had.
+    #[test]
+    fn an_upstream_build_updates_as_before() {
+        fork_update_refusal(None, None, None).expect("upstream is not refused");
+    }
+
+    /// A configured channel is the caller's decision, so the refusal stands aside —
+    /// including a blank override, which configures nothing.
+    #[test]
+    fn a_configured_fork_channel_is_honoured() {
+        fork_update_refusal(Some("fork.010"), Some("https://example.test/i.sh"), None)
+            .expect("an explicit installer URL is honoured");
+        fork_update_refusal(Some("fork.010"), None, Some("https://example.test/dl"))
+            .expect("an explicit download base is honoured");
+        assert!(
+            fork_update_refusal(Some("fork.010"), Some("   "), Some("")).is_err(),
+            "a blank override configures nothing and must not defeat the refusal"
+        );
     }
 }
