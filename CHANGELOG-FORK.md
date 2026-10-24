@@ -109,6 +109,11 @@ the fork-only crates stay in it.
 - `76efd5959` — `FactoryExecutor`'s docstring says what a kernel restart costs: the
   run id is unknown afterwards, `status`/`stop`/`resume` raise, and surviving
   children must be stopped through `rlm.delete_subagent`.
+- `f07be9ec1` — the F05/F06/F17 findings: an LSP timeout that bounded only the final
+  request (8.15 s -> 0.00 s on a zero budget) now bounds the whole cycle; `graph.auto =
+  "watch"` is documented as accepted-but-equal-to-`auto` (`fs_watcher` was never wired);
+  an import resolved by suffix guess no longer wears the exact-match 0.95 — it is demoted
+  to 0.55 and the ambiguity is reported.
 - `8c107093b` — a judgment answer must be about the question that was asked. The
   decoder compared the answer's kind and stopped, so a choice naming an option the
   question never offered, a score past the rubric, or a probability of 1.5 all came back
