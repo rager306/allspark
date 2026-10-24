@@ -98,7 +98,7 @@ jobs:
           # A dispatch re-publishes an existing tag: check out that tag's tree,
           # not the default branch (the version/changelog checks run on it).
           ref: ${{ env.FORK_TAG }}
-      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # the 1.98.1 pin
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # the 1.98.1 pin
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: release-fork

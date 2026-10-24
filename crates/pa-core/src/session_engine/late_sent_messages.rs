@@ -402,7 +402,7 @@ mod tests {
                 .await
                 .expect_err("a failed durable append cannot acknowledge recording");
             assert!(error.to_string().contains("not persisted"));
-            assert!(session.lock().await.late_sent_agent_messages().is_empty());
+            assert_eq!(session.lock().await.late_sent_agent_messages().len(), 0);
             if landed {
                 let state = agent.state().await;
                 let details = state.messages.iter().find_map(tool_result_details).unwrap();

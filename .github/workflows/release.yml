@@ -60,9 +60,9 @@ jobs:
         with:
           persist-credentials: false
       # The pinned SHA is the toolchain pin: this action version has no
-      # `toolchain` input, and its parse step hard-codes 1.98.1. Change the
+      # `toolchain` input, and its parse step hard-codes 1.99.1. Change the
       # compiler by changing the SHA; a `toolchain:` input is ignored.
-      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8
       - name: Validate tag matches workspace version
         run: |
           set -euo pipefail
@@ -147,9 +147,9 @@ jobs:
         # Later container steps need the same exact path in their own config.
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       # The pinned SHA is the toolchain pin: this action version has no
-      # `toolchain` input, and its parse step hard-codes 1.98.1. Change the
+      # `toolchain` input, and its parse step hard-codes 1.99.1. Change the
       # compiler by changing the SHA; a `toolchain:` input is ignored.
-      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -323,9 +323,9 @@ jobs:
         with:
           persist-credentials: false
       # The pinned SHA is the toolchain pin: this action version has no
-      # `toolchain` input, and its parse step hard-codes 1.98.1. Change the
+      # `toolchain` input, and its parse step hard-codes 1.99.1. Change the
       # compiler by changing the SHA; a `toolchain:` input is ignored.
-      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -424,9 +424,9 @@ jobs:
         with:
           persist-credentials: false
       # The pinned SHA is the toolchain pin: this action version has no
-      # `toolchain` input, and its parse step hard-codes 1.98.1. Change the
+      # `toolchain` input, and its parse step hard-codes 1.99.1. Change the
       # compiler by changing the SHA; a `toolchain:` input is ignored.
-      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
