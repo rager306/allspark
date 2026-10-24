@@ -99,6 +99,52 @@ session's own supervisor — and shut it down; five workers and four subagents d
   host the functionality, and `make deny` must stay clean for it.
 - If a change starts forcing edits across many crate internals, stop and fix the boundary instead.
 
+## Idle time is work time
+
+When there is nothing pending — no review to answer, no failing gate to chase, no waiting on a
+human decision — act. Do not idle and do not wait for a push. Pick the most valuable open thread
+and advance it, then report what moved.
+
+The ordered shortlist, cheapest first:
+
+1. **Hunt dead code and dead surface.** Modules nobody calls, `pub` items no crate uses,
+   settings that parse but never reach a consumer, exports with no consumer. `cargo
+   udeps`/`rg` over call sites, then the reachability read the earlier audits used
+   (`.research/R1-MODULE-VERDICTS.md`). A dead module is a maintenance bill paid forever.
+2. **Find the breaks, not the bugs.** The expensive defects are contract breaks across a
+   boundary: a parameter implemented and never accepted, a documented behaviour that never
+   fires, an event that fires in the wrong order, two owners of one piece of state that can
+   disagree. The audit format in `.research/AUDIT-VERDICTS-AND-PLAN.md` is the shape to reuse:
+   claim, current code, verdict, evidence, `file:line`.
+3. **Re-check the plans we already wrote and did not finish.** `.research/PLAN-*.md`,
+   `.research/GOAL-RECOVERY.md`, `.research/INDEX.md`. A planned item that quietly stopped is
+   the cheapest thing to recover, and the matrix's own status columns are stale — probe the
+   tree instead of trusting them.
+4. **Simplify.** A file past 2,000 lines, a helper used once, two near-duplicate paths, a
+   comment that narrates history instead of explaining why. Deleting is the best kind of change:
+   it cannot regress behaviour it no longer has.
+5. **Measure before optimising.** Take a number first (latency, bytes, allocations, query plan,
+   wall clock of a real command), state the baseline in the commit, then change one thing. A
+   speedup with no before/after is a claim, not a result. Prefer the fix that removes work over
+   the fix that does the same work faster.
+6. **Read what the ecosystem already solved.** Search MCPs for how mature projects handle the
+   problem at hand, and study the upstream repo's issues and discussions for the same class of
+   defect — the maintainers often name the mechanism and the fix. Port the mechanism, not the
+   code, and say what does not port.
+7. **Cover it.** Every behaviour you touch gets a test at the cheapest tier of the matrix above
+   that can observe the defect — and that test must go red without the fix. A test that passes
+   on the broken code documents nothing; several were caught this way and rewritten.
+
+Two rules hold throughout:
+
+- **Judge every change by its cascade, not its site.** A faster function that makes the caller
+  wait, a cache that invalidates a downstream guarantee, a looser contract that shifts a check to
+  a caller that never had one — those are regressions. State the downstream effect in the commit
+  message, including what you decided not to touch because of it.
+- **Leave the tree greener.** A finding that needs a decision goes in a report with the
+  options and their costs; a finding that does not gets fixed on its own branch. Nothing lands
+  half-done on a shared branch, and nothing is left as a `TODO`.
+
 ## Parallel agents share one working tree
 
 This checkout is often worked by several agents at once: same branch, same index, same build
