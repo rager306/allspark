@@ -150,6 +150,25 @@ The ordered shortlist, cheapest first:
    error, how it was caught, what closed it. Three tests this week passed on the broken code,
    and two files were corrupted by rewriting instead of `edit` — that is a pattern, not bad
    luck. A class repeated three times is a defect in the process, and the process is here.
+10. **Tune the scripts against the machine they run on.** The gate, the installers and the
+   harness scripts are programs with a measurable cost: take the wall clock, then change one
+   thing, then take it again. The gate went 3232s over 229 units to 1162s over 280 by running
+   one build instead of one per unit — more tests, a third of the time — and the reason was
+   found by reading every per-unit log, not by guessing. Check free space and memory
+   before a heavy step and refuse with a number when they are short — a compiler that dies with
+   `No space left on device` reports as a code failure and costs an hour of bisecting. Sweep the
+   litter the step itself leaves (`.kache-prestage-*`, stale duplicate test binaries, run
+   scratch): it is that step's own output, it reappears every run, and it is the cheapest disk to
+   reclaim.
+11. **Read the logs you produce, and correct on what they say.** A log nobody reads is a cost
+   with no benefit. Look for the two shapes that matter: a message that repeats (a retry loop, a
+   warning in every unit) and a message that contradicts what the code claims. Then change the
+   code or the message — never leave the two disagreeing.
+12. **Re-measure the corrections you already made.** Every fix has a blast radius, and the
+   earlier you look, the cheaper it is to undo. A faster gate that hides units, a cache that
+   stops noticing edits, a demoted confidence that silently empties a caller's results — each was
+   introduced by a change that looked local. Take the metric again after the change, and say in
+   the commit whether the previous correction still holds.
 
 Two rules hold throughout:
 
