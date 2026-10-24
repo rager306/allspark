@@ -1106,7 +1106,7 @@ impl GraphTool {
     /// list, moved below the survivors and labelled with the probability that
     /// demoted it - the model sees the judge's opinion, not a silent
     /// deletion. A candidate beyond the judged top-K keeps its place and is
-    /// marked unjudged, never "verified".
+    /// marked unjudged, never `kept`.
     async fn rerank_search(
         &self,
         query: &str,
@@ -1165,8 +1165,13 @@ impl GraphTool {
             let probability = outcome.probabilities.get(&index).copied();
             let demoted_at = demoted.get(&index).copied();
             if let Some(object) = row.as_object_mut() {
+                // `kept`, not `verified`: the hit cleared a 0.1 threshold, which
+                // means the judge did not confidently reject it - not that it
+                // confirmed it (audit F18). `judged` stays beside it so "the
+                // judge never looked" is distinguishable from "the judge
+                // rejected it".
                 object.insert(
-                    "verified".to_string(),
+                    "kept".to_string(),
                     serde_json::Value::Bool(probability.is_some() && demoted_at.is_none()),
                 );
                 object.insert(
@@ -1749,7 +1754,7 @@ fn string_field(row: &serde_json::Value, key: &str) -> String {
 }
 
 /// Render one re-ranked hit line: a demoted candidate carries the
-/// probability that demoted it, a judged survivor is marked verified, and a
+/// probability that demoted it, a judged survivor is marked `kept`, and a
 /// candidate the judge never looked at renders exactly like the store's own
 /// line.
 fn render_hit_line(row: &serde_json::Value, demoted_at: Option<f64>) -> String {
@@ -1771,7 +1776,7 @@ fn render_hit_line(row: &serde_json::Value, demoted_at: Option<f64>) -> String {
     let base = format!("- {name} ({file}:{line}) [{label}] score={score:.3}");
     match (demoted_at, judged) {
         (Some(probability), _) => format!("{base} demoted-by-jev (p={probability:.2})"),
-        (None, true) => format!("{base} verified-by-jev"),
+        (None, true) => format!("{base} kept-by-jev"),
         (None, false) => base,
     }
 }
@@ -2070,7 +2075,7 @@ mod tests {
                 .is_none(),
             "an unconfigured tool carries no marker"
         );
-        assert!(!text_of(&result).contains("verified-by-jev"));
+        assert!(!text_of(&result).contains("kept-by-jev"));
     }
 
     #[tokio::test]
@@ -2100,16 +2105,16 @@ mod tests {
         assert_eq!(marker["judged"].as_u64(), Some(2), "{marker}");
         let text = text_of(&result);
         assert!(text.contains("re-ranked by jev"), "{text}");
-        assert!(text.contains("verified-by-jev"), "{text}");
+        assert!(text.contains("kept-by-jev"), "{text}");
         assert!(text.contains("demoted-by-jev"), "{text}");
         // A demoted candidate is kept and flagged, never silently deleted.
         let rows = result.details["results"].as_array().expect("rows");
         assert_eq!(rows.len(), 2);
-        let verified: Vec<bool> = rows
+        let kept: Vec<bool> = rows
             .iter()
-            .map(|row| row["verified"].as_bool().unwrap_or_default())
+            .map(|row| row["kept"].as_bool().unwrap_or_default())
             .collect();
-        assert_eq!(verified, vec![true, false], "the survivor comes first");
+        assert_eq!(kept, vec![true, false], "the survivor comes first");
         // The demoted row keeps its probability as evidence.
         assert!(
             rows[1]["relevance"].as_f64().is_some_and(|p| p < 0.1),
@@ -2205,7 +2210,7 @@ mod tests {
                 .is_none(),
             "a failed re-rank leaves no marker"
         );
-        assert!(!text_of(&result).contains("verified-by-jev"));
+        assert!(!text_of(&result).contains("kept-by-jev"));
     }
 
     #[test]

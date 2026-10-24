@@ -17,11 +17,14 @@
 //!   reorders, it filters. Nothing is ever added.
 //! - **Fail-open**: any failure leaves the hits exactly as the search
 //!   returned them, unmarked.
-//! - **Honest marker**: a re-ranked result carries
-//!   [`VERIFIED_MARKER`] in its details and a per-hit `verified` flag, so the
-//!   model (and the transcript) can see which hits the judge actually
-//!   vouched for. A demoted hit is reported with its probability, never
-//!   silently deleted.
+//! - **Honest marker**: a re-ranked result carries [`VERIFIED_MARKER`] in its
+//!   details, a per-hit `judged` flag (the judge looked at it) and a per-hit
+//!   `kept` flag (it cleared the threshold). `kept` is deliberately not called
+//!   "verified": the judge is asked whether a symbol plausibly answers the
+//!   query and its yes-probability only has to clear
+//!   [`DEMOTE_BELOW`] (0.1) to keep a hit, so the flag means "not confidently
+//!   rejected", not "confirmed correct" (audit F18). A demoted hit is reported
+//!   with its probability, never silently deleted.
 //! - **Promoted only on a measured win** (corpus gate, `RuFlo` ADR-391).
 
 use std::collections::BTreeMap;
@@ -41,6 +44,10 @@ pub const DEMOTE_BELOW: f64 = 0.1;
 /// The per-search bound; a slow judge must not delay the tool result.
 pub const RERANK_TIMEOUT: Duration = Duration::from_millis(3000);
 /// The details marker a re-ranked result carries.
+///
+/// The wire string keeps its historical spelling: it is what transcripts and
+/// the eval corpus already contain, and renaming it would make old results
+/// unreadable to the corpus gate. The Rust name says what it is.
 pub const VERIFIED_MARKER: &str = "verified_jev";
 
 /// One candidate the judge sees: what the search knows, trimmed to what the
