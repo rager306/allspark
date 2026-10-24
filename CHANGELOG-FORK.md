@@ -142,6 +142,12 @@ the fork-only crates stay in it.
   upstream Console backend rejects their `encrypted_content` across rotated accounts,
   which surfaced as a turn that printed its next action and died (9router `eafac37d`,
   ported as mechanism).
+- `ce6d85fd0` — a streamed tool-call fragment without an id gets a synthesized stable
+  one, so strict OpenAI clients stop aborting the turn with "Expected 'id' to be a
+  string" (9router #4992, ported as mechanism).
+- `5fbe3e6d3` — the `subagent-keep-alive` valve gets its consumer: descendant work
+  unsettled past the configured window admits the keep-alive text while the autonomous
+  continuation stays held, instead of the deferral staying silent forever.
 
 ## fork.009 — upstream v0.10.1-beta.38
 
