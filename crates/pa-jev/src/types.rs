@@ -207,6 +207,118 @@ impl Answer {
         }
     }
 
+    /// Check this answer against the question it claims to answer.
+    ///
+    /// [`Self::from_wire`] validates SHAPE (a number where a number belongs);
+    /// this validates MEANING against what was asked, which shape alone cannot
+    /// see: an answer naming an option the question never offered decodes
+    /// perfectly and is still unusable (audit F18).
+    ///
+    /// The bounds are deliberately permissive where the two wire dialects
+    /// disagree — `OpenJev` reports a `score` as the argmax level INDEX while
+    /// the `TypeSafe` shape reports the probability-weighted mean, so a score is
+    /// accepted anywhere in `0..=levels.len()` rather than pinned to the mean's
+    /// range. Rejecting a live response is worse than accepting a loose one.
+    ///
+    /// # Errors
+    ///
+    /// The first violated postcondition, as a human-readable string.
+    pub fn validate_against(&self, question: &Question) -> Result<(), String> {
+        match (self, question) {
+            (
+                Answer::Choice {
+                    choice,
+                    probabilities,
+                    confidence,
+                },
+                Question::Choice { criteria, .. },
+            ) => {
+                if !criteria.contains_key(choice) {
+                    return Err(format!(
+                        "answered with option {choice:?}, which the question never offered"
+                    ));
+                }
+                if probabilities.is_empty() {
+                    return Err("choice answer carries no probabilities".to_string());
+                }
+                for (option, probability) in probabilities {
+                    if !probability.is_finite() || !(0.0..=1.0).contains(probability) {
+                        return Err(format!(
+                            "option {option:?} has probability {probability}, not a probability"
+                        ));
+                    }
+                    if !criteria.contains_key(option) {
+                        return Err(format!(
+                            "probability given for {option:?}, which the question never offered"
+                        ));
+                    }
+                }
+                if !confidence.is_finite() || !(0.0..=1.0).contains(confidence) {
+                    return Err(format!("confidence {confidence} is not a probability"));
+                }
+                Ok(())
+            }
+            (
+                Answer::Score {
+                    score,
+                    probabilities,
+                    confidence,
+                },
+                Question::Score { levels, .. },
+            ) => {
+                // `levels.len()` is capped at `MAX_SCORE_LEVELS` (10), far below
+                // f64's exact-integer range.
+                #[allow(clippy::cast_precision_loss)]
+                let highest = levels.len() as f64;
+                if !score.is_finite() || *score < 0.0 || *score > highest {
+                    return Err(format!(
+                        "score {score} is outside the {} level(s) this question declares",
+                        levels.len()
+                    ));
+                }
+                if probabilities.is_empty() {
+                    return Err("score answer carries no probabilities".to_string());
+                }
+                for (level, probability) in probabilities {
+                    if !probability.is_finite() || !(0.0..=1.0).contains(probability) {
+                        return Err(format!(
+                            "level {level:?} has probability {probability}, not a probability"
+                        ));
+                    }
+                    // Probabilities are keyed by level INDEX (`"0"`, `"1"`, ...),
+                    // so a key at or past the level count names a level that
+                    // does not exist.
+                    match level.parse::<usize>() {
+                        Ok(index) if index < levels.len() => {}
+                        _ => {
+                            return Err(format!(
+                                "probability given for level {level:?}, and this question has {} level(s)",
+                                levels.len()
+                            ));
+                        }
+                    }
+                }
+                if !confidence.is_finite() || !(0.0..=1.0).contains(confidence) {
+                    return Err(format!("confidence {confidence} is not a probability"));
+                }
+                Ok(())
+            }
+            (Answer::Noul { noul }, Question::Noul { .. }) => {
+                if !noul.is_finite() || !(0.0..=1.0).contains(noul) {
+                    return Err(format!("noul {noul} is not a probability"));
+                }
+                Ok(())
+            }
+            // The kind mismatch is reported by the caller, which compares kinds
+            // before it gets here; stating it again keeps this total.
+            (answer, question) => Err(format!(
+                "an answer of kind {} cannot resolve a {} question",
+                answer.kind().as_str(),
+                question.kind().as_str()
+            )),
+        }
+    }
+
     /// Decode one wire answer. Accepts the verified shape (a `type` echo)
     /// and the `OpenJev` shape (discriminated by the answer's own field);
     /// `None` when the value is neither.
@@ -406,5 +518,95 @@ mod tests {
             levels: (0..=MAX_SCORE_LEVELS).map(|i| i.to_string()).collect(),
         };
         assert!(many.validate().is_err());
+    }
+    /// Audit F18: shape validation could not see meaning. An answer naming an
+    /// option the question never offered decodes perfectly and is still not an
+    /// answer.
+    #[test]
+    fn an_answer_must_be_about_the_question_that_was_asked() {
+        let question = Question::Choice {
+            instructions: String::new(),
+            criteria: BTreeMap::from([("billing".to_string(), None), ("fraud".to_string(), None)]),
+        };
+        let invented = Answer::Choice {
+            choice: "shipping".to_string(),
+            probabilities: BTreeMap::from([("shipping".to_string(), 0.9)]),
+            confidence: 0.9,
+        };
+        let refusal = invented
+            .validate_against(&question)
+            .expect_err("an unoffered option is not an answer");
+        assert!(refusal.contains("never offered"), "{refusal}");
+
+        let real = Answer::Choice {
+            choice: "billing".to_string(),
+            probabilities: BTreeMap::from([
+                ("billing".to_string(), 0.82),
+                ("fraud".to_string(), 0.18),
+            ]),
+            confidence: 0.82,
+        };
+        real.validate_against(&question)
+            .expect("a well-formed answer");
+    }
+
+    /// A probability outside `0..=1` is not a probability, and a level key past
+    /// the rubric names a level the question does not have.
+    #[test]
+    fn probabilities_and_levels_are_bounded_by_the_question() {
+        let score = Question::Score {
+            instructions: String::new(),
+            levels: vec!["low".into(), "mid".into(), "high".into()],
+        };
+        // The OpenJev shape: `score` is the argmax level index, probabilities an
+        // array over the levels. Accepted.
+        let argmax = Answer::Score {
+            score: 1.0,
+            probabilities: BTreeMap::from([
+                ("0".to_string(), 0.1),
+                ("1".to_string(), 0.7),
+                ("2".to_string(), 0.2),
+            ]),
+            confidence: 0.7,
+        };
+        argmax
+            .validate_against(&score)
+            .expect("the live argmax shape");
+
+        let past_the_end = Answer::Score {
+            score: 1.0,
+            probabilities: BTreeMap::from([("5".to_string(), 1.0)]),
+            confidence: 1.0,
+        };
+        assert!(past_the_end.validate_against(&score).is_err());
+
+        let not_a_probability = Answer::Score {
+            score: 1.0,
+            probabilities: BTreeMap::from([("1".to_string(), 1.5)]),
+            confidence: 1.0,
+        };
+        assert!(not_a_probability.validate_against(&score).is_err());
+
+        let out_of_range = Answer::Score {
+            score: 9.0,
+            probabilities: BTreeMap::from([("1".to_string(), 1.0)]),
+            confidence: 1.0,
+        };
+        assert!(out_of_range.validate_against(&score).is_err());
+    }
+
+    /// A yes/no probability outside `0..=1` is the one bound `noul` has.
+    #[test]
+    fn a_noul_answer_must_be_a_probability() {
+        let question = Question::Noul {
+            instructions: String::new(),
+            criteria: None,
+        };
+        Answer::Noul { noul: 0.91 }
+            .validate_against(&question)
+            .expect("a probability");
+        assert!(Answer::Noul { noul: 1.4 }
+            .validate_against(&question)
+            .is_err());
     }
 }

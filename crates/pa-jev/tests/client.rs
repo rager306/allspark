@@ -519,3 +519,51 @@ async fn missing_or_mistyped_answers_are_malformed() {
         .expect_err("kind mismatch");
     assert!(matches!(error, JevError::Malformed { .. }));
 }
+
+/// Audit F18: an answer that decodes but is not about the question must be
+/// rejected by the CLIENT, not just by the typed helper — otherwise the
+/// validation is reachable only from tests.
+#[tokio::test]
+async fn a_decodable_but_unoffered_answer_fails_the_judgment() {
+    let server = MockServer::new();
+    // Noul is asked; the endpoint answers with a choice naming an option the
+    // question never offered. Shape is fine, kind is wrong, and the kind check
+    // catches this one -- so the endpoint instead answers a CHOICE question
+    // with an unknown option, which only meaning-validation can reject.
+    server.push(
+        200,
+        &[("content-type", "application/json")],
+        serde_json::json!({
+            "model": "jev-1.13.0",
+            "answers": {
+                "dept": {
+                    "type": "choice",
+                    "choice": "shipping",
+                    "probabilities": {"shipping": 0.9},
+                    "confidence": 0.9
+                }
+            },
+            "usage": {"input_tokens": 10, "output_tokens": 0}
+        })
+        .to_string(),
+    );
+    let request = JudgmentRequest {
+        state: JudgmentState::from("my card was charged twice"),
+        questions: BTreeMap::from([(
+            "dept".to_string(),
+            Question::Choice {
+                instructions: "which department".to_string(),
+                criteria: BTreeMap::from([
+                    ("billing".to_string(), None),
+                    ("fraud".to_string(), None),
+                ]),
+            },
+        )]),
+    };
+    let error = typesafe_client(&server)
+        .judge(&request)
+        .await
+        .expect_err("an unoffered option is not an answer");
+    let detail = error.to_string();
+    assert!(detail.contains("never offered"), "{detail}");
+}

@@ -359,7 +359,16 @@ impl JevClient {
                         ),
                     });
                 }
-                Some(_) => {}
+                // Shape and kind match is not enough: the answer must also BE an
+                // answer to this question — an option it offered, a level that
+                // exists, a probability that is one (audit F18).
+                Some(answer) => {
+                    answer
+                        .validate_against(question)
+                        .map_err(|detail| JevError::Malformed {
+                            detail: format!("question {id:?}: {detail}"),
+                        })?;
+                }
             }
         }
         let mut answers = BTreeMap::new();
