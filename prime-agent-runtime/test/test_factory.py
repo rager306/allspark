@@ -5036,11 +5036,11 @@ class FactoryExecutorTest(_ExecutorTestCase):
         )
 
     @async_test
-    async def test_failed_delete_records_cancel_failed_and_cancelled(self) -> None:
-        # A delete that raises still releases the executor's slot, so the
-        # ledger records the failure AND the cancellation (the eval replay
-        # checker keys off cancelled events) while the instance reads
-        # cancelled in the stopped run.
+    async def test_failed_delete_does_not_claim_the_child_is_cancelled(self) -> None:
+        # Audit F11: a refused delete leaves the child RUNNING under the
+        # supervisor, so reporting it "cancelled" made a "stopped" run contain a
+        # live child. The slot is still released — that is a scheduling fact —
+        # but the status is a claim about the child and must stay false.
         failing = DeleteFailsHost(clock=self.clock)
         patcher = patch.object(rlm_module, "host_request", failing)
         patcher.start()
@@ -5050,16 +5050,24 @@ class FactoryExecutorTest(_ExecutorTestCase):
         result = await self.start()
         await self.wait_until(lambda: failing.collects >= 1)
         stopped = await rlm_module.rlm.factory.stop(result["run_id"])
+        # The run is stopped: no more work is admitted. But the payload must
+        # name the child that survived, or the caller never learns it exists.
+        self.assertEqual(stopped["state"], "stopped")
         self.assertEqual(stopped["cancelled"], ["a"])
+        self.assertEqual(stopped["cancel_failed"], ["child-1"])
         status = await rlm_module.rlm.factory.status(result["run_id"])
         self.assertEqual(status["state"], "stopped")
         instance = self.node_status(status, "a")["instances"][0]
-        self.assertEqual(instance["status"], "cancelled")
-        kinds = [(event["kind"], event.get("detail")) for event in status["events"]]
-        self.assertIn(("cancel_failed", None), kinds)
-        self.assertIn(("cancelled", "slot released despite the failed delete"), kinds)
-        # the failure is recorded before the cancellation it explains
-        self.assertLess(kinds.index(("cancel_failed", None)), kinds.index(("cancelled", "slot released despite the failed delete")))
+        self.assertEqual(instance["status"], "cancel_failed")
+        kinds = [event["kind"] for event in status["events"]]
+        # No "cancelled" event for a child that was not deleted: the eval replay
+        # checker keys off those, so a false one is worse than a missing one.
+        self.assertIn("cancel_failed", kinds)
+        self.assertNotIn("cancelled", kinds)
+        # and the run_stopped detail tells the operator what is still running
+        detail = next(event["detail"] for event in status["events"] if event["kind"] == "run_stopped")
+        self.assertIn("still running", detail)
+        self.assertIn("child-1", detail)
 
     @async_test
     async def test_rate_limit_at_admission_defers_to_backoff(self) -> None:

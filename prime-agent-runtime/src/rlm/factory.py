@@ -1466,6 +1466,11 @@ class FactoryRun:
     # (byte-pretty, stable formatting).
     machine: "dict[str, Any]" = field(default_factory=dict)
     state: str = "running"  # running | stopping | paused | done | failed | stopped
+    # Children whose delete was REFUSED during a cancellation pass. Their
+    # supervisor-side lease outlives the run, so the run cannot honestly claim
+    # every child is gone; `stop()` reports them and status() surfaces the list
+    # instead of letting "stopped" hide a live child (audit F11).
+    cancel_failures: "list[str]" = field(default_factory=list)
     started_at: float = 0.0
     max_parallel: int = RUN_MAX_PARALLEL_DEFAULT
     max_transitions: int = MAX_TRANSITIONS_CAP
@@ -1711,8 +1716,22 @@ class FactoryExecutor:
         self._touch(run)
         stopped = await self._halt_nonterminal(run, "run stopped")
         run.state = "stopped"
-        self._event(run, "run_stopped", detail=f"stopped; {len(stopped)} state(s) cancelled")
-        return {"run_id": run.run_id, "state": "stopped", "cancelled": stopped}
+        # A refused delete leaves a child RUNNING under the supervisor after the
+        # run reports stopped. The run is still stopped — no more work will be
+        # admitted — but the payload must name those children, or the caller has
+        # no way to learn that its "stopped" run still costs a live subagent
+        # (audit F11). `cancel_failures` is collected by both cancellation paths.
+        leaked = list(run.cancel_failures)
+        detail = f"stopped; {len(stopped)} state(s) cancelled"
+        if leaked:
+            detail += f"; {len(leaked)} child(ren) still running: {', '.join(leaked)}"
+        self._event(run, "run_stopped", detail=detail)
+        return {
+            "run_id": run.run_id,
+            "state": "stopped",
+            "cancelled": stopped,
+            "cancel_failed": leaked,
+        }
 
     async def resume(self, run_id: str) -> dict[str, Any]:
         """Resume a paused run (escalate, budget, or max_transitions pause).
@@ -3438,19 +3457,22 @@ class FactoryExecutor:
         from . import delete_subagent
 
         child_id = instance.child_id or ""
+        # "cancelled" is a claim about the child, so it is made only after the
+        # delete confirmed: a failed delete leaves the child RUNNING under the
+        # supervisor, and reporting it cancelled made a "stopped" run contain a
+        # live child (audit F11, reproduced with a refusing delete host). The
+        # slot is released either way — that is a scheduling fact — but the
+        # status is not allowed to say the child is gone when it is not.
+        instance.status = "cancelling"
         try:
             await delete_subagent(child_id)
         except Exception as exc:
             self._event(run, "cancel_failed", node=state.state_id, entry=entry.index, instance=instance.index, child=child_id, error=str(exc))
-            # The slot is released either way, so the ledger must record the
-            # cancellation next to the failure (the eval replay checker keys
-            # off cancelled events, and the instance below reads cancelled).
-            self._event(run, "cancelled", node=state.state_id, entry=entry.index, instance=instance.index, child=child_id, detail="slot released despite the failed delete")
+            instance.status = "cancel_failed"
+            run.cancel_failures.append(child_id)
         else:
             self._event(run, "cancelled", node=state.state_id, entry=entry.index, instance=instance.index, child=child_id)
-        # The child is supervisor-owned; a failed delete leaves it running
-        # there, but the executor treats its slot as released.
-        instance.status = "cancelled"
+            instance.status = "cancelled"
 
     async def _cancel_running(self, run: FactoryRun) -> None:
         from . import delete_subagent
@@ -3465,24 +3487,26 @@ class FactoryExecutor:
                     # Claim the instance BEFORE the await: a concurrent
                     # cancellation pass (stop() racing fail_fast's cascade, or a
                     # repeated stop) must never issue a duplicate delete for a
-                    # child this pass already owns. A failed delete still
-                    # releases the slot, so the terminal status is the same
-                    # either way, and a settle landing inside the delete window
-                    # is dropped instead of applying to a child being torn down.
-                    instance.status = "cancelled"
+                    # child this pass already owns. The CLAIM is `cancelling`,
+                    # not `cancelled`: a refused delete leaves the child running
+                    # under the supervisor, so the terminal status must not say it
+                    # is gone (audit F11). A settle landing inside the delete
+                    # window is still dropped — the claim is what fences it.
+                    instance.status = "cancelling"
                     try:
                         await delete_subagent(child_id)
                     except Exception as exc:
+                        # No "cancelled" event here: the eval replay checker
+                        # keys off those, and this child was NOT deleted. The
+                        # slot is still released — the failure is reported as
+                        # cancel_failed and the child is named in
+                        # run.cancel_failures so stop() can surface it.
                         self._event(run, "cancel_failed", node=state_id, entry=entry.index, instance=instance.index, child=child_id, error=str(exc))
-                        # The slot is released either way, so the ledger also
-                        # records the cancellation next to the failure (the
-                        # eval replay checker keys off cancelled events, and
-                        # the instance above already reads cancelled).
-                        self._event(run, "cancelled", node=state_id, entry=entry.index, instance=instance.index, child=child_id, detail="slot released despite the failed delete")
+                        instance.status = "cancel_failed"
+                        run.cancel_failures.append(child_id)
                     else:
                         self._event(run, "cancelled", node=state_id, entry=entry.index, instance=instance.index, child=child_id)
-                    # The child is supervisor-owned; a failed delete leaves it
-                    # running there, but the executor treats its slot as released.
+                        instance.status = "cancelled"
 
     # -- completion ----------------------------------------------------------
 
