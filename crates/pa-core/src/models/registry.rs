@@ -96,6 +96,10 @@ pub struct ModelRegistry {
     /// The process-shared live catalog chain (`catalog_chain::catalog_for`);
     /// `resolve()` sources built-ins from it.
     catalog: std::sync::Arc<pa_models::ModelCatalog>,
+    /// The last `OpenCode` snapshot seen (fresh or cached): the source of the
+    /// retirement list `deprecated_opencode_ids` reports. `None` until the
+    /// first refresh attempt.
+    opencode_snapshot: Option<pa_models::opencode_models::OpenCodeSnapshot>,
 }
 
 /// Under a stored xAI subscription the provider's models switch onto the
@@ -183,6 +187,7 @@ impl ModelRegistry {
             authorized_private_models: Vec::new(),
             authorized_team_id: None,
             catalog,
+            opencode_snapshot: None,
         };
         registry.load_models();
         registry
@@ -658,6 +663,7 @@ impl ModelRegistry {
                         .is_some_and(|age| age < pa_models::opencode_models::REFRESH_INTERVAL);
                 if fresh {
                     self.apply_opencode_snapshot(cached);
+                    self.opencode_snapshot = Some(cached.clone());
                     return;
                 }
             }
@@ -679,8 +685,10 @@ impl ModelRegistry {
             pa_models::opencode_models::refresh(&fetcher, models_dir, &known, String::new()).await
         {
             self.apply_opencode_snapshot(&snapshot);
+            self.opencode_snapshot = Some(snapshot);
         } else if let Some(cached) = cached {
             self.apply_opencode_snapshot(&cached);
+            self.opencode_snapshot = Some(cached);
         }
     }
 
@@ -705,6 +713,35 @@ impl ModelRegistry {
                 model.max_tokens = output;
             }
         }
+    }
+
+    /// The `OpenCode` ids the live list stopped serving, still held for
+    /// resolution and display.
+    ///
+    /// The contract (`docs/model-discovery-contract.md` §6) is deprecate, not
+    /// delete: a saved `settings.json` naming the id keeps resolving, `model
+    /// list` shows the disappearance date, and nothing is silently pruned. The
+    /// hand-written table stays the resolution authority — this list only says
+    /// which of its rows the live endpoint no longer answers for.
+    pub fn deprecated_opencode_ids(&self) -> Vec<&pa_models::opencode_models::DeprecatedModel> {
+        let mut ids: Vec<&str> = self
+            .models
+            .iter()
+            .filter(|model| model.provider == pa_models::opencode_models::PROVIDER)
+            .map(|model| model.id.as_str())
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        self.opencode_snapshot
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .deprecated
+                    .iter()
+                    .filter(|gone| ids.binary_search(&gone.id.as_str()).is_ok())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Reload local state and refresh entitlements (live catalog + private

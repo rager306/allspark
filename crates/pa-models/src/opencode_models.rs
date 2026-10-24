@@ -74,8 +74,22 @@ pub struct LiveModel {
     pub metadata: MetadataSource,
 }
 
+/// One id the live list USED to serve and stopped: kept, named, dated.
+///
+/// The whole point of this record is that retirement is not deletion. A saved
+/// `settings.json` naming the id must keep resolving, `model list` must show it
+/// with the date it disappeared, and nothing may silently prune it (the
+/// discovery contract, `docs/model-discovery-contract.md` §6).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeprecatedModel {
+    /// The id exactly as the endpoint used to serve it.
+    pub id: String,
+    /// ISO-8601 of the refresh that first noticed the id was gone.
+    pub deprecated_at: String,
+}
+
 /// The persisted snapshot: the live list, plus the capability deltas that
-/// differed from the hand-written table.
+/// differed from the hand-written table, plus the ids it stopped serving.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct OpenCodeSnapshot {
     /// The `ETag` of the `models.dev` body this snapshot was built from; sent
@@ -87,6 +101,11 @@ pub struct OpenCodeSnapshot {
     pub synced_at: String,
     /// Every id the live list serves, with what is known about it.
     pub models: Vec<LiveModel>,
+    /// Ids the live list stopped serving, oldest disappearance first. Accumulates
+    /// across refreshes and never shrinks: the hand-written table stays the
+    /// resolution authority for exactly these ids.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deprecated: Vec<DeprecatedModel>,
 }
 
 impl OpenCodeSnapshot {
@@ -100,6 +119,39 @@ impl OpenCodeSnapshot {
     #[must_use]
     pub fn ids(&self) -> Vec<&str> {
         self.models.iter().map(|model| model.id.as_str()).collect()
+    }
+
+    /// The id is a recorded retirement: not served now, served before, kept
+    /// for resolution and display.
+    #[must_use]
+    pub fn is_deprecated(&self, id: &str) -> bool {
+        self.deprecated.iter().any(|model| model.id == id)
+    }
+
+    /// Fold a refresh's live set into the accumulated retirement list: every id
+    /// the previous snapshot carried and this one does not gains a dated entry;
+    /// an id the endpoint serves AGAIN leaves the list (a returned model is not
+    /// deprecated, and a second disappearance is dated again).
+    #[must_use]
+    pub fn with_deprecations(mut self, previous: Option<&Self>, now: &str) -> Self {
+        let served_now: std::collections::HashSet<&str> =
+            self.models.iter().map(|model| model.id.as_str()).collect();
+        if let Some(previous) = previous {
+            for model in &previous.models {
+                if served_now.contains(model.id.as_str())
+                    || self.deprecated.iter().any(|gone| gone.id == model.id)
+                {
+                    continue;
+                }
+                self.deprecated.push(DeprecatedModel {
+                    id: model.id.clone(),
+                    deprecated_at: now.to_string(),
+                });
+            }
+        }
+        self.deprecated
+            .sort_by(|a, b| a.deprecated_at.cmp(&b.deprecated_at).then(a.id.cmp(&b.id)));
+        self
     }
 }
 
@@ -256,6 +308,9 @@ pub fn build_snapshot(
         models_dev_etag,
         synced_at,
         models,
+        // Filled by the caller (`refresh`), which owns the previous snapshot the
+        // retirement list accumulates from.
+        deprecated: Vec::new(),
     })
 }
 
@@ -326,15 +381,16 @@ pub async fn refresh(
         // the live list alone would lose them, so keep the previous models when
         // the live set did not change.
         Ok(FetchOutcome::NotModified) => {
-            if let Some(previous) = previous {
+            if let Some(ref previous) = previous {
                 if previous.models.len()
                     == serde_json::from_slice::<LiveResponse>(&live)
                         .map_or(0, |response| response.data.len())
                 {
                     let snapshot = OpenCodeSnapshot {
                         models_dev_etag: etag,
-                        synced_at,
-                        models: previous.models,
+                        synced_at: synced_at.clone(),
+                        models: previous.models.clone(),
+                        deprecated: previous.deprecated.clone(),
                     };
                     let _ = write_snapshot(models_dir, &snapshot);
                     return Ok(snapshot);
@@ -347,12 +403,17 @@ pub async fn refresh(
         Err(_) => (None, etag),
     };
 
-    let Some(snapshot) = build_snapshot(&live, dev_body.as_deref(), known, dev_etag, synced_at)
+    let Some(mut snapshot) = build_snapshot(&live, dev_body.as_deref(), known, dev_etag, synced_at)
     else {
         return Err(FetchError::Transport {
             message: "opencode model list is not a JSON model list".to_string(),
         });
     };
+    // Retirements accumulate from the previous snapshot BEFORE the new one
+    // overwrites it on disk: a disappearance is only knowable by comparing the
+    // two, and the dated record must survive restarts (`read_snapshot`).
+    let now = snapshot.synced_at.clone();
+    snapshot = snapshot.with_deprecations(previous.as_ref(), &now);
     let _ = write_snapshot(models_dir, &snapshot);
     Ok(snapshot)
 }
@@ -516,6 +577,68 @@ mod tests {
         let read = read_snapshot(dir.path()).expect("cached snapshot");
         assert_eq!(read, snapshot);
         assert_eq!(read.models_dev_etag.as_deref(), Some("etag-1"));
+    }
+
+    /// The discovery contract (§6): retirement is not deletion. A model the
+    /// endpoint stopped serving is recorded with the date it disappeared, the
+    /// record survives the next refresh, and a model that comes BACK leaves the
+    /// list (a returned model is served, not retired; a second disappearance is
+    /// dated again).
+    #[test]
+    fn retirements_accumulate_and_a_returning_id_leaves_the_list() {
+        let first = build_snapshot(
+            &live_body(&["alpha", "beta"]),
+            None,
+            &no_table,
+            None,
+            "2026-10-01".into(),
+        )
+        .unwrap();
+        assert_eq!(first.deprecated.len(), 0, "nothing disappeared yet");
+
+        // beta disappears.
+        let second = build_snapshot(
+            &live_body(&["alpha"]),
+            None,
+            &no_table,
+            None,
+            "2026-10-02".into(),
+        )
+        .unwrap()
+        .with_deprecations(Some(&first), "2026-10-02");
+        assert_eq!(second.deprecated.len(), 1);
+        assert_eq!(second.deprecated[0].id, "beta");
+        assert_eq!(second.deprecated[0].deprecated_at, "2026-10-02");
+        assert!(second.is_deprecated("beta"));
+
+        // beta returns: served again, not retired.
+        let third = build_snapshot(
+            &live_body(&["alpha", "beta"]),
+            None,
+            &no_table,
+            None,
+            "2026-10-03".into(),
+        )
+        .unwrap()
+        .with_deprecations(Some(&second), "2026-10-03");
+        assert!(
+            !third.is_deprecated("beta"),
+            "a model the endpoint serves again is served, not retired"
+        );
+        assert_eq!(third.deprecated.len(), 0);
+
+        // beta disappears again: the record is dated with the NEW disappearance.
+        let fourth = build_snapshot(
+            &live_body(&["alpha"]),
+            None,
+            &no_table,
+            None,
+            "2026-10-04".into(),
+        )
+        .unwrap()
+        .with_deprecations(Some(&third), "2026-10-04");
+        assert_eq!(fourth.deprecated.len(), 1);
+        assert_eq!(fourth.deprecated[0].deprecated_at, "2026-10-04");
     }
 
     /// An unreadable cache reads as absent, never a panic: a corrupt file must not
