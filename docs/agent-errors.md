@@ -51,3 +51,24 @@ listed reports that are not in a clone.
 
 **Rule:** a claim about behaviour is verified against the code that would have to implement it.
 Documents describe intent and drift; the tree is what runs.
+
+## 5. Python string surgery on large Rust test files
+
+**Seen:** once (2026-10-24). Inserting a regression test into `installer_stop_gate.rs` by
+Python string replace spliced the new test's doc block into the middle of another test's
+`#[test]` + fn pair — orphaning the ancestor fn, duplicating the test name, and (after a
+failed `git checkout --` recovery attempt) landing the corruption in a commit that failed
+the workspace clippy gate at push time.
+
+**Caught by:** the workspace clippy gate at push (duplicated test name, unused fn).
+
+**Rule:** inserting into a large file with many `#[test]` blocks goes through the edit
+tool with exact unique anchors; Python replace is for single-site replacements whose
+anchor was read from the file in the same step. After any multi-block edit, run
+`cargo check -p <crate> --all-targets` before committing; a compile check catches the
+splice immediately.
+
+**Related:** `git checkout --` on a file carrying uncommitted work destroys that work —
+the 2026-10-24 recovery of `installer_stop_gate.rs` lost only self-written code, but the
+rule (never `checkout --`, `stash`, `reset --hard`) exists because the next file might
+not be yours alone.
