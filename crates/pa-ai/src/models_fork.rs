@@ -98,6 +98,20 @@ const EFFORT_NO_OFF_WITH_MAX: &[(ModelThinkingLevel, Option<&str>)] = &[
     (ModelThinkingLevel::Max, Some("max")),
 ];
 
+/// `oc/deepseek-v4.1-flash-free` (`OpenCode` Zen free tier): the upstream serves
+/// and forwards `low|high|max` verbatim (no low→high collapse, unlike `DeepSeek`'s
+/// own API), and does NOT serve `medium`/`xhigh` — the generic `DeepSeek` set
+/// advertised levels the model answers 400 to (9router v0.5.109 `313559f4`).
+const EFFORT_LOW_HIGH_MAX: &[(ModelThinkingLevel, Option<&str>)] = &[
+    (ModelThinkingLevel::Off, None),
+    (ModelThinkingLevel::Minimal, None),
+    (ModelThinkingLevel::Low, Some("low")),
+    (ModelThinkingLevel::Medium, None),
+    (ModelThinkingLevel::High, Some("high")),
+    (ModelThinkingLevel::Xhigh, None),
+    (ModelThinkingLevel::Max, Some("max")),
+];
+
 /// Genspark effort variants `low`..=`high` only.
 const EFFORT_LOW_MEDIUM_HIGH: &[(ModelThinkingLevel, Option<&str>)] = &[
     (ModelThinkingLevel::Off, None),
@@ -192,7 +206,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         api: "openai-completions",
         base_url: "https://opencode.ai/inference/v1",
         reasoning: true,
-        thinking_levels: EFFORT_NO_OFF,
+        thinking_levels: EFFORT_LOW_HIGH_MAX,
         input: &[ModelInput::Text, ModelInput::Image],
         cost: (0.0, 0.0, 0.0, 0.0),
         // 200K/32K, not the 128K/8K first recorded: models.dev
@@ -240,7 +254,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         api: "openai-completions",
         base_url: "http://127.0.0.1:20128/v1",
         reasoning: true,
-        thinking_levels: EFFORT_NO_OFF,
+        thinking_levels: EFFORT_LOW_HIGH_MAX,
         input: &[ModelInput::Text],
         cost: (0.0, 0.0, 0.0, 0.0),
         context_window: 128_000,
@@ -1019,5 +1033,30 @@ mod tests {
                 Some(crate::types::MaxTokensField::MaxTokens)
             );
         }
+    }
+    /// 9router v0.5.109 (`313559f4`): the `OpenCode` free `deepseek-v4.1-flash` serves
+    /// `low|high|max` verbatim — no low→high collapse, no medium/xhigh. The
+    /// generic `DeepSeek` set advertised levels the upstream answers 400 to.
+    #[test]
+    fn opencode_free_deepseek_serves_low_high_max_only() {
+        let levels: &[&[(ModelThinkingLevel, Option<&str>)]] =
+            &[EFFORT_LOW_HIGH_MAX, EFFORT_LOW_HIGH_MAX];
+        for table in levels {
+            let served: Vec<&str> = table.iter().filter_map(|(_, wire)| *wire).collect();
+            assert_eq!(served, vec!["low", "high", "max"]);
+        }
+        // And both OpenCode entries (direct + via 9router) use exactly this table.
+        let direct = FORK_RAW_MODELS
+            .iter()
+            .find(|model| model.provider == "opencode" && model.id == "deepseek-v4.1-flash-free")
+            .expect("opencode direct entry");
+        assert_eq!(direct.thinking_levels, EFFORT_LOW_HIGH_MAX);
+        let via_9router = FORK_RAW_MODELS
+            .iter()
+            .find(|model| {
+                model.provider == "ninerouter" && model.id == "oc/deepseek-v4.1-flash-free"
+            })
+            .expect("ninerouter oc entry");
+        assert_eq!(via_9router.thinking_levels, EFFORT_LOW_HIGH_MAX);
     }
 }

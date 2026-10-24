@@ -9,8 +9,8 @@ Structural code analysis: tree-sitter parsing plus ast-grep pattern search.
 - **Grammars (`language/`)**: native grammars compiled in, plus `.wasm` grammars
   loaded at first use through a shared `WasmStore` (only lexing runs in wasm;
   tree-sitter copies the parse tables into native memory).
-- **Parse (`parse.rs`, `parse_cache.rs`)**: one parser per thread, a cache keyed
-  by (path, mtime, size) so a repeat query does not re-parse.
+- **Parse (`ops.rs`, `language/parsers.rs`, `parse_cache.rs`)**: one parser per
+  thread, a cache keyed by (path, mtime, size) so a repeat query does not re-parse.
 - **Structural search**: ast-grep patterns over the parse tree.
 
 ## Why it matters
