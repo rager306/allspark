@@ -231,6 +231,30 @@ fn run_probe(probe: &Path, socket: &Path, prefix: &Path, payload_dir: &str) -> O
     .expect("run the probe")
 }
 
+fn run_probe_fork(probe: &Path, socket: &Path, prefix: &Path, payload_dir: &str) -> Output {
+    Command::new(
+        [
+            "/usr/bin/python3",
+            "/usr/local/bin/python3",
+            "/opt/homebrew/bin/python3",
+        ]
+        .into_iter()
+        .find(|path| Path::new(path).is_file())
+        .expect("python3"),
+    )
+    .arg(probe)
+    .arg("--kind=ours")
+    .arg("--force=0")
+    .arg("--fork-run")
+    .arg(format!("--prefix={}", prefix.display()))
+    .arg(format!("--payload-dir={payload_dir}"))
+    .arg(socket)
+    .env_clear()
+    .env("PATH", "/usr/bin:/bin")
+    .output()
+    .expect("run the probe")
+}
+
 fn verdict(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
@@ -357,6 +381,69 @@ fn the_probe_stops_only_a_daemon_running_this_installs_payload() {
 /// command line owns this process tree — and name nothing when no ancestor is
 /// a daemon.
 #[test]
+/// THE FIELD RELAPSE of the 2026-10-21 incident (regression): a fork run and the
+/// upstream Rust install share the same PREFIX, and the upstream lives at
+/// PREFIX/share/prime-agent — INSIDE the prefix. A fork update run from a bare
+/// shell (HOME=/root -> PREFIX=/root/.local) therefore claimed the whole prefix
+/// as its own and stopped the co-installed upstream daemon on
+/// /tmp/prime-agent-rust-<uid>/daemon.sock. With --fork-run the fork owns ONLY
+/// its payload tree (libexec/prime-agent); the prefix root is dropped.
+#[test]
+fn a_fork_run_does_not_claim_the_prefix_shared_with_the_upstream_install() {
+    let dir = tempfile::tempdir().expect("scratch dir");
+    let Some(probe) = probe_file(dir.path()) else {
+        eprintln!("skipping: no python3 for the installer's probe");
+        return;
+    };
+    // The fork layout: payload in libexec/, prefix elsewhere (the shared one).
+    let shared_prefix = dir.path().join("shared-local");
+    let fork_payload = shared_prefix.join("libexec/prime-agent");
+    std::fs::create_dir_all(fork_payload.parent().expect("libexec dir")).expect("fork payload dir");
+    std::fs::write(&fork_payload, b"payload").expect("fork payload file");
+
+    // The upstream Rust install: PREFIX/share/prime-agent — inside the shared
+    // prefix, OUTSIDE the fork's payload tree.
+    let upstream_payload = shared_prefix.join("share/prime-agent/prime-agent");
+    std::fs::create_dir_all(upstream_payload.parent().expect("upstream dir"))
+        .expect("upstream payload dir");
+    std::fs::write(&upstream_payload, b"payload").expect("upstream payload file");
+    let upstream = FakeDaemon::start(&dir.path().join("upstream-state"), &upstream_payload);
+
+    let output = run_probe_fork(
+        &probe,
+        &upstream.socket,
+        &shared_prefix,
+        fork_payload.parent().unwrap().to_str().unwrap(),
+    );
+    assert_eq!(
+        verdict(&output),
+        format!("foreign:{}", upstream_payload.display()),
+        "a fork run must not claim the prefix the upstream install lives under: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        upstream.commands().is_empty(),
+        "the upstream daemon must never be commanded by a fork run: {:?}",
+        upstream.commands()
+    );
+
+    // The fork's OWN daemon (under its payload tree) is still stopped.
+    let own = FakeDaemon::start(&dir.path().join("own-state"), &fork_payload);
+    let output = run_probe_fork(
+        &probe,
+        &own.socket,
+        &shared_prefix,
+        fork_payload.parent().unwrap().to_str().unwrap(),
+    );
+    assert_eq!(
+        verdict(&output),
+        "rust:stopped:2",
+        "the fork's own daemon is stopped: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn the_probe_names_the_daemon_this_process_tree_runs_under() {
     let dir = tempfile::tempdir().expect("scratch dir");
     let Some(probe) = probe_file(dir.path()) else {

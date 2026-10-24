@@ -1896,11 +1896,14 @@ path = sys.argv[-1]
 kind = "ts"
 listening_only = False
 force = False
+fork_run = False
 prefix = ""
 payload_dir = ""
 for flag in sys.argv[1:-1]:
     if flag == "--listening":
         listening_only = True
+    if flag == "--fork-run":
+        fork_run = True
     if flag.startswith("--kind="):
         kind = flag[len("--kind="):]
     if flag == "--force=1":
@@ -1955,7 +1958,24 @@ RUST_BUILD_ID_PREFIX = "pa-daemon-rs-"
 # standalone curl|sh run has none). Two roots, because the fork's launcher
 # layout keeps its payload OUTSIDE the prefix (bin/allspark + libexec/) while
 # still being the install the update replaces.
-OWN_ROOTS = [os.path.realpath(root) for root in (prefix, payload_dir) if root]
+#
+# FORK RUNS NARROW THE ROOTS TO THE PAYLOAD TREE ALONE (the field relapse of
+# the 2026-10-21 incident): the fork and the upstream Rust install share the
+# same PREFIX (~/.local), and the upstream lives at PREFIX/share/prime-agent —
+# INSIDE the prefix. With `prefix` in OWN_ROOTS, a fork update run from a bare
+# shell (HOME=/root -> PREFIX=/root/.local) claimed the whole tree as its own
+# and stopped the co-installed upstream daemon on
+# /tmp/prime-agent-rust-<uid>/daemon.sock. The fork's own files are the payload
+# tree (libexec/prime-agent) and bin/allspark; the upstream's share/ subtree is
+# a different install and is left alone. An upstream run keeps the prefix root
+# (its own layout installs INTO the prefix).
+# A fork run owns ONLY its payload tree: the upstream Rust install shares the
+# prefix (PREFIX/share/prime-agent) and must not be claimed by the prefix root.
+# `--fork-run` is passed by the shell below from the same fork_run gate.
+if fork_run:
+    OWN_ROOTS = [os.path.realpath(root) for root in (payload_dir,) if root]
+else:
+    OWN_ROOTS = [os.path.realpath(root) for root in (prefix, payload_dir) if root]
 HELLO_TIMEOUT_S = 1.5
 PROBE_TIMEOUT_S = 5.0
 STOP_CONFIRM_TIMEOUT_S = 5.0
@@ -2415,7 +2435,9 @@ stop_daemon_candidate() {
     step_start "Checking for a running daemon"
     probe_ui_file=""
     if [ -n "$ui_pid" ]; then probe_ui_file="$ui_active"; fi
-    verdict="$(PRIME_AGENT_INSTALL_UI_FILE="$probe_ui_file" "$UVPY" "$probe_py" "--kind=${candidate_kind}" "--force=${FORCE}" "--prefix=${PREFIX}" "--payload-dir=${install_payload_dir}" "$socket_path" 4>&2 2>/dev/null)" || verdict="probe-error"
+    fork_run_flag=""
+    if [ "${fork_run:-}" = "yes" ]; then fork_run_flag="--fork-run"; fi
+    verdict="$(PRIME_AGENT_INSTALL_UI_FILE="$probe_ui_file" "$UVPY" "$probe_py" "--kind=${candidate_kind}" "--force=${FORCE}" "--prefix=${PREFIX}" "--payload-dir=${install_payload_dir}" ${fork_run_flag} "$socket_path" 4>&2 2>/dev/null)" || verdict="probe-error"
   else
     verdict="absent"
   fi
