@@ -507,46 +507,54 @@ impl LspTool {
         timeout: Duration,
         kind: Goto,
     ) -> anyhow::Result<AgentToolResult> {
-        let path = self.file_path(params)?;
-        let client = self.manager.ensure_client(&path).await?;
-        let (position, symbol) = self.target(&client, &path, params).await?;
-        let response = match kind {
-            Goto::Definition => {
-                with_timeout(timeout, kind.label(), client.definition(&path, position)).await?
+        // The WHOLE cycle is bounded, not only the final request. `ensure_client`
+        // starts a server and completes `initialize`, and the symbol lookup may
+        // issue its own requests; with the bound only around the last request, a
+        // server that never answers `initialize` hung the call far longer than the
+        // timeout the caller asked for.
+        with_timeout(timeout, kind.label(), async {
+            let path = self.file_path(params)?;
+            let client = self.manager.ensure_client(&path).await?;
+            let (position, symbol) = self.target(&client, &path, params).await?;
+            let response = match kind {
+                Goto::Definition => {
+                    with_timeout(timeout, kind.label(), client.definition(&path, position)).await?
+                }
+                Goto::Declaration => {
+                    with_timeout(timeout, kind.label(), client.declaration(&path, position)).await?
+                }
+                Goto::TypeDefinition => {
+                    with_timeout(
+                        timeout,
+                        kind.label(),
+                        client.type_definition(&path, position),
+                    )
+                    .await?
+                }
+                Goto::Implementation => {
+                    with_timeout(
+                        timeout,
+                        kind.label(),
+                        client.implementation(&path, position),
+                    )
+                    .await?
+                }
+            };
+            let locations = definition_locations(response);
+            let origin = symbol.map_or_else(
+                || format!("{}:{}", path.display(), position.line + 1),
+                |s| s.name_path(),
+            );
+            let mut text = format!("{} of {}:\n", kind.label(), origin);
+            if locations.is_empty() {
+                text.push_str("  (none)\n");
             }
-            Goto::Declaration => {
-                with_timeout(timeout, kind.label(), client.declaration(&path, position)).await?
+            for location in &locations {
+                let _ = writeln!(text, "  - {}", format_location(location));
             }
-            Goto::TypeDefinition => {
-                with_timeout(
-                    timeout,
-                    kind.label(),
-                    client.type_definition(&path, position),
-                )
-                .await?
-            }
-            Goto::Implementation => {
-                with_timeout(
-                    timeout,
-                    kind.label(),
-                    client.implementation(&path, position),
-                )
-                .await?
-            }
-        };
-        let locations = definition_locations(response);
-        let origin = symbol.map_or_else(
-            || format!("{}:{}", path.display(), position.line + 1),
-            |s| s.name_path(),
-        );
-        let mut text = format!("{} of {}:\n", kind.label(), origin);
-        if locations.is_empty() {
-            text.push_str("  (none)\n");
-        }
-        for location in &locations {
-            let _ = writeln!(text, "  - {}", format_location(location));
-        }
-        Ok(AgentToolResult::text(text))
+            Ok(AgentToolResult::text(text))
+        })
+        .await
     }
 
     /// References via LSP (S11), with `include_declaration`, an optional
@@ -1375,5 +1383,32 @@ mod tests {
         assert!(diff.contains("-b"));
         assert!(diff.contains("+B"));
         assert!(diff.contains("-a") || !diff.contains("-a"));
+    }
+    /// The bound covers PREPARATION, not only the final LSP request.
+    ///
+    /// `goto` used to run `ensure_client` (which starts a server and completes
+    /// `initialize`) and the symbol lookup outside `with_timeout`, so a server that
+    /// never answered `initialize` hung the call far past the timeout the caller
+    /// asked for. With the bound around the whole cycle, a zero budget expires
+    /// before `ensure_client` can do anything — which is observable without a
+    /// language server: the call returns the bound's own error instead of the
+    /// file/manager error that preparation would raise.
+    #[tokio::test]
+    async fn goto_bounds_its_preparation_not_only_the_final_request() {
+        let tool = LspTool::new(Arc::new(LspManager::new()), PathBuf::from("/tmp"));
+        let params: LspParams = serde_json::from_value(serde_json::json!({
+            "action": "definition",
+            "symbol": "some_symbol",
+            "file": "/tmp/does-not-exist.rs"
+        }))
+        .expect("params");
+        let error = tool
+            .goto(&params, std::time::Duration::ZERO, Goto::Definition)
+            .await
+            .expect_err("a zero budget must expire during preparation");
+        assert!(
+            error.to_string().contains("did not answer within"),
+            "the bound itself must fire, not a preparation error: {error}"
+        );
     }
 }

@@ -1108,3 +1108,110 @@ fn a_symlinked_spelling_of_the_same_root_still_registers() {
         .index_project(link.join("repo"), &IndexOptions::new("repo"))
         .expect("the same tree through a symlink is not a conflict");
 }
+
+/// An import whose name maps to several definitions must resolve by MODULE,
+/// and must not claim the top confidence when no module separates them.
+///
+/// `resolve_import` used to take `candidates.first()` of the sorted list and
+/// emit `ImportMap` at 0.95 regardless — so `use b::foo` could wire to `a::foo`
+/// while wearing the strongest confidence the resolver has. Two cases, and the
+/// second is the one that was silently wrong:
+///
+/// 1. the imported module names one candidate -> that candidate, `ImportMap` 0.95
+///    (the evidence really is there);
+/// 2. nothing in the module matches (an external or differently-spelled path)
+///    -> the pick stays a guess, so it drops to `Suffix` and reports how many
+///    candidates were ambiguous.
+fn import_edges_for(root: &std::path::Path) -> Vec<pa_graph::types::Edge> {
+    let mut store = GraphStore::open(root.join("g.db")).unwrap();
+    store
+        .index_project(root, &IndexOptions::new("p").with_force(true))
+        .unwrap();
+    store
+        .all_edges("p")
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|edge| edge.edge_type == pa_graph::types::EdgeType::Imports)
+        .collect()
+}
+
+#[test]
+fn an_import_resolves_to_the_candidate_in_its_module() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    std::fs::create_dir_all(root.join("a")).unwrap();
+    std::fs::create_dir_all(root.join("b")).unwrap();
+    std::fs::write(root.join("a/mod.rs"), "pub fn foo() -> u32 { 1 }\n").unwrap();
+    std::fs::write(root.join("b/mod.rs"), "pub fn foo() -> u32 { 2 }\n").unwrap();
+    std::fs::write(
+        root.join("main.rs"),
+        "use b::foo;\npub fn caller() -> u32 { foo() }\n",
+    )
+    .unwrap();
+
+    let edges = import_edges_for(&root);
+    let target = edges
+        .iter()
+        .find(|edge| {
+            edge.props["module"]
+                .as_str()
+                .is_some_and(|m| m.contains('b'))
+        })
+        .expect("the b::foo import edge");
+    assert_eq!(
+        target.props["strategy"].as_str(),
+        Some("import_map"),
+        "the module names the candidate, so this is ImportMap: {:?}",
+        target.props
+    );
+    // f32 0.95 renders as 0.949999988…; compare with tolerance.
+    let confidence = target.props["confidence"].as_f64().expect("confidence");
+    assert!(
+        (confidence - 0.95).abs() < 1e-6,
+        "ImportMap confidence: {confidence}"
+    );
+    assert_eq!(target.props["ambiguous_candidates"].as_u64(), Some(0));
+}
+
+#[test]
+fn an_import_no_module_can_separate_is_demoted_not_trusted() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    std::fs::create_dir_all(root.join("a")).unwrap();
+    std::fs::create_dir_all(root.join("b")).unwrap();
+    std::fs::write(root.join("a/mod.rs"), "pub fn foo() -> u32 { 1 }\n").unwrap();
+    std::fs::write(root.join("b/mod.rs"), "pub fn foo() -> u32 { 2 }\n").unwrap();
+    // An unresolvable module path: neither candidate's qname contains it.
+    std::fs::write(
+        root.join("main.rs"),
+        "use nowhere::foo;\npub fn caller() -> u32 { foo() }\n",
+    )
+    .unwrap();
+
+    let edges = import_edges_for(&root);
+    let target = edges
+        .iter()
+        .find(|edge| {
+            edge.props["module"]
+                .as_str()
+                .is_some_and(|m| m.contains("nowhere"))
+        })
+        .expect("the nowhere::foo import edge");
+    assert_eq!(
+        target.props["strategy"].as_str(),
+        Some("suffix"),
+        "no module separates the candidates, so the pick is a guess: {:?}",
+        target.props
+    );
+    assert!(
+        target.props["confidence"].as_f64().unwrap_or(1.0) < 0.95,
+        "a guess must not wear ImportMap's confidence: {:?}",
+        target.props
+    );
+    assert_eq!(
+        target.props["ambiguous_candidates"].as_u64(),
+        Some(2),
+        "the edge reports how ambiguous it was: {:?}",
+        target.props
+    );
+}

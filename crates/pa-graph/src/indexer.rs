@@ -852,15 +852,36 @@ impl Resolver {
     /// symbol is defined in the project.
     pub(crate) fn resolve_import(&self, import: &ImportDef) -> Option<(i64, serde_json::Value)> {
         let candidates = self.by_name.get(&import.target_name)?;
-        let target_qn = candidates.first()?;
+        // Several definitions share the imported name: the module path the import
+        // actually names is the only discriminator available here, so prefer a
+        // candidate that sits in it. Without this the FIRST candidate by qualified
+        // name won — `import foo from b` could wire to `a::foo` — while still
+        // claiming ImportMap's 0.95, i.e. an unmeasured guess dressed as the
+        // strongest evidence the resolver emits.
+        //
+        // When the module cannot separate them (no candidate's qname contains it)
+        // the choice stays a guess, so it must not keep 0.95: the confidence drops
+        // to `Suffix`'s level and the strategy says `ambiguous`, which is what a
+        // caller filtering by confidence needs to see.
+        let in_module = |qn: &&String| qn.contains(&import.module);
+        let (target_qn, confident) = match candidates.iter().find(in_module) {
+            Some(found) => (found, true),
+            None => (candidates.first()?, candidates.len() == 1),
+        };
         let target = *self.by_qn.get(target_qn)?;
+        let strategy = if confident {
+            CallStrategy::ImportMap
+        } else {
+            CallStrategy::Suffix
+        };
         Some((
             target,
             json!({
                 "local_name": import.local_name,
                 "module": import.module,
-                "confidence": CallStrategy::ImportMap.base_confidence(),
-                "strategy": CallStrategy::ImportMap.as_str(),
+                "confidence": strategy.base_confidence(),
+                "strategy": strategy.as_str(),
+                "ambiguous_candidates": if confident { 0 } else { candidates.len() },
             }),
         ))
     }
