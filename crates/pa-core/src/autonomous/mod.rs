@@ -449,6 +449,19 @@ pub fn autonomous_continuation_loop_row(
     ))
 }
 
+/// The durable user-message row for a keep-alive fire: the loop injects this
+/// as the next turn while descendant work stays unsettled past the window.
+#[must_use]
+pub fn autonomous_keep_alive_row(
+    state: &AutonomousRuntimeState,
+    timestamp: u64,
+) -> pa_agent::types::AgentMessage {
+    autonomous_continuation_loop_row(
+        &create_autonomous_subagent_keep_alive_text(state),
+        timestamp,
+    )
+}
+
 /// Keep-alive message delivered while subagents are still active.
 #[must_use]
 pub fn create_autonomous_subagent_keep_alive_text(state: &AutonomousRuntimeState) -> String {

@@ -245,6 +245,45 @@ impl AgentSessionEngine {
                 && !self.session_input_queued()
             {
                 self.retry_owed_autonomous_continuation();
+                return;
+            }
+            // The keep-alive valve: descendant work still unsettled past the
+            // configured window mints the keep-alive row as the delivered turn,
+            // so the model checks on (or cancels) hung descendants instead of
+            // the deferral staying silent forever. Without this the setting had
+            // a documented value and no consumer (`documented, never wired`).
+            let keep_alive_ms = {
+                let state = self.autonomous.lock().await;
+                state.subagent_keep_alive_ms
+            };
+            let now = pa_core::autonomous::now_millis();
+            let due = {
+                let mut last = self
+                    .autonomous_last_keep_alive_ms
+                    .lock()
+                    .expect("keep-alive lock");
+                // The deferral's START is not a keep-alive: the window measures
+                // how long the work has BEEN unsettled, so the first probe just
+                // opens it. Firing here would admit a keep-alive on the very
+                // settle that deferred the turn.
+                let due = last.is_some_and(|last| now.saturating_sub(last) >= keep_alive_ms);
+                if due || last.is_none() {
+                    *last = Some(now);
+                }
+                due
+            };
+            if due {
+                let state = self.autonomous.lock().await;
+                let text = pa_core::autonomous::create_autonomous_subagent_keep_alive_text(&state);
+                drop(state);
+                let admission = self
+                    .autonomous_admission
+                    .lock()
+                    .expect("autonomous admission lock")
+                    .clone();
+                if let Some(admit) = admission {
+                    admit(text);
+                }
             }
             return;
         }
@@ -401,6 +440,58 @@ mod tests {
                 .load(std::sync::atomic::Ordering::SeqCst),
             "the delivered turn consumed the owed flag"
         );
+    }
+
+    /// The keep-alive valve: descendant work unsettled past the window admits
+    /// the keep-alive text while the continuation stays held; the first probe
+    /// only opens the window, and a fresh probe re-arms it.
+    #[test]
+    fn the_keep_alive_fires_only_after_the_window_while_descendants_hold() {
+        let _faux = FAUX_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (engine, _dir) = faux_engine_with_settings(
+            &serde_json::json!({ "responses": [{"text": "warm ok"}, {"text": "working"}] }),
+            u64::MAX,
+        );
+        let engine = Arc::new(engine);
+        engine.register_arc();
+        let admitted: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&admitted);
+        engine.set_autonomous_admission(std::sync::Arc::new(move |text| {
+            sink.lock().unwrap().push(text);
+        }));
+        let mut events: Vec<EngineEvent> = Vec::new();
+        admit(&engine, "warm".to_string(), &mut events);
+        set_background_bash_probe(&engine, Arc::new(|| true));
+        admit(
+            &engine,
+            "/autonomous on --max-continuations 5 --max-turns 60".to_string(),
+            &mut events,
+        );
+        admit(&engine, "go".to_string(), &mut events);
+        assert!(engine
+            .autonomous_awaits_rlm_work
+            .load(std::sync::atomic::Ordering::SeqCst));
+        // The deferral's own probe only opens the window: no keep-alive yet.
+        engine
+            .runtime
+            .block_on(async { engine.autonomous_children_settled().await });
+        assert!(
+            admitted.lock().unwrap().is_empty(),
+            "the window just opened"
+        );
+
+        // The window elapsed: the next settle admits the keep-alive.
+        *engine.autonomous_last_keep_alive_ms.lock().unwrap() =
+            Some(pa_core::autonomous::now_millis().saturating_sub(25 * 60 * 1000));
+        engine
+            .runtime
+            .block_on(async { engine.autonomous_children_settled().await });
+        let admitted = admitted.lock().unwrap();
+        assert_eq!(admitted.len(), 1, "the window elapsed: {admitted:?}");
+        assert!(admitted[0].contains("keep-alive"), "{admitted:?}");
     }
 
     #[test]

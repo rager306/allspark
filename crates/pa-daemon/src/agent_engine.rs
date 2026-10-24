@@ -269,6 +269,11 @@ pub struct AgentSessionEngine {
     /// Whether the in-run hook deferred the continuation behind unsettled
     /// RLM descendant work: the settle hook delivers it.
     pub(crate) autonomous_awaits_rlm_work: std::sync::atomic::AtomicBool,
+    /// Epoch ms of the last subagent keep-alive the deferral branch minted, or
+    /// `None`. The valve fires while descendant work stays unsettled longer
+    /// than `subagent_keep_alive_ms`; without it the deferral is silent and the
+    /// keep-alive setting (`pa-core/src/autonomous/mod.rs:30`) has no consumer.
+    pub(crate) autonomous_last_keep_alive_ms: std::sync::Mutex<Option<u64>>,
     /// Set by the worker's kill/shutdown closes: the continuation mint sites
     /// and settle-hook retries bail — a stopped session stays stopped. The
     /// create path clears it.
