@@ -1,5 +1,7 @@
 # pa-edit
 
+`FORK-ONLY` — never pushed upstream.
+
 The edit engine: five modes over one session, staging, and preview machinery.
 
 **FORK-ONLY.** Ported from oh-my-pi's `pi-edit`; do not push upstream.

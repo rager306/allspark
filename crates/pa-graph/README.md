@@ -1,5 +1,8 @@
 # pa-graph
 
+`FORK-ONLY` — never pushed upstream. The fork's flagship crate: the `graph` tool's
+entire backend.
+
 On-disk SQLite code graph + full-text symbol search. A native Rust port of the
 `codebase-memory-mcp` store patterns and the `ruvector` hybrid-retrieval
 techniques, built on `pa-ast` for parsing.

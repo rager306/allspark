@@ -1,5 +1,7 @@
 # pa-mem
 
+`FORK-ONLY` — never pushed upstream.
+
 Low-level RAM layout structures, ported safely from pogocache.
 
 **FORK-ONLY.** The upstream C uses manual layout tricks; this port keeps the

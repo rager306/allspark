@@ -1,5 +1,7 @@
 # pa-diff
 
+`FORK-ONLY` — never pushed upstream.
+
 Line and word diff primitives shared by the edit engine and the terminal UI.
 
 **FORK-ONLY.**
