@@ -205,6 +205,18 @@ pub fn convert_responses_messages(
                 for block in &assistant.content {
                     match block {
                         AssistantContent::Thinking(thinking) => {
+                            // Muse Spark contributor models route to an upstream Console
+                            // backend that cannot validate `encrypted_content` across
+                            // rotated accounts or sessions: replaying the reasoning item
+                            // the earlier turn captured yields 400 "reasoning
+                            // encrypted_content was not issued to this caller", and the
+                            // turn dies after a bare summary line. 9router learned this
+                            // the same way (`eafac37d`, "strip prior reasoning items on
+                            // Muse Spark Responses models"): for these models the
+                            // reasoning item is dropped from `input` entirely.
+                            if model.provider == "muse" && model.id.contains("contributor") {
+                                continue;
+                            }
                             if let Some(signature) = &thinking.thinking_signature {
                                 if let Ok(mut reasoning_item) =
                                     serde_json::from_str::<Value>(signature)
@@ -383,8 +395,8 @@ pub fn convert_responses_tools(
 mod tests {
     use super::*;
     use crate::types::{
-        Message, StopReason, TextContent, ToolCall, ToolResultMessage, Usage, UserMessage,
-        UserMessageContent, UserOrToolContent,
+        Message, StopReason, TextContent, ThinkingContent, ToolCall, ToolResultMessage, Usage,
+        UserMessage, UserMessageContent, UserOrToolContent,
     };
 
     fn codex_model() -> Model {
@@ -528,6 +540,76 @@ mod tests {
                     "output": "ok",
                 }),
             ]
+        );
+    }
+
+    /// The muse contributor replay: a prior-turn reasoning item (captured whole into
+    /// `thinking_signature`, encrypted content included) must NOT re-enter `input`.
+    /// The upstream Console backend rejects foreign `encrypted_content` across rotated
+    /// accounts with 400 `"reasoning encrypted_content was not issued to this caller"`,
+    /// which surfaced as a turn that announced its next action and stopped. 9router
+    /// learned the same rule (`eafac37d`, strip prior reasoning items on Muse Spark
+    /// Responses models); this is that mechanism, ported.
+    #[test]
+    fn muse_contributor_does_not_replay_prior_reasoning_items() {
+        let model = Model {
+            provider: "muse".into(),
+            id: "muse-spark-1.3-contributor".into(),
+            api: "openai-responses".into(),
+            ..codex_model()
+        };
+        let reasoning_signature = serde_json::json!({
+            "type": "reasoning",
+            "id": "rs_1",
+            "summary": [],
+            "encrypted_content": "secret-from-another-account"
+        })
+        .to_string();
+        // The prior turn was produced BY this muse model: `is_same_model` is what
+        // lets a thinking block reach the replay branch at all.
+        let prior = Message::Assistant(AssistantMessage {
+            content: vec![
+                crate::types::AssistantContent::Thinking(ThinkingContent {
+                    thinking: String::new(),
+                    thinking_signature: Some(reasoning_signature),
+                    redacted: None,
+                    rest: Map::default(),
+                }),
+                crate::types::AssistantContent::Text(TextContent {
+                    text: "Продолжаю.".into(),
+                    text_signature: None,
+                    rest: Map::default(),
+                }),
+            ],
+            api: "openai-responses".into(),
+            provider: "muse".into(),
+            model: "muse-spark-1.3-contributor".into(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::ToolUse,
+            stop_reason_raw: None,
+            error_message: None,
+            timestamp: 0,
+            rest: Map::default(),
+        });
+        let items = convert(&model, vec![user("hi"), prior]);
+        let reasoning_items = items
+            .iter()
+            .filter(|item| item.get("type").and_then(Value::as_str) == Some("reasoning"))
+            .count();
+        assert_eq!(
+            reasoning_items, 0,
+            "a muse contributor turn must not replay prior reasoning items: {items:?}"
+        );
+        // The assistant's own text survives.
+        assert!(
+            items.iter().any(|item| {
+                item.get("role").and_then(Value::as_str) == Some("assistant")
+                    && item.to_string().contains("Продолжаю.")
+            }),
+            "the assistant text stays in the transcript"
         );
     }
 

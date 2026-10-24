@@ -251,7 +251,17 @@ fn build_params(model: &Model, context: &Context, options: &OpenAIResponsesOptio
                 "reasoning".into(),
                 json!({ "effort": effort, "summary": summary }),
             );
-            params.insert("include".into(), json!(["reasoning.encrypted_content"]));
+            // Muse Spark contributor models cannot replay captured reasoning items
+            // (the upstream Console backend rejects foreign `encrypted_content`
+            // across rotated accounts), so the fork does not ask for them: the
+            // capture would be stored in the transcript and then filtered out of
+            // every subsequent request's `input` (`convert_responses_messages`).
+            // Asking for the capture would only bloat the stored signature.
+            let replays_encrypted_reasoning =
+                !(model.provider == "muse" && model.id.contains("contributor"));
+            if replays_encrypted_reasoning {
+                params.insert("include".into(), json!(["reasoning.encrypted_content"]));
+            }
         } else if model.provider != "github-copilot" {
             let off_null = model
                 .thinking_level_map_value(ModelThinkingLevel::Off)
