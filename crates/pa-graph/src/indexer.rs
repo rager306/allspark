@@ -437,7 +437,7 @@ impl GraphStore {
     ///
     /// # Errors
     /// Propagates SQLite errors.
-    fn record_call_edge(
+    pub(crate) fn record_call_edge(
         &self,
         resolver: &Resolver,
         project: &str,
@@ -752,8 +752,13 @@ pub(crate) struct Resolver {
 
 impl Resolver {
     /// A resolver that knows no dependency crates: every miss falls back to the
-    /// std/trait corpora. Used where a root is not available (tests, incremental
-    /// paths that did not read manifests).
+    /// std/trait corpora.
+    ///
+    /// Both WRITE paths use [`Self::with_deps`] — the full index and the
+    /// incremental reindex alike — because a dependency-blind resolver makes the
+    /// two disagree about the same tree (audit R1). This constructor is for
+    /// callers with no root to read manifests from, and for tests.
+    #[cfg(test)]
     pub(crate) fn new(by_qn: HashMap<String, i64>) -> Self {
         Self::with_deps(by_qn, crate::deps::DependencyCrates::default())
     }

@@ -287,12 +287,21 @@ impl GraphStore {
 
         // ── 5. re-resolve cross-file edges for the touched files ────────
         let symbols = self.symbol_index(&opts.project)?;
-        let resolver = Resolver::new(symbols);
+        // The SAME resolver the full index uses (audit R1): `Resolver::new` is
+        // dependency-blind, so a reindex deleted a file's outgoing CALLS/IMPORTS
+        // and re-inserted only what an intra-tree name match could find — every
+        // cross-crate call vanished with no edge, no miss row and no counter
+        // movement, while miss rows for calls the edit deleted stayed behind.
+        // A later full index then produced a different graph for the same tree.
+        let deps = crate::deps::DependencyCrates::from_workspace(&root).unwrap_or_default();
+        let resolver = Resolver::with_deps(symbols, deps);
         let file_nodes = self.file_node_ids(&opts.project)?;
+        // `record_call_edge` is the full index's per-call writer: it resolves,
+        // ELSE records a dependency-rooted self-loop, ELSE records a miss row
+        // with its reason. Calling it here is what makes the two write paths
+        // agree — an unresolved call becomes evidence instead of silence.
         for (caller_qn, call) in &pending_calls {
-            if let Some((source, target, props)) = resolver.resolve_call(caller_qn, call) {
-                self.insert_edge(&opts.project, source, target, EdgeType::Calls, &props)?;
-            }
+            self.record_call_edge(&resolver, &opts.project, caller_qn, call)?;
         }
         for (rel, import) in &pending_imports {
             let Some(&file_id) = file_nodes.get(rel) else {
@@ -387,6 +396,8 @@ fn pick_reason(reasons: &BTreeSet<ReindexReason>) -> ReindexReason {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
     use crate::store::GraphStore;
 
     fn write(dir: &Path, name: &str, body: &str) {
@@ -614,6 +625,83 @@ mod tests {
         assert!(
             verdict.chain_ok,
             "the appended receipt links to its predecessor"
+        );
+    }
+    /// Audit R1, the differential proof: touching one file and re-indexing it
+    /// must produce the same graph a full index produces.
+    ///
+    /// Before the fix the two paths disagreed — a reindex resolved calls with a
+    /// dependency-blind resolver and wrote no miss rows, so a cross-crate call
+    /// disappeared and an unresolved one left nothing behind.
+    #[test]
+    fn reindex_and_full_index_agree_on_the_same_tree() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A workspace manifest, so a dependency-rooted call is recognisable.
+        write(
+            dir.path(),
+            "Cargo.toml",
+            "[package]\nname = \"p\"\nversion = \"0.1.0\"\n[dependencies]\nserde = \"1\"\n",
+        );
+        write(
+            dir.path(),
+            "a.rs",
+            "pub fn caller() { serde::de::from_str(\"x\"); helper(); unknown_thing(); }\n",
+        );
+        write(dir.path(), "b.rs", "pub fn helper() -> u32 { 1 }\n");
+
+        // Route A: index, then edit a file and reindex.
+        let mut reindexed = GraphStore::open_in_memory().expect("store");
+        index(&mut reindexed, dir.path());
+        write(
+            dir.path(),
+            "a.rs",
+            "pub fn caller() { serde::de::from_str(\"x\"); helper(); unknown_thing(); }\npub fn added() {}\n",
+        );
+        reindexed
+            .reindex_incremental(dir.path(), &IndexOptions::new("p"))
+            .expect("reindex");
+        let reindex_edges = reindexed.all_edges("p").expect("edges");
+
+        // Route B: the same tree, indexed from scratch.
+        let mut fresh = GraphStore::open_in_memory().expect("store");
+        fresh
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("index");
+        let index_edges = fresh.all_edges("p").expect("edges");
+
+        // Compare by NAME, not by row id: a reindex preserves the ids it
+        // already wrote while a fresh index numbers the tree from scratch, so
+        // ids are store-local and only qualified names describe the graph.
+        let shape = |edges: &[crate::types::Edge], store: &GraphStore| {
+            let names: HashMap<i64, String> = store
+                .all_nodes("p")
+                .expect("nodes")
+                .into_iter()
+                .map(|n| (n.id, n.qualified_name))
+                .collect();
+            let mut out: Vec<(String, String, String)> = edges
+                .iter()
+                .map(|e| {
+                    (
+                        e.edge_type.to_string(),
+                        names.get(&e.source).cloned().unwrap_or_default(),
+                        names.get(&e.target).cloned().unwrap_or_default(),
+                    )
+                })
+                .collect();
+            out.sort();
+            out
+        };
+        assert_eq!(
+            shape(&reindex_edges, &reindexed),
+            shape(&index_edges, &fresh),
+            "a reindex and a full index disagree about the same tree"
+        );
+        assert!(
+            index_edges
+                .iter()
+                .any(|e| e.props.to_string().contains("dependency")),
+            "the fixture must exercise the dependency path"
         );
     }
 }
