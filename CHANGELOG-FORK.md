@@ -87,6 +87,32 @@ the fork-only crates stay in it.
   answered `fresh` with none of its symbols. Registration now refuses and names
   both paths; a symlinked spelling of the same tree still registers.
 
+- `9a582825e` — a context's `fixed_tools` reaches the tool pipeline. `Context`
+  carried it and `Context::apply` honoured it, but `Context::delta()` dropped it, so
+  `minimal` ("bash + edit only") handed the runtime the full roster. `query` also
+  said "Read-only surface" while excluding just `edit` and `bash`; `python_repl` can
+  write files, so the description now says what the layer does.
+- `a23e049dc` — a refused child delete no longer claims the child is cancelled.
+  Both cancellation paths set `cancelled` before `await delete_subagent`, so a
+  refused delete left a live child under a `stopped` run. The claim is now
+  `cancelling`, the terminal status follows the delete's result, and `stop()`
+  reports the survivors it could not cancel.
+- `a49fd1bd3`, `4fb017bab` — a judgment is priced and capped per ENDPOINT, not per
+  chain. One constant priced every endpoint at TypeSafe's 0.042 while SubQ Snap bills
+  0.05, and `max_questions` was never set, so a 17-question `ask` hit SubQ's 422
+  instead of chunking.
+- `8e2af5056` — a re-ranked hit reports `kept`, not `verified`. Clearing a 0.1
+  threshold means "not confidently rejected", not "confirmed".
+- `140f02a35` — `allspark update` on a fork build refuses instead of installing
+  upstream over itself. Every endpoint the funnel reaches belongs to upstream; the
+  fork marker had only ever reached the installer's daemon-stop probe.
+- `76efd5959` — `FactoryExecutor`'s docstring says what a kernel restart costs: the
+  run id is unknown afterwards, `status`/`stop`/`resume` raise, and surviving
+  children must be stopped through `rlm.delete_subagent`.
+- `64bc6e007` — the toolchain pin moves to **1.99.1** in both halves (`rust-toolchain.toml`
+  and the dtolnay action SHA in seven workflows), after two real 1.99 findings:
+  `clippy::assert_is_empty` at `activity_lines.rs:53` and `late_sent_messages.rs:405`.
+
 ## fork.009 — upstream v0.10.1-beta.38
 
 - Tag: `allspark-v0.10.1-beta.38-fork.009` (2026-10-20)
