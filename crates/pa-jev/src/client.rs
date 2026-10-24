@@ -20,7 +20,9 @@ use futures::StreamExt;
 use tokio::sync::watch;
 
 use crate::error::JevError;
-use crate::types::{Answer, JudgmentRequest, JudgmentState, Question, Usage};
+use crate::types::{
+    Answer, JudgmentRequest, JudgmentState, Question, Usage, JEV_INPUT_PRICE_PER_MTOK,
+};
 use crate::wire::{self, WireDialect};
 
 /// Per-attempt timeout (the omp `DEFAULT_TIMEOUT_MS`).
@@ -52,6 +54,14 @@ pub struct JevClientConfig {
     /// Most questions per request this endpoint accepts; larger requests
     /// split. `None`: no cap.
     pub max_questions: Option<usize>,
+    /// `$/million` input tokens, used to price a response that reports token
+    /// counts but no billed amount. This is an ENDPOINT fact: the chain can
+    /// mix endpoints at different prices (`TypeSafe` `0.042`, `SubQ Snap`
+    /// `0.05`), so one chain-wide constant would price one provider's tokens
+    /// at another's rate. Callers holding a catalog entry set this from
+    /// `Model.cost.input`; [`JEV_INPUT_PRICE_PER_MTOK`] remains the default
+    /// for the no-catalog `typesafe` path.
+    pub input_price_per_mtok: f64,
     /// Extra static headers (catalog per-model headers).
     pub extra_headers: BTreeMap<String, String>,
 }
@@ -75,6 +85,7 @@ impl JevClientConfig {
             api_key: api_key.into(),
             timeout: Duration::from_millis(DEFAULT_TIMEOUT_MS),
             max_questions: None,
+            input_price_per_mtok: JEV_INPUT_PRICE_PER_MTOK,
             extra_headers: BTreeMap::new(),
         }
     }
@@ -321,9 +332,12 @@ impl JevClient {
         payload: &serde_json::Value,
         questions: &BTreeMap<String, Question>,
     ) -> Result<JudgmentResult, JevError> {
-        let decoded = wire::decode_response(payload).ok_or_else(|| JevError::Malformed {
-            detail: format!("not a judgment response: {payload}"),
-        })?;
+        let decoded =
+            wire::decode_response(payload, self.config.input_price_per_mtok).ok_or_else(|| {
+                JevError::Malformed {
+                    detail: format!("not a judgment response: {payload}"),
+                }
+            })?;
         for (id, question) in questions {
             if decoded.refused.iter().any(|refused| refused == id) {
                 return Err(JevError::Malformed {

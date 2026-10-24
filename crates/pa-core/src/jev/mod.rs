@@ -216,6 +216,13 @@ fn resolve_candidate(
         .iter()
         .find(|model| model.provider == provider && model.id == model_id)
         .cloned();
+    // The endpoint's own input price, when the catalog knows it: the chain can
+    // hold TypeSafe (0.042/MTok) and SubQ Snap (0.05/MTok) at once, so pricing
+    // is read per candidate, never from one chain-wide constant.
+    let catalog_input_price = catalog_model
+        .as_ref()
+        .map(|model| model.cost.input.as_f64())
+        .filter(|price| *price > 0.0);
     let (dialect, base_url, wire_model, api_key, headers, identity) = match catalog_model {
         Some(model) => {
             // Classification is always by wire dialect, never by provider.
@@ -263,6 +270,13 @@ fn resolve_candidate(
         );
         config.timeout = settings.timeout;
         config.extra_headers = headers;
+        // Price the tokens at THIS endpoint's rate: the chain mixes TypeSafe
+        // (0.042/MTok) with SubQ Snap (0.05/MTok), so a single chain-wide
+        // constant would bill one provider's tokens at another's price.
+        // `None` keeps the no-catalog default for the `typesafe` path.
+        if let Some(price) = catalog_input_price {
+            config.input_price_per_mtok = price;
+        }
         Arc::new(NativeJudge::new(
             JevClient::new(config),
             identity.clone(),
