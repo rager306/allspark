@@ -23,9 +23,14 @@ async fn list(options: &RunOptions) -> Result<i32, String> {
     }
     // Discovery, not failover: a native free model needs no configured provider,
     // so it belongs in the list even though `get_available` keeps it out of the
-    // default/failover set.
-    let models: Vec<pa_types::ai::Model> = {
+    // default/failover set. A retired OpenCode id keeps its row with the date it
+    // disappeared in the model column — the deprecate half of the discovery
+    // contract: visible, still resolvable, never silently pruned.
+    let deprecated: std::collections::HashMap<String, String> = {
         registry.refresh_available_models().await;
+        registry.deprecated_opencode_ids().into_iter().collect()
+    };
+    let models: Vec<pa_types::ai::Model> = {
         registry
             .get_discoverable_models()
             .into_iter()
@@ -52,7 +57,7 @@ async fn list(options: &RunOptions) -> Result<i32, String> {
         None => models,
     };
     filtered.sort_by(|a, b| a.provider.cmp(&b.provider).then_with(|| a.id.cmp(&b.id)));
-    print_table(&filtered);
+    print_table(&filtered, &deprecated);
     Ok(0)
 }
 
@@ -76,10 +81,15 @@ struct Row {
 }
 
 impl Row {
-    fn from_model(model: &pa_types::ai::Model) -> Self {
+    fn from_model(model: &pa_types::ai::Model, retired_at: Option<&String>) -> Self {
         Row {
             provider: model.provider.clone(),
-            model: model.id.clone(),
+            model: match retired_at {
+                // The deprecate half of the discovery contract: the id stays
+                // listed and resolvable, with the date it disappeared named.
+                Some(date) => format!("{} [retired {date}]", model.id),
+                None => model.id.clone(),
+            },
             context: format_token_count(model.context_window),
             max_out: format_token_count(model.max_tokens),
             thinking: yes_no(model.reasoning),
@@ -132,11 +142,17 @@ fn format_token_count(count: u64) -> String {
 
 /// The catalog table: fixed headers, two-space gutters, and every
 /// column padded to its widest value (trailing padding included).
-fn print_table(models: &[pa_types::ai::Model]) {
+fn print_table(
+    models: &[pa_types::ai::Model],
+    deprecated: &std::collections::HashMap<String, String>,
+) {
     const HEADERS: [&str; 6] = [
         "provider", "model", "context", "max-out", "thinking", "images",
     ];
-    let rows: Vec<Row> = models.iter().map(Row::from_model).collect();
+    let rows: Vec<Row> = models
+        .iter()
+        .map(|model| Row::from_model(model, deprecated.get(&model.id)))
+        .collect();
     let mut widths = [0usize; 6];
     for (index, header) in HEADERS.iter().enumerate() {
         widths[index] = header.chars().count();

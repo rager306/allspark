@@ -153,13 +153,19 @@ pub(crate) async fn get_available_models(state: &Arc<RpcState>) -> Result<Respon
     let mut registry = registry(state);
     registry.refresh_available_models().await;
     // The picker's discovery set: native free models included (no provider auth
-    // needed), default/failover candidates unchanged.
+    // needed), default/failover candidates unchanged. Retired OpenCode ids ride
+    // along as a separate list so a picker can mark them without a wire-type
+    // change to `Model` (discovery contract §6).
     let models: Vec<pa_types::ai::Model> = registry
         .get_discoverable_models()
         .into_iter()
         .cloned()
         .collect();
-    Ok(ResponseData::Present(json!({ "models": models })))
+    let deprecated: Vec<(String, String)> = registry.deprecated_opencode_ids();
+    Ok(ResponseData::Present(json!({
+        "models": models,
+        "deprecatedModels": deprecated,
+    })))
 }
 
 /// The valid thinking-level wire names.

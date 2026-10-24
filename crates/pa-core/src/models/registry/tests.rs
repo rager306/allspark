@@ -120,6 +120,28 @@ fn explicit_native_free_selection_resolves_public_request_auth_only_on_its_endpo
             error: None,
         }
     );
+}
+
+/// The deprecate half of the discovery contract: a retirement list is
+/// reported only for ids the table actually carries, and the tuple shape
+/// (id, date) is what the picker and `model list` render.
+#[test]
+fn deprecated_opencode_ids_reports_only_table_rows() {
+    let registry = ModelRegistry::in_memory(auth_without_env(&serde_json::json!({})));
+    // No snapshot in an in-memory registry: empty, never a panic.
+    assert_eq!(
+        registry.deprecated_opencode_ids(),
+        Vec::<(String, String)>::new()
+    );
+}
+
+#[test]
+fn a_native_free_row_never_learns_other_endpoints_request_auth() {
+    let mut registry = ModelRegistry::in_memory(auth_without_env(&serde_json::json!({})));
+    let free = registry
+        .resolve_set_model_selection("opencode", "deepseek-v4.1-flash-free")
+        .expect("explicit native free selection")
+        .clone();
     assert!(registry.has_request_auth(&free));
     for base_url in [
         "https://example.com/v1",

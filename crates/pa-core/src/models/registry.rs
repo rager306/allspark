@@ -723,7 +723,7 @@ impl ModelRegistry {
     /// list` shows the disappearance date, and nothing is silently pruned. The
     /// hand-written table stays the resolution authority — this list only says
     /// which of its rows the live endpoint no longer answers for.
-    pub fn deprecated_opencode_ids(&self) -> Vec<&pa_models::opencode_models::DeprecatedModel> {
+    pub fn deprecated_opencode_ids(&self) -> Vec<(String, String)> {
         let mut ids: Vec<&str> = self
             .models
             .iter()
@@ -739,6 +739,7 @@ impl ModelRegistry {
                     .deprecated
                     .iter()
                     .filter(|gone| ids.binary_search(&gone.id.as_str()).is_ok())
+                    .map(|gone| (gone.id.clone(), gone.deprecated_at.clone()))
                     .collect()
             })
             .unwrap_or_default()
