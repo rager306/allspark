@@ -42,15 +42,6 @@ class RestartSupervisor(Supervisor):
         self.catalog_held = threading.Event()
         super().__init__(*args)
 
-    def extra_command(self, command, response):
-        # FORK-ONLY get_cache_stats: the TUI statusline asks for per-model cache
-        # totals on attach. The fixture answers with an empty fold - the scenario
-        # is about the reconnect banner, not cache accounting.
-        if command.get("type") == "get_cache_stats":
-            response["data"] = {"models": []}
-            return True
-        return False
-
     def send(self, sock, data):
         if self.closed and data.get('type') == 'response' and data.get('command') == 'get_commands':
             # A resync rebuild can clear the transcript after the status shows.

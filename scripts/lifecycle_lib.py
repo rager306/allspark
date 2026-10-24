@@ -216,6 +216,14 @@ class Supervisor:
 
     def extra_command(self, command, response):
         """Subclass-owned protocol additions, handled before unknown-command errors."""
+        # FORK-ONLY get_cache_stats: the TUI statusline asks for per-model cache
+        # totals on attach, in EVERY scenario that drives a real TUI against this
+        # fixture. Answer with an empty fold — the scenarios are about reconnects,
+        # banners and lifecycles, not cache accounting (the empty answer matches
+        # handle_get_cache_stats's unresolved-fold shape).
+        if command.get("type") == "get_cache_stats":
+            response["data"] = {"models": []}
+            return True
         return False
 
     def send(self, sock, data):

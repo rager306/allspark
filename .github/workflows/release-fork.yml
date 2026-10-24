@@ -189,6 +189,7 @@ jobs:
           # channel instead of refusing (no upstream channel serves fork
           # builds) or silently keeping the old payload.
           version="${tag#allspark-v}"
+          mkdir -p dist
           printf '%s\n' "$version" > dist/stable
           sha_row=$(grep "${root}.tar.gz" SHA256SUMS | awk '{print $1}')
           python3 - "$version" "$sha_row" "${root}.tar.gz" <<'PY'
