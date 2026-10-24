@@ -58,4 +58,13 @@ export PRIME_AGENT_SESSION_DIR="$ALLSPARK_HOME/.prime/agent/sessions"
 # override for a fork that really wants a different file.
 export PRIME_AGENT_DAEMON_SOCKET="${ALLSPARK_DAEMON_SOCKET:-${TMPDIR:-/tmp}/allspark-daemon.sock}"
 
+# THE FORK UPDATE CHANNEL: without it the update funnel refuses fork builds
+# (the default endpoints belong to upstream prime-agent, and updating through
+# them would replace this build with one that lacks the fork crates). The
+# fork release publishes `stable`, `latest.json`, and the tarballs as release
+# assets, so GitHub's latest/download URLs ARE the fork channel. The funnel
+# fetches <base>/stable, <base>/latest.json, and <base>/<archive> from it.
+# ALLSPARK_DOWNLOAD_BASE_URL is the explicit override (a self-hosted mirror).
+export PRIME_AGENT_DOWNLOAD_BASE_URL="${ALLSPARK_DOWNLOAD_BASE_URL:-https://github.com/rager306/allspark/releases/latest/download}"
+
 exec "$PAYLOAD" "$@"

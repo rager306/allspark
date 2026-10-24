@@ -131,7 +131,11 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ needs.tag-check.outputs.tag }}"
-          root="${tag}-linux-x86_64"
+          # THE CHANNEL NAMING: the funnel's manifest check expects the archive
+          # named prime-agent-<version>-<platform>.tar.gz (install-rust.sh's
+          # ROW_PY), so the published archive carries the product name even
+          # though the tag says allspark.
+          root="prime-agent-${tag#allspark-v}-linux-x86_64"
           mkdir -p "package/${root}/bin" "package/${root}/libexec"
           cp target/dist/prime-agent "package/${root}/libexec/prime-agent"
           cp scripts/allspark-launcher.sh "package/${root}/bin/allspark"
@@ -177,7 +181,30 @@ jobs:
           chmod 755 "package/${root}/bin/allspark" "package/${root}/libexec/prime-agent"
           tar -C package -czf "${root}.tar.gz" "${root}"
           sha256sum "${root}.tar.gz" > SHA256SUMS
-          echo "archive ${root}.tar.gz"
+          # THE FORK UPDATE CHANNEL (the funnel reads it): a stable pointer
+          # (bare version) and the channel manifest (platform -> artifact row
+          # + sha256), published as release assets. The launcher exports
+          # PRIME_AGENT_DOWNLOAD_BASE_URL pointing at this release's
+          # latest/download URLs, so `allspark update` fetches the fork's own
+          # channel instead of refusing (no upstream channel serves fork
+          # builds) or silently keeping the old payload.
+          version="${tag#allspark-v}"
+          printf '%s\n' "$version" > dist/stable
+          sha_row=$(grep "${root}.tar.gz" SHA256SUMS | awk '{print $1}')
+          python3 - "$version" "$sha_row" "${root}.tar.gz" <<'PY'
+          import json, pathlib, sys
+          version, sha, archive = sys.argv[1], sys.argv[2], sys.argv[3]
+          manifest = {
+              "version": version,
+              "binaries": [{
+                  "platform": "linux-x86_64",
+                  "file": archive,
+                  "sha256": sha,
+              }],
+          }
+          pathlib.Path("dist/latest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          PY
+          echo "channel assets: dist/stable dist/latest.json"
           cat SHA256SUMS
       - name: Prove the packaged launcher runs
         run: |
@@ -247,7 +274,7 @@ jobs:
           set -euo pipefail
           if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             echo "release ${TAG} already exists: uploading assets over it"
-            gh release upload "${TAG}" dist/*.tar.gz dist/SHA256SUMS \
+            gh release upload "${TAG}" dist/*.tar.gz dist/SHA256SUMS dist/stable dist/latest.json \
               --repo "${GITHUB_REPOSITORY}" --clobber
             gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" \
               --notes-file release-body.md
@@ -256,5 +283,5 @@ jobs:
               --repo "${GITHUB_REPOSITORY}" \
               --title "allspark ${TAG#allspark-v}" \
               --notes-file release-body.md \
-              dist/*.tar.gz dist/SHA256SUMS
+              dist/*.tar.gz dist/SHA256SUMS dist/stable dist/latest.json
           fi
