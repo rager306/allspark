@@ -109,6 +109,10 @@ the fork-only crates stay in it.
 - `76efd5959` — `FactoryExecutor`'s docstring says what a kernel restart costs: the
   run id is unknown afterwards, `status`/`stop`/`resume` raise, and surviving
   children must be stopped through `rlm.delete_subagent`.
+- `8c107093b` — a judgment answer must be about the question that was asked. The
+  decoder compared the answer's kind and stopped, so a choice naming an option the
+  question never offered, a score past the rubric, or a probability of 1.5 all came back
+  as judgments. The last open audit finding; the one that changes behaviour.
 - `64bc6e007` — the toolchain pin moves to **1.99.1** in both halves (`rust-toolchain.toml`
   and the dtolnay action SHA in seven workflows), after two real 1.99 findings:
   `clippy::assert_is_empty` at `activity_lines.rs:53` and `late_sent_messages.rs:405`.
