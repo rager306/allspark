@@ -317,7 +317,18 @@ impl Worker {
         };
         let (id, queued, snapshot, target) = {
             let (mut core, inputs) = self.summary_inputs();
-            let pending = core.steering.len() + core.follow_up.len();
+            // Count AGENT messages, not every queued row (audit: inbox overflow).
+            // The lane also carries service notices — `[bash-done]` rows,
+            // factory milestones — which the session produces for itself; a
+            // polling session filled the 20-row budget with them and delivery of
+            // two subagent reports was refused. `agent_message` is set exactly on
+            // rows admitted by this path, so it is the honest count.
+            let pending = core
+                .steering
+                .iter()
+                .chain(core.follow_up.iter())
+                .filter(|item| item.agent_message.is_some())
+                .count();
             if let Err(error) =
                 pa_core::session_engine::agent_messaging::assert_agent_message_queue_capacity(
                     pending,

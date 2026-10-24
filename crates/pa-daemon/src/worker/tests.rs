@@ -1,4 +1,5 @@
 //! Worker tests.
+use super::queue::{service_rows, trim_service_rows, MAX_SERVICE_QUEUE_ROWS};
 use super::*;
 
 /// A created worker over the scripted engine.

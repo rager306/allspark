@@ -499,3 +499,129 @@ async fn forced_batch_arming_classifies_the_visible_plain_rows() {
         );
     }
 }
+
+/// The inbox-overflow regression, part A: a notice about the same subject
+/// REPLACES the queued one instead of stacking.
+///
+/// The measured failure: 4 000 `[bash-done]` rows from polling loops filled the
+/// shared queue, and a subagent's report was refused with
+/// "184 unfinished, limit is 20". Two completions for one pid cannot both be
+/// news — the second supersedes the first.
+/// The inbox-overflow regression, part A: admitting a notice about the same
+/// subject REPLACES the queued one instead of stacking.
+///
+/// Driven through the real admission path, because a re-implementation in the
+/// test would prove only that the test copies the code.
+#[test]
+fn a_second_notice_for_the_same_pid_replaces_the_queued_one() {
+    let core = Arc::new(Mutex::new(SessionCore::test_core(None, "/tmp".to_string())));
+    core.lock().unwrap().busy = true;
+    let recovery = std::sync::Mutex::new(None);
+    let notify = Arc::new(Notify::new());
+    let admit = |pid: u32| {
+        admit_kernel_notice(
+            &recovery,
+            &core,
+            &notify,
+            crate::engine::KernelNotice::bash_completion(pid, "sleep 20", 0),
+            || false,
+        );
+    };
+    admit(4321);
+    admit(4321);
+    admit(4321);
+    let core_guard = core.lock().unwrap();
+    assert_eq!(
+        core_guard.steering.len(),
+        1,
+        "one row per pid, not one per notice"
+    );
+    drop(core_guard);
+    admit(99);
+    assert_eq!(
+        core.lock().unwrap().steering.len(),
+        2,
+        "a different pid is a different subject"
+    );
+}
+
+#[test]
+fn service_rows_are_capped_and_the_oldest_yields() {
+    let mut core = SessionCore::test_core(None, "/tmp".to_string());
+    let add_service = |core: &mut SessionCore, pid: u32| {
+        core.steering.push_back(QueuedItem {
+            message: format!("pid {pid}"),
+            priority: QueuePriority::Background,
+            preview: None,
+            custom_message: None,
+            agent_message: None,
+            queue_key: Some(format!("bash:{pid}")),
+            admission_id: None,
+            images: Vec::new(),
+            done: None,
+            queue_visible: true,
+            policy: TurnPolicy::Queued,
+            forced_batch: false,
+        });
+    };
+    // The admission path trims BEFORE it pushes, so the invariant it maintains is
+    // `service_rows <= MAX` after the push. Mirror that sequence exactly.
+    let overflow = MAX_SERVICE_QUEUE_ROWS + 3;
+    for pid in 0..overflow as u32 {
+        trim_service_rows(&mut core);
+        add_service(&mut core, pid);
+    }
+    assert_eq!(
+        service_rows(&core),
+        MAX_SERVICE_QUEUE_ROWS,
+        "the ceiling holds after each admission"
+    );
+    let remaining: Vec<&str> = core
+        .steering
+        .iter()
+        .filter_map(|item| item.queue_key.as_deref())
+        .collect();
+    assert!(
+        !remaining.contains(&"bash:0"),
+        "the oldest service row yielded: {remaining:?}"
+    );
+    assert!(
+        remaining.contains(&format!("bash:{}", overflow - 1).as_str()),
+        "the newest notice survives: {remaining:?}"
+    );
+}
+
+/// Part A's blast radius: a heartbeat and an autonomous item also carry a
+/// `queue_key`, and both are work a user configured. They must NOT be treated as
+/// service rows, or the trimmer would drop something real.
+#[test]
+fn only_kernel_notices_count_as_service_rows() {
+    let mut core = SessionCore::test_core(None, "/tmp".to_string());
+    let push = |core: &mut SessionCore, key: Option<&str>, agent_message: Option<&str>| {
+        core.steering.push_back(QueuedItem {
+            message: key.unwrap_or("plain").to_string(),
+            priority: QueuePriority::Human,
+            preview: None,
+            custom_message: None,
+            agent_message: agent_message.map(str::to_string),
+            queue_key: key.map(str::to_string),
+            admission_id: None,
+            images: Vec::new(),
+            done: None,
+            queue_visible: true,
+            policy: TurnPolicy::Queued,
+            forced_batch: false,
+        });
+    };
+    push(&mut core, Some("bash:1"), None);
+    push(&mut core, Some("factory:run-1"), None);
+    push(&mut core, Some("heartbeat:hb-1"), None);
+    push(&mut core, Some("autonomous"), None);
+    push(&mut core, None, Some("a report from a child"));
+    push(&mut core, None, None);
+    assert_eq!(
+        service_rows(&core),
+        2,
+        "only the bash and factory notices are service rows"
+    );
+}

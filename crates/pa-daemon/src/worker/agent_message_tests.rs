@@ -274,13 +274,17 @@ async fn deliver_message_respects_the_pending_capacity() {
     let worker = created_worker().await;
     {
         let mut core = worker.core.lock().unwrap();
-        for _ in 0..DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION {
+        // Fill the budget with MESSAGES, which is what the guard counts: a row
+        // from a sender carries `agent_message`, a kernel notice does not (see
+        // the sibling test). A fixture without it would be testing a queue the
+        // guard no longer measures.
+        for index in 0..DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION {
             core.follow_up.push_back(QueuedItem {
                 priority: QueuePriority::Human,
                 preview: None,
                 message: "occupied".to_string(),
                 custom_message: None,
-                agent_message: None,
+                agent_message: Some(format!("queued report {index}")),
                 queue_key: None,
                 admission_id: None,
                 images: Vec::new(),
@@ -562,4 +566,52 @@ async fn assert_clear_queue_bounces(restore_queue: bool) {
         "the bounce names the receiver and quotes the dropped body: {command}"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The inbox-overflow regression, part B: service notices do not spend the
+/// message budget.
+///
+/// The real failure: a polling session queued 4 000 `[bash-done]` rows, the
+/// shared 20-row guard counted them, and a subagent's report was refused with
+/// "184 unfinished, limit is 20". A notice is the session talking to itself; a
+/// message is work someone awaits, and only the second may be refused.
+#[tokio::test]
+async fn service_notices_do_not_consume_the_message_budget() {
+    let worker = created_worker().await;
+    {
+        let mut core = worker.core.lock().unwrap();
+        // Fill BOTH lanes past the limit with kernel notices: no `agent_message`,
+        // a `bash:<pid>` key each.
+        for index in 0..(DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION * 2) {
+            let notice = crate::engine::KernelNotice::bash_completion(index as u32, "sleep 20", 0);
+            core.follow_up.push_back(QueuedItem {
+                priority: QueuePriority::Background,
+                preview: None,
+                message: "bash-done".to_string(),
+                custom_message: None,
+                agent_message: None,
+                queue_key: notice.queue_key,
+                admission_id: None,
+                images: Vec::new(),
+                done: None,
+                queue_visible: true,
+                policy: TurnPolicy::Injected,
+                forced_batch: false,
+            });
+        }
+    }
+    let response = worker
+        .dispatch(
+            "worker_deliver_message",
+            &json!({
+                "targetActiveSessionId": "target-session",
+                "message": "a report that must not be refused",
+                "sender": { "activeSessionId": "source-session" },
+            }),
+        )
+        .await;
+    assert!(
+        response.success,
+        "service-only traffic must not refuse a real message: {response:?}"
+    );
 }

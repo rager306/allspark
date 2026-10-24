@@ -213,9 +213,18 @@ pub fn assert_direct_agent_message_target(target: &str) -> anyhow::Result<String
 
 /// Guard the target session's pending-work capacity.
 ///
+/// The guard counts MESSAGES, not queue rows. A session's queue also carries
+/// service notices — `[bash-done]` rows and factory milestones — and those are
+/// produced by the session itself, not by a sender. Counting them here let a
+/// polling session starve delivery of real reports: a measured 4 000 completion
+/// notices against a 20-row limit rejected two subagent answers with
+/// "184 unfinished, limit is 20". Callers pass the number of queued rows that
+/// came from message senders (see `is_agent_message_item`); service rows are
+/// bounded by their own admission instead.
+///
 /// # Errors
 ///
-/// Error when the target's unfinished action count has reached the pending-work limit.
+/// Error when the target's unfinished MESSAGE count has reached the limit.
 pub fn assert_agent_message_queue_capacity(
     unfinished_action_count: usize,
     max_pending: usize,

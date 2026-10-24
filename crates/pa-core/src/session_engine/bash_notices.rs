@@ -30,6 +30,15 @@ pub struct KernelNotice {
     pub row: CustomMessage,
     /// The queue strip's label for the row's preview.
     pub preview_label: &'static str,
+    /// The admission key: a notice whose key matches a queued one REPLACES it
+    /// instead of appending. One detached command reports once per pid and one
+    /// factory run once per milestone, so a queued notice about the same
+    /// subject is stale by definition (`bash:<pid>`, `factory:<run_id>`).
+    ///
+    /// This is what keeps service traffic from spending the message budget: the
+    /// queue is shared, and an unbounded notice stream starved a subagent's
+    /// report (4 000 completions against a 20-row limit).
+    pub queue_key: Option<String>,
 }
 
 impl KernelNotice {
@@ -44,6 +53,9 @@ impl KernelNotice {
                 crate::autonomous::now_millis(),
             ),
             preview_label: ASYNC_BASH_COMPLETION_PREVIEW_LABEL,
+            // One row per pid: a second completion notice for the same pid
+            // supersedes the queued one rather than stacking behind it.
+            queue_key: Some(format!("bash:{pid}")),
         }
     }
 }
@@ -162,15 +174,19 @@ fn validate_factory_progress(data: &Value) -> anyhow::Result<KernelNotice> {
         .is_some()
         .then(|| text("node"))
         .transpose()?;
+    let run_id = text("run_id")?;
     Ok(KernelNotice {
         row: messages::create_factory_progress_message(
-            text("run_id")?,
+            run_id,
             text("kind")?,
             node,
             text("detail")?,
             crate::autonomous::now_millis(),
         ),
         preview_label: FACTORY_PROGRESS_PREVIEW_LABEL,
+        // One row per run: the latest milestone is the one that matters, and a
+        // long run would otherwise queue a row per milestone.
+        queue_key: Some(format!("factory:{run_id}")),
     })
 }
 

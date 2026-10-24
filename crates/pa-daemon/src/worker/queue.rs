@@ -537,6 +537,57 @@ pub(crate) fn admit_goal_follow_up(
     work_notify.notify_one();
 }
 
+/// How many service rows (kernel notices) one session may hold queued.
+///
+/// A service row is a background signal the session produced for itself, and
+/// each one steers a turn. Twelve is generous for a real workload — a handful of
+/// detached commands plus one factory milestone — and small enough that the
+/// queue stays dominated by work someone is waiting for.
+pub(crate) const MAX_SERVICE_QUEUE_ROWS: usize = 12;
+
+/// The `queue_key` prefixes that mark a kernel service notice. A key alone is
+/// not enough: a heartbeat carries `heartbeat:<id>` and an autonomous item
+/// `AUTONOMOUS_QUEUE_KEY`, and both are work a user configured — evicting those
+/// would drop something real. Only these prefixes are the session's own service
+/// signals.
+const SERVICE_QUEUE_KEY_PREFIXES: &[&str] = &["bash:", "factory:"];
+
+/// Whether a queued row is a kernel service notice rather than work someone
+/// asked for.
+pub(crate) fn is_service_row(item: &QueuedItem) -> bool {
+    item.agent_message.is_none()
+        && item.queue_key.as_deref().is_some_and(|key| {
+            SERVICE_QUEUE_KEY_PREFIXES
+                .iter()
+                .any(|prefix| key.starts_with(prefix))
+        })
+}
+
+/// Drop the oldest service rows until the ceiling holds.
+///
+/// Replace-by-key bounds duplicates, not volume: a session can start many
+/// DIFFERENT detached commands, each with its own pid. Past the ceiling the
+/// OLDEST service row yields — the newest notification is the one the model is
+/// waiting for, and an older one has already been superseded in meaning if not
+/// in key.
+pub(crate) fn trim_service_rows(core: &mut SessionCore) {
+    while service_rows(core) >= MAX_SERVICE_QUEUE_ROWS {
+        let Some(oldest) = core.steering.iter().position(is_service_row) else {
+            return;
+        };
+        core.steering.remove(oldest);
+    }
+}
+
+/// The number of queued service rows across both lanes.
+pub(crate) fn service_rows(core: &SessionCore) -> usize {
+    core.steering
+        .iter()
+        .chain(core.follow_up.iter())
+        .filter(|item| is_service_row(item))
+        .count()
+}
+
 /// Admit one kernel notice (a detached bash completion or a factory run
 /// milestone): the row queues on the steering lane (busy sessions keep a
 /// visible steer row, idle sessions wake into it); a crash before the
@@ -548,7 +599,11 @@ pub(crate) fn admit_kernel_notice(
     notice: crate::engine::KernelNotice,
     session_is_closed: impl Fn() -> bool,
 ) {
-    let crate::engine::KernelNotice { row, preview_label } = notice;
+    let crate::engine::KernelNotice {
+        row,
+        preview_label,
+        queue_key,
+    } = notice;
     let content = match &row.content {
         pa_types::ai::UserContent::Text(text) => text.clone(),
         pa_types::ai::UserContent::Blocks(_) => String::new(),
@@ -567,6 +622,22 @@ pub(crate) fn admit_kernel_notice(
         (TurnPolicy::Injected, false)
     };
     {
+        // A notice is a SERVICE signal, and a later one about the same subject
+        // supersedes the earlier: `[bash-done]` for pid N is stale once pid N
+        // reports again (pids are reused, and a kernel that already read the
+        // result neither needs nor wants the queued row). Replacing instead of
+        // appending is what keeps a polling session from drowning its own
+        // queue — the measured failure was 4 000 completion notices against a
+        // 20-row budget, which starved a subagent's report (inbox overflow).
+        if let Some(key) = &queue_key {
+            core_guard
+                .steering
+                .retain(|item| item.queue_key.as_deref() != Some(key.as_str()));
+            core_guard
+                .follow_up
+                .retain(|item| item.queue_key.as_deref() != Some(key.as_str()));
+        }
+        trim_service_rows(&mut core_guard);
         core_guard.steering.push_back(QueuedItem {
             priority: QueuePriority::Background,
             // The queue strip's labeled preview (TS `previewLabel`).
@@ -574,7 +645,7 @@ pub(crate) fn admit_kernel_notice(
             message: content,
             custom_message: Some(crate::session_commands::custom_message_value(&row)),
             agent_message: None,
-            queue_key: None,
+            queue_key,
             admission_id: None,
             images: Vec::new(),
             done: None,
