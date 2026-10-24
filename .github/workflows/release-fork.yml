@@ -210,7 +210,9 @@ jobs:
       - name: Prove the packaged launcher runs
         run: |
           set -euo pipefail
-          root="prime-agent-${{ needs.tag-check.outputs.tag }}-linux-x86_64"
+          # The same root the packaging step built: prime-agent-<version>-linux-x86_64,
+          # version = tag minus the leading "allspark-v".
+          root="prime-agent-${{ needs.tag-check.outputs.tag#allspark-v }}-linux-x86_64"
           mkdir -p unpack && tar -xzf "${root}.tar.gz" -C unpack
           ./unpack/"${root}"/bin/allspark --version
           # The offline catalog assets are part of the packaged contract:
