@@ -414,8 +414,12 @@ pub async fn wait_for_exit(pid: u32) -> std::io::Result<()> {
         Err(error) => return Err(error),
     };
     // SAFETY: `open_pidfd` returned a fresh descriptor this call owns
-    // (and closes on drop, on every path).
-    let fd = AsyncFd::with_interest(unsafe { OwnedFd::from_raw_fd(fd) }, Interest::READABLE)?;
+    // (and closes on drop, on every path). `register_with_interest` (tokio
+    // 1.53.3+, RUSTSEC-2026-0386) makes the ownership proof explicit at the
+    // call site instead of trusting any `AsRawFd`.
+    #[allow(unused_unsafe)]
+    let fd =
+        unsafe { AsyncFd::register_with_interest(OwnedFd::from_raw_fd(fd), Interest::READABLE)? };
     // Every wake is confirmed by a zero-timeout poll (AsyncFd readiness
     // can be spurious).
     loop {
