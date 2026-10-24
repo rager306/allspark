@@ -209,16 +209,36 @@ pub fn load_refinement_history(
     crate::refinement::merge_refinement_history(&global, &session_entries)
 }
 
-/// The session's local harness state directory (under the session dir).
+/// The session's local harness state directory.
+///
+/// This MUST be `get_session_artifact_dir()`'s `<artifact>/harness`, and not
+/// `get_session_dir()/harness`. The two are not the same path:
+/// `get_session_dir()` is the directory sessions are STORED in — for a daemon
+/// worker it is `<agent>/sessions`, the shared parent of every session — so
+/// `get_session_dir()/harness` is one store for the whole install, while the
+/// kernel is handed `get_local_harness_state_dir(artifact)` (a per-session
+/// directory under `<agent>/session-artifacts/<id>/harness`,
+/// `runtime_wiring.rs:276`) and the digest reads the same one
+/// (`engine.rs:457`). Using the session dir therefore wrote refinements to a
+/// path nothing ever read back: the on-disk evidence was
+/// `<agent>/sessions/harness` holding 55 refinements, while the prompt digest
+/// rendered the global store with 0 (review R1).
+///
+/// Fallback: an in-memory manager carries no artifact dir, and the session
+/// directory is the only identity it has, so that is used when nothing better
+/// exists.
 ///
 /// # Panics
 ///
-/// The `expect` cannot fire: the mapping is total for `Some` session dirs.
+/// Never in practice: the mapping is total for any directory, and both branches
+/// supply one.
 #[must_use]
 pub fn local_harness_state_dir(session: &SessionManager) -> PathBuf {
-    let session_dir = session.get_session_dir().to_path_buf();
-    crate::refinement::get_local_harness_state_dir(Some(&session_dir))
-        .expect("session dir always yields a local harness dir")
+    let artifact_dir = session
+        .get_session_artifact_dir()
+        .unwrap_or_else(|| session.get_session_dir().to_path_buf());
+    crate::refinement::get_local_harness_state_dir(Some(&artifact_dir))
+        .expect("a session dir always yields a local harness dir")
 }
 
 /// Strip display-only `local:`/`global:` prefixes from edit ids.
@@ -880,9 +900,7 @@ Reviewer instructions: record it"
             disabled.applied_edits[0].error.as_deref(),
             Some(crate::refinement::FACTORY_DISABLED_MESSAGE)
         );
-        let harness_dir =
-            crate::refinement::get_local_harness_state_dir(Some(session.get_session_dir()))
-                .unwrap();
+        let harness_dir = local_harness_state_dir(&session);
         let state = load_harness_state(&harness_dir, HarnessScope::Local);
         assert!(state.entries[&crate::refinement::RefinementKind::Factory].is_empty());
         // The user opts in: the same proposal applies, read live from the
@@ -953,9 +971,7 @@ Reviewer instructions: record it"
             turned_off.applied_edits[0].error.as_deref(),
             Some(crate::refinement::FACTORY_DISABLED_MESSAGE)
         );
-        let harness_dir =
-            crate::refinement::get_local_harness_state_dir(Some(session.get_session_dir()))
-                .unwrap();
+        let harness_dir = local_harness_state_dir(&session);
         let state = load_harness_state(&harness_dir, HarnessScope::Local);
         assert!(state.entries[&crate::refinement::RefinementKind::Factory].is_empty());
         // Authored while disabled; the request opts in.
@@ -1007,9 +1023,7 @@ Reviewer instructions: record it"
         assert!(result.applied_edits[0].applied);
         let state_path = Path::new(&result.harness_state_path);
         assert!(state_path.exists());
-        let harness_dir =
-            crate::refinement::get_local_harness_state_dir(Some(session.get_session_dir()))
-                .unwrap();
+        let harness_dir = local_harness_state_dir(&session);
         let state = load_harness_state(&harness_dir, HarnessScope::Local);
         assert!(state.entries[&crate::refinement::RefinementKind::Memory].contains_key("m1"));
         let entries = session.get_all_entries().to_vec();
@@ -1063,9 +1077,7 @@ Reviewer instructions: record it"
             error.to_string().contains("audit row not persisted"),
             "the audit error surfaces after the durable writes: {error:#}"
         );
-        let harness_dir =
-            crate::refinement::get_local_harness_state_dir(Some(session.get_session_dir()))
-                .unwrap();
+        let harness_dir = local_harness_state_dir(&session);
         let state = load_harness_state(&harness_dir, HarnessScope::Local);
         assert!(state.entries[&crate::refinement::RefinementKind::Memory].contains_key("m9"));
         // The notice is ordered after the audit rethrow.
@@ -1269,6 +1281,34 @@ Reviewer instructions: record it"
         let global_state = load_harness_state(&global_dir, HarnessScope::Global);
         assert!(
             !global_state.entries[&crate::refinement::RefinementKind::Memory].contains_key("g1")
+        );
+    }
+    /// Review R1, the regression: the writer and the reader must agree on ONE
+    /// directory. They did not — `local_harness_state_dir` used
+    /// `get_session_dir()`, which for a daemon worker is the shared parent of
+    /// every session, while the kernel is handed
+    /// `get_local_harness_state_dir(artifact)` and the digest reads that same
+    /// per-session path (`engine.rs:457`). Refinements were therefore written to
+    /// `<agent>/sessions/harness` and read from nowhere: the live install had 55
+    /// refinements in the store the digest never opened.
+    #[test]
+    fn the_local_harness_dir_is_the_session_artifact_dir_not_the_sessions_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = persisted_session(&dir);
+        let harness_dir = local_harness_state_dir(&session);
+        // The path the kernel env var and the digest both resolve.
+        let artifact_dir = session
+            .get_session_artifact_dir()
+            .expect("persisted session");
+        assert_eq!(
+            harness_dir,
+            artifact_dir.join(crate::refinement::HARNESS_STATE_DIR_NAME),
+            "the writer must use the artifact dir the kernel and digest read"
+        );
+        assert_ne!(
+            harness_dir.parent().and_then(|p| p.file_name()),
+            Some(std::ffi::OsStr::new("sessions")),
+            "the shared sessions parent is not a per-session store"
         );
     }
 }
