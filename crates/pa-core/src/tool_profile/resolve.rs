@@ -82,6 +82,7 @@ pub fn resolve_profile(
         layers.push(ToolsetLayer::Project(ToolsetDelta {
             excluded_tools: settings.excluded_tools.clone(),
             included_tools: settings.included_tools.clone(),
+            fixed_tools: Vec::new(),
         }));
     }
 

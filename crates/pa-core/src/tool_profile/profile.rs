@@ -45,6 +45,16 @@ pub struct ToolsetDelta {
     pub excluded_tools: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub included_tools: Vec<String>,
+    /// An exact surface, when the layer states one. Non-empty replaces the
+    /// exclude/include arithmetic for the whole pipeline: a context that says
+    /// "these two tools and nothing else" cannot express that as exclusions,
+    /// because `apply_layers` unions every layer's exclusions and a later
+    /// layer's inclusion beats an earlier exclusion. Carried here so the
+    /// presets that state a fixed surface (`minimal`: `bash + edit`) actually
+    /// reach the roster — without it, `Context::delta()` dropped the field and
+    /// the runtime received the full router (audit F08).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fixed_tools: Vec<String>,
 }
 
 impl ToolsetDelta {
@@ -54,6 +64,7 @@ impl ToolsetDelta {
         Self {
             excluded_tools: names.into_iter().map(Into::into).collect(),
             included_tools: Vec::new(),
+            fixed_tools: Vec::new(),
         }
     }
 }
@@ -153,32 +164,33 @@ impl Context {
     /// With `fixed_tools` the result is exactly those tools; otherwise the
     /// surface is the input minus `excluded_tools`, minus optional/beta tools
     /// unless they appear in `included_optional_tools`.
+    ///
+    /// The session engine applies the layered pipeline ([`apply_layers`]) rather
+    /// than this single context, so both paths must agree on what `fixed_tools`
+    /// means; [`Self::delta`] carries it for exactly that reason.
     #[must_use]
     pub fn apply(&self, tools: &[Arc<dyn AgentTool>]) -> Vec<Arc<dyn AgentTool>> {
-        if !self.fixed_tools.is_empty() {
-            let fixed: BTreeSet<&str> = self.fixed_tools.iter().map(String::as_str).collect();
-            return tools
-                .iter()
-                .filter(|tool| fixed.contains(tool.name()))
-                .cloned()
-                .collect();
-        }
         let excluded: BTreeSet<&str> = self.excluded_tools.iter().map(String::as_str).collect();
         let included: BTreeSet<&str> = self
             .included_optional_tools
             .iter()
             .map(String::as_str)
             .collect();
+        let fixed: BTreeSet<&str> = self.fixed_tools.iter().map(String::as_str).collect();
         tools
             .iter()
             .filter(|tool| {
-                if excluded.contains(tool.name()) {
+                let name = tool.name();
+                if !fixed.is_empty() && !fixed.contains(name) && !included.contains(name) {
+                    return false;
+                }
+                if excluded.contains(name) {
                     return false;
                 }
                 let markers = tool.markers();
                 let optional =
                     markers.contains(&ToolMarker::Optional) || markers.contains(&ToolMarker::Beta);
-                !optional || included.contains(tool.name())
+                !optional || included.contains(name)
             })
             .cloned()
             .collect()
@@ -206,6 +218,7 @@ impl Context {
         ToolsetDelta {
             excluded_tools: excluded,
             included_tools: self.included_optional_tools.clone(),
+            fixed_tools: self.fixed_tools.clone(),
         }
     }
 
@@ -220,7 +233,15 @@ impl Context {
             },
             Context {
                 name: CONTEXT_QUERY.into(),
-                description: Some("Read-only surface: no editing tools".into()),
+                // Honest description: this removes the two editing tools it
+                // names, not every way to write. `python_repl` can write files,
+                // so a session under this context can still change the tree;
+                // calling it "read-only" promised a guarantee no layer enforces
+                // (audit F08). Enforcing it would mean excluding the kernel too,
+                // which is a different product decision.
+                description: Some(
+                    "Query surface: no edit/bash tools (python_repl stays available)".into(),
+                ),
                 excluded_tools: vec!["edit".into(), "bash".into()],
                 ..Self::default()
             },
@@ -474,14 +495,27 @@ pub fn apply_layers(
 ) -> Vec<Arc<dyn AgentTool>> {
     let mut excluded: BTreeSet<String> = BTreeSet::new();
     let mut included: BTreeSet<String> = BTreeSet::new();
+    // A fixed surface is closed under union: the first layer that states one
+    // (the context) defines the roster, and a later exclusion can only narrow
+    // it further. Unioning them keeps two fixed layers from widening each
+    // other, and `included` still wins, so a mode that force-includes a tool
+    // can do so inside a fixed surface.
+    let mut fixed: BTreeSet<String> = BTreeSet::new();
     for layer in layers {
         let delta = layer.delta();
         excluded.extend(delta.excluded_tools);
         included.extend(delta.included_tools);
+        fixed.extend(delta.fixed_tools);
     }
     base_tools
         .iter()
-        .filter(|tool| !excluded.contains(tool.name()) || included.contains(tool.name()))
+        .filter(|tool| {
+            let name = tool.name();
+            if !fixed.is_empty() && !fixed.contains(name) && !included.contains(name) {
+                return false;
+            }
+            !excluded.contains(name) || included.contains(name)
+        })
         .cloned()
         .collect()
 }

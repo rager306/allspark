@@ -164,6 +164,58 @@ fn context_presets_resolve() {
     assert!(Context::preset("nope").is_none());
 }
 
+/// Audit F08: `minimal` says "bash + edit only", and the PIPELINE is what the
+/// session engine applies — `Context::apply` alone would have said the right
+/// thing while the runtime received the full roster.
+#[test]
+fn the_minimal_context_reaches_the_pipeline_as_exactly_bash_and_edit() {
+    let layers = vec![ToolsetLayer::Context(
+        Context::preset(CONTEXT_MINIMAL).unwrap(),
+    )];
+    let surfaced = names(&apply_layers(&roster(), &layers));
+    assert_eq!(surfaced, vec!["bash".to_string(), "edit".to_string()]);
+}
+
+/// A fixed surface bounds a later layer: an explicit force-include still
+/// works inside it, and nothing else widens it.
+#[test]
+fn a_fixed_surface_bounds_a_later_layers_inclusion() {
+    let layers = vec![
+        ToolsetLayer::Context(Context::preset(CONTEXT_MINIMAL).unwrap()),
+        ToolsetLayer::Project(ToolsetDelta {
+            excluded_tools: Vec::new(),
+            included_tools: vec!["graph".into(), "find_symbol".into()],
+            fixed_tools: Vec::new(),
+        }),
+    ];
+    let surfaced = names(&apply_layers(&roster(), &layers));
+    // Both were force-included, so both survive the fixed surface; `experimental`
+    // and `replace_symbol_body` were not mentioned anywhere and stay out.
+    assert_eq!(
+        surfaced,
+        vec![
+            "bash".to_string(),
+            "edit".to_string(),
+            "find_symbol".to_string(),
+            "graph".to_string()
+        ]
+    );
+}
+
+/// Audit F08: the `query` preset must not claim a guarantee no layer enforces.
+#[test]
+fn the_query_context_describes_what_it_actually_removes() {
+    let description = Context::preset(CONTEXT_QUERY).unwrap().description.unwrap();
+    assert!(
+        !description.contains("Read-only"),
+        "python_repl can write files, so `query` is not read-only: {description}"
+    );
+    assert!(
+        description.contains("python_repl"),
+        "the description must say what stays available: {description}"
+    );
+}
+
 // ── S2 modes ───────────────────────────────────────────────────────────────
 
 #[test]
@@ -240,6 +292,7 @@ fn layering_applies_in_order_and_inclusion_wins() {
         ToolsetLayer::Project(ToolsetDelta {
             excluded_tools: vec!["find_symbol".into()],
             included_tools: vec!["bash".into()],
+            fixed_tools: Vec::new(),
         }),
     ];
     let kept = names(&apply_layers(&roster(), &layers));
