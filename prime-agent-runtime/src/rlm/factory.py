@@ -1540,6 +1540,14 @@ class FactoryExecutor:
     Runs do not survive a kernel restart (the registry lives in kernel
     memory); children are supervisor-owned and keep running, so
     ``rlm.list_subagents`` can still see and stop them after a restart.
+
+    What that MEANS for an operator (audit F12): after a restart the run id
+    is unknown -- ``status``/``stop``/``resume`` raise, the ledger is gone, and
+    nothing re-attaches the surviving children to a new run. They are not
+    lost, but they are no longer governed by this executor: stop them through
+    ``rlm.delete_subagent`` by id. There is no resume; a run is a kernel-lifetime
+    object. Making it durable needs a persisted ledger, which is why this
+    paragraph exists instead of a silent guarantee.
     """
 
     def __init__(
@@ -1554,6 +1562,13 @@ class FactoryExecutor:
         self._now_fn: Callable[[], float] = now or time.monotonic
         self._sleep_fn: Callable[[float], Any] = sleep or asyncio.sleep
         self._harness = harness
+        # In-memory ONLY (audit F12): a kernel restart loses every run's
+        # state, while the children it admitted keep running under the
+        # supervisor. There is no resume-after-restart: a run that is gone is
+        # gone, and the orphans are visible through `rlm.list_subagents` (they
+        # are supervisor-owned sessions, not this table). The fix is a
+        # persisted run ledger; until then this is the limitation the operator
+        # must know about, and it is why the docstring says so at the top.
         self._runs: dict[str, FactoryRun] = {}
 
     # -- public API ---------------------------------------------------------
