@@ -138,7 +138,21 @@ impl StreamingState {
         self.output
             .content
             .push(AssistantContent::ToolCall(ToolCall {
-                id: id.unwrap_or("").to_string(),
+                // Some upstreams stream tool-call fragments with no `id` at all
+                // (9router #4992: strict OpenAI clients then abort the whole turn
+                // with "Expected 'id' to be a string"). Synthesize a stable one —
+                // keyed on the stream index when present, so later fragments of
+                // the SAME call still join this block through `by_id`.
+                id: id.map_or_else(
+                    || {
+                        // The provider's fragment index is far below 2^53, so the
+                        // cast loses nothing on any real stream.
+                        #[allow(clippy::cast_possible_truncation)]
+                        let index = stream_index.map_or(self.output.content.len(), |i| i as usize);
+                        format!("call_{index}")
+                    },
+                    ToOwned::to_owned,
+                ),
                 name: String::new(),
                 arguments: Map::default(),
                 thought_signature: None,
@@ -885,6 +899,41 @@ mod tests {
                 panic!("stream failed: {:?}", error.error_message);
             }
         }
+    }
+
+    /// 9router #4992, ported: a tool-call fragment that arrives with NO `id`
+    /// must still produce a non-empty tool-call id. Strict `OpenAI` clients abort
+    /// the whole turn with "Expected 'id' to be a string" when it is empty.
+    #[tokio::test]
+    async fn a_tool_call_fragment_without_an_id_gets_a_synthesized_one() {
+        let body = [
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"bash","arguments":""}}]}}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"cmd\":\"ls\"}"}}]}}]}"#,
+            r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+            "data: [DONE]",
+        ]
+        .join("\n\n");
+        let message = stream_final_message(
+            completions_model("test", "opencode", 0.0, 0.0),
+            body.clone(),
+        )
+        .await;
+        let calls: Vec<&ToolCall> = message
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                AssistantContent::ToolCall(call) => Some(call),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(calls.len(), 1, "one fragment pair, one call: {message:?}");
+        assert!(
+            !calls[0].id.is_empty(),
+            "the synthesized id must be non-empty: {:?}",
+            calls[0].id
+        );
+        assert_eq!(calls[0].name, "bash");
+        assert_eq!(calls[0].arguments["cmd"], "ls");
     }
 
     fn completions_model(id: &str, provider: &str, input: f64, output: f64) -> Value {
