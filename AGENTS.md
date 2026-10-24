@@ -107,6 +107,11 @@ and advance it, then report what moved.
 
 The ordered shortlist, cheapest first:
 
+0. **Tend `.research`.** 237 reports, 6 named in a commit message, 106 not even tracked:
+   the corpus is a memory that does not give back what it learned. Re-read a report against
+   the tree, set `status: adopted|planned|rejected|superseded|open` with an `owner` and the
+   `commit` that landed it, mark `superseded_by`, and name the report in the commit that
+   implements it. A report with no status is work that was read once and forgotten.
 1. **Hunt dead code and dead surface.** Modules nobody calls, `pub` items no crate uses,
    settings that parse but never reach a consumer, exports with no consumer. `cargo
    udeps`/`rg` over call sites, then the reachability read the earlier audits used
@@ -134,6 +139,17 @@ The ordered shortlist, cheapest first:
 7. **Cover it.** Every behaviour you touch gets a test at the cheapest tier of the matrix above
    that can observe the defect — and that test must go red without the fix. A test that passes
    on the broken code documents nothing; several were caught this way and rewritten.
+
+8. **Check what is promised against what exists.** Every crate README, every setting in
+   `settings/types.rs`, every parameter in `params_schema()` — does a consumer read it? The
+   graph alone gave 13 breaks this way, all of the shape "documented, never wired" (`graph.auto
+   = "watch"` promised a watcher that was never connected). This is mechanical and it finds the
+   defects users hit first.
+9. **Keep a retrospective of your own mistakes.** `docs/agent-errors.md` (committed, unlike
+   `.research`, so it survives a clone): the class of
+   error, how it was caught, what closed it. Three tests this week passed on the broken code,
+   and two files were corrupted by rewriting instead of `edit` — that is a pattern, not bad
+   luck. A class repeated three times is a defect in the process, and the process is here.
 
 Two rules hold throughout:
 
