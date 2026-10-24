@@ -121,6 +121,20 @@ the fork-only crates stay in it.
 - `64bc6e007` — the toolchain pin moves to **1.99.1** in both halves (`rust-toolchain.toml`
   and the dtolnay action SHA in seven workflows), after two real 1.99 findings:
   `clippy::assert_is_empty` at `activity_lines.rs:53` and `late_sent_messages.rs:405`.
+- `733daae68`, `c5409e17e` — a reindex must move the evidence AND resolve like the full
+  index: the receipt chain stayed behind a reindex (`verify` accepted a store that no
+  longer existed), and the incremental resolver was dependency-blind, so a reindex
+  deleted cross-crate CALLS edges the full index wrote (487 in the live store).
+- `aef9d78df` — local harness state is written where the kernel and digest read it:
+  the writer used the shared sessions parent while everything else used the
+  per-session artifact dir, so 55 refinements sat in a file nothing ever opened.
+- `0c24251d5` — service notices must not spend the message budget: 4 000 `[bash-done]`
+  rows filled the 20-row queue and a subagent report was refused with "184 unfinished,
+  limit is 20". Notices now replace by key (`bash:<pid>`), carry their own ceiling, and
+  the delivery guard counts only real messages.
+- `20a4e3d99` — OpenCode retirements are recorded, dated, and kept resolvable instead
+  of being silently offered after the endpoint stopped serving them (the discovery
+  contract, `docs/model-discovery-contract.md`).
 
 ## fork.009 — upstream v0.10.1-beta.38
 
