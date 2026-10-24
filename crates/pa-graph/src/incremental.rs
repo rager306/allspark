@@ -314,8 +314,19 @@ impl GraphStore {
             closure_paths: closure_targets.iter().map(|t| t.rel.clone()).collect(),
         };
         // Stamped last, like the full index: an interrupted run must not look
-        // complete.
+        // complete. A reindex CHANGES the graph, so it must also move the
+        // evidence: without `analyze` a re-indexed store keeps the old planner
+        // statistics (the full path measured 52.30 ms -> 0.08 ms on `trace`),
+        // and without a receipt `verify` accepts evidence that predates this
+        // run — the store it describes is no longer the store that exists
+        // (audit F07/R6). `finish_run` does all three for the full path; this is
+        // the incremental half of the same contract.
+        self.analyze()?;
         self.touch_project(&opts.project)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        self.record_index_receipt(&opts.project, now)?;
         if let Ok(head) = crate::changes::run_git(&root, &["rev-parse", "HEAD"]) {
             let head = head.trim();
             if !head.is_empty() {
@@ -577,5 +588,32 @@ mod tests {
             .expect("run");
         assert_eq!(report.reason, ReindexReason::Unchanged);
         assert!(store.file_surface("p", "a.rs").expect("surface").is_some());
+    }
+    /// Audit F07/R6: a reindex changes the graph, so it must move the evidence.
+    /// Before this, `verify` kept accepting a receipt that predated the
+    /// reindex — the store it described was no longer the store that existed.
+    #[test]
+    fn a_reindex_appends_a_receipt_so_verify_sees_the_change() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(dir.path(), "a.rs", "pub fn foo() -> u32 { 1 }\n");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        index(&mut store, dir.path());
+        let after_index = store.verify_run("p").expect("verify").receipts;
+        assert_eq!(after_index, 1, "the full index records one receipt");
+
+        write(dir.path(), "a.rs", "pub fn foo() -> u32 { 2 }\n");
+        store
+            .reindex_incremental(dir.path(), &IndexOptions::new("p"))
+            .expect("reindex");
+
+        let verdict = store.verify_run("p").expect("verify");
+        assert_eq!(
+            verdict.receipts, 2,
+            "a reindex that changed a file must append its own receipt"
+        );
+        assert!(
+            verdict.chain_ok,
+            "the appended receipt links to its predecessor"
+        );
     }
 }
