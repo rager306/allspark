@@ -37,6 +37,7 @@ reachability count alone changes four times (`DEADWEIGHT-AUDIT` 20/51 → `ATTAC
 | `SYNTHESIS.md` | four reports verified: what to accept, catch, refuse | **open** — the shortest honest summary of the graph backlog |
 | `SYNTHESIS-2026-10-21.md` (ru) | what five parallel subagents found about providers, context, graph/lsp | **adopted in part** — 8 findings, 5 shipped as fixes |
 | `ROADMAP-V2-2026-10-21.md` (ru) | what to build next, re-estimated from that synthesis | **planned** — R01..R11 with crate impact |
+| `REVIEW-SQLITE-ROADMAP.md` | is `allspark-sqlite-architecture-roadmap-2026-10-23.md` still true against HEAD | **open** — 56 claims re-checked: 43 correct, 5 obsolete, 5 partial, 3 wrong; the roadmap describes a tree **119 commits back** (`f4fc256bc`, 10-21) and misses the writer lease, the schema-version refusal and the receipt chain. Names R1/R2/R3 as undetected corruption risks; recommends refusing any graph cache before those |
 
 ## 1. Code graph (`pa-graph`)
 
