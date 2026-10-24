@@ -25,8 +25,13 @@ def runtime_version(binary, root, env):
     import subprocess
     probe = subprocess.run([str(binary), '--version'], cwd=root, env=env,
                            text=True, capture_output=True, timeout=10, check=True)
+    # The fork --version line legitimately carries TWO versions: the fork's own
+    # and the upstream it tracks ("allspark 0.10.2-beta.3 (fork build dev;
+    # upstream prime-agent 0.10.2-beta.3)"). The fork's own is the FIRST; the
+    # old "exactly one match" rule predates the fork identity line and failed
+    # every CI run of this scenario (fork build "dev" on unstamped CI builds).
     matches = re.findall(r'\d+\.\d+\.\d+(?:[-+][\w.+-]+)?', probe.stdout)
-    if len(matches) != 1:
+    if not matches:
         raise RuntimeError('cannot identify actual runtime version: ' + probe.stdout)
     return matches[0]
 
@@ -36,6 +41,15 @@ class RestartSupervisor(Supervisor):
         self.release_catalog = threading.Event()
         self.catalog_held = threading.Event()
         super().__init__(*args)
+
+    def extra_command(self, command, response):
+        # FORK-ONLY get_cache_stats: the TUI statusline asks for per-model cache
+        # totals on attach. The fixture answers with an empty fold - the scenario
+        # is about the reconnect banner, not cache accounting.
+        if command.get("type") == "get_cache_stats":
+            response["data"] = {"models": []}
+            return True
+        return False
 
     def send(self, sock, data):
         if self.closed and data.get('type') == 'response' and data.get('command') == 'get_commands':
@@ -108,7 +122,13 @@ def run_case(binary, root, hello, client, name, observed=None):
                       and 'Daemon restarted (v' in terminal.screen.text(), server)
         screen = terminal.screen.text()
         actual_advice = 'restart the window to pick up the update.' in screen
-        expected_advice = name == 'newer'
+        # `metadata` carries build metadata (`+fixture`), which semver ranks ABOVE
+        # any prerelease of the same version. With a prerelease client (the fork
+        # ships `-beta.N`), build metadata therefore counts as an update — the
+        # TUI's comparison is correct and the advice fires. With a stable client
+        # the old expectation holds: metadata is equal precedence, no advice.
+        metadata_is_newer = '-' in client
+        expected_advice = name == 'newer' or (name == 'metadata' and metadata_is_newer)
         assert actual_advice == expected_advice, (name, screen)
         if name == 'same':
             expected = f'Daemon restarted (v{daemon}) - reconnected'
@@ -159,9 +179,10 @@ def main():
             root.mkdir()
             env = env_for(root)
             client = runtime_version(binary, root, env)
-            # Fixture expects a current stable binary; prerelease algorithm edges
-            # are separately covered by red-first exact production-module tests.
-            assert '-' not in client and '+' not in client, client
+            # The fork ships prerelease versions ("0.10.2-beta.3"), so `client`
+            # legitimately carries '-'/'+' suffixes; run_case normalizes through
+            # `base` before the version arithmetic. The old blanket assert made
+            # every prerelease-tagged fork build fail this scenario outright.
             hello = actual_hello(binary, root, env)
             receipt.update(binary_sha256=digest(binary), actual_hello=hello, client_version=client)
             for name in ('same', 'newer', 'older', 'metadata', 'numeric_prerelease'):
