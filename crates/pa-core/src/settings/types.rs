@@ -625,6 +625,50 @@ pub struct ToolProfileSettings {
 /// seconds.
 pub const DEFAULT_PYTHON_CELL_TIMEOUT_MS: u64 = 60_000;
 
+/// One rung of the `subagentModel` effort ladder: either a bare model
+/// reference (`"provider/model-id"` or a catalog short form) or an object
+/// pinning the reference plus the child's thinking level
+/// (`{"model": "...", "thinking": "high"}`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SubagentModelRung {
+    Reference(String),
+    Pinned {
+        model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thinking: Option<String>,
+    },
+}
+
+/// Per-effort model ladder for unpinned `rlm.spawn` children
+/// (`settings.subagentModel`): the spawn's `thinking` level picks its rung,
+/// `default` serves every effort without a rung (including no thinking),
+/// and the legacy `subagentDefaultModel` string is the legacy `default`
+/// rung. Unset rungs fall through to `default`; an entirely unset ladder
+/// inherits the parent's model. Global and project files deep-merge per
+/// rung, so a project file may pin only `max`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SubagentModelSettings {
+    /// Serves every effort without its own rung.
+    pub default: Option<SubagentModelRung>,
+    pub low: Option<SubagentModelRung>,
+    /// The `medium` wire name and `normal` are the same rung.
+    #[serde(alias = "medium")]
+    pub normal: Option<SubagentModelRung>,
+    pub high: Option<SubagentModelRung>,
+    pub xhigh: Option<SubagentModelRung>,
+    pub max: Option<SubagentModelRung>,
+}
+
+/// The resolved `subagentModel` ladder choice for an unpinned spawn: the
+/// model reference plus the rung's pinned thinking level, if any.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentModelChoice {
+    pub model: String,
+    pub thinking: Option<String>,
+}
+
 /// The settings document: every known field optional; unknown keys preserved.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -633,7 +677,12 @@ pub struct Settings {
     pub onboarding_completed: Option<bool>,
     pub default_provider: Option<String>,
     pub default_model: Option<String>,
+    /// Legacy `default` rung of `subagentModel`; the ladder supersedes it,
+    /// and it stays the last fallback (see [`SubagentModelSettings`]).
     pub subagent_default_model: Option<String>,
+    /// FORK-ONLY: the per-effort model ladder for unpinned `rlm.spawn`
+    /// children (see [`SubagentModelSettings`]).
+    pub subagent_model: Option<SubagentModelSettings>,
     pub update_channel: Option<UpdateChannel>,
     pub recent_models: Option<Vec<String>>,
     pub auxiliary_model: Option<String>,

@@ -10,7 +10,8 @@ use super::load::from_value_lenient;
 use super::merge::{deep_merge, migrate};
 use super::storage::{SettingsScope, SettingsStorage};
 use super::types::{
-    QueueModeSetting, Settings, ThinkingLevelSetting, TransportSetting, UpdateChannel,
+    QueueModeSetting, Settings, SubagentModelChoice, SubagentModelRung, ThinkingLevelSetting,
+    TransportSetting, UpdateChannel,
 };
 
 pub const RECENT_MODELS_LIMIT: usize = 20;
@@ -578,6 +579,10 @@ impl SettingsManager {
     }
 
     /// Model for `rlm.spawn` without a pinned model; unset inherits parent.
+    ///
+    /// The legacy `default` rung of the `subagentModel` ladder: superseded
+    /// by the ladder, still honored last (see
+    /// [`Self::get_subagent_model_for_effort`]).
     #[must_use]
     pub fn get_subagent_default_model(&self) -> Option<String> {
         self.merged
@@ -585,6 +590,58 @@ impl SettingsManager {
             .as_ref()
             .map(|m| m.trim().to_string())
             .filter(|m| !m.is_empty())
+    }
+
+    /// Model (+ optional pinned thinking) for `rlm.spawn` without a pinned
+    /// model, resolved by the `subagentModel` effort ladder: the spawn's
+    /// thinking level picks its rung (`normal` and `medium` name the same
+    /// rung; `off`, `minimal`, unknown levels, and no level take the
+    /// `default` rung), then the `default` rung, then the legacy
+    /// `subagentDefaultModel` string. `None` inherits the parent's model.
+    /// Whitespace or empty rung references behave as unset and fall
+    /// through.
+    #[must_use]
+    pub fn get_subagent_model_for_effort(
+        &self,
+        effort: Option<&str>,
+    ) -> Option<SubagentModelChoice> {
+        let ladder = self.merged.subagent_model.as_ref();
+        let rung_choice = |rung: Option<&SubagentModelRung>| -> Option<SubagentModelChoice> {
+            match rung? {
+                SubagentModelRung::Reference(model) => Some(SubagentModelChoice {
+                    model: model.trim().to_string(),
+                    thinking: None,
+                }),
+                SubagentModelRung::Pinned { model, thinking } => Some(SubagentModelChoice {
+                    model: model.trim().to_string(),
+                    thinking: thinking
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|level| !level.is_empty())
+                        .map(str::to_string),
+                }),
+            }
+        };
+        let effort_rung = ladder.and_then(|ladder| {
+            match effort.map(str::trim).map(str::to_lowercase).as_deref() {
+                Some("low") => rung_choice(ladder.low.as_ref()),
+                Some("normal" | "medium") => rung_choice(ladder.normal.as_ref()),
+                Some("high") => rung_choice(ladder.high.as_ref()),
+                Some("xhigh") => rung_choice(ladder.xhigh.as_ref()),
+                Some("max") => rung_choice(ladder.max.as_ref()),
+                _ => None,
+            }
+        });
+        effort_rung
+            .or_else(|| ladder.and_then(|ladder| rung_choice(ladder.default.as_ref())))
+            .or_else(|| {
+                self.get_subagent_default_model()
+                    .map(|model| SubagentModelChoice {
+                        model,
+                        thinking: None,
+                    })
+            })
+            .filter(|choice| !choice.model.is_empty())
     }
 
     #[must_use]
@@ -1729,5 +1786,190 @@ mod tests {
         .unwrap();
         let manager = SettingsManager::in_memory(&settings);
         assert_eq!(manager.get_graph_db_path(), Some(home.join("graph.db")));
+    }
+
+    /// The `subagentModel` effort ladder: the effort picks its rung, unset
+    /// rungs fall through to `default` and then the legacy string, `normal`
+    /// and `medium` are the same rung, and malformed values behave as unset.
+    #[test]
+    fn subagent_model_ladder_resolves_by_effort() {
+        let choice = |settings: &Settings, effort: Option<&str>| {
+            SettingsManager::in_memory(settings).get_subagent_model_for_effort(effort)
+        };
+
+        // Unset everywhere: the parent inherits.
+        assert_eq!(
+            choice(&Settings::default(), Some("high")),
+            None,
+            "an unset ladder inherits the parent"
+        );
+
+        // The effort picks its rung; every other effort takes `default`.
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "subagentModel": {
+                "default": "prov/base",
+                "low": "prov/cheap",
+                "normal": { "model": "prov/mid", "thinking": "low" },
+                "high": "prov/smart",
+                "xhigh": "prov/genius",
+                "max": { "model": "prov/max", "thinking": "xhigh" },
+            },
+        }))
+        .unwrap();
+        assert_eq!(choice(&settings, Some("low")).unwrap().model, "prov/cheap");
+        assert_eq!(choice(&settings, Some("high")).unwrap().model, "prov/smart");
+        // `medium` and `normal` are the same rung, and the pinned thinking rides it.
+        assert_eq!(
+            choice(&settings, Some("medium")),
+            Some(SubagentModelChoice {
+                model: "prov/mid".to_string(),
+                thinking: Some("low".to_string()),
+            })
+        );
+        assert_eq!(
+            choice(&settings, Some("normal")),
+            choice(&settings, Some("medium"))
+        );
+        // The pinned rung object: model + thinking.
+        assert_eq!(
+            choice(&settings, Some("max")),
+            Some(SubagentModelChoice {
+                model: "prov/max".to_string(),
+                thinking: Some("xhigh".to_string()),
+            })
+        );
+        // No effort (and unknown/off/minimal efforts) take `default`.
+        assert_eq!(choice(&settings, None).unwrap().model, "prov/base");
+        assert_eq!(
+            choice(&settings, Some("minimal")).unwrap().model,
+            "prov/base"
+        );
+        assert_eq!(choice(&settings, Some("bogus")).unwrap().model, "prov/base");
+
+        // A missing rung falls through to `default`.
+        let partial: Settings = serde_json::from_value(serde_json::json!({
+            "subagentModel": { "default": "prov/base", "max": "prov/max" },
+        }))
+        .unwrap();
+        assert_eq!(choice(&partial, Some("low")).unwrap().model, "prov/base");
+        assert_eq!(choice(&partial, Some("max")).unwrap().model, "prov/max");
+
+        // The legacy string is the last fallback and the legacy `default` rung.
+        let legacy: Settings =
+            serde_json::from_value(serde_json::json!({ "subagentDefaultModel": " prov/old " }))
+                .unwrap();
+        assert_eq!(
+            choice(&legacy, Some("max")),
+            Some(SubagentModelChoice {
+                model: "prov/old".to_string(),
+                thinking: None,
+            })
+        );
+        // The ladder wins over the legacy string; the `default` rung still catches it.
+        let both: Settings = serde_json::from_value(serde_json::json!({
+            "subagentDefaultModel": "prov/old",
+            "subagentModel": { "max": "prov/max" },
+        }))
+        .unwrap();
+        assert_eq!(choice(&both, Some("max")).unwrap().model, "prov/max");
+        assert_eq!(choice(&both, Some("low")).unwrap().model, "prov/old");
+
+        // Malformed values behave as unset: whitespace references, empty
+        // strings, and blank pinned thinking all fall through.
+        let malformed: Settings = serde_json::from_value(serde_json::json!({
+            "subagentModel": {
+                "default": "   ",
+                "high": { "model": "", "thinking": "  " },
+            },
+            "subagentDefaultModel": "",
+        }))
+        .unwrap();
+        assert_eq!(
+            choice(&malformed, Some("high")),
+            None,
+            "empty rungs fall through"
+        );
+        assert_eq!(
+            choice(&malformed, None),
+            None,
+            "blank legacy behaves as unset"
+        );
+
+        // The `medium` JSON alias lands on the `normal` rung.
+        let aliased: Settings = serde_json::from_value(serde_json::json!({
+            "subagentModel": { "medium": "prov/via-alias" },
+        }))
+        .unwrap();
+        assert_eq!(
+            choice(&aliased, Some("normal")).unwrap().model,
+            "prov/via-alias"
+        );
+
+        // Deep merge: the project file pins one rung over the global ladder
+        // without wiping the rest (the deep-merge contract for nested objects).
+        let global: Settings = serde_json::from_value(serde_json::json!({
+            "subagentModel": { "default": "prov/base", "max": "prov/global-max" },
+        }))
+        .unwrap();
+        let project: Settings = serde_json::from_value(serde_json::json!({
+            "subagentModel": { "max": "prov/project-max" },
+        }))
+        .unwrap();
+        let merged = super::super::merge::deep_merge(&global, &project);
+        assert_eq!(
+            choice(&merged, Some("max")).unwrap().model,
+            "prov/project-max"
+        );
+        assert_eq!(
+            choice(&merged, Some("low")).unwrap().model,
+            "prov/base",
+            "the unpinned rung survives the project overlay"
+        );
+    }
+
+    /// The rung wire shapes: a bare reference string, the pinned object, the
+    /// `medium` key alias, and a wrong-typed rung (the lenient-load contract).
+    #[test]
+    fn subagent_model_rung_wire_shapes() {
+        // Bare string.
+        let rung: SubagentModelRung =
+            serde_json::from_value(serde_json::json!("prov/one")).unwrap();
+        assert_eq!(rung, SubagentModelRung::Reference("prov/one".to_string()));
+
+        // Pinned object, thinking present and absent.
+        let rung: SubagentModelRung = serde_json::from_value(serde_json::json!({
+            "model": "prov/two", "thinking": "high"
+        }))
+        .unwrap();
+        assert_eq!(
+            rung,
+            SubagentModelRung::Pinned {
+                model: "prov/two".to_string(),
+                thinking: Some("high".to_string()),
+            }
+        );
+        let rung: SubagentModelRung =
+            serde_json::from_value(serde_json::json!({ "model": "prov/three" })).unwrap();
+        assert_eq!(
+            rung,
+            SubagentModelRung::Pinned {
+                model: "prov/three".to_string(),
+                thinking: None,
+            }
+        );
+
+        // A wrong-typed ladder value loads as unset (the lenient-load
+        // contract: a bad document never blocks the session).
+        let lenient = super::super::load::from_value_lenient(&serde_json::json!({
+            "subagentModel": { "max": 42 },
+        }));
+        assert!(
+            lenient.subagent_model.is_none()
+                || matches!(
+                    lenient.subagent_model.as_ref().and_then(|l| l.max.as_ref()),
+                    Some(SubagentModelRung::Reference(_)) | None
+                ),
+            "a wrong-typed rung must not panic the loader"
+        );
     }
 }

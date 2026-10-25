@@ -22,6 +22,7 @@ pub use types::{
     AgentsSettings, AutoRefineSettings, AutonomousSettings, CompactionSettings, GraphSettings,
     JevAutoThinkingSetting, JevCacheSettings, JevEnabledSetting, JevGraphRerankSetting,
     JevSettings, JevToolArbiterSetting, LspSettings, McpServerConfig, ModelRoutingLevel,
-    QueueModeSetting, RoutingSettings, Settings, ThinkingLevelSetting, ToolProfileSettings,
-    TransportSetting, UpdateChannel,
+    QueueModeSetting, RoutingSettings, Settings, SubagentModelChoice, SubagentModelRung,
+    SubagentModelSettings, ThinkingLevelSetting, ToolProfileSettings, TransportSetting,
+    UpdateChannel,
 };
