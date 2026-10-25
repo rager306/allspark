@@ -502,3 +502,97 @@ rows:
     source: >-
       issue #8 + #12-1a: Position::new(line-1, 0) sent where there is no
       identifier; gopls answers "no identifier found"
+
+  - id: JEV-judge-model-not-in-chat-picker
+    plane: product
+    invariant: >-
+      The judge-only model (subq-snap-preview) is served to the judge chain but
+      never offered as a chat model in the picker.
+    layer: unit
+    paths:
+      - crates/pa-ai/src/models_fork.rs
+      - crates/pa-core/src/models/registry.rs
+    axes:
+      code: [crates/pa-ai/src/models_fork.rs]
+      logic: [picker filter excludes judge-only ids]
+      semantics: [subq-snap-preview absent from get_discoverable_models]
+      data: [fork_provider_models]
+    oracle: []
+    kill_mutation: >-
+      add the judge model to fork_provider_models; the picker must still not
+      list it as a chat option
+    status: gap
+    gate: default
+    owner: ADR-0001
+    source: >-
+      measured: subq-snap-preview in the picker on a fresh install with no
+      subquadratic key — the fork table row (models_fork.rs:291) carries no
+      judge-only marker and get_discoverable_models does not filter it
+
+  - id: CI-miri-pure-crates
+    plane: harness
+    invariant: >-
+      Pure crates (pa-types, pa-jev, pa-graph) pass under Miri: no UB, no
+      leaks, no aliasing violations on the lib test suite.
+    layer: unit
+    paths:
+      - crates/pa-types
+      - crates/pa-jev
+      - crates/pa-graph
+    axes:
+      code: [crates/pa-types, crates/pa-jev, crates/pa-graph]
+      logic: [undefined behaviour detection]
+      semantics: [no UB on any test input]
+    oracle: []
+    kill_mutation: >-
+      introduce an out-of-bounds read in a pure function; Miri must catch it
+    status: gap
+    gate: advisory
+    owner: ADR-0001
+    source: >-
+      issue #14 (bbtree testing ladder); Miri cannot run FFI, so pa-core and
+      pa-daemon (libc/windows) are out of scope
+
+  - id: CI-shuttle-daemon-scheduler
+    plane: harness
+    invariant: >-
+      At least one daemon scheduler test runs under deterministic simulation
+      (Shuttle) with enough schedules to catch interleaving races.
+    layer: daemon
+    paths:
+      - crates/pa-daemon/src
+    axes:
+      code: [crates/pa-daemon/src]
+      logic: [scheduling, retry, landing]
+      semantics: [deterministic outcome regardless of interleaving]
+    oracle: []
+    kill_mutation: >-
+      remove a memory barrier from the scheduler; Shuttle must find the race
+    status: gap
+    gate: advisory
+    owner: ADR-0001
+    source: >-
+      bbtree lesson: one DST tool does not mean "tested" - Shuttle missed a
+      race fork-based ffs found (bbtree issue 9); treat ffs as a second
+      instrument once the first Shuttle-found bug class appears
+
+  - id: CI-design-decision-log
+    plane: harness
+    invariant: >-
+      Key architectural decisions are numbered and citable from code and
+      issues (not buried in CHANGELOG prose).
+    layer: unit
+    paths:
+      - docs
+    axes:
+      code: [doc/adr]
+      logic: [numbered decisions, addressable from issues]
+      semantics: [decision -> evidence -> number]
+    oracle: []
+    kill_mutation: >-
+    status: gap
+    gate: advisory
+    owner: ADR-0001
+    source: >-
+      bbtree design/03-decisions.md; ADR-0001 already numbers G-1..G-16,
+      so this row tracks the backlog of unnumbered decisions predating it
