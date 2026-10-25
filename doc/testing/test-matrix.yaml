@@ -590,6 +590,7 @@ rows:
       semantics: [decision -> evidence -> number]
     oracle: []
     kill_mutation: >-
+      remove a numbered decision from doc/adr/; the coverage test must redden
     status: gap
     gate: advisory
     owner: ADR-0001
