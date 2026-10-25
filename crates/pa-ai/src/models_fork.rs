@@ -136,6 +136,18 @@ const MUSE_THINKING_LEVELS: &[(ModelThinkingLevel, Option<&str>)] = &[
     (ModelThinkingLevel::Max, Some("max")),
 ];
 
+/// `muse-spark-1.1`/`1.2`/`1.2-contributor` reject `reasoning_effort: "max"` with a 400
+/// listing `[minimal, low, medium, high, xhigh]`; measured live against `api.meta.ai`
+/// (2026-10-25). Only 1.3, the contributor twin, and the wonder models accept `max`.
+const MUSE_THINKING_LEVELS_NO_MAX: &[(ModelThinkingLevel, Option<&str>)] = &[
+    (ModelThinkingLevel::Off, None),
+    (ModelThinkingLevel::Minimal, Some("minimal")),
+    (ModelThinkingLevel::Low, Some("low")),
+    (ModelThinkingLevel::Medium, Some("medium")),
+    (ModelThinkingLevel::High, Some("high")),
+    (ModelThinkingLevel::Xhigh, Some("xhigh")),
+];
+
 static FORK_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
     FORK_RAW_MODELS
         .iter()
@@ -329,7 +341,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         api: "openai-responses",
         base_url: "https://api.meta.ai/v1",
         reasoning: true,
-        thinking_levels: MUSE_THINKING_LEVELS,
+        thinking_levels: MUSE_THINKING_LEVELS_NO_MAX,
         input: &[ModelInput::Text, ModelInput::Image],
         cost: (1.25, 4.25, 0.15, 0.0),
         context_window: 1_048_576,
@@ -345,7 +357,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         api: "openai-responses",
         base_url: "https://api.meta.ai/v1",
         reasoning: true,
-        thinking_levels: MUSE_THINKING_LEVELS,
+        thinking_levels: MUSE_THINKING_LEVELS_NO_MAX,
         input: &[ModelInput::Text, ModelInput::Image],
         cost: (0.10, 0.20, 0.0, 0.0),
         context_window: 1_048_576,
@@ -361,7 +373,7 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         api: "openai-responses",
         base_url: "https://api.meta.ai/v1",
         reasoning: true,
-        thinking_levels: MUSE_THINKING_LEVELS,
+        thinking_levels: MUSE_THINKING_LEVELS_NO_MAX,
         input: &[ModelInput::Text, ModelInput::Image],
         cost: (1.25, 4.25, 0.15, 0.0),
         context_window: 1_048_576,
@@ -977,12 +989,19 @@ mod tests {
                 .expect("muse thinking map");
             assert_eq!(map.get(&ModelThinkingLevel::Off), Some(&None));
             assert_eq!(
-                map.get(&ModelThinkingLevel::Max),
-                Some(&Some("max".to_string()))
-            );
-            assert_eq!(
                 map.get(&ModelThinkingLevel::Minimal),
                 Some(&Some("minimal".to_string()))
+            );
+            // 1.1/1.2 reject `max` (400 with the supported list); only 1.3+ accepts it.
+            let accepts_max = matches!(
+                model.id.as_str(),
+                "muse-spark-1.3" | "muse-spark-1.3-contributor"
+            );
+            assert_eq!(
+                map.get(&ModelThinkingLevel::Max).is_some(),
+                accepts_max,
+                "{}: max must be advertised only by 1.3+",
+                model.id
             );
         }
     }
