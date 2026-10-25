@@ -178,3 +178,131 @@ mod tests {
         assert_eq!(DAEMON_UPDATE_RESTART_FORMAT_VERSION, 1);
     }
 }
+
+pub use crate::build_identity::BuildCompat;
+
+/// The daemon-attachment compatibility decision, made in exactly one place.
+///
+/// Two previous implementations disagreed (`interactive_mode/daemon.rs`
+/// compared protocol+schemaId; `daemon_discovery::classify_reachable` compared
+/// protocol+schemaId+appVersion), so a TUI silently attached to a daemon built
+/// from different code. This is the single authority; both call sites must
+/// delegate to it.
+///
+/// Fail-closed on identity: when either side carries no build stamp, the
+/// answer is [`BuildCompat::Unknown`], which callers treat as not-attachable.
+#[must_use]
+pub fn daemon_attach_compat(
+    hello: &HelloFacts,
+    own: &OwnFacts,
+) -> crate::build_identity::BuildCompat {
+    let protocol_matches = hello.protocol_version == Some(own.protocol_version);
+    let schema_matches = hello.schema_id.as_deref() == Some(own.schema_id);
+    let version_matches = hello.app_version == own.app_version;
+    if protocol_matches && schema_matches && version_matches {
+        crate::build_identity::build_compatible(hello.build_hash.clone(), own.build_hash.clone())
+    } else {
+        BuildCompat::Mismatch
+    }
+}
+
+/// The facts about one side, extracted from a `daemon_hello`-shaped payload.
+#[derive(Debug, Clone, Default)]
+pub struct HelloFacts {
+    pub protocol_version: Option<u64>,
+    pub schema_id: Option<String>,
+    pub app_version: Option<String>,
+    pub build_hash: Option<String>,
+}
+
+/// This process's own facts, as the composition root knows them.
+#[derive(Debug, Clone)]
+pub struct OwnFacts {
+    pub protocol_version: u64,
+    pub schema_id: &'static str,
+    pub app_version: Option<String>,
+    pub build_hash: Option<String>,
+}
+
+#[cfg(test)]
+mod attach_compat_tests {
+    use super::{
+        daemon_attach_compat, HelloFacts, OwnFacts, DAEMON_PROTOCOL_VERSION, DAEMON_SCHEMA_ID,
+    };
+
+    fn own(commit: &str) -> OwnFacts {
+        OwnFacts {
+            protocol_version: DAEMON_PROTOCOL_VERSION,
+            schema_id: DAEMON_SCHEMA_ID,
+            app_version: Some("0.10.2-beta.3".to_string()),
+            build_hash: Some(commit.to_string()),
+        }
+    }
+
+    fn hello(commit: &str, version: &str) -> HelloFacts {
+        HelloFacts {
+            protocol_version: Some(DAEMON_PROTOCOL_VERSION),
+            schema_id: Some(DAEMON_SCHEMA_ID.to_string()),
+            app_version: Some(version.to_string()),
+            build_hash: Some(commit.to_string()),
+        }
+    }
+
+    #[test]
+    fn the_incident_shape_is_a_mismatch() {
+        // Old daemon (yesterday's build) against today's client: same protocol,
+        // same schema, different commit -> not attachable.
+        let verdict = daemon_attach_compat(
+            &hello("559751fdcec0", "0.10.1-beta.35"),
+            &own("01de64db25e5"),
+        );
+        assert!(!matches!(
+            verdict,
+            crate::build_identity::BuildCompat::Match
+        ));
+    }
+
+    #[test]
+    fn same_commit_different_version_is_a_mismatch() {
+        // The silent-empty-list class: same code lineage, drifting version file.
+        let verdict = daemon_attach_compat(
+            &hello("559751fdcec0", "0.10.1-beta.35"),
+            &own("559751fdcec0"),
+        );
+        assert!(!matches!(
+            verdict,
+            crate::build_identity::BuildCompat::Match
+        ));
+    }
+
+    #[test]
+    fn an_unstamped_side_is_unknown_fail_closed() {
+        let mut unstamped = hello("559751fdcec0", "0.10.2-beta.3");
+        unstamped.build_hash = None;
+        let verdict = daemon_attach_compat(&unstamped, &own("01de64db25e5"));
+        assert!(!matches!(
+            verdict,
+            crate::build_identity::BuildCompat::Match
+        ));
+    }
+
+    #[test]
+    fn a_protocol_drift_beats_everything() {
+        let mut drifted = hello("01de64db25e5", "0.10.2-beta.3");
+        drifted.protocol_version = Some(DAEMON_PROTOCOL_VERSION - 1);
+        let verdict = daemon_attach_compat(&drifted, &own("01de64db25e5"));
+        assert!(!matches!(
+            verdict,
+            crate::build_identity::BuildCompat::Match
+        ));
+    }
+
+    #[test]
+    fn an_identical_build_matches() {
+        let verdict = daemon_attach_compat(
+            &hello("01de64db25e5", "0.10.2-beta.3"),
+            &own("01de64db25e5"),
+        );
+        assert!(matches!(verdict, crate::build_identity::BuildCompat::Match));
+    }
+}

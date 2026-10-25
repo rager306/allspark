@@ -150,6 +150,13 @@ pub struct DaemonRuntimeIdentity {
     pub entrypoint_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launcher_path: Option<String>,
+    /// The content stamp (ADR-0001 G-1): the short git commit this binary was
+    /// built from, `.dirty`-suffixed when the tree was unclean, `""` when the
+    /// build ran outside a repository. Additive with serde default, so a
+    /// pre-upgrade daemon that omits it still deserializes — and the attach
+    /// classifier treats a missing stamp as `Unknown` (fail-closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

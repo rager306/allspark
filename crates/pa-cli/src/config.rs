@@ -72,6 +72,17 @@ pub fn version() -> &'static str {
     })
 }
 
+/// The compiled build stamp: the 12-hex commit this binary was built from,
+/// empty when the build ran outside a repository (no `.git`). Emitted by
+/// `crates/pa-cli/build.rs`; a CI run pins it via `ALLSPARK_BUILD_COMMIT` the
+/// same way `ALLSPARK_FORK_BUILD` is pinned. A `.dirty` suffix means the tree
+/// had uncommitted changes at build time — a different build from its clean
+/// sibling, deliberately.
+#[must_use]
+pub fn build_hash() -> &'static str {
+    option_env!("ALLSPARK_BUILD_HASH").unwrap_or("")
+}
+
 /// The packaged package-dir (`PI_PACKAGE_DIR` wins, else the directory of
 /// the executable, launcher symlinks resolved through pa-core's
 /// `exe_dir_of`).

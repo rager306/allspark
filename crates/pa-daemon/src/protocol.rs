@@ -37,8 +37,32 @@ pub fn configure_app_version(version: &'static str) -> anyhow::Result<()> {
     Ok(())
 }
 
+static PRODUCT_BUILD_HASH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+/// Set the compiled build stamp once in the composition root, before serving
+/// supervisor or worker connections. Repeating the same value is safe; changing
+/// it is not (the daemon would advertise an identity its own binary contradicts).
+///
+/// # Errors
+///
+/// Returns an error if a process attempts to serve two build stamps.
+pub fn configure_build_hash(hash: &'static str) -> anyhow::Result<()> {
+    let configured = PRODUCT_BUILD_HASH.get_or_init(|| Some(hash.to_string()));
+    anyhow::ensure!(
+        configured.as_deref() == Some(hash),
+        "daemon build hash was already configured differently"
+    );
+    Ok(())
+}
+
+/// The compiled build stamp this daemon advertises in `runtime.buildHash`.
+/// `None` when the composition root did not configure one (an unstamped build).
+#[must_use]
+pub fn build_hash() -> Option<String> {
+    PRODUCT_BUILD_HASH.get().and_then(std::clone::Clone::clone)
+}
+
 /// Product version shared by daemon handshakes and update checkpoints. Library
-/// embedders without package metadata retain the compiled version fallback.
 #[must_use]
 pub(crate) fn app_version() -> &'static str {
     PRODUCT_VERSION.get().copied().unwrap_or(DAEMON_APP_VERSION)

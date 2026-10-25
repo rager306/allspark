@@ -124,6 +124,9 @@ impl Supervisor {
             app_version: Some(app_version().to_string()),
             runtime: Some(DaemonRuntimeIdentity {
                 build_id: concat!("pa-daemon-rs-", env!("CARGO_PKG_VERSION")).to_string(),
+                // Content stamp (doc/adr/0001 G-1): compiled into the binary by
+                // the composition root's build.rs; empty on an unstamped build.
+                build_hash: crate::protocol::build_hash(),
                 executable_path: std::env::current_exe()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_default(),

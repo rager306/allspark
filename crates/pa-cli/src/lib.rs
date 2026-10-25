@@ -149,6 +149,8 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
     pa_telemetry::set_version(crate::config::version());
     pa_daemon::protocol::configure_app_version(crate::config::version())
         .map_err(|error| error.to_string())?;
+    pa_daemon::protocol::configure_build_hash(crate::config::build_hash())
+        .map_err(|error| error.to_string())?;
 
     let offline_mode = args.iter().any(|arg| arg == "--offline")
         || crate::config::is_truthy_env_flag(
