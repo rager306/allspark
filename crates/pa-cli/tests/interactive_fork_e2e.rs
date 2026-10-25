@@ -17,7 +17,7 @@
 //! daemon-active guard on the fork arm).
 #![cfg(unix)]
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -408,7 +408,7 @@ async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
     let mut pty_reader = PtyReader::new(pty.master);
 
     // The TUI renders the forked transcript: the source's exchange.
-    pty_reader.wait_for("seedphrase4fork", "the copied transcript", 45_000);
+    pty_reader.wait_for(b"seedphrase4fork", "the copied transcript", 45_000);
 
     // The daemon hosts the fork: a roster row naming a new session file —
     // never the source — under its own id.
@@ -467,7 +467,7 @@ async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
     // The fork is live: a new turn on it answers through the scripted
     // engine.
     pty_reader.write(b"forked turn\r");
-    pty_reader.wait_for("forkfollowanswer", "the new turn on the fork", 45_000);
+    pty_reader.wait_for(b"forkfollowanswer", "the new turn on the fork", 45_000);
 
     // Exit cleanly (ctrl+d), and the launch reports success.
     pty_reader.write(b"\x04");

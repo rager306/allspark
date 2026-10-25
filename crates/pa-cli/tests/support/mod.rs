@@ -77,14 +77,20 @@ pub struct PtyReader {
 
 impl PtyReader {
     pub fn new(master: OwnedFd) -> PtyReader {
+        Self::with_size(master, PTY_ROWS, PTY_COLS)
+    }
+
+    /// A reader whose grid matches the pty's actual geometry (the tests that
+    /// match rendered needles open their pty at their own size).
+    pub fn with_size(master: OwnedFd, rows: usize, cols: usize) -> PtyReader {
         let fd = master.as_raw_fd();
         fcntl(fd, F_SETFL(OFlag::O_NONBLOCK)).expect("pty master non-blocking");
         PtyReader {
             file: master.into(),
             output: Vec::new(),
-            rows: PTY_ROWS,
-            cols: PTY_COLS,
-            grid: vec![vec![' '; PTY_COLS]; PTY_ROWS],
+            rows,
+            cols,
+            grid: vec![vec![' '; cols]; rows],
             row: 0,
             col: 0,
         }
@@ -227,8 +233,9 @@ impl PtyReader {
             .join("\n")
     }
 
-    /// Read whatever the child produced since the last poll.
-    fn pump(&mut self) {
+    /// Read whatever the child produced since the last poll (the child
+    /// lifecycle helpers in the tests pump between `try_wait` polls).
+    pub fn pump(&mut self) {
         let mut buffer = [0u8; 8192];
         match self.file.read(&mut buffer) {
             Ok(0) | Err(_) => {}
@@ -239,13 +246,52 @@ impl PtyReader {
         }
     }
 
+    /// The current stream position (the mark for the `wait_from*` family).
+    pub fn mark(&self) -> usize {
+        self.output.len()
+    }
+
+    /// The bytes collected since the given mark.
+    pub fn since(&self, mark: usize) -> &[u8] {
+        &self.output[mark..]
+    }
+
+    /// The whole raw stream collected so far.
+    pub fn output(&self) -> &[u8] {
+        &self.output
+    }
+
+    /// Read until quiet for `quiet_polls` consecutive empty polls: a write
+    /// into a full kernel buffer is dropped, so tests drain to silence
+    /// before every resume write.
+    pub fn drain_until_quiet(&mut self, quiet_polls: usize) {
+        let mut quiet = 0;
+        while quiet < quiet_polls {
+            let mut buffer = [0u8; 8192];
+            match self.file.read(&mut buffer) {
+                Ok(0) | Err(_) => quiet += 1,
+                Ok(n) => {
+                    self.output.extend_from_slice(&buffer[..n]);
+                    self.feed(&buffer[..n]);
+                    quiet = 0;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    fn find_since(&self, mark: usize, needle: &[u8]) -> Option<usize> {
+        find_subsequence(&self.output[mark..], needle).map(|at| mark + at)
+    }
+
     /// Drain until the needle appears in the raw stream, bounded by the
-    /// deadline; panics with the artifact dump.
-    pub fn wait_for(&mut self, needle: &str, what: &str, window_ms: u64) {
+    /// deadline; returns the raw offset where the needle first appeared
+    /// (the ordering oracle's evidence). Panics with the artifact dump.
+    pub fn wait_for(&mut self, needle: &[u8], what: &str, window_ms: u64) -> usize {
         let deadline = Instant::now() + Duration::from_millis(window_ms);
         loop {
-            if find_subsequence(&self.output, needle.as_bytes()).is_some() {
-                return;
+            if let Some(at) = self.find_since(0, needle) {
+                return at;
             }
             self.pump();
             if Instant::now() > deadline {
@@ -256,12 +302,62 @@ impl PtyReader {
         }
     }
 
-    /// Drain until the needle appears in the RENDERED grid.
-    pub fn wait_for_screen(&mut self, needle: &str, what: &str, window_ms: u64) {
-        let deadline = Instant::now() + Duration::from_millis(window_ms);
+    /// Drain until the needle appears AFTER the mark (the ordering oracle:
+    /// the evidence must postdate the mark), the copies' 30s bound.
+    pub fn wait_from(&mut self, mark: usize, needle: &[u8], what: &str) -> usize {
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            if self.rendered().contains(needle) {
-                return;
+            if let Some(at) = self.find_since(mark, needle) {
+                return at;
+            }
+            self.pump();
+            if Instant::now() > deadline {
+                self.dump_artifacts(what);
+                panic!("timeout waiting for {what} (needle {needle:?} after mark {mark})");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// `wait_from` with a caller-chosen bound (a regression's starvation
+    /// window can be shorter than the default bound).
+    pub fn wait_from_bounded(
+        &mut self,
+        mark: usize,
+        needle: &[u8],
+        what: &str,
+        bound: Duration,
+    ) -> usize {
+        let deadline = Instant::now() + bound;
+        loop {
+            if let Some(at) = self.find_since(mark, needle) {
+                return at;
+            }
+            self.pump();
+            if Instant::now() > deadline {
+                self.dump_artifacts(what);
+                panic!("{what} missed the {bound:?} bound (needle {needle:?})");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// `wait_from(0, ..)`: the needle must appear anywhere in the stream.
+    pub fn wait_from_start(&mut self, needle: &[u8], what: &str) -> usize {
+        self.wait_from(0, needle, what)
+    }
+
+    /// Drain until the needle appears in the RENDERED grid; returns the raw
+    /// offset at which the needle first became visible.
+    pub fn wait_for_screen(&mut self, needle: &str, what: &str, window_ms: u64) -> usize {
+        let deadline = Instant::now() + Duration::from_millis(window_ms);
+        let mut seen_at = None;
+        loop {
+            if seen_at.is_none() && self.rendered().contains(needle) {
+                seen_at = Some(self.output.len());
+            }
+            if let Some(at) = seen_at {
+                return at;
             }
             self.pump();
             if Instant::now() > deadline {

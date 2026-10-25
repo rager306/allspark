@@ -23,23 +23,26 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use nix::fcntl::{fcntl, FcntlArg::F_SETFL, OFlag};
 use nix::pty::{openpty, Winsize};
 use nix::sys::signal::{kill, Signal};
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
 use serde_json::{json, Value};
 
+mod support;
+
+use support::PtyReader;
+
 use pa_tui::interactive::{
     run_interactive, InteractiveOptions, ModelSelection, SessionSelection, UiMode,
 };
 
 /// The SGR tracking sequences the seam writes (enable: `?1002h` then `?1006h`).
-const MOUSE_ENABLE: &str = "\x1b[?1002h\x1b[?1006h";
+const MOUSE_ENABLE: &[u8] = b"\x1b[?1002h\x1b[?1006h";
 
 /// The hardware-cursor visibility bytes (`crossterm::cursor::Show`/`Hide`).
-const CURSOR_SHOW: &str = "\x1b[?25h";
-const CURSOR_HIDE: &str = "\x1b[?25l";
+const CURSOR_SHOW: &[u8] = b"\x1b[?25h";
+const CURSOR_HIDE: &[u8] = b"\x1b[?25l";
 
 /// Set (with the socket path) only when re-executed as the product-under-test.
 const CHILD_SOCKET_ENV: &str = "PA_CURSOR_CHILD_SOCKET";
@@ -102,7 +105,7 @@ fn cursor_stays_hidden_and_positioned_across_mount_picker_and_suspend() {
     harness.write(b"hi");
     harness.wait_from(
         mark_typed,
-        "\x1b[22;7H",
+        b"\x1b[22;7H",
         "the editor positions the hidden cursor at the caret",
     );
 
@@ -112,18 +115,18 @@ fn cursor_stays_hidden_and_positioned_across_mount_picker_and_suspend() {
     harness.write(b"\x7f\x7f");
     harness.wait_from(
         mark_clear,
-        "\x1b[22;5H",
+        b"\x1b[22;5H",
         "the editor emptied back to the bare caret",
     );
     let mark_picker = harness.mark();
     harness.write(b"/model\r");
-    harness.wait_from(mark_picker, "Search models", "the model picker mounts");
+    harness.wait_from(mark_picker, b"Search models", "the model picker mounts");
     harness.write(&[0x1b]);
     // The frame-end hide + hidden caret write is the editor-owns-the-frame marker;
     // picker-open frames end at the bare hide, so no picker cell can false-match.
     harness.wait_from(
         mark_picker,
-        "\x1b[?25l\x1b[22;5H",
+        b"\x1b[?25l\x1b[22;5H",
         "the closed picker returns the caret to the empty editor",
     );
     // Let the escape settle before the next key: a byte written hot on its heels reads
@@ -156,7 +159,7 @@ fn cursor_stays_hidden_and_positioned_across_mount_picker_and_suspend() {
     );
     harness.wait_from(
         mark_resume,
-        "\x1b[1;33Hsuspend",
+        b"\x1b[1;33Hsuspend",
         "the SIGCONT resume repaints the terminal",
     );
 
@@ -167,7 +170,7 @@ fn cursor_stays_hidden_and_positioned_across_mount_picker_and_suspend() {
 
     // Exactly one cursor-show window in the whole session: the suspend release tail.
     // A mount, frame, picker, or resume that shows the cursor is the glitch.
-    let shows = count_occurrences(stream, CURSOR_SHOW.as_bytes());
+    let shows = count_occurrences(stream, CURSOR_SHOW);
     assert_eq!(
         shows, 1,
         "the default-setting session shows the hardware cursor exactly \
@@ -175,11 +178,10 @@ fn cursor_stays_hidden_and_positioned_across_mount_picker_and_suspend() {
     );
 
     // The show is followed by a hide on resume before the repaint (balanced handoff).
-    let show_at = find_subsequence(stream, CURSOR_SHOW.as_bytes())
-        .expect("the suspend show is in the stream");
+    let show_at = find_subsequence(stream, CURSOR_SHOW).expect("the suspend show is in the stream");
     let post_show = &stream[show_at..];
-    let hide_at = find_subsequence(post_show, CURSOR_HIDE.as_bytes())
-        .expect("the resume hide follows the suspend show");
+    let hide_at =
+        find_subsequence(post_show, CURSOR_HIDE).expect("the resume hide follows the suspend show");
     let repaint_at = find_subsequence(post_show, b"\x1b[1;33Hsuspend")
         .expect("the resume repaint follows the suspend show");
     assert!(
@@ -195,7 +197,7 @@ fn cursor_stays_hidden_and_positioned_across_mount_picker_and_suspend() {
         while let Some(at) = find_subsequence(&stream[offset..], caret) {
             let start = offset + at;
             let prefixed = start >= CURSOR_SHOW.len()
-                && &stream[start - CURSOR_SHOW.len()..start] == CURSOR_SHOW.as_bytes();
+                && &stream[start - CURSOR_SHOW.len()..start] == CURSOR_SHOW;
             assert!(
                 !prefixed,
                 "a cursor-show byte directly precedes the caret position \
@@ -206,8 +208,8 @@ fn cursor_stays_hidden_and_positioned_across_mount_picker_and_suspend() {
     }
 
     // The mount hides the cursor with the surface (TS `TUI.start`): a hide precedes any paint.
-    let mount_hide = find_subsequence(stream, CURSOR_HIDE.as_bytes())
-        .expect("the session hides the hardware cursor");
+    let mount_hide =
+        find_subsequence(stream, CURSOR_HIDE).expect("the session hides the hardware cursor");
     assert!(
         mount_hide < harness.startup_end,
         "the mount hide lands inside the startup window"
@@ -222,25 +224,25 @@ fn shell_markers_are_reserved_for_the_exit_transcript() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut harness = CursorHarness::start();
-    harness.wait_from_start("\x1b[?2026l", "the attached transcript frame finished");
+    harness.wait_from_start(b"\x1b[?2026l", "the attached transcript frame finished");
     let mark = harness.mark();
     harness.write(b"hi");
     harness.wait_from(
         mark,
-        "\x1b[?25l\x1b[20;7H",
+        b"\x1b[?25l\x1b[20;7H",
         "the editor parked the hidden caret after the typed text",
     );
     let mark = harness.mark();
     harness.write(b"\x7f\x7f");
     harness.wait_from(
         mark,
-        "\x1b[?25l\x1b[20;5H",
+        b"\x1b[?25l\x1b[20;5H",
         "the editor emptied back to the bare caret",
     );
     harness.write(b"\x04");
-    harness.wait_from_start("\x1b[?1049l", "exit restored the main screen");
-    harness.wait_from_start("\x1b]133;C\x07", "exit replayed the marked transcript");
-    harness.wait_from_start("test result: ok", "the interactive child exited cleanly");
+    harness.wait_from_start(b"\x1b[?1049l", "exit restored the main screen");
+    harness.wait_from_start(b"\x1b]133;C\x07", "exit replayed the marked transcript");
+    harness.wait_from_start(b"test result: ok", "the interactive child exited cleanly");
     let output = harness.output();
     harness.finish();
 
@@ -300,7 +302,7 @@ impl CursorHarness {
             startup_end: 0,
         };
         // The startup window ends where the attach marker landed: later windows measure from it.
-        harness.wait_from_start("row 0", "the attach snapshot rendered");
+        harness.wait_from_start(b"row 0", "the attach snapshot rendered");
         harness.startup_end = harness.mark();
         harness
     }
@@ -317,11 +319,11 @@ impl CursorHarness {
         self.master.write(payload);
     }
 
-    fn wait_from_start(&mut self, needle: &str, what: &str) {
+    fn wait_from_start(&mut self, needle: &[u8], what: &str) {
         self.master.wait_from(0, needle, what);
     }
 
-    fn wait_from(&mut self, mark: usize, needle: &str, what: &str) {
+    fn wait_from(&mut self, mark: usize, needle: &[u8], what: &str) {
         self.master.wait_from(mark, needle, what);
     }
 
@@ -337,71 +339,6 @@ impl CursorHarness {
         let _ = self.child.kill();
         // Reap the child so no zombie is left behind.
         let _ = self.child.wait();
-    }
-}
-
-/// Non-blocking reader over the pty master, collecting the child's byte stream.
-struct PtyReader {
-    file: std::fs::File,
-    output: Vec<u8>,
-}
-
-impl PtyReader {
-    fn new(master: OwnedFd) -> PtyReader {
-        let fd = master.as_raw_fd();
-        fcntl(fd, F_SETFL(OFlag::O_NONBLOCK)).expect("pty master non-blocking");
-        PtyReader {
-            file: master.into(),
-            output: Vec::new(),
-        }
-    }
-
-    fn mark(&self) -> usize {
-        self.output.len()
-    }
-
-    fn write(&mut self, payload: &[u8]) {
-        self.file.write_all(payload).expect("write to the pty");
-    }
-
-    /// Drain until quiet for `quiet_polls` polls: a settle window keeps every
-    /// later byte (the pty driver drops writes on a full kernel buffer).
-    fn drain_until_quiet(&mut self, quiet_polls: usize) {
-        let mut quiet = 0;
-        while quiet < quiet_polls {
-            let mut buffer = [0u8; 8192];
-            match self.file.read(&mut buffer) {
-                Ok(0) | Err(_) => quiet += 1,
-                Ok(n) => {
-                    self.output.extend_from_slice(&buffer[..n]);
-                    quiet = 0;
-                }
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-    }
-
-    /// Drain until the needle appears since the mark (bounded by a generous deadline).
-    fn wait_from(&mut self, mark: usize, needle: &str, what: &str) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            if find_subsequence(&self.output[mark..], needle.as_bytes()).is_some() {
-                return;
-            }
-            let mut buffer = [0u8; 8192];
-            let result = self.file.read(&mut buffer);
-            match result {
-                Ok(0) | Err(_) => {}
-                Ok(n) => self.output.extend_from_slice(&buffer[..n]),
-            }
-            if Instant::now() > deadline {
-                let text = String::from_utf8_lossy(&self.output[mark..]);
-                panic!(
-                    "timeout waiting for {what} (needle {needle:?}); pty tail since mark:\n{text}"
-                );
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
     }
 }
 

@@ -26,6 +26,10 @@ use nix::fcntl::{fcntl, FcntlArg::F_SETFL, OFlag};
 use nix::pty::{openpty, Winsize};
 use serde_json::{json, Value};
 
+mod support;
+
+use support::PtyReader;
+
 use pa_tui::auth_panel::{AuthPanelHandle, PrimeTeamOption, PrimeTeamPick};
 use pa_tui::interactive::{
     run_interactive, InteractiveOptions, ModelSelection, SessionSelection, UiMode,
@@ -367,10 +371,10 @@ const MOUSE_DISABLE: &str = "\x1b[?1006l\x1b[?1002l";
 fn prime_login_renders_the_team_picker_without_a_terminal_takeover() {
     let mut harness = LoginPanelHarness::start();
 
-    harness.wait_from_start("\x1b[?1049h", "the startup alternate-screen enter");
+    harness.wait_from_start(b"\x1b[?1049h", "the startup alternate-screen enter");
 
     harness.write(b"/login\r");
-    harness.wait_from_start("Search providers", "the provider selector panel");
+    harness.wait_from_start(b"Search providers", "the provider selector panel");
 
     // Enter selects the Prime Inference row; the window to the settled
     // status is the takeover-free proof.
@@ -380,17 +384,17 @@ fn prime_login_renders_the_team_picker_without_a_terminal_takeover() {
     // skips the title's default-styled spaces, so the subtitle paints in one contiguous run.
     harness.wait_from(
         mark,
-        "Choose which account pays for Prime Inference usage.",
+        b"Choose which account pays for Prime Inference usage.",
         "the inline team picker",
     );
 
-    harness.wait_from(mark, "Acme Corp", "the team row");
-    harness.wait_from(mark, "personal account", "the personal row");
+    harness.wait_from(mark, b"Acme Corp", "the team row");
+    harness.wait_from(mark, b"personal account", "the personal row");
 
     harness.write(b"\r");
     harness.wait_from(
         mark,
-        "Saved API key for Prime Inference. Using personal account.",
+        b"Saved API key for Prime Inference. Using personal account.",
         "the settled login status",
     );
 
@@ -422,17 +426,17 @@ fn prime_login_renders_the_team_picker_without_a_terminal_takeover() {
 fn mcp_view_enter_login_renders_inline_without_a_terminal_takeover() {
     let mut harness = LoginPanelHarness::start_mcp();
 
-    harness.wait_from_start("\x1b[?1049h", "the startup alternate-screen enter");
+    harness.wait_from_start(b"\x1b[?1049h", "the startup alternate-screen enter");
 
     harness.write(b"/mcp\r");
-    harness.wait_from_start("Linear", "the connections view row");
+    harness.wait_from_start(b"Linear", "the connections view row");
 
     // Enter runs the row's login flow; the window from here proves no takeover.
     let mark = harness.mark();
     harness.write(b"\r");
     // Ratatui's diff paints word by word and the frame scheduler can
     // settle a fast flow inside one frame, so the wait pins the unique word.
-    harness.wait_from(mark, "Connected", "the settled login status");
+    harness.wait_from(mark, b"Connected", "the settled login status");
 
     let window = harness.window_since(mark);
     assert!(
@@ -462,31 +466,31 @@ fn mcp_view_enter_login_renders_inline_without_a_terminal_takeover() {
 fn model_picker_routes_the_sign_in_flow_and_applies_after_login() {
     let mut harness = LoginPanelHarness::start_model_sign_in();
 
-    harness.wait_from_start("\x1b[?1049h", "the startup alternate-screen enter");
+    harness.wait_from_start(b"\x1b[?1049h", "the startup alternate-screen enter");
 
     harness.write(b"/model\r");
-    harness.wait_from_start("Search models", "the model picker");
-    harness.wait_from_start("GLM 5.3 Fast", "the unauthenticated provider's model row");
-    harness.wait_from_start("require sign in", "the row's sign-in marking");
+    harness.wait_from_start(b"Search models", "the model picker");
+    harness.wait_from_start(b"GLM 5.3 Fast", "the unauthenticated provider's model row");
+    harness.wait_from_start(b"require sign in", "the row's sign-in marking");
 
     let mark = harness.mark();
     harness.write(b"\r");
     harness.wait_from(
         mark,
-        "Sign in to zai to use zai/glm-5.3-fast",
+        b"Sign in to zai to use zai/glm-5.3-fast",
         "the sign-in note",
     );
-    harness.wait_from(mark, "Search providers", "the provider login menu");
-    harness.wait_from(mark, "ZAI", "the preselected provider row");
+    harness.wait_from(mark, b"Search providers", "the provider login menu");
+    harness.wait_from(mark, b"ZAI", "the preselected provider row");
 
     harness.write(b"\r");
-    harness.wait_from(mark, "Enter API key:", "the API-key prompt");
+    harness.wait_from(mark, b"Enter API key:", "the API-key prompt");
     harness.write(b"sk-fake\r");
 
     // The sign-in applies the parked model: the login and `Model:` notes
     // rewrite in place (TS last-wins), so the `Model:` landing is itself the
     // proof the login succeeded (the retry fires only then).
-    harness.wait_from(mark, "Model: glm-5.3-fast", "the automatic model retry");
+    harness.wait_from(mark, b"Model: glm-5.3-fast", "the automatic model retry");
 
     let window = harness.window_since(mark);
     assert!(
@@ -556,16 +560,16 @@ impl LoginPanelHarness {
         self.master.write(payload);
     }
 
-    fn wait_from_start(&mut self, needle: &str, what: &str) {
+    fn wait_from_start(&mut self, needle: &[u8], what: &str) {
         self.master.wait_from(0, needle, what);
     }
 
-    fn wait_from(&mut self, mark: usize, needle: &str, what: &str) {
+    fn wait_from(&mut self, mark: usize, needle: &[u8], what: &str) {
         self.master.wait_from(mark, needle, what);
     }
 
     fn window_since(&self, mark: usize) -> &[u8] {
-        &self.master.output[mark..]
+        self.master.since(mark)
     }
 
     fn finish(mut self) {
@@ -589,54 +593,6 @@ fn spawn_child(socket: &std::path::Path, slave: &OwnedFd, child_test: &str) -> C
 
 fn slave_as_stdio(slave: &OwnedFd) -> Stdio {
     slave.try_clone().expect("clone pty slave").into()
-}
-
-/// Non-blocking reader over the pty master, collecting the child's bytes.
-struct PtyReader {
-    file: std::fs::File,
-    output: Vec<u8>,
-}
-
-impl PtyReader {
-    fn new(master: OwnedFd) -> PtyReader {
-        let fd = master.as_raw_fd();
-        fcntl(fd, F_SETFL(OFlag::O_NONBLOCK)).expect("pty master non-blocking");
-        PtyReader {
-            file: master.into(),
-            output: Vec::new(),
-        }
-    }
-
-    fn mark(&self) -> usize {
-        self.output.len()
-    }
-
-    fn write(&mut self, payload: &[u8]) {
-        self.file.write_all(payload).expect("write to the pty");
-    }
-
-    /// Drain the master until the needle appears since the given mark,
-    /// bounded by a generous harness deadline.
-    fn wait_from(&mut self, mark: usize, needle: &str, what: &str) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            if find_subsequence(&self.output[mark..], needle.as_bytes()).is_some() {
-                return;
-            }
-            let mut buffer = [0u8; 8192];
-            match self.file.read(&mut buffer) {
-                Ok(0) | Err(_) => {}
-                Ok(n) => self.output.extend_from_slice(&buffer[..n]),
-            }
-            if Instant::now() > deadline {
-                let text = String::from_utf8_lossy(&self.output[mark..]);
-                panic!(
-                    "timeout waiting for {what} (needle {needle:?}); pty tail since mark:\n{text}"
-                );
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
 }
 
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
