@@ -482,16 +482,17 @@ rows:
     invariant: >-
       A `line`-addressed lsp call resolves to the identifier that starts on that
       line, never to column 0 of the line.
-    layer: integration
+    layer: unit
     paths:
       - crates/pa-lsp/src/tool.rs
     axes:
       code: [crates/pa-lsp/src/tool.rs]
       logic: [target(): line -> symbol selection]
       semantics: [identifier span, not line start]
-      flow: [references/definition/hover]
     oracle:
-      - lsp_line_addressing_picks_the_identifier_on_the_line
+      - the_identifier_is_chosen_not_the_line_start
+      - the_innermost_symbol_wins_on_a_tie
+      - an_empty_line_has_no_identifier
     kill_mutation: >-
       revert target() to Position::new(line-1, 0); the oracle must redden on a
       declaration whose identifier is indented
