@@ -19,6 +19,13 @@
       "auth": "none",
       "id_path": "data.[].id",
       "models_dev_key": "opencode"
+    },
+    {
+      "provider": "agnes",
+      "list_url": "https://apihub.agnes-ai.com/v1/models",
+      "auth": "bearer",
+      "id_path": "data.[].id",
+      "models_dev_key": "agnes"
     }
   ]
 }

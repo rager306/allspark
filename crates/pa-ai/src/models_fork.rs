@@ -886,6 +886,76 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         supports_developer_role: None,
         max_tokens_field: None,
     },
+
+    // --- Agnes AI (agnes-ai.com subscription) ---------------------------------
+    // Subscription: 1500 model requests / 5 hours, powered by Agnes-3.0-Flash
+    // (about 100 TPS, 150 TPS during off-peak). API is OpenAI-compatible.
+    // Bearer auth with the subscription api key (AGNES_API_KEY or auth.json).
+    // Subscription limits are enforced by the provider, not the client.
+    ForkModel {
+        provider: "agnes",
+        id: "agnes-3.0-flash",
+        name: "Agnes 3.0 Flash",
+        api: "openai-completions",
+        base_url: "https://apihub.agnes-ai.com/v1",
+        reasoning: true,
+        thinking_levels: &[],
+        input: &[ModelInput::Text, ModelInput::Image],
+        cost: (0.0, 0.0, 0.0, 0.0),
+        context_window: 512_000,
+        max_tokens: 65_536,
+        headers: &[],
+        supports_developer_role: None,
+        max_tokens_field: None,
+    },
+    ForkModel {
+        provider: "agnes",
+        id: "agnes-2.5-flash",
+        name: "Agnes 2.5 Flash",
+        api: "openai-completions",
+        base_url: "https://apihub.agnes-ai.com/v1",
+        reasoning: true,
+        thinking_levels: &[],
+        input: &[ModelInput::Text, ModelInput::Image],
+        cost: (0.0, 0.0, 0.0, 0.0),
+        context_window: 512_000,
+        max_tokens: 65_536,
+        headers: &[],
+        supports_developer_role: None,
+        max_tokens_field: None,
+    },
+    ForkModel {
+        provider: "agnes",
+        id: "agnes-2.5-pro-alpha",
+        name: "Agnes 2.5 Pro Alpha",
+        api: "openai-completions",
+        base_url: "https://apihub.agnes-ai.com/v1",
+        reasoning: true,
+        thinking_levels: &[],
+        input: &[ModelInput::Text, ModelInput::Image],
+        cost: (0.45, 0.0, 0.0, 0.0),
+        context_window: 1_000_000,
+        max_tokens: 65_536,
+        headers: &[],
+        supports_developer_role: None,
+        max_tokens_field: None,
+    },
+    ForkModel {
+        provider: "agnes",
+        id: "agnes-2.0-flash",
+        name: "Agnes 2.0 Flash",
+        api: "openai-completions",
+        base_url: "https://apihub.agnes-ai.com/v1",
+        reasoning: true,
+        thinking_levels: &[],
+        input: &[ModelInput::Text],
+        cost: (0.0, 0.0, 0.0, 0.0),
+        context_window: 512_000,
+        max_tokens: 65_536,
+        headers: &[],
+        supports_developer_role: None,
+        max_tokens_field: None,
+    },
 ];
 
 /// The fork's built-in providers, merged into the registry's built-in set.
@@ -922,6 +992,7 @@ pub fn fork_providers() -> &'static [&'static str] {
         // the provider id was absent here, so anything keyed off this list had no
         // entry for them (issue #9).
         "opencode",
+        "agnes",
     ]
 }
 
