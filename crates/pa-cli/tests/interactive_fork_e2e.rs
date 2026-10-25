@@ -17,15 +17,16 @@
 //! daemon-active guard on the fork arm).
 #![cfg(unix)]
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use nix::fcntl::{fcntl, FcntlArg::F_SETFL, OFlag};
 use nix::pty::{openpty, Winsize};
 use serde_json::{json, Map, Value};
+
+mod support;
+use support::PtyReader;
 
 use pa_types::daemon::DaemonCommand;
 
@@ -305,61 +306,6 @@ fn session_files(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Non-blocking reader over the pty master, collecting the raw byte stream
-/// the child writes (the login-panel harness's reader).
-struct PtyReader {
-    file: std::fs::File,
-    output: Vec<u8>,
-}
-
-impl PtyReader {
-    fn new(master: OwnedFd) -> PtyReader {
-        let fd = master.as_raw_fd();
-        fcntl(fd, F_SETFL(OFlag::O_NONBLOCK)).expect("pty master non-blocking");
-        PtyReader {
-            file: master.into(),
-            output: Vec::new(),
-        }
-    }
-
-    fn write(&mut self, payload: &[u8]) {
-        self.file.write_all(payload).expect("write to the pty");
-    }
-
-    /// Drain the master until the needle appears in the collected stream,
-    /// bounded by the harness deadline.
-    fn wait_for(&mut self, needle: &str, what: &str) {
-        let deadline = Instant::now() + Duration::from_secs(45);
-        loop {
-            if find_subsequence(&self.output, needle.as_bytes()).is_some() {
-                return;
-            }
-            let mut buffer = [0u8; 8192];
-            match self.file.read(&mut buffer) {
-                Ok(0) | Err(_) => {}
-                Ok(n) => self.output.extend_from_slice(&buffer[..n]),
-            }
-            if Instant::now() > deadline {
-                let text = String::from_utf8_lossy(&self.output);
-                panic!(
-                    "timeout waiting for {what} (needle {needle:?}); pty tail:\n{}",
-                    &text[text.len().saturating_sub(4000)..]
-                );
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-}
-
-fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return None;
-    }
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
 #[tokio::test]
 async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -462,7 +408,7 @@ async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
     let mut pty_reader = PtyReader::new(pty.master);
 
     // The TUI renders the forked transcript: the source's exchange.
-    pty_reader.wait_for("seedphrase4fork", "the copied transcript");
+    pty_reader.wait_for("seedphrase4fork", "the copied transcript", 45_000);
 
     // The daemon hosts the fork: a roster row naming a new session file —
     // never the source — under its own id.
@@ -521,7 +467,7 @@ async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
     // The fork is live: a new turn on it answers through the scripted
     // engine.
     pty_reader.write(b"forked turn\r");
-    pty_reader.wait_for("forkfollowanswer", "the new turn on the fork");
+    pty_reader.wait_for("forkfollowanswer", "the new turn on the fork", 45_000);
 
     // Exit cleanly (ctrl+d), and the launch reports success.
     pty_reader.write(b"\x04");

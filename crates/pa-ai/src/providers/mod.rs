@@ -4,6 +4,7 @@
 /// outside this set cannot serve a chat turn, so picker surfaces must not
 /// offer it (`typesafe` is the judgment dialect — a decision model must
 /// never resolve as a chat backend).
+#[must_use]
 pub fn serves_chat_turns(api: &str) -> bool {
     matches!(
         api,

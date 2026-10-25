@@ -5,8 +5,6 @@
 //! gone mad, or a registry regression each drop rows — and this test goes
 //! red against the binary, not against a re-implementation of it.
 
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
