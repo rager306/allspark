@@ -13,6 +13,54 @@ branch (`feat/allspark-identity`). `fork.3` points at the SAME commit as `fork.2
 (`375ad95cf`) and is a duplicate tag, not a separate release — it has no entry here
 because nothing shipped between them. `FORK.md` carries the same correction.
 
+## fork.011 — upstream v0.10.2-beta.3 (+v0.10.2-beta.7 merge)
+
+- Tag: `allspark-v0.10.2-beta.3-fork.011` (2026-10-26)
+- Base: `5a3df6fc9` line continues from fork.010; 51 commits, of which six are
+  an upstream `v0.10.2-beta.7` merge (tag-only snapshot: compaction duplicate
+  rows, queued-work hold during navigate/fork, session-event isError, MCP
+  oauth trailing-slash issuer, google systemInstruction shape, instant
+  @-completion, tokio 1.54.1 for RUSTSEC-2026-0386).
+
+**Identity and attach (the empty-picker incident class).**
+- `85c46975a` — a content build stamp: `build.rs` resolves HEAD (12-hex,
+  `.dirty` when the tree is unclean, rerun-if-changed on the git refs), the
+  stamp rides `daemon_hello` as `runtime.build_hash`, and `--version` carries
+  it (`; build <hash>`). A version string is not an identity.
+- `3449ba879` — probe and doctor classify daemon compatibility through ONE
+  predicate (`build_compatible`, fail-closed: no stamp = `Unknown`), replacing
+  three classifiers that disagreed on different field sets.
+- `88cfed495` — `--version` names the content hash, so two unstamped local
+  builds are distinguishable at a glance.
+
+**Live fixes the user hit.**
+- `cbe6f1610` — muse-spark-1.1/1.2 reject `reasoning_effort=max`; the catalog
+  now advertises only what the API accepts (three models were failing).
+- `d5e4fb430` — LSP line-addressing resolves to the identifier ON the line
+  (innermost wins), not to column 0.
+- `430aece2c` — `.graphignore`: the repository's own ignore file for the code
+  graph.
+- `317cfc4a1` + `99fb1345a` — the release pipeline ships real catalog assets
+  (the packer gate fires for real; the disk guard reads a number), `--network`
+  replaces `--fixture` as the release path.
+- `fb8074008` — the packaging dry-run packs its fixture catalog with an
+  explicit waiver (the gate kept firing on offline dry-runs).
+- `8e27d317a` — `update --rollback` sets its payload root (a regression from
+  the publish rework; both installer e2e rollback tests went red without it).
+
+**Verification infrastructure (issue #14 ladder + ADR-0001).**
+- `86b89e702` + `59c27ab1d` + `1ec0b6ce3` + `e9a788aeb` — the test-contract
+  governor (FSM interpreter over dictionaries, 33-row matrix, selftest proves
+  every check can fail), the dynamic model discovery engine (muse, subq,
+  opencode, agnes), Miri/ASan/Shuttle workflows, the design-decision log
+  (D1–D9), and the perf-review procedure with baselines.
+- `9f12c7eb2`..`3eeb2ce7f` — one shared PTY harness replaces 11 drifted
+  per-test copies; the quiescence oracle (`wait_for_stable`), failure
+  artifacts (raw.log + screen.txt), and the set-equality oracle end to end
+  against the real binary.
+- `5b41318be` — Agnes AI as a provider (4 models); `86b697b67` — path-routed
+  mock responses so one test can hold two wire dialects apart.
+
 ## fork.010 — upstream v0.10.2-beta.3
 
 - Tag: `allspark-v0.10.2-beta.3-fork.010` (2026-10-23)
