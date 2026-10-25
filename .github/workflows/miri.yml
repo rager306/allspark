@@ -1,0 +1,20 @@
+name: miri
+on:
+  workflow_call:
+
+jobs:
+  miri:
+    name: Miri (pa-types, pa-jev, pa-graph)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Install Miri
+        run: |
+          rustup toolchain install nightly --component miri
+          cargo +nightly miri setup
+      - name: Run Miri on pure crates
+        run: |
+          cargo +nightly miri test -p pa-types --lib 2>&1
+          cargo +nightly miri test -p pa-jev --lib 2>&1
+          cargo +nightly miri test -p pa-graph --lib 2>&1

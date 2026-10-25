@@ -1,0 +1,22 @@
+name: sanitizer
+on:
+  workflow_call:
+
+jobs:
+  asan:
+    name: AddressSanitizer (pa-types, pa-jev, pa-graph)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RUSTFLAGS: "-Zsanitizer=address"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Install nightly with rust-src (required for -Z build-std)
+        run: rustup toolchain install nightly --component rust-src
+      - name: Run tests under ASan
+        run: |
+          cargo +nightly test -Z build-std \
+            -p pa-types --lib \
+            -p pa-jev --lib \
+            -p pa-graph --lib \
+            -- --test-threads=2
