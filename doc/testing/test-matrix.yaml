@@ -289,6 +289,12 @@ rows:
       logic: [compare_exchange loops, guard release]
       semantics: [exactly one acquire per release, no lost wakeup]
       flow: [lock -> guard -> release]
+    status: gap
+    gate: advisory
+    owner: ADR-0001
+    source: >-
+      360 lines of hand-rolled atomic ordering; a bug here is invisible on
+      x86 and visible on aarch64-apple-darwin which we ship
     oracle: []
     kill_mutation: >-
       weaken the release ordering from Release to Relaxed in SpinGuard::drop; a loom
@@ -611,8 +617,7 @@ rows:
     axes:
       code: [.github/workflows/miri.yml]
       semantics: [no UB on any test input]
-    oracle:
-      - miri_workflow_covers_pure_crates
+    oracle: []
     kill_mutation: >-
       remove the miri job from the workflow; the file-existence and content
       oracle must redden
@@ -633,8 +638,7 @@ rows:
     axes:
       code: [.github/workflows/sanitizer.yml]
       semantics: [no memory errors on any test input]
-    oracle:
-      - sanitizer_workflow_covers_pure_crates
+    oracle: []
     kill_mutation: >-
       remove the sanitizer workflow; the file-existence and content oracle
       must redden
@@ -679,6 +683,12 @@ rows:
       logic: [compare_exchange loops, guard release]
       semantics: [exactly one acquire per release, no lost wakeup]
       flow: [lock -> guard -> release]
+    status: gap
+    gate: advisory
+    owner: ADR-0001
+    source: >-
+      360 lines of hand-rolled atomic ordering; a bug here is invisible on
+      x86 and visible on aarch64-apple-darwin which we ship
     oracle: []
     kill_mutation: >-
       weaken the release ordering from Release to Relaxed in SpinGuard::drop;
@@ -717,7 +727,7 @@ rows:
       A performance change requires a measured before-and-after, documented
       in the commit and in docs/perf-review.md, with the baseline in
       pa-perf/baseline.json.
-    layer: bench
+    layer: integration
     paths:
       - docs/perf-review.md
       - crates/pa-perf
