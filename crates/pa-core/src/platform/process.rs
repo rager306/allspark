@@ -499,7 +499,8 @@ pub async fn wait_for_exit(pid: u32) -> std::io::Result<()> {
             };
         }
     }
-    let kq = AsyncFd::with_interest(kq, Interest::READABLE)?;
+    // SAFETY: the `AsyncFd` owns `kq`, so it stays open and unchanged until drop.
+    let kq = unsafe { AsyncFd::register_with_interest(kq, Interest::READABLE) }?;
     // Only the exit knote is registered, so a drained event is the exit.
     loop {
         let mut ready = kq.readable().await?;
