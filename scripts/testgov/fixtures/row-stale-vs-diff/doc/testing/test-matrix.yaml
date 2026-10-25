@@ -1,0 +1,12 @@
+schema: allspark-test-matrix/v1
+rows:
+  - id: FIX-stale
+    plane: product
+    invariant: a row whose code changed without the matrix changing
+    layer: unit
+    axes: {code: [crates/fix/src/lib.rs]}
+    oracle: [the_only_tracked_behavioural_test_name]
+    kill_mutation: change the code under this row
+    status: killed
+    gate: default
+    owner: fixture

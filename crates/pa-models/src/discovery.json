@@ -1,0 +1,24 @@
+{
+  "schema": "allspark-model-discovery/v1",
+  "providers": [
+    {
+      "provider": "muse",
+      "list_url": "https://api.meta.ai/v1/models",
+      "auth": "bearer",
+      "id_path": "data.[].id"
+    },
+    {
+      "provider": "subquadratic",
+      "list_url": "https://api.subq.ai/v1/models",
+      "auth": "none",
+      "id_path": "data.[].id"
+    },
+    {
+      "provider": "opencode",
+      "list_url": "https://opencode.ai/inference/v1/models",
+      "auth": "none",
+      "id_path": "data.[].id",
+      "models_dev_key": "opencode"
+    }
+  ]
+}

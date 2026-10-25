@@ -1,0 +1,12 @@
+schema: allspark-test-matrix/v1
+rows:
+  - id: FIX-cited-only
+    plane: product
+    invariant: cites one crate, leaving another wholly uncited
+    layer: unit
+    axes: {code: [crates/fix/src/lib.rs]}
+    oracle: []
+    kill_mutation: cite nothing else
+    status: gap
+    gate: default
+    owner: fixture

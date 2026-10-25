@@ -1,0 +1,12 @@
+schema: allspark-test-matrix/v1
+rows:
+  - id: FIX-no-mutation
+    plane: product
+    invariant: a row with a placeholder mutation
+    layer: unit
+    axes: {code: [crates/fix/src/lib.rs]}
+    oracle: [some_real_test]
+    kill_mutation: TBD
+    status: gap
+    gate: default
+    owner: fixture

@@ -1,0 +1,12 @@
+schema: allspark-test-matrix/v1
+rows:
+  - id: FIX-ui-without-ui
+    plane: ui
+    invariant: a ui row that cites no ui surface
+    layer: pty_e2e
+    axes: {code: [crates/pa-models/src/chain.rs], ui: [picker]}
+    oracle: []
+    kill_mutation: paint a panel that no test can see
+    status: gap
+    gate: default
+    owner: fixture

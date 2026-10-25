@@ -100,6 +100,9 @@ pub struct ModelRegistry {
     /// retirement list `deprecated_opencode_ids` reports. `None` until the
     /// first refresh attempt.
     opencode_snapshot: Option<pa_models::opencode_models::OpenCodeSnapshot>,
+    /// The provider-discovery snapshot (`doc/discovery.json`): which ids each
+    /// live list serves right now. `None` until the first refresh attempt.
+    discovery_snapshot: Option<pa_models::discovery::DiscoverySnapshot>,
 }
 
 /// Under a stored xAI subscription the provider's models switch onto the
@@ -188,6 +191,7 @@ impl ModelRegistry {
             authorized_team_id: None,
             catalog,
             opencode_snapshot: None,
+            discovery_snapshot: None,
         };
         registry.load_models();
         registry
@@ -748,6 +752,231 @@ impl ModelRegistry {
     /// Reload local state and refresh entitlements (live catalog + private
     /// auth). Both fetches are awaited, so the resolved catalog reflects
     /// them when the call returns.
+    /// The provider-discovery snapshot (`doc/discovery.yaml`), folded into the
+    /// built-in set below. Lives beside the other model caches.
+    pub fn discovery_snapshot(&self) -> Option<pa_models::discovery::DiscoverySnapshot> {
+        self.discovery_snapshot.clone()
+    }
+
+    /// The `models.dev` display name for one id, when the catalog describes it.
+    fn dev_entry_name(
+        models_dev: Option<&serde_json::Value>,
+        models_dev_key: &str,
+        id: &str,
+    ) -> String {
+        models_dev
+            .and_then(|payload| payload.get(models_dev_key))
+            .and_then(|provider| provider.get("models"))
+            .and_then(|models| models.get(id))
+            .and_then(|entry| entry.get("name"))
+            .and_then(serde_json::Value::as_str)
+            .map_or_else(|| id.to_string(), str::to_string)
+    }
+
+    /// Build the thinking-level map from the provider's documented effort values
+    /// (`models.dev` `reasoning_options[].values`, in the documented order). `off`
+    /// always maps to `None`: the wire never carries an effort for it.
+    fn build_thinking_level_map(values: &[String]) -> pa_types::ai::ThinkingLevelMap {
+        use pa_types::ai::ModelThinkingLevel;
+        let effort_of: std::collections::BTreeMap<&str, &str> = values
+            .iter()
+            .map(|value| (value.as_str(), value.as_str()))
+            .collect();
+        let pick = |level: ModelThinkingLevel| {
+            let name = level.wire_name();
+            effort_of.get(name).map(|effort| (*effort).to_string())
+        };
+        ThinkingLevelMap::from([
+            (ModelThinkingLevel::Off, None),
+            (
+                ModelThinkingLevel::Minimal,
+                pick(ModelThinkingLevel::Minimal),
+            ),
+            (ModelThinkingLevel::Low, pick(ModelThinkingLevel::Low)),
+            (ModelThinkingLevel::Medium, pick(ModelThinkingLevel::Medium)),
+            (ModelThinkingLevel::High, pick(ModelThinkingLevel::High)),
+            (ModelThinkingLevel::Xhigh, pick(ModelThinkingLevel::Xhigh)),
+            (ModelThinkingLevel::Max, pick(ModelThinkingLevel::Max)),
+        ])
+    }
+
+    /// Refresh the provider-discovery snapshot for every provider in
+    /// `doc/discovery.json`. Best-effort: a provider without credentials, a
+    /// failed fetch, or an unparseable list is a debug note, not an error —
+    /// the hand table keeps deciding offline, which is the documented contract.
+    fn apply_discovery_snapshot(
+        &mut self,
+        snapshot: &pa_models::discovery::DiscoverySnapshot,
+        models_dev: Option<&serde_json::Value>,
+    ) {
+        // A live id with no hand-table row is appended as a discovery model. Its properties
+        // follow the discovery contract's precedence: a `models.dev` entry wins
+        // (`CatalogDelta`), otherwise `Estimated` — "existence outranks properties": a working
+        // selection must not turn into NotFound. A hand-table row the endpoint stopped serving
+        // stays in place — deprecate, not delete; the deprecated list names it.
+        let dictionary = pa_models::discovery::load_embedded_dictionary().ok();
+        let mut appended: Vec<pa_types::ai::Model> = Vec::new();
+        for entry in snapshot.providers.values() {
+            let hand_table: Vec<&str> = self
+                .models
+                .iter()
+                .filter(|model| model.provider == entry.provider)
+                .map(|model| model.id.as_str())
+                .collect();
+            let dev_key = dictionary
+                .as_ref()
+                .and_then(|dictionary| {
+                    dictionary
+                        .providers
+                        .iter()
+                        .find(|row| row.provider == entry.provider)
+                })
+                .and_then(|row| row.models_dev_key.clone());
+            for id in &entry.ids {
+                if hand_table.contains(&id.as_str()) {
+                    continue;
+                }
+                let dev = dev_key
+                    .as_deref()
+                    .zip(models_dev)
+                    .and_then(|(key, payload)| pa_models::discovery::dev_entry(payload, key, id))
+                    .map(pa_models::discovery::dev_properties);
+                let (context_window, max_tokens) = match dev.as_ref() {
+                    Some(properties) => (
+                        properties.context_window.unwrap_or(128_000),
+                        properties.max_output.unwrap_or(4_096),
+                    ),
+                    None => (128_000, 4_096),
+                };
+                let thinking_level_map = dev.as_ref().and_then(|properties| {
+                    let values = properties.reasoning_effort_values.as_ref()?;
+                    Some(Self::build_thinking_level_map(values))
+                });
+                let input = if dev
+                    .as_ref()
+                    .and_then(|properties| properties.input_images)
+                    .unwrap_or(false)
+                {
+                    vec![
+                        pa_types::ai::ModelInput::Text,
+                        pa_types::ai::ModelInput::Image,
+                    ]
+                } else {
+                    vec![pa_types::ai::ModelInput::Text]
+                };
+                let name =
+                    Self::dev_entry_name(models_dev, dev_key.as_deref().unwrap_or_default(), id);
+                appended.push(pa_types::ai::Model {
+                    id: id.clone(),
+                    name,
+                    api: "openai-completions".to_string(),
+                    provider: entry.provider.clone(),
+                    base_url: String::new(),
+                    reasoning: dev
+                        .as_ref()
+                        .and_then(|properties| properties.reasoning)
+                        .unwrap_or(false),
+                    thinking_level_map,
+                    input,
+                    cost: pa_types::ai::ModelCost {
+                        input: pa_types::JsNumber(
+                            dev.as_ref()
+                                .and_then(|properties| properties.cost_input)
+                                .unwrap_or(0.0),
+                        ),
+                        output: pa_types::JsNumber(
+                            dev.as_ref()
+                                .and_then(|properties| properties.cost_output)
+                                .unwrap_or(0.0),
+                        ),
+                        cache_read: pa_types::JsNumber(
+                            dev.as_ref()
+                                .and_then(|properties| properties.cost_cache_read)
+                                .unwrap_or(0.0),
+                        ),
+                        cache_write: pa_types::JsNumber(0.0),
+                    },
+                    context_window,
+                    max_tokens,
+                    max_tokens_explicit: false,
+                    featured: None,
+                    headers: None,
+                    compat: None,
+                });
+            }
+        }
+        if appended.is_empty() {
+            return;
+        }
+        tracing::debug!(
+            count = appended.len(),
+            providers = %appended.iter().map(|model| model.provider.clone()).collect::<Vec<_>>().join(","),
+            "model discovery appended models"
+        );
+        self.models.extend(appended);
+    }
+
+    /// Refresh the provider-discovery snapshot for every provider in
+    /// `doc/discovery.json`. Best-effort: a provider without credentials, a
+    /// failed fetch, or an unparseable list is a debug note, not an error —
+    /// the hand table keeps deciding offline, which is the documented contract.
+    async fn refresh_discovery(&mut self, models_dir: &Path) {
+        let dictionary = match pa_models::discovery::load_embedded_dictionary() {
+            Ok(dictionary) => dictionary,
+            Err(error) => {
+                tracing::debug!(%error, "model discovery dictionary is invalid");
+                return;
+            }
+        };
+        let mut snapshot = pa_models::discovery::read_snapshot(models_dir).unwrap_or_default();
+        let fetcher = pa_models::fetch::CatalogFetcher::new();
+        // models.dev is the precedence-3 properties source for every dictionary provider that
+        // names a key; fetched once per refresh and shared by the fold below.
+        let models_dev = match fetcher
+            .fetch(pa_models::opencode_models::MODELS_DEV_URL, None)
+            .await
+        {
+            Ok(pa_models::fetch::FetchOutcome::Fresh { body, .. }) => {
+                serde_json::from_slice::<serde_json::Value>(&body).ok()
+            }
+            _ => None,
+        };
+        // opencode passes an empty stamp the same way; the snapshot mtime is the clock.
+        let synced_at = String::new();
+        for entry in &dictionary.providers {
+            let headers = self.provider_discovery_headers(&entry.provider);
+            match pa_models::discovery::discover_provider_with_headers(
+                &fetcher,
+                entry,
+                &headers,
+                synced_at.clone(),
+            )
+            .await
+            {
+                Ok(discovered) => snapshot.merge(discovered),
+                Err(error) => {
+                    tracing::debug!(provider = %entry.provider, %error, "model discovery skipped");
+                }
+            }
+        }
+        if snapshot.providers.is_empty() {
+            return;
+        }
+        self.apply_discovery_snapshot(&snapshot, models_dev.as_ref());
+        let _ = pa_models::discovery::write_snapshot(models_dir, &snapshot);
+        self.discovery_snapshot = Some(snapshot);
+    }
+
+    /// The discovery credential for one provider: the same headers a provider
+    /// request carries (`Authorization: Bearer …` for key-auth providers),
+    /// straight from the auth storage. OAuth-only providers yield no usable
+    /// key and the caller skips them.
+    fn provider_discovery_headers(&self, provider: &str) -> Vec<(String, String)> {
+        self.auth
+            .get_provider_headers(provider)
+            .map(|headers| headers.into_iter().collect())
+            .unwrap_or_default()
+    }
     pub async fn refresh_available_models(&mut self) -> Vec<Model> {
         self.refresh_available_models_forced(false).await
     }
@@ -767,6 +996,15 @@ impl ModelRegistry {
     /// auth-filtered catalog.
     async fn refresh_available_models_forced(&mut self, force: bool) -> Vec<Model> {
         self.refresh_opencode_free_tier(force).await;
+        if force {
+            if let Some(models_dir) = self
+                .models_json_path
+                .as_ref()
+                .and_then(|path| path.parent().map(Path::to_path_buf))
+            {
+                self.refresh_discovery(models_dir.as_path()).await;
+            }
+        }
         let previous_ids = self.authorized_private_ids.clone();
         let previous_team = self.authorized_team_id.clone();
         let previous_models = self.authorized_private_models.clone();

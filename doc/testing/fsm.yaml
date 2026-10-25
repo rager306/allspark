@@ -1,0 +1,42 @@
+schema: allspark-testgov-fsm/v1
+meta_prompt: doc/testing/META.md
+# Process quantum for `testgov ci`. Append a transition to extend the machine.
+# Unknown state kind or missing transition -> HIGH (`unknown-fsm-kind`), fail-closed.
+# Use `event:` not `on:` — YAML 1.1 reads unquoted `on` as boolean true.
+
+defaults:
+  budget: 105
+
+initial: idle
+terminal: [ok, fail]
+
+states:
+  idle:            { kind: noop }
+  load_constitution: { kind: require_file, path: doc/testing/META.md }
+  load_matrix:     { kind: require_file, path: doc/testing/test-matrix.yaml }
+  load_fsm:        { kind: require_file, path: doc/testing/fsm.yaml }
+  run_shape:       { kind: run_checks, checks: [matrix-shape, kill-mutation-present, axis-uncovered, plane-collapse, layer-too-cheap] }
+  run_oracles:     { kind: run_checks, checks: [oracle-exists, governor-row-names-a-check] }
+  run_guards:      { kind: run_checks, checks: [inert-guard] }
+  run_process:     { kind: run_checks, checks: [row-stale-vs-diff, untracked-oracle, capability-coverage] }
+  run_surfaces:    { kind: run_checks, checks: [non-rust-surfaces-parse, settings-have-consumers, parameter-schemas-validate, workflow-surface-intact] }
+  run_selftest:    { kind: run_selftest }
+  decide:          { kind: decide }
+
+transitions:
+  - { from: idle,              event: done,   to: load_constitution }
+  - { from: load_constitution, event: ok,     to: load_matrix }
+  - { from: load_constitution, event: fail,   to: fail }
+  - { from: load_matrix,       event: ok,     to: load_fsm }
+  - { from: load_matrix,       event: fail,   to: fail }
+  - { from: load_fsm,          event: ok,     to: run_shape }
+  - { from: load_fsm,          event: fail,   to: fail }
+  - { from: run_shape,         event: done,   to: run_oracles }
+  - { from: run_oracles,       event: done,   to: run_guards }
+  - { from: run_guards,        event: done,   to: run_process }
+  - { from: run_process,       event: done,   to: run_surfaces }
+  - { from: run_surfaces,      event: done,   to: run_selftest }
+  - { from: run_selftest,      event: done,   to: decide }
+  - { from: run_selftest,      event: fail,   to: fail }
+  - { from: decide,            event: ok,     to: ok }
+  - { from: decide,            event: fail,   to: fail }

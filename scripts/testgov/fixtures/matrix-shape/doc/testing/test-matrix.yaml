@@ -1,0 +1,12 @@
+schema: allspark-test-matrix/v1
+rows:
+  - id: FIX-bad
+    plane: nonsense
+    invariant: a row with a bad plane and a bad layer
+    layer: nowhere
+    axes: {not-an-axis: [x]}
+    oracle: []
+    kill_mutation: x
+    status: nonsense
+    gate: nonsense
+    owner: fixture

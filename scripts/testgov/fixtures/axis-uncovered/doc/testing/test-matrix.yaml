@@ -1,0 +1,12 @@
+schema: allspark-test-matrix/v1
+rows:
+  - id: FIX-killed-without-oracle
+    plane: product
+    invariant: claims killed but names nothing
+    layer: unit
+    axes: {code: [crates/fix/src/lib.rs]}
+    oracle: []
+    kill_mutation: remove the nothing that asserts nothing
+    status: killed
+    gate: default
+    owner: fixture

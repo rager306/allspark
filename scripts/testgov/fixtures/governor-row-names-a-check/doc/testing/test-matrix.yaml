@@ -1,0 +1,13 @@
+schema: allspark-test-matrix/v1
+rows:
+  - id: FIX-governor-fake
+    plane: harness
+    invariant: a governor row naming a check that does not exist
+    layer: governor
+    paths: [doc/testing/test-matrix.yaml]
+    axes: {code: [doc/testing/test-matrix.yaml]}
+    oracle: [no_such_check]
+    kill_mutation: disable the check that was never written
+    status: gate
+    gate: default
+    owner: fixture

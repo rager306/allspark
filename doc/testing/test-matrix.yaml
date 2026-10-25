@@ -1,0 +1,503 @@
+schema: allspark-test-matrix/v1
+# A map of oracles, not a coverage number. Governor green on this file means the named oracles
+# exist and are not ignored — NOT "the product is tested". Do not mark a row `killed` unless
+# the oracle exists and its kill_mutation is recorded. See doc/adr/0001.
+
+rows:
+  - id: ID-build-same-build
+    plane: product
+    invariant: >-
+      A client refuses to serve a session from a daemon process whose build identity differs
+      from its own, and says which one it is talking to.
+    layer: decision
+    axes:
+      code:
+        - crates/pa-cli/src/interactive_mode/daemon.rs
+        - crates/pa-cli/src/daemon_discovery/mod.rs
+      logic: [one identity classifier]
+      semantics: [buildId]
+      flow: [attach]
+    oracle: []
+    kill_mutation: delete the buildId comparison from the identity classifier
+    status: gap
+    gate: default
+    owner: ADR-0001
+    source: incident 2026-10-24 (client 0.10.2-beta.3 served by daemon 0.10.1-beta.35)
+
+  - id: ID-one-identity-classifier
+    plane: product
+    invariant: >-
+      Exactly one function decides whether a daemon is usable, and every call site uses it.
+    layer: decision
+    axes:
+      code:
+        - crates/pa-cli/src/interactive_mode/daemon.rs
+        - crates/pa-cli/src/daemon_discovery/mod.rs
+        - crates/pa-cli/src/update_flow/legacy_restart.rs
+      logic: [classify_reachable]
+      semantics: [same verdict for one hello]
+    oracle: []
+    kill_mutation: give probe_daemon its own field list again (the pre-ADR shape)
+    status: gap
+    gate: default
+    owner: ADR-0001
+    source: three classifiers measured at mod.rs:416, daemon.rs:37, legacy_restart.rs:439
+
+  - id: DATA-partial-asset
+    plane: product
+    invariant: >-
+      A bundled catalog that is partial or synthetic never silently replaces the complete
+      compiled catalog; the resolved set is compared against what the build promises.
+    layer: integration
+    axes:
+      code:
+        - crates/pa-models/src/chain.rs
+        - crates/pa-models/src/pinning.rs
+      semantics: [set equality vs compiled]
+      data: [models.bundled.json]
+    oracle: []
+    kill_mutation: >-
+      ship an asset with one provider only; the resolved catalog must not shrink
+    status: gap
+    gate: default
+    owner: ADR-0001
+    source: measured five asset states (absent/empty/one-anthropic/one-zai/one-unpinnable)
+
+  - id: UI-picker-nonempty
+    plane: ui
+    invariant: >-
+      The /model picker shows exactly the models the packaged catalog promises, on the settled
+      screen.
+    layer: pty_e2e
+    axes:
+      code:
+        - crates/pa-tui/src/session_ui/model_picker.rs
+        - crates/pa-tui/src/model_picker
+      ui: [model picker]
+      semantics: [set equality, at least one real id]
+      data: [models.bundled.json]
+      logic: [get_model_catalog]
+    oracle: []
+    kill_mutation: >-
+      ship the fixture catalog; the row must go red on "at least one rendered id is a real id"
+    status: gap
+    gate: default
+    owner: ADR-0001
+    source: incident 2026-10-24; published fork.010 ships 46/46 fixture-* ids
+
+  - id: GATE-inert-guard
+    plane: harness
+    invariant: >-
+      A guard that cannot fail does not exist; every exit-code path and every gate waiver is
+      provably able to fail.
+    layer: governor
+    paths:
+      - scripts/release/bundle_catalog.py
+      - scripts/fork/prepush-gate.sh
+      - crates/pa-cli/src/public_command.rs
+    axes:
+      logic: [doctor exit code, catalog waiver, per-unit disk floor]
+      semantics: [non-zero on failure]
+    oracle:
+      - inert-guard
+    kill_mutation: make a guard always return zero; the row must go red
+    status: gate
+    gate: default
+    owner: ADR-0001
+    source: >-
+      measured: run_doctor discards run_reap's code (public_command.rs:462-467);
+      bundle_catalog.py:842 waives its own gate; prepush-gate.sh:177 reads an unexported $ROOT
+
+  - id: MUT-kill-mutation-recorded
+    plane: harness
+    invariant: >-
+      Every row names the single edit that makes it red, so a vacancy cannot pass as coverage.
+    layer: governor
+    paths: [doc/testing/test-matrix.yaml]
+    axes:
+      semantics: [kill_mutation present and concrete]
+      logic: [governor kill-mutation-present check]
+    oracle:
+      - kill-mutation-present
+    kill_mutation: blank a row's kill_mutation; governor must report kill-mutation-missing
+    status: gate
+    gate: default
+    owner: ADR-0001
+
+  - id: HARNESS-one-isolation-owner
+    plane: harness
+    invariant: >-
+      One owner creates a test sandbox and its environment policy; no e2e file re-derives it.
+    layer: unit
+    axes:
+      code:
+        - crates/pa-cli/tests
+        - crates/pa-perf/src/bench/pty.rs
+      logic: [sandbox construction, env policy, harness lock]
+      semantics: [identical isolation across suites]
+    oracle: []
+    kill_mutation: add a fifth fn sandbox(); the row must report the duplicate
+    status: gap
+    gate: advisory
+    owner: ADR-0001
+    source: 4 distinct fn sandbox( + 9 HARNESS_LOCK re-declarations, measured
+
+  - id: TELEM-property-canary
+    plane: product
+    invariant: >-
+      A secret placed in the value of an allowed property never reaches serialized telemetry
+      bytes.
+    layer: unit
+    axes:
+      code:
+        - crates/pa-telemetry/src/properties.rs
+        - crates/pa-telemetry/src/catalog.rs
+      data: [free_string properties]
+      semantics: [canary absent from export]
+    oracle: []
+    kill_mutation: widen a free_string property and let it carry a canary
+    status: gap
+    gate: default
+    owner: ADR-0001
+    source: 12+ free_string sites; no byte-level canary test exists
+
+  - id: EVAL-frozen-corpus
+    plane: product
+    invariant: >-
+      A frozen eval corpus cannot change without a measured rerun, and the test split can be
+      unsealed only once per corpus.
+    layer: unit
+    axes:
+      code: [crates/pa-core/src/jev/eval]
+      semantics: [sha256 fingerprint, one-shot test split]
+      logic: [tune() accepts dev split only]
+    oracle:
+      - the_fingerprint_pins_the_case_list
+      - the_ruflo_lesson_a_sub_point_win_does_not_promote
+    kill_mutation: edit one corpus case without re-freezing; the fingerprint must go red
+    status: killed
+    gate: default
+    owner: ADR-0001
+    source: measured — 3 corpora, EvalError::TestAlreadyTouched, TuningError::WrongSplit
+
+  # ── rows from the six-report synthesis (ADR-0001 §D.7) ──────────────────
+  - id: MUT-fixture-failure-setters
+    plane: harness
+    invariant: >-
+      The scripted-model fixture can produce stall, refuse, cut, stream-error and doom-loop
+      answers, so retry and backoff paths have a fixture.
+    layer: unit
+    axes:
+      code:
+        - crates/pa-cli/src/print_runtime/faux.rs
+      logic: [scripted failure producers]
+      semantics: [each failure kind reachable]
+    oracle: []
+    kill_mutation: remove the stall producer; the retry test must go red
+    status: gap
+    gate: default
+    owner: ADR-0001
+    source: six-report synthesis; faux scripts responses only, no failure setters
+
+  - id: HARNESS-script-consumed
+    plane: harness
+    invariant: >-
+      A test cannot pass when its scripted replies were never served, and the check does not
+      mask a genuine panic.
+    layer: unit
+    axes:
+      code:
+        - crates/pa-cli/src/print_runtime/faux.rs
+      logic: [drop-time consumption check guarded by !panicking]
+      semantics: [unconsumed script is a failure]
+    oracle: []
+    kill_mutation: delete the drop-time check; an unconsumed-script test must go red
+    status: gap
+    gate: default
+    owner: ADR-0001
+    source: reference disposal contract; we have no equivalent
+
+  - id: UI-quiescence-before-assert
+    plane: ui
+    invariant: >-
+      No screen assertion runs against a mid-paint grid; a missing update for N ms is the only
+      settle signal, and it is not a sleep.
+    layer: pty_e2e
+    axes:
+      code:
+        - crates/pa-tui/src
+        - crates/pa-perf/src/bench/pty.rs
+      ui: [settled grid]
+      logic: [grid generation watch]
+      flow: [paint then assert]
+    oracle: []
+    kill_mutation: replace the wait with a fixed sleep; a resize-storm row must go red
+    status: gap
+    gate: default
+    owner: ADR-0001
+    source: synthesis; scaled timeouts must come AFTER this (masking edge)
+
+  - id: ARTIFACT-provenance
+    plane: product
+    invariant: >-
+      A release asset carries no synthetic model id, and the packer's own verify command exits
+      zero on the artifact the same workflow generated.
+    layer: artifact
+    paths:
+      - scripts/release/bundle_catalog.py
+      - .github/workflows/release-fork.yml
+    axes:
+      data: [models.bundled.json]
+      semantics: [zero fixture ids, manifest sha256 matches]
+    oracle: []
+    kill_mutation: pack the fixture catalog; the gate must exit non-zero
+    status: gap
+    gate: default
+    owner: ADR-0001
+    source: >-
+      measured: published fork.010 ships 46/46 fixture ids; the in-tree gate exits 1 on the
+      release's own generated artifact
+
+  - id: FAIL-flake-ledger
+    plane: harness
+    invariant: >-
+      Every known-flaky or environment-gated unit has a named row with an owner and a date.
+    layer: governor
+    paths: [docs/flaky.md]
+    axes:
+      logic: [ignore markers cross-referenced]
+      semantics: [no unnamed skip]
+    oracle:
+      - untracked-oracle
+    kill_mutation: add an unnamed #[ignore]; the check must report it
+    status: gap
+    gate: advisory
+    owner: ADR-0001
+    source: 32 #[ignore] attributes; no ledger
+
+  # ── verification ladder: the two layers worth adding (assessment 2026-10-24) ──
+  - id: MUT-loom-spinlock
+    plane: product
+    invariant: >-
+      The hand-rolled spinlock and refcount in pa-mem are free of interleavings that lose a
+      wakeup, double-release, or observe a stale state under any ordering.
+    layer: interleaving
+    paths:
+      - crates/pa-mem/src/spinlock.rs
+      - crates/pa-mem/src/refcount.rs
+    axes:
+      logic: [compare_exchange loops, guard release]
+      semantics: [exactly one acquire per release, no lost wakeup]
+      flow: [lock -> guard -> release]
+    oracle: []
+    kill_mutation: >-
+      weaken the release ordering from Release to Relaxed in SpinGuard::drop; a loom
+      interleaving test must redden
+    status: gap
+    gate: serial-tail
+    owner: ADR-0001
+    source: >-
+      1747 lines of hand-rolled concurrency in pa-mem; 0 loom/shuttle deps; an ordering bug is
+      invisible on x86 and visible on aarch64-apple-darwin, which we ship
+
+  - id: MUT-kani-robin-hood
+    plane: product
+    invariant: >-
+      RobinHoodMap deletion preserves the probe-sequence invariant for every insert/remove
+      order within bounds; no entry becomes unreachable after a backward shift.
+    layer: unit
+    paths:
+      - crates/pa-mem/src/robin_hood.rs
+    axes:
+      logic: [backward-shift on delete, wraparound probing]
+      semantics: [every live key remains findable]
+      data: [adversarial collision set]
+    oracle: []
+    kill_mutation: >-
+      delete the backward-shift loop; a Kani harness must report the unreachable key
+    status: gap
+    gate: advisory
+    owner: ADR-0001
+    source: >-
+      630 lines, the only pure module with an index/wraparound invariant and no Verus mirror
+      (ptr48/varint already have one); the deletion bug surfaced in an earlier audit
+
+  - id: VERUS-mirrors-are-verified
+    plane: product
+    invariant: >-
+      Every Verus mirror under verus/ still matches the constants of the source it mirrors, and
+      every proof obligation still closes.
+    layer: unit
+    paths:
+      - verus/pa_mem_ptr48.rs
+      - verus/pa_mem_bucket.rs
+      - verus/pa_core_gates.rs
+      - scripts/verus-check.sh
+      - scripts/verus-mirror-check.py
+    axes:
+      logic: [mirror constants, spec functions]
+      semantics: [mirror matches source constants]
+    oracle: []
+    kill_mutation: >-
+      change a constant in ptr48.rs without the mirror; verus-mirror-check must redden
+    status: gap
+    gate: advisory
+    owner: ADR-0001
+    source: >-
+      scripts/verus-check.sh and verus-mirror-check.py exist; proofs are advisory by ADR and
+      nothing in the gate runs them
+
+  - id: MOCK-path-routed-responses
+    plane: harness
+    invariant: >-
+      The mock inference server routes scripted responses by request path, so a test can hold
+      two dialects apart (a /v1/messages request and a /v1/chat/completions request consume
+      different queues); a path with an empty key-queue falls back to the global queue.
+    layer: unit
+    paths:
+      - crates/pa-ai/src/testing/mock_server.rs
+    axes:
+      logic: [path-keyed overlay before FIFO, fallback on dry path]
+      semantics: [one queue per dialect, query string is not the path]
+      data: [ScriptedResponse]
+    oracle:
+      - a_path_keyed_response_is_served_only_to_that_path
+      - a_path_queue_that_runs_dry_falls_back_to_the_global_queue
+      - the_key_is_the_path_so_a_query_string_does_not_claim_a_keyed_response
+      - an_unkeyed_path_falls_through_to_the_global_queue
+    kill_mutation: >-
+      in serve(), delete the path_queues lookup so every request pops the global FIFO; all four
+      oracles must go red
+    status: killed
+    gate: default
+    owner: ADR-0001
+    source: >-
+      measured: serve() popped one FIFO for every path (mock_server.rs:350-356), so a test
+      could not hold /v1/messages and /v1/chat/completions apart
+
+  - id: MOCK-sse-failure-modes-exercised
+    plane: harness
+    invariant: >-
+      Every scripted SSE failure mode (drop, truncate, stall, hang) is exercised by at least one
+      test; an unexercised mode is an unproven capability.
+    layer: unit
+    paths:
+      - crates/pa-ai/src/testing/mock_server.rs
+      - crates/pa-core/tests/provider_session_id_wire.rs
+      - crates/pa-daemon/tests/provider_failover_drill_e2e.rs
+    axes:
+      logic: [retry and failure handling]
+      semantics: [each mode observed at least once]
+      data: [scripted SSE streams]
+    oracle: []
+    kill_mutation: >-
+      delete the last unexercised mode's test; the check that counts exercised modes must redden
+    status: gap
+    gate: default
+    owner: ADR-0001
+    source: >-
+      measured: queue_hang and queue_sse_stalling are used by no test; dropping/truncated by
+      provider_failover_drill_e2e.rs only
+
+  - id: SETTINGS-every-field-read
+    plane: product
+    invariant: >-
+      Every field declared in settings/types.rs is read somewhere outside the settings module;
+      a field that is only written (or never mentioned) is a documented lie.
+    layer: governor
+    paths:
+      - crates/pa-core/src/settings/types.rs
+      - crates/pa-core/src/settings/manager.rs
+    axes:
+      code: [crates/pa-core/src/settings/types.rs]
+      logic: [accessed-identifier index over the corpus]
+      semantics: [every declared field is consumed]
+    oracle:
+      - settings_have_consumers
+    kill_mutation: >-
+      add a field nobody reads; the check must name it
+    status: gate
+    gate: default
+    owner: ADR-0001
+    source: >-
+      first mechanical audit found 5 fields declared and never read outside settings/
+      (max_wait_ms, onboarding_completed, provider_backup_model, subagent_default_model,
+      wait_for_usage) plus one write-only field (onboarding_completed has set_ but no read)
+
+  - id: MODELS-opencode-free-fingerprint
+    plane: harness
+    invariant: >-
+      The opencode free-tier fingerprint is exactly the shipped v2 shape (HTTP/2 via ALPN, UA
+      opencode/latest/2.0.26/cli, x-opencode-client: cli, the 4-header session triplet,
+      x-opencode-project: global, Bearer public, stream:true + the bash/glob/grep/read
+      fingerprint tools in the body). A probe missing ANY of it answers 403 FreeTierError.
+    layer: unit
+    paths:
+      - crates/pa-ai/src/utils_inner/opencode.rs
+    axes:
+      code: [crates/pa-ai/src/utils_inner/opencode.rs]
+      logic: [v2_headers, generate_session_id, prepare_body]
+      semantics: [session id v2 format, fingerprint tools present, stream true]
+    oracle:
+      - session_id_matches_the_v2_shape
+    kill_mutation: >-
+      change OPENCODE_UA to opencode/wrong/1.0/cli; a live probe must answer 403 FreeTierError
+      (advisory: needs network)
+    status: killed
+    gate: serial-tail
+    owner: ADR-0001
+    source: >-
+      measured live 2026-10-25: wrong session shape answers 403 FreeTierError; correct v2 id
+      passes the fingerprint and reaches FreeUsageLimitError (rate) or the model
+
+  - id: MODELS-opencode-free-params-verified
+    plane: product
+    invariant: >-
+      An opencode -free model's context_window and max_tokens are measured against the
+      provider, never copied from a paid sibling: the free tier cuts parameters
+      (deepseek-v4.1-flash 1M/384K vs -free 200K/32K).
+    layer: integration
+    paths:
+      - crates/pa-ai/src/models_fork.rs
+      - crates/pa-models/src/opencode_models.rs
+    axes:
+      code: [crates/pa-ai/src/models_fork.rs]
+      semantics: [measured limits, never copied from a paid sibling]
+      data: [models.dev opencode entry, live provider answer]
+    oracle:
+      - a_capability_within_tolerance_keeps_the_table_value
+      - an_undescribed_live_id_is_kept_and_marked_estimated
+    kill_mutation: >-
+      set deepseek-v4.1-flash-free context_window to 1_000_000 (the paid value); the drift
+      check must go red
+    status: killed
+    gate: default
+    owner: ADR-0001
+    source: >-
+      measured: paid 1M/384K vs free 200K/32K (models.dev opencode entry, 44 -free variants);
+      our table 200K/32K matches
+
+  - id: LSP-line-resolves-identifier
+    plane: product
+    invariant: >-
+      A `line`-addressed lsp call resolves to the identifier that starts on that
+      line, never to column 0 of the line.
+    layer: integration
+    paths:
+      - crates/pa-lsp/src/tool.rs
+    axes:
+      code: [crates/pa-lsp/src/tool.rs]
+      logic: [target(): line -> symbol selection]
+      semantics: [identifier span, not line start]
+      flow: [references/definition/hover]
+    oracle:
+      - lsp_line_addressing_picks_the_identifier_on_the_line
+    kill_mutation: >-
+      revert target() to Position::new(line-1, 0); the oracle must redden on a
+      declaration whose identifier is indented
+    status: gap
+    gate: default
+    owner: ADR-0001
+    source: >-
+      issue #8 + #12-1a: Position::new(line-1, 0) sent where there is no
+      identifier; gopls answers "no identifier found"

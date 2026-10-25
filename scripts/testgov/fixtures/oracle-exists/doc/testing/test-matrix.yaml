@@ -1,0 +1,12 @@
+schema: allspark-test-matrix/v1
+rows:
+  - id: FIX-missing-oracle
+    plane: product
+    invariant: names a test that does not exist
+    layer: unit
+    axes: {code: [crates/fix/src/lib.rs]}
+    oracle: [no_such_test_anywhere]
+    kill_mutation: delete the assertion that never existed
+    status: killed
+    gate: default
+    owner: fixture

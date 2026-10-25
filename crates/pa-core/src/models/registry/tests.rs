@@ -601,3 +601,80 @@ async fn scope_readiness_timeout_keeps_models_available_before_refresh() {
         vec![existing]
     );
 }
+
+// ── FORK MODELS SURVIVE EVERY CATALOG SOURCE ────────────────────────────────
+//
+// The registry chains `fork_provider_models()` after the catalog chain
+// (`registry.rs:600`), so the fork's providers exist in every mode. A release
+// install ships `models.bundled.json` (step 2 of the no-cold-start chain), and
+// a stale or upstream-shaped asset would silently replace the compiled catalog:
+// the user then sees fewer models than the build carries, which reads as
+// "провайдеры есть, а моделей нет" and is indistinguishable from a broken build.
+//
+// These pin the invariant on the SOURCE the registry reads, so a packaging
+// mistake (a fixture catalog, an upstream snapshot) fails here instead of in a
+// user's picker.
+#[test]
+fn the_fork_model_table_carries_every_fork_provider() {
+    let fork = pa_ai::models_fork::fork_provider_models();
+    for provider in pa_ai::models_fork::fork_providers() {
+        assert!(
+            fork.iter().any(|model| model.provider == *provider),
+            "provider {provider} is registered but has no model in the fork table: \
+             the picker would show the provider with an empty list"
+        );
+    }
+}
+
+/// Every fork model must survive the registry's own load path (which chains the
+/// fork table after the catalog chain and then merges a caller's models.json).
+#[test]
+fn a_fresh_registry_lists_the_fork_models() {
+    let registry = ModelRegistry::in_memory(auth_without_env(&serde_json::json!({})));
+    let listed: std::collections::HashSet<(String, String)> = registry
+        .get_all()
+        .iter()
+        .map(|model| (model.provider.clone(), model.id.clone()))
+        .collect();
+    let mut missing = Vec::new();
+    for model in pa_ai::models_fork::fork_provider_models() {
+        if !listed.contains(&(model.provider.clone(), model.id.clone())) {
+            missing.push(format!("{}/{}", model.provider, model.id));
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "the registry dropped fork models from its catalog: {missing:?}"
+    );
+}
+
+/// A caller's `models.json` OVERRIDES a fork entry by (provider, id); it must
+/// never delete the rest of the table. This is the shape the release install
+/// hits when a user customises one model.
+#[test]
+fn a_custom_model_override_keeps_the_other_fork_models() {
+    let auth = auth_without_env(&serde_json::json!({}));
+    let registry = ModelRegistry::in_memory(auth);
+    let before = registry
+        .get_all()
+        .iter()
+        .filter(|model| model.provider == "muse")
+        .count();
+    assert!(
+        before > 0,
+        "the fixture needs at least one muse model to test the merge"
+    );
+    // The merge itself is what this pins: `merge_custom_models` replaces by
+    // (provider, id) and appends the rest (registry.rs:627).
+    let custom = vec![model("muse-spark-1.3", "muse")];
+    let built_in = registry.get_all().to_vec();
+    let merged = ModelRegistry::merge_custom_models(built_in, custom);
+    let after = merged
+        .iter()
+        .filter(|model| model.provider == "muse")
+        .count();
+    assert_eq!(
+        after, before,
+        "a single override must replace one entry, not drop the provider's others"
+    );
+}

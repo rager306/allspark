@@ -1,0 +1,12 @@
+schema: allspark-test-matrix/v1
+rows:
+  - id: FIX-one
+    plane: product
+    invariant: only one row, so every other test is untracked
+    layer: unit
+    axes: {code: [crates/fix/src/lib.rs]}
+    oracle: [the_only_tracked_behavioural_test_name]
+    kill_mutation: remove the one tracked test
+    status: killed
+    gate: default
+    owner: fixture

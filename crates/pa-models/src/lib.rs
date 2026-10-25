@@ -6,6 +6,7 @@
 pub mod bundled;
 pub mod cache;
 pub mod compat;
+pub mod discovery;
 pub mod fetch;
 pub mod offline;
 pub mod opencode_models;

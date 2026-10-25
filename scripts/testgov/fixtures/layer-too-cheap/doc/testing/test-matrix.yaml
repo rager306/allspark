@@ -1,0 +1,12 @@
+schema: allspark-test-matrix/v1
+rows:
+  - id: FIX-unit-sees-ui
+    plane: ui
+    invariant: a unit test claiming it observes the rendered screen
+    layer: unit
+    axes: {ui: [picker]}
+    oracle: []
+    kill_mutation: assert a screen inside a unit test
+    status: gap
+    gate: default
+    owner: fixture
