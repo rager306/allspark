@@ -1695,4 +1695,72 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
             "a blank override configures nothing and must not defeat the refusal"
         );
     }
+
+    // ── THE BUNDLED INSTALLER CARRIES THE FORK PROTECTIONS ────────────────────
+    //
+    // `BUNDLED_INSTALLER` is `include_str!("install-rust.sh")`: the script is
+    // frozen into the binary at COMPILE time. Every fork protection added to
+    // `install-rust.sh` therefore reaches users only when they build a new
+    // binary — and an install built before a protection existed keeps the old
+    // behaviour forever.
+    //
+    // That is exactly how the upstream daemon died three times: the installed
+    // fork.008 binary carried an installer with no fork gate, so its `allspark
+    // update` fetched upstream's channel and upstream's installer stopped BOTH
+    // daemons (measured 2026-10-24 14:18: allspark 14:18:01, upstream
+    // 14:18:06). A code fix in the tree does not reach an installed build.
+    //
+    // These pins fail the build when the bundled script loses a protection, so
+    // the regression is caught at compile/test time instead of on a user's
+    // machine.
+    #[test]
+    fn the_bundled_installer_carries_the_fork_gate() {
+        assert!(
+            BUNDLED_INSTALLER.contains("PRIME_AGENT_FORK_BUILD"),
+            "the bundled installer must read the fork marker: without it a fork run \
+             probes the upstream TypeScript socket and stops a co-installed daemon"
+        );
+        assert!(
+            BUNDLED_INSTALLER.contains("fork_run="),
+            "the bundled installer must derive its fork/upstream gate"
+        );
+        assert!(
+            BUNDLED_INSTALLER.contains("--fork-run"),
+            "the bundled installer must pass the fork gate into the stop probe, or the \
+             probe's install-root test claims the whole prefix and stops the upstream \
+             daemon living under PREFIX/share/prime-agent"
+        );
+        assert!(
+            BUNDLED_INSTALLER.contains("allspark"),
+            "the bundled installer must know the fork's own socket namespace"
+        );
+    }
+
+    /// The stop-probe's ownership test is the crash site: it must narrow the
+    /// owned roots for a fork run instead of trusting the shared prefix.
+    #[test]
+    fn the_bundled_installer_narrows_ownership_for_a_fork_run() {
+        assert!(
+            BUNDLED_INSTALLER.contains("if fork_run:"),
+            "the probe must branch on the fork gate before deciding which install roots \
+             it owns"
+        );
+        assert!(
+            BUNDLED_INSTALLER.contains("OWN_ROOTS"),
+            "the probe's owned-root list must exist (it is what the install-root test reads)"
+        );
+    }
+
+    /// The bundled script and the script on disk must be the same file: a
+    /// developer editing install-rust.sh without rebuilding still runs the old
+    /// script at update time, which reads as "the fix did nothing".
+    #[test]
+    fn the_bundled_installer_matches_the_script_on_disk() {
+        let on_disk = include_str!("../../../../install-rust.sh");
+        assert_eq!(
+            BUNDLED_INSTALLER.len(),
+            on_disk.len(),
+            "the bundled installer and install-rust.sh differ in length"
+        );
+    }
 }

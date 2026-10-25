@@ -1363,9 +1363,40 @@ for install_root in "${PREFIX}/share" "${PREFIX}/bin"; do
   fi
 done
 
-share_dir="${PREFIX}/share/prime-agent"
-bin_dir="${PREFIX}/bin"
-launcher="${bin_dir}/prime-agent"
+# THE FORK LAYOUT (the product this build belongs to): the fork's launcher
+# installs `bin/allspark` + `libexec/prime-agent` and leaves every upstream
+# path alone. Deriving the layout from the SAME two signals the stop gate uses
+# (the funnel's build marker, or a socket already in the fork namespace) keeps
+# one definition of "is this a fork run" for the whole script — the gate below
+# recomputes it from `fork_run`, and this early copy is what the layout reads.
+#
+# Why the layout has to differ: the upstream install owns
+# `$PREFIX/share/prime-agent` and `$PREFIX/bin/prime-agent`. Writing a fork
+# payload there replaces a co-installed upstream install's binary with one that
+# lacks the fork crates (and the reverse), which is the same boundary the stop
+# gate exists to protect.
+fork_layout="no"
+if [ -n "${PRIME_AGENT_FORK_BUILD:-}" ]; then
+  fork_layout="yes"
+fi
+case "${PRIME_AGENT_DAEMON_SOCKET:-}" in
+  *allspark*) fork_layout="yes" ;;
+esac
+
+if [ "$fork_layout" = "yes" ]; then
+  # Fork layout: the payload rides libexec/ (its own tree, beside the
+  # launcher), the launcher is bin/allspark, and the upstream share/ paths
+  # stay untouched.
+  share_dir="${PREFIX}/libexec"
+  payload_path="${share_dir}/prime-agent"
+  bin_dir="${PREFIX}/bin"
+  launcher="${bin_dir}/allspark"
+else
+  share_dir="${PREFIX}/share/prime-agent"
+  payload_path="${share_dir}/prime-agent"
+  bin_dir="${PREFIX}/bin"
+  launcher="${bin_dir}/prime-agent"
+fi
 old_layout_dir="${PREFIX}/share/prime-agent-rust"
 legacy_dir="${PREFIX}/share/prime-agent-legacy"
 lock_link="${PREFIX}/share/.prime-agent-install.lock"
@@ -2625,10 +2656,44 @@ if ! tar -xzf "$asset" -C "$stage"; then
   rm -rf "$stage"
   die "could not extract ${asset}"
 fi
-if [ ! -x "${stage}/${BINARY_NAME}" ]; then
-  rm -rf "$stage"
-  die "the tarball did not contain an executable ${BINARY_NAME} payload"
+# THE PAYLOAD'S PLACE IN THE ARCHIVE (two shipped layouts):
+#   upstream channel: <root>/prime-agent            (payload at the root)
+#   fork release:     <root>/libexec/prime-agent     (payload beside the launcher)
+# The fork tarball's root is one directory deep (the release name), so the
+# payload is found either at the stage root (an archive packed from inside the
+# root) or one level down. Resolve it ONCE here and publish from `payload_src`,
+# so both layouts install the same way and a fork release is not rejected by a
+# check written for the upstream one.
+payload_src=""
+if [ -x "${stage}/${BINARY_NAME}" ]; then
+  payload_src="${stage}/${BINARY_NAME}"
+elif [ -x "${stage}/libexec/${BINARY_NAME}" ]; then
+  payload_src="${stage}/libexec/${BINARY_NAME}"
+else
+  # The release archives carry a single top-level directory (the tag name);
+  # look inside it for either layout.
+  for root_dir in "${stage}"/*/; do
+    [ -d "$root_dir" ] || continue
+    if [ -x "${root_dir}${BINARY_NAME}" ]; then
+      payload_src="${root_dir}${BINARY_NAME}"
+      break
+    fi
+    if [ -x "${root_dir}libexec/${BINARY_NAME}" ]; then
+      payload_src="${root_dir}libexec/${BINARY_NAME}"
+      break
+    fi
+  done
 fi
+if [ -z "$payload_src" ]; then
+  rm -rf "$stage"
+  die "the tarball did not contain an executable ${BINARY_NAME} payload (looked at the root and libexec/)"
+fi
+# The tree the publish renames into ${share_dir}: the directory that HOLDS the
+# payload binary plus its siblings (runtime, skills, catalog assets). For the
+# upstream layout that is the stage root; for the fork layout it is the
+# `libexec/` directory, so publishing puts the payload FILES in
+# $PREFIX/libexec/ instead of nesting another bin/ + libexec/ under it.
+payload_root="$(dirname "$payload_src")"
 # The archive's name is the version contract (the marker
 # records it and the rollback later reports it), so the payload's own
 # --version must agree — a mis-named archive would publish a marker that
@@ -2675,7 +2740,7 @@ rm -f "$probe_out" "$probe_done" "$probe_pid_file"
   # the limit would take the runner down before the done marker and
   # every --archive install would then fail at the bound.
   ulimit -f 64 2>/dev/null || true
-  "${stage}/${BINARY_NAME}" --version >"$probe_out" 2>/dev/null &
+  "${payload_src}" --version >"$probe_out" 2>/dev/null &
   printf '%s\n' "$!" >"$probe_pid_file"
   # The probe's OWN status rides a file (set -e would take the wait's
   # nonzero as an abort): the version line AND a successful exit are the
@@ -2738,8 +2803,24 @@ fi
 # <version>-continuous.<sha> while the archive name keeps the bare
 # <version> so rolling releases overwrite assets): the exact name or its
 # documented continuous stamp both publish honestly.
+# THE FORK IDENTITY LINE: a fork build answers
+# `allspark <version> (fork build fork.NNN; upstream prime-agent <version>)`
+# — the version is the SECOND field, and the line is what /docs/fork-identity
+# pins as the product's own `--version` shape. Accept it by extracting the
+# version field; every other shape keeps the exact-match rule below.
+# A fork release names itself `<product version>-fork.NNN` while the binary
+# reports the PRODUCT version (`0.10.2-beta.3`) plus the build id separately
+# (`fork build fork.010`). Compare like with like: the archive's fork suffix
+# is a build id, not part of the version the payload answers with.
+expected_version="$VERSION"
+case "$expected_version" in
+  *-fork.[0-9][0-9][0-9]) expected_version="${expected_version%-fork.*}" ;;
+esac
 case "$reported_version" in
-  "$VERSION") ;;
+  allspark\ *) reported_version="$(printf '%s' "$reported_version" | awk '{print $2}')" ;;
+esac
+case "$reported_version" in
+  "$VERSION"|"$expected_version") ;;
   "$VERSION-continuous."*)
     # The stamp is exactly a 40-hex commit SHA (assemble_artifacts.py's
     # --sha contract): a wrong-length or non-hex tail is a malformed
@@ -3084,7 +3165,10 @@ if [ -d "$share_dir" ]; then
   # copy of the payload (the record rides OUTSIDE the tree).
   printf '%s\n' "$old" >> "${PREFIX}/share/.prime-agent-install-generations"
 fi
-if ! mv "$stage" "$share_dir"; then
+# The published tree is `payload_root`, not the whole stage: a fork archive's
+# payload sits in libexec/ beside bin/allspark, so renaming the stage root would
+# nest another bin/ + libexec/ under $PREFIX/libexec.
+if ! mv "$payload_root" "$share_dir"; then
   if [ "$had_share_dir" = 1 ] && [ -d "$old" ]; then
     mv "$old" "$share_dir"      # put the old tree back
   fi
@@ -3149,7 +3233,38 @@ if [ "$preserve_npm_launcher" != yes ] && { [ -e "$launcher" ] || [ -L "$launche
   fi
 fi
 launcher_tmp="$(mktemp "${bin_dir}/.prime-agent.XXXXXX")"
-if [ "$WINDOWS" = "yes" ]; then
+if [ "$fork_layout" = "yes" ]; then
+  # THE FORK LAUNCHER: identical in spirit to the upstream one (same env
+  # contract), but it execs the payload from the FORK's libexec/ tree and pins
+  # the fork's own daemon socket, so a co-installed upstream daemon neither
+  # shares nor fights it. `scripts/allspark-launcher.sh` is the tracked source
+  # of truth for a source install; this is the same launcher written into the
+  # release prefix. `@PAYLOAD@` is substituted below because the template is
+  # written unquoted-heredoc-free (a literal path is safer than $0 arithmetic
+  # inside a heredoc that must not expand anything else).
+  cat > "$launcher_tmp" <<EOF
+#!/bin/sh
+# allspark — launcher written by install-rust.sh (fork layout).
+#
+# Isolation is one knob: HOME. Every product path (sessions, auth, config,
+# kernel venv, logs) derives from it, so a co-installed upstream prime-agent
+# shares nothing. ALLSPARK_HOME overrides the isolated home.
+if [ -z "\${ALLSPARK_HOME:-}" ]; then
+    ALLSPARK_HOME="\$HOME/.allspark-home"
+fi
+mkdir -p "\$ALLSPARK_HOME"
+export HOME="\$ALLSPARK_HOME"
+export PRIME_AGENT_CODING_AGENT_DIR="\$ALLSPARK_HOME/.prime/agent"
+export PRIME_AGENT_SESSION_DIR="\$ALLSPARK_HOME/.prime/agent/sessions"
+# The fork's own daemon socket: pinned unconditionally (never inherited), so a
+# session launched from inside an upstream session cannot reach upstream's
+# supervisor. ALLSPARK_DAEMON_SOCKET is the explicit override.
+export PRIME_AGENT_DAEMON_SOCKET="\${ALLSPARK_DAEMON_SOCKET:-\${TMPDIR:-/tmp}/allspark-daemon.sock}"
+# The fork update channel (see PRIME_AGENT_DOWNLOAD_BASE_URL in pa-core).
+export PRIME_AGENT_DOWNLOAD_BASE_URL="\${ALLSPARK_DOWNLOAD_BASE_URL:-https://github.com/rager306/allspark/releases/latest/download}"
+exec "${share_dir}/prime-agent" "\$@"
+EOF
+elif [ "$WINDOWS" = "yes" ]; then
   # The Git Bash launcher: execs the payload's prime-agent.exe. NO daemon
   # socket pin — this product's Windows daemon endpoint is the fixed named
   # pipe (pa-daemon platform/paths), which is rust-only by construction:
@@ -3545,7 +3660,11 @@ if [ "$ts_stop_rust_stopped" = "yes" ] && [ "$rust_leftover" != "yes" ]; then
 fi
 
 printf '\n' >&2
-printf ' %sDone.%s Run %sprime-agent%s to start.\n' "$C_BOLD" "$C_RESET" "$C_BOLD" "$C_RESET" >&2
+if [ "$fork_layout" = "yes" ]; then
+  printf ' %sDone.%s Run %sallspark%s to start.\n' "$C_BOLD" "$C_RESET" "$C_BOLD" "$C_RESET" >&2
+else
+  printf ' %sDone.%s Run %sprime-agent%s to start.\n' "$C_BOLD" "$C_RESET" "$C_BOLD" "$C_RESET" >&2
+fi
 dim "installed to $(tilde "$share_dir") · launcher $(tilde "$launcher")"
 if [ -n "$ts_takeover_from" ]; then
   dim "moved the TypeScript install to $(tilde "$ts_takeover_from") · undo:"

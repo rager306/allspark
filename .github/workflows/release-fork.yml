@@ -85,7 +85,7 @@ jobs:
           fi
 
   build:
-    name: build the fork payload (linux-x86_64)
+    name: build the fork payload (linux-x64)
     needs: tag-check
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -114,17 +114,19 @@ jobs:
             *"fork build ${{ needs.tag-check.outputs.build }}"*) ;;
             *) echo "::error::the binary does not report the tagged fork build: ${built}"; exit 1 ;;
           esac
-      - name: Generate bundled catalog assets (fixture, offline-safe)
-        # Upstream release.yml parity: the no-cold-start layer 2 assets
-        # (models.bundled.json + mcp-services.bundled.json) the binary
-        # reads when no network is available. --fixture keeps the release
-        # deterministic (no network fetch, no token); the verify run is
-        # the packer gate upstream's assemble_artifacts.py enforces
-        # (>= 42 transport tuples, >= 68 services) - the fork's packaging
-        # is hand-rolled, so the gate lives here.
+      - name: Fetch bundled catalog assets (network; real models, not the fixture)
+        # ADR-0001 G-4: the bundled asset REPLACES the compiled catalog at runtime
+        # (chain.rs step 2, `Some(bundled) => bundled`), so shipping the synthetic
+        # fixture made every release install present `fixture-*` rows instead of real
+        # models - measured on fork.010: zai showed `fixture-zai-42` instead of glm-4.7.
+        # Upstream ships the fixture too (release.yml:211,352,468); we do not - the
+        # network fetch is the documented non-fixture source, and the verify run is the
+        # packer gate upstream's assemble_artifacts.py enforces (>= 42 transport tuples,
+        # >= 68 services). No fork-provider waiver: the fetched catalog plus the runtime
+        # fork chain (registry.rs:600) is exactly what a fresh install should list.
         run: |
           set -euo pipefail
-          python3 scripts/release/bundle_catalog.py generate --fixture \
+          python3 scripts/release/bundle_catalog.py generate --network \
             --out target/catalog-assets
           python3 scripts/release/bundle_catalog.py verify --out target/catalog-assets
       - name: Package the payload
@@ -135,7 +137,7 @@ jobs:
           # named prime-agent-<version>-<platform>.tar.gz (install-rust.sh's
           # ROW_PY), so the published archive carries the product name even
           # though the tag says allspark.
-          root="prime-agent-${tag#allspark-v}-linux-x86_64"
+          root="prime-agent-${tag#allspark-v}-linux-x64"
           mkdir -p "package/${root}/bin" "package/${root}/libexec"
           cp target/dist/prime-agent "package/${root}/libexec/prime-agent"
           cp scripts/allspark-launcher.sh "package/${root}/bin/allspark"
@@ -198,7 +200,7 @@ jobs:
           manifest = {
               "version": version,
               "binaries": [{
-                  "platform": "linux-x86_64",
+                  "platform": "linux-x64",
                   "file": archive,
                   "sha256": sha,
               }],
@@ -211,9 +213,9 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ needs.tag-check.outputs.tag }}"
-          # The same root the packaging step built: prime-agent-<version>-linux-x86_64,
+          # The same root the packaging step built: prime-agent-<version>-linux-x64,
           # version = tag minus the leading "allspark-v".
-          root="prime-agent-${tag#allspark-v}-linux-x86_64"
+          root="prime-agent-${tag#allspark-v}-linux-x64"
           mkdir -p unpack && tar -xzf "${root}.tar.gz" -C unpack
           ./unpack/"${root}"/bin/allspark --version
           # The offline catalog assets are part of the packaged contract:
@@ -234,6 +236,8 @@ jobs:
           path: |
             *.tar.gz
             SHA256SUMS
+            stable
+            latest.json
           if-no-files-found: error
 
   publish:

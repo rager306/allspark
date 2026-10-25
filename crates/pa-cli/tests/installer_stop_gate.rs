@@ -624,3 +624,132 @@ fn a_foreign_daemon_is_reported_as_a_skip_and_never_as_a_stop() {
         "the install's own daemon records its stop: {output}"
     );
 }
+
+// ── THE FORK INSTALL LAYOUT (regressions) ────────────────────────────────────
+//
+// Three field failures happened because the installer was upstream-shaped while
+// the fork's release archive is not:
+//
+//   1. `allspark update` ran the UPSTREAM installer (no fork channel in the
+//      installed launcher) and it stopped BOTH daemons (measured 2026-10-24:
+//      allspark 14:18:01, upstream 14:18:06).
+//   2. The fork archive packs `bin/allspark` + `libexec/prime-agent`, while the
+//      installer demanded `<stage>/prime-agent` — its own release could not be
+//      installed by its own installer.
+//   3. The archive was named `linux-x86_64` while the installer's channel
+//      contract is `linux-x64`.
+//
+// These pin the three so a future edit cannot silently restore the mismatch.
+
+/// The installer must derive a fork layout (payload tree + launcher name) from
+/// the same signals the stop gate uses.
+#[test]
+fn the_installer_carries_a_fork_layout_branch() {
+    let text = installer_script_text();
+    assert!(
+        text.contains("fork_layout=\"no\""),
+        "the installer must compute its fork layout separately from the stop gate"
+    );
+    assert!(
+        text.contains("share_dir=\"${PREFIX}/libexec\""),
+        "a fork install publishes its payload under libexec/, never over upstream's share/prime-agent"
+    );
+    assert!(
+        text.contains("launcher=\"${bin_dir}/allspark\""),
+        "a fork install writes bin/allspark, not bin/prime-agent"
+    );
+    // And the fork branch must ALSO carry the isolated-home/socket contract,
+    // because this launcher is what a release install runs.
+    for needle in [
+        "ALLSPARK_HOME",
+        "allspark-daemon.sock",
+        "PRIME_AGENT_DOWNLOAD_BASE_URL",
+    ] {
+        assert!(
+            text.contains(needle),
+            "the fork launcher must carry {needle}: a release install has no other place to set it"
+        );
+    }
+}
+
+/// Both shipped archive layouts must be accepted, and the published tree must be
+/// the payload's own directory (never the whole stage, which would nest another
+/// bin/ + libexec/ under libexec/).
+#[test]
+fn the_installer_accepts_both_archive_layouts() {
+    let text = installer_script_text();
+    assert!(
+        text.contains("stage}/libexec/${BINARY_NAME}"),
+        "the payload lookup must accept the fork layout (libexec/prime-agent)"
+    );
+    assert!(
+        text.contains("payload_root=\"$(dirname \"$payload_src\")\""),
+        "the publish must rename the payload's own directory, not the stage root"
+    );
+    assert!(
+        text.contains("mv \"$payload_root\" \"$share_dir\""),
+        "the publish must use payload_root (a fork stage root would nest bin/ under libexec/)"
+    );
+}
+
+/// The channel platform name is part of the wire contract between the release
+/// workflow's manifest and the installer's expectation.
+#[test]
+fn the_channel_platform_name_matches_the_installer() {
+    let text = installer_script_text();
+    assert!(
+        text.contains("CHANNEL_PLATFORM=linux-x64"),
+        "the installer expects the linux-x64 platform name; the release must publish that spelling"
+    );
+    let workflow = std::fs::read_to_string(repo_root().join(".github/workflows/release-fork.yml"))
+        .expect("read the fork release workflow");
+    assert!(
+        !workflow.contains("linux-x86_64"),
+        "the release workflow must not publish linux-x86_64: the installer's contract is linux-x64"
+    );
+    assert!(
+        workflow.contains("\"platform\": \"linux-x64\""),
+        "the channel manifest's platform row must match CHANNEL_PLATFORM"
+    );
+    for needle in [
+        "dist/stable",
+        "dist/latest.json",
+        "        stable\n",
+        "        latest.json\n",
+    ] {
+        assert!(
+            workflow.contains(needle),
+            "the archive upload must carry the channel assets ({needle} missing)"
+        );
+    }
+}
+
+/// The completion line names the product the user actually types.
+#[test]
+fn the_completion_line_names_the_installed_launcher() {
+    let text = installer_script_text();
+    assert!(
+        text.contains("Run %sallspark%s to start"),
+        "a fork install must tell the user to run allspark"
+    );
+    assert!(
+        text.contains("fork_layout") && text.contains("if [ \"$fork_layout\" = \"yes\" ]"),
+        "the naming must be branched on the fork layout, not applied unconditionally"
+    );
+}
+
+/// A fork build's `--version` answers `allspark <product> (fork build fork.NNN;
+/// upstream prime-agent <product>)`; the version pre-flight must compare the
+/// PRODUCT version, not the literal archive-name string.
+#[test]
+fn the_version_preflight_understands_the_fork_identity_line() {
+    let text = installer_script_text();
+    assert!(
+        text.contains("allspark\\ *)"),
+        "the pre-flight must recognise the fork identity line"
+    );
+    assert!(
+        text.contains("expected_version=\"${expected_version%-fork.*}\""),
+        "the pre-flight must strip the fork build id before comparing versions"
+    );
+}

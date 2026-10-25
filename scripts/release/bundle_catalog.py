@@ -110,6 +110,15 @@ def _is_finite_number(value) -> bool:
         and math.isfinite(value)
 
 
+# The providers only the fork ships (crates/pa-ai/src/models_fork.rs
+# `fork_providers()`). The release's bundled catalog must carry them: it is the
+# file that REPLACES the compiled catalog at runtime, so a release asset without
+# them hands the user a picker whose fork providers have no models.
+FORK_PROVIDERS = frozenset({
+    "muse", "codebuddy", "genspark", "subquadratic", "ninerouter", "opencode",
+})
+
+
 def validate_bundled_model_catalog(path: Path, allow_small_fixture: bool = False) -> dict:
     """Gate the bundled model catalog: envelope, per-entry schema, and the
     transport-tuple minimum.
@@ -178,6 +187,27 @@ def validate_bundled_model_catalog(path: Path, allow_small_fixture: bool = False
             f"Bundled model catalog has {len(tuples)} transport tuples; "
             f"expected at least {MIN_MODEL_TRANSPORT_TUPLES}"
         )
+    # THE FORK PROVIDERS (a packaging invariant, not a schema one): the bundled
+    # asset is step 2 of the no-cold-start chain and REPLACES the compiled
+    # catalog (`chain.rs`: `Some(bundled) => bundled`). The registry chains the
+    # fork table after it (`registry.rs:600`), so the fork's models survive — but
+    # only because of that chain. A release that ships an upstream-shaped asset
+    # (the fixture snapshot, or a channel fetch of upstream's catalog) still
+    # looks healthy here and in the picker the fork table is the ONLY reason the
+    # list is not empty; a packaging regression in that chain then presents as
+    # "the providers are there, the models are not" with no signal at all.
+    #
+    # A fixture packer passes `allow_small_fixture` and is exempt by design; a
+    # release (the default) must carry the fork's own providers.
+    if not allow_small_fixture:
+        present = {model["provider"] for model in catalog["models"]}
+        missing = sorted(FORK_PROVIDERS - present)
+        if missing:
+            fail(
+                "Bundled model catalog is missing the fork's providers "
+                f"{missing}: a release asset must carry them (chain.rs step 2 "
+                "replaces the compiled catalog with this file)"
+            )
     return {"models": len(catalog["models"]), "transportTuples": len(tuples)}
 
 

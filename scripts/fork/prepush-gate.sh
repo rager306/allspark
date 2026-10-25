@@ -14,7 +14,9 @@
 set -uo pipefail
 
 cd "$(dirname "$0")/../.." || exit 1
-ROOT="$PWD"
+# Exported: run_unit's per-unit disk floor runs under `xargs bash -c`, and an unexported
+# variable is empty there — `df` got an empty operand and the floor never fired (G-9).
+export ROOT
 OUT="$ROOT/.research/gate"
 mkdir -p "$OUT"
 FAST=0
@@ -73,6 +75,19 @@ unset PRIME_AGENT_SESSION_DIR PRIME_AGENT_DAEMON_SOCKET \
 fail=0
 step() { printf '\n=== %s\n' "$*"; }
 
+# The test-contract governor (doc/adr/0001). Runs FIRST because it costs ~2s and catches a
+# matrix/gate inconsistency that would otherwise surface after a forty-minute build. Its
+# findings are real defects in the tree, not style: a guard that cannot fail is the class that
+# produced both the inert disk floor below and the self-waiving catalog gate.
+step "test contract (governor)"
+if PYTHONPATH="$ROOT/scripts" python3 -m testgov ci >"$OUT/testgov.log" 2>&1; then
+  echo "testgov: ok"
+else
+  echo "testgov: FAILED (HIGH findings; see $OUT/testgov.log)"
+  grep -E '^\[HIGH\]' "$OUT/testgov.log" | head -20
+  fail=1
+fi
+
 step "fmt"
 if cargo fmt --all --check >"$OUT/fmt.log" 2>&1; then
   echo "fmt: ok"
@@ -95,6 +110,37 @@ fi
 if [[ $FAST -eq 1 ]]; then
   echo; echo "GATE GREEN (fast: fmt + clippy)"
   exit 0
+fi
+
+# Verification-ladder layers below clippy (doc/testing/test-matrix.yaml: MUT-loom-spinlock,
+# MUT-kani-robin-hood). Both are opt-in: loom needs the `loom` dev-dependency wired into
+# pa-mem's spinlock/refcount, Kani needs the kani toolchain. Each prints SKIPPED with the
+# reason instead of a fake green — a guard that cannot fail is the class testgov exists for.
+step "loom (pa-mem interleavings)"
+if cargo metadata --no-deps --format-version 1 2>/dev/null | rg -q '"loom"'; then
+  if ! cargo test -p pa-mem --features loom -- --test-threads=1 >"$OUT/loom.log" 2>&1; then
+    echo "loom: FAILED (see $OUT/loom.log)"; sed -n '1,20p' "$OUT/loom.log"; fail=1
+  else
+    echo "loom: ok"
+  fi
+else
+  echo "loom: SKIPPED (no loom dev-dependency in pa-mem yet — matrix row MUT-loom-spinlock)"
+fi
+
+step "kani (pa-mem robin_hood)"
+if command -v cargo-kani >/dev/null 2>&1 || cargo kani --version >/dev/null 2>&1; then
+  if ! cargo kani -p pa-mem --harness verify_robin_hood_delete >"$OUT/kani.log" 2>&1; then
+    echo "kani: FAILED (see $OUT/kani.log)"; sed -n '1,20p' "$OUT/kani.log"; fail=1
+  else
+    echo "kani: ok"
+  fi
+else
+  echo "kani: SKIPPED (toolchain absent — matrix row MUT-kani-robin-hood, advisory)"
+fi
+
+if [[ $fail -ne 0 ]]; then
+  echo; echo "GATE RED (verification ladder). Logs: $OUT"
+  exit 1
 fi
 
 free_gb=$(df -BG --output=avail "$ROOT" | tail -1 | tr -dc '0-9')
