@@ -839,8 +839,14 @@ def generate_bundled_catalog_assets(options) -> dict:
             "MCP service")
         targets["models.bundled.json"].write_text(model_body)
         targets["mcp-services.bundled.json"].write_text(mcp_body)
-    allow_small = options.allow_small_fixture or options.fixture
-    result = validate_bundled_catalog_dir(out_dir, allow_small_fixture=allow_small)
+    if options.fixture:
+        # The fixture is synthetic by design, so the producer does not
+        # validate what it just wrote: a producer waiving its own gate is the
+        # inert-guard defect. The consumer validates it explicitly — the
+        # packer with --allow-fixture-catalog, or verify with
+        # --verify-fixture.
+        return {"outDir": str(out_dir), "fixture": True}
+    result = validate_bundled_catalog_dir(out_dir)
     result["outDir"] = str(out_dir)
     return result
 

@@ -394,7 +394,7 @@ mod concurrency_tests {
         );
     }
 
-    /// try_lock returns Some exactly once while the lock is held.
+    /// `try_lock` returns Some exactly once while the lock is held.
     #[test]
     fn try_lock_fails_while_held() {
         let lock = SpinLock::new();

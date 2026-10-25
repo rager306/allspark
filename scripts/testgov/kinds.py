@@ -624,6 +624,32 @@ class SettingsHaveConsumers(Check):
                 continue
             if not any(field in name for name in accessed_names):
                 unread.append(field)
+        if unread:
+            # FIFTH access shape (found the hard way): the getter-mediated
+            # alias. A legacy field can be consumed ONLY through an accessor
+            # that reads it inside settings/ — `get_image_model()` falls back
+            # to `provider_backup_model`, `get_onboarding_shown()` to
+            # `onboarding_completed`. The field identifier never appears
+            # outside settings/, but the accessor's own name does. A field is
+            # mediated-read when a settings accessor's body mentions it AND
+            # that accessor's name is referenced in the outside corpus. The
+            # accessor block split rides the module's uniform 4-space `pub fn`
+            # layout; a name is only credited when it is actually referenced
+            # outside, so an accessor no one calls still reports.
+            manager = ctx.read("crates/pa-core/src/settings/manager.rs") or ""
+            mediated: set[str] = set()
+            blocks = re_module.split(r"\n    (?:pub )?fn ", manager)
+            for block in blocks:
+                name_match = re_module.match(r"([a-z][a-z0-9_]*)", block)
+                if not name_match:
+                    continue
+                accessor = name_match.group(1)
+                if accessor not in accessed_names:
+                    continue
+                for field in list(unread):
+                    if field in block:
+                        mediated.add(field)
+                        unread.remove(field)
         for field in unread:
             result.findings.append(Finding(
                 self.name, Severity.HIGH, "setting-without-consumer",

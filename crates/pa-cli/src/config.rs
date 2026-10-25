@@ -47,11 +47,17 @@ pub const ENV_LEGACY_SESSION_DIR: &str = "PRIME_AGENT_CODING_AGENT_SESSION_DIR";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The splash version: the product version carrying the fork build id
-/// (`0.10.0-fork.3` stamped, `0.10.0-dev` unstamped), so the brand splash
-/// distinguishes fork binaries at a glance.
+/// (`0.10.0-fork.3` stamped, `0.10.0-dev` unstamped) plus the content hash
+/// as semver build metadata (`+917aea8008db`) when the build has one — the
+/// hash is what tells two builds of the same release apart at a glance.
 #[must_use]
 pub fn splash_version() -> String {
-    format!("{}-{}", version(), fork_build())
+    let hash = build_hash();
+    if hash.is_empty() {
+        format!("{}-{}", version(), fork_build())
+    } else {
+        format!("{}-{}+{}", version(), fork_build(), hash)
+    }
 }
 
 /// The fork build identifier: stamped at build time via
@@ -169,17 +175,24 @@ pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn splash_version_carries_the_fork_build_id() {
-        // The splash must distinguish fork binaries: the compiled-in product
-        // version followed by the fork build id (stamped or "dev").
+    fn splash_version_carries_the_fork_build_id_and_the_content_hash() {
+        // The splash must distinguish fork binaries: the product version, the
+        // fork build id (stamped or "dev"), and the content hash as semver
+        // build metadata (in-tree builds always resolve a hash; `dev` builds
+        // of the same release differ exactly there).
         let splash = crate::config::splash_version();
+        let hash = crate::config::build_hash();
         assert!(
-            splash.starts_with(&format!("{}-", crate::config::version())),
-            "splash version must extend the product version: {splash}"
+            splash.starts_with(&format!(
+                "{}-{}",
+                crate::config::version(),
+                crate::config::fork_build()
+            )),
+            "splash version must extend the product version + fork build id: {splash}"
         );
         assert!(
-            splash.ends_with(crate::config::fork_build()),
-            "splash version must end with the fork build id: {splash}"
+            !hash.is_empty() && splash.ends_with(&format!("+{hash}")),
+            "splash version must end with the content hash: {splash}"
         );
     }
 
