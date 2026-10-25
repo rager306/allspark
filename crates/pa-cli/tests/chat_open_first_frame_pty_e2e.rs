@@ -17,17 +17,20 @@
 
 #![cfg(unix)]
 
-use std::io::{BufRead, Read, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::io::{BufRead, Write};
+use std::os::fd::OwnedFd;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use nix::fcntl::{fcntl, FcntlArg::F_SETFL, OFlag};
 use nix::pty::{openpty, Winsize};
 use nix::unistd::Pid;
 use serde_json::{json, Value};
+
+mod support;
+
+use support::PtyReader;
 
 use pa_tui::interactive::{
     run_interactive, InteractiveOptions, ModelSelection, SessionSelection, UiMode,
@@ -77,10 +80,10 @@ fn chat_open_first_frame_pins_the_first_paint() {
 
     // The one complete frame: transcript, title row, and dock row all land;
     // each wait is an observable-readiness barrier, not a wall-clock window.
-    harness.wait_from_start("settled answer", "the transcript painted");
-    harness.wait_from_start("probe", "the pinned title row painted");
-    harness.wait_from_start("\u{25f7} 1 heartbeat", "the dock panel painted");
-    harness.wait_from_start("\x1b[>7u", "the kitty keyboard flags enabled");
+    harness.wait_from_start(b"settled answer", "the transcript painted");
+    harness.wait_from_start(b"probe", "the pinned title row painted");
+    harness.wait_from_start("\u{25f7} 1 heartbeat".as_bytes(), "the dock panel painted");
+    harness.wait_from_start(b"\x1b[>7u", "the kitty keyboard flags enabled");
 
     // Let the surface settle so the audit covers every repaint the open can produce, then read the
     // whole byte stream.
@@ -174,7 +177,7 @@ impl ChatOpenHarness {
         }
     }
 
-    fn wait_from_start(&mut self, needle: &str, what: &str) {
+    fn wait_from_start(&mut self, needle: &[u8], what: &str) {
         self.master.wait_from(0, needle, what);
     }
 
@@ -190,65 +193,6 @@ impl ChatOpenHarness {
         let _ = self.child.kill();
         // Reap the child so no zombie is left behind.
         let _ = self.child.wait();
-    }
-}
-
-/// Non-blocking reader over the pty master, collecting the raw byte stream the child writes.
-struct PtyReader {
-    file: std::fs::File,
-    output: Vec<u8>,
-}
-
-impl PtyReader {
-    fn new(master: OwnedFd) -> PtyReader {
-        let fd = master.as_raw_fd();
-        fcntl(fd, F_SETFL(OFlag::O_NONBLOCK)).expect("pty master non-blocking");
-        PtyReader {
-            file: master.into(),
-            output: Vec::new(),
-        }
-    }
-
-    /// Drain the master until it goes quiet for `quiet_polls` consecutive polls: a
-    /// settle window keeps every later byte (the pty driver drops writes that find
-    /// its kernel-side buffer full).
-    fn drain_until_quiet(&mut self, quiet_polls: usize) {
-        let mut quiet = 0;
-        while quiet < quiet_polls {
-            let mut buffer = [0u8; 8192];
-            match self.file.read(&mut buffer) {
-                Ok(0) | Err(_) => quiet += 1,
-                Ok(n) => {
-                    self.output.extend_from_slice(&buffer[..n]);
-                    quiet = 0;
-                }
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-    }
-
-    /// Drain the master until the needle appears in the output collected since the given mark,
-    /// bounded by a generous harness deadline.
-    fn wait_from(&mut self, mark: usize, needle: &str, what: &str) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            if find_subsequence(&self.output[mark..], needle.as_bytes()).is_some() {
-                return;
-            }
-            let mut buffer = [0u8; 8192];
-            let result = self.file.read(&mut buffer);
-            match result {
-                Ok(0) | Err(_) => {}
-                Ok(n) => self.output.extend_from_slice(&buffer[..n]),
-            }
-            if Instant::now() > deadline {
-                let text = String::from_utf8_lossy(&self.output[mark..]);
-                panic!(
-                    "timeout waiting for {what} (needle {needle:?}); pty tail since mark:\n{text}"
-                );
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
     }
 }
 

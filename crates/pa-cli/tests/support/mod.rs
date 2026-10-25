@@ -106,6 +106,13 @@ impl PtyReader {
         self.file.write_all(payload).expect("write to the pty");
     }
 
+    /// A write that tolerates the child being gone: a closed master fails
+    /// with EIO — no answer, not a failure.
+    pub fn try_write(&mut self, payload: &[u8]) {
+        let _ = self.file.write_all(payload);
+        let _ = self.file.flush();
+    }
+
     pub fn put(&mut self, ch: char) {
         if self.row < self.rows && self.col < self.cols {
             self.grid[self.row][self.col] = ch;
@@ -233,15 +240,39 @@ impl PtyReader {
             .join("\n")
     }
 
-    /// Read whatever the child produced since the last poll (the child
-    /// lifecycle helpers in the tests pump between `try_wait` polls).
-    pub fn pump(&mut self) {
+    /// One non-blocking read; `Ok(0)` when nothing was pending (the caller
+    /// waits) — the drive-cycle helpers poll the master directly.
+    pub fn try_read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.file.read(buffer)
+    }
+
+    /// Read whatever the child produced since the last poll. One 8 KiB
+    /// bufferful per call for the bounded-wait loops; `drain` (the callers
+    /// that must empty the kernel buffer) loops it.
+    /// `Ok(bytes read)`; 0 = nothing pending.
+    pub fn pump(&mut self) -> usize {
         let mut buffer = [0u8; 8192];
         match self.file.read(&mut buffer) {
-            Ok(0) | Err(_) => {}
+            Ok(0) | Err(_) => 0,
             Ok(n) => {
                 self.output.extend_from_slice(&buffer[..n]);
                 self.feed(&buffer[..n]);
+                n
+            }
+        }
+    }
+
+    /// Drain every pending byte (the bounded-query race: a wait that sleeps
+    /// between 8 KiB reads loses a 250 ms window against a 128 KiB burst).
+    pub fn drain(&mut self) {
+        loop {
+            let mut buffer = [0u8; 8192];
+            match self.file.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    self.output.extend_from_slice(&buffer[..n]);
+                    self.feed(&buffer[..n]);
+                }
             }
         }
     }
@@ -293,12 +324,14 @@ impl PtyReader {
             if let Some(at) = self.find_since(0, needle) {
                 return at;
             }
-            self.pump();
+            let read = self.pump();
             if Instant::now() > deadline {
                 self.dump_artifacts(what);
                 panic!("timeout waiting for {what} (needle {needle:?})");
             }
-            std::thread::sleep(Duration::from_millis(20));
+            if read < 8192 {
+                std::thread::sleep(Duration::from_millis(20));
+            }
         }
     }
 
@@ -310,12 +343,14 @@ impl PtyReader {
             if let Some(at) = self.find_since(mark, needle) {
                 return at;
             }
-            self.pump();
+            let read = self.pump();
             if Instant::now() > deadline {
                 self.dump_artifacts(what);
                 panic!("timeout waiting for {what} (needle {needle:?} after mark {mark})");
             }
-            std::thread::sleep(Duration::from_millis(20));
+            if read < 8192 {
+                std::thread::sleep(Duration::from_millis(20));
+            }
         }
     }
 

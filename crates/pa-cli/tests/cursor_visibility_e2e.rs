@@ -16,8 +16,8 @@
 
 #![cfg(unix)]
 
-use std::io::{BufRead, Read, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::io::{BufRead, Write};
+use std::os::fd::OwnedFd;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};

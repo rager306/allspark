@@ -29,8 +29,8 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use harness::{
-    child_options, find_subsequence, harness_lock, quiet_child_epilogue, spawn_child, view_options,
-    ChildSpec, DifferentialHarness, PtyReader, Termios,
+    child_options, harness_lock, quiet_child_epilogue, spawn_child, view_options, ChildSpec,
+    DifferentialHarness, PtyReader, Termios,
 };
 use ledger::ModeLedger;
 
@@ -703,7 +703,7 @@ fn the_late_kitty_answer_inside_the_exit_window_is_stood_down() {
 
     let stream = harness.output();
     assert!(
-        find_subsequence(&stream, KITTY_FLAGS_PUSH).is_none(),
+        harness::find_subsequence(&stream, KITTY_FLAGS_PUSH).is_none(),
         "the late answer pushed the kitty flags after the exit standdown"
     );
     harness.assert_terminal_state_restored("the late kitty answer inside the exit window");

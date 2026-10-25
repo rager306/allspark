@@ -15,14 +15,12 @@
 //! re-executed under the pty as the product under test).
 
 use std::io::{BufRead, Read, Write};
-use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use nix::fcntl::{fcntl, FcntlArg::F_SETFL, OFlag};
-use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use nix::pty::{openpty, Winsize};
 use serde_json::{json, Value};
 
@@ -30,9 +28,14 @@ use pa_tui::agents_view::AgentsViewOptions;
 use pa_tui::interactive::{InteractiveOptions, ModelSelection, SessionSelection};
 
 use crate::ledger::ModeLedger;
+
+#[path = "../support/mod.rs"]
+mod support;
+
 use crate::{
     CHILD_MODE_ENV, CHILD_SOCKET_ENV, CHILD_TERM, KITTY_ANSWER, KITTY_FLAGS_PUSH, KITTY_QUERY,
 };
+pub(crate) use support::{find_subsequence, PtyReader};
 
 // The pty harness.
 
@@ -201,94 +204,6 @@ pub(crate) fn harness_lock() -> std::sync::MutexGuard<'static, ()> {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     }
-}
-
-/// Non-blocking reader over the pty master (the mock terminal's tape).
-pub(crate) struct PtyReader {
-    pub(crate) file: std::fs::File,
-    pub(crate) output: Vec<u8>,
-}
-
-impl PtyReader {
-    pub(crate) fn new(master: OwnedFd) -> PtyReader {
-        let fd = master.as_raw_fd();
-        fcntl(fd, F_SETFL(OFlag::O_NONBLOCK)).expect("pty master non-blocking");
-        PtyReader {
-            file: master.into(),
-            output: Vec::new(),
-        }
-    }
-
-    pub(crate) fn mark(&self) -> usize {
-        self.output.len()
-    }
-
-    pub(crate) fn write(&mut self, payload: &[u8]) {
-        self.file.write_all(payload).expect("write to the pty");
-    }
-
-    /// A write that tolerates the child being gone: a closed master fails
-    /// with EIO — no answer, not a failure.
-    pub(crate) fn try_write(&mut self, payload: &[u8]) {
-        let _ = self.file.write_all(payload);
-        let _ = self.file.flush();
-    }
-
-    /// Drain the master until it goes quiet for `quiet_polls` consecutive
-    /// polls: a settle window keeps every later byte.
-    pub(crate) fn drain_until_quiet(&mut self, quiet_polls: usize) {
-        let mut quiet = 0;
-        while quiet < quiet_polls {
-            let mut buffer = [0u8; 8192];
-            match self.file.read(&mut buffer) {
-                Ok(0) | Err(_) => quiet += 1,
-                Ok(n) => {
-                    self.output.extend_from_slice(&buffer[..n]);
-                    quiet = 0;
-                }
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-    }
-
-    /// Drain the master until the needle appears since the given mark.
-    pub(crate) fn wait_from(&mut self, mark: usize, needle: &[u8], what: &str) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            if find_subsequence(&self.output[mark..], needle).is_some() {
-                return;
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                let text = String::from_utf8_lossy(&self.output[mark..]);
-                panic!(
-                    "timeout waiting for {what} (needle {needle:?}); pty tail \
-                     since mark:\n{text}"
-                );
-            }
-            let mut ready = [PollFd::new(self.file.as_fd(), PollFlags::POLLIN)];
-            let timeout = PollTimeout::try_from(remaining).expect("the 30s readiness bound fits");
-            match poll(&mut ready, timeout) {
-                Ok(0) | Err(nix::errno::Errno::EINTR) => continue,
-                Ok(_) => {}
-                Err(error) => panic!("polling the pty while waiting for {what}: {error}"),
-            }
-            let mut buffer = [0u8; 8192];
-            match self.file.read(&mut buffer) {
-                Ok(0) | Err(_) => {}
-                Ok(n) => self.output.extend_from_slice(&buffer[..n]),
-            }
-        }
-    }
-}
-
-pub(crate) fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() {
-        return None;
-    }
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
 }
 
 /// A mock terminal must not spend the real probe window sleeping through

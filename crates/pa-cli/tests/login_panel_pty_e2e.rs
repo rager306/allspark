@@ -16,13 +16,11 @@
 //! release — while the panel and the team picker render inline.
 #![cfg(unix)]
 
-use std::io::{BufRead, Read, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::io::{BufRead, Write};
+use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
 
-use nix::fcntl::{fcntl, FcntlArg::F_SETFL, OFlag};
 use nix::pty::{openpty, Winsize};
 use serde_json::{json, Value};
 

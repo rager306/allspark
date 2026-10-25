@@ -29,17 +29,20 @@
 
 #![cfg(unix)]
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::io::{BufRead, BufReader, Write};
+use std::os::fd::OwnedFd;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use nix::fcntl::{fcntl, FcntlArg::F_SETFL, OFlag};
 use nix::pty::{openpty, Winsize};
 use serde_json::{json, Value};
+
+mod support;
+
+use support::PtyReader;
 
 use pa_tui::interactive::{
     run_interactive, InteractiveOptions, ModelSelection, SessionSelection, UiMode,
@@ -54,15 +57,8 @@ const CHILD_SOCKET_ENV: &str = "PA_INPUT_LIVE_CHILD_SOCKET";
 /// keystrokes are expected to echo.
 const OPEN_STALL_MS: u64 = 2_500;
 
-/// The echo deadline: the keystroke echo must land while the attach is
-/// still stalled, well inside the stall window.
-const ECHO_DEADLINE_MS: u64 = 1_500;
-
 /// The pty window the child renders into (a 0x0 pty renders nothing; the
 /// grid the echo oracle reads matches the window the child lays out).
-const PTY_ROWS: usize = 24;
-const PTY_COLS: usize = 80;
-
 /// The child half of the e2e: runs the real interactive loop in terminal
 /// mode against the parent's mock supervisor. A plain `cargo test` run
 /// (no `CHILD_SOCKET_ENV`) passes trivially — only the parent test drives
@@ -109,12 +105,12 @@ fn typing_echoes_while_the_session_open_is_stalled() {
 
     // Type while the open is still stalled. The echo must land inside the
     // echo deadline — far inside the attach's stall window.
-    harness.type_text("zzq");
+    harness.write_typed("zzq");
     let echo_at = harness.wait_from_start("zzq", "the keystroke echoed while the open was stalled");
 
     // The queued submit: the typed-ahead text plus Enter ride the opening
     // phase's queue and dispatch once the session lands.
-    harness.type_text("\r");
+    harness.write_typed("\r");
 
     // Let the stalled attach land and the fold run.
     let content_at = harness.wait_from_start(
@@ -179,6 +175,14 @@ struct InputLiveHarness {
 }
 
 impl InputLiveHarness {
+    fn write_typed(&mut self, text: &str) {
+        self.master.write_typed(text);
+    }
+
+    fn wait_from_start(&mut self, needle: &str, what: &str) -> usize {
+        self.master.wait_for_screen(needle, what, 30_000)
+    }
+
     fn start(commands: Arc<Mutex<Vec<String>>>) -> InputLiveHarness {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let socket = dir.path().join("tui.sock");
@@ -212,19 +216,6 @@ impl InputLiveHarness {
             master: PtyReader::new(pty.master),
         }
     }
-
-    fn type_text(&mut self, text: &str) {
-        // The typed bytes must land on the child's stdin (the pty slave):
-        // write to the master.
-        self.master.write_typed(text);
-    }
-
-    /// Wait for a needle in the rendered grid; returns the raw byte
-    /// offset at which it first became visible (the ordering oracle).
-    fn wait_from_start(&mut self, needle: &str, what: &str) -> usize {
-        self.master
-            .wait_for(needle, what, ECHO_DEADLINE_MS * 3 + OPEN_STALL_MS * 2)
-    }
 }
 
 impl Drop for InputLiveHarness {
@@ -241,205 +232,6 @@ impl Drop for InputLiveHarness {
             if let Some(server) = self.server.take() {
                 let _ = server.join();
             }
-        }
-    }
-}
-
-/// The rendered screen (a minimal ANSI grid renderer, the probe doc's
-/// detection method): the TUI draws char-by-char with cursor moves, so a
-/// needle must be matched against the RENDERED grid — a raw byte search
-/// false-negatives whenever the wordmark, a name, or an editor echo is
-/// painted glyph-by-glyph with cursor hops between them.
-struct PtyReader {
-    file: std::fs::File,
-    /// The raw byte stream (kept for the panic dump).
-    output: Vec<u8>,
-    rows: usize,
-    cols: usize,
-    grid: Vec<Vec<char>>,
-    row: usize,
-    col: usize,
-}
-
-impl PtyReader {
-    fn new(master: OwnedFd) -> PtyReader {
-        let fd = master.as_raw_fd();
-        fcntl(fd, F_SETFL(OFlag::O_NONBLOCK)).expect("pty master non-blocking");
-        PtyReader {
-            file: master.into(),
-            output: Vec::new(),
-            rows: PTY_ROWS,
-            cols: PTY_COLS,
-            grid: vec![vec![' '; PTY_COLS]; PTY_ROWS],
-            row: 0,
-            col: 0,
-        }
-    }
-
-    fn write_typed(&mut self, text: &str) {
-        self.file.write_all(text.as_bytes()).expect("type text");
-    }
-
-    fn put(&mut self, ch: char) {
-        if self.row < self.rows && self.col < self.cols {
-            self.grid[self.row][self.col] = ch;
-        }
-        self.col = (self.col + 1).min(self.cols - 1);
-    }
-
-    /// Feed the raw bytes through the grid: text lands at the cursor, CSI
-    /// cursor/erase sequences move or clear it, and every other escape
-    /// (SGR, private modes, OSC) is consumed.
-    fn feed(&mut self, data: &[u8]) {
-        let bytes = data;
-        let mut i = 0;
-        while i < bytes.len() {
-            let byte = bytes[i];
-            if byte == 0x1b {
-                match bytes.get(i + 1) {
-                    Some(b'[') => {
-                        // CSI: consume the parameter bytes, then the final.
-                        let mut j = i + 2;
-                        let start = j;
-                        while j < bytes.len() && !(0x40..=0x7e).contains(&bytes[j]) {
-                            j += 1;
-                        }
-                        if j >= bytes.len() {
-                            break;
-                        }
-                        self.csi(&String::from_utf8_lossy(&bytes[start..j]), bytes[j]);
-                        i = j + 1;
-                    }
-                    Some(b']') => {
-                        // OSC: consumed through its BEL or ST terminator
-                        // (a fresh ESC starts a new sequence instead).
-                        let mut j = i + 2;
-                        let mut consumed = false;
-                        while j < bytes.len() {
-                            if bytes[j] == 0x07 {
-                                i = j + 1;
-                                consumed = true;
-                                break;
-                            }
-                            if bytes[j] == 0x1b {
-                                let terminator = bytes.get(j + 1) == Some(&b'\\');
-                                i = if terminator { j + 2 } else { j };
-                                consumed = true;
-                                break;
-                            }
-                            j += 1;
-                        }
-                        if !consumed {
-                            i = j;
-                        }
-                    }
-                    // A two-byte escape the grid does not model (ESC (, ESC =,
-                    // ...): skip the pair.
-                    Some(_) => i += 2,
-                    None => break,
-                }
-                continue;
-            }
-            match byte {
-                b'\n' => {
-                    self.row = (self.row + 1).min(self.rows - 1);
-                    i += 1;
-                }
-                b'\r' => {
-                    self.col = 0;
-                    i += 1;
-                }
-                byte if byte < 0x20 => i += 1,
-                byte if byte < 0x80 => {
-                    self.put(byte as char);
-                    i += 1;
-                }
-                _ => {
-                    // Multi-byte UTF-8: decode the full code point.
-                    let len = if byte < 0xe0 {
-                        2
-                    } else if byte < 0xf0 {
-                        3
-                    } else {
-                        4
-                    };
-                    let end = (i + len).min(bytes.len());
-                    if let Ok(text) = std::str::from_utf8(&bytes[i..end]) {
-                        if let Some(ch) = text.chars().next() {
-                            self.put(ch);
-                        }
-                    }
-                    i = end;
-                }
-            }
-        }
-    }
-
-    fn csi(&mut self, params: &str, final_byte: u8) {
-        let params = params.trim_start_matches(['?', '>', '<', '=']);
-        let number = |index: usize, default: usize| -> usize {
-            params
-                .split(';')
-                .nth(index)
-                .and_then(|value| value.parse::<usize>().ok())
-                .unwrap_or(default)
-        };
-        match final_byte {
-            b'H' | b'f' => {
-                self.row = number(0, 1).saturating_sub(1).min(self.rows - 1);
-                self.col = number(1, 1).saturating_sub(1).min(self.cols - 1);
-            }
-            b'A' => self.row = self.row.saturating_sub(number(0, 1)),
-            b'B' => self.row = (self.row + number(0, 1)).min(self.rows - 1),
-            b'C' => self.col = (self.col + number(0, 1)).min(self.cols - 1),
-            b'D' => self.col = self.col.saturating_sub(number(0, 1)),
-            b'G' => self.col = number(0, 1).saturating_sub(1).min(self.cols - 1),
-            b'J' => {
-                let mode = number(0, 0);
-                if mode == 2 || mode == 3 {
-                    self.grid = vec![vec![' '; self.cols]; self.rows];
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// The rendered grid as text (trailing blanks trimmed per row).
-    fn rendered(&self) -> String {
-        self.grid
-            .iter()
-            .map(|row| row.iter().collect::<String>())
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    /// Drain the master until the needle appears in the RENDERED grid,
-    /// bounded by the given window; returns the raw byte offset at which
-    /// the needle first became visible (the ordering oracle's evidence).
-    fn wait_for(&mut self, needle: &str, what: &str, window_ms: u64) -> usize {
-        let deadline = Instant::now() + Duration::from_millis(window_ms);
-        let mut seen_at = None;
-        loop {
-            if seen_at.is_none() && self.rendered().contains(needle) {
-                seen_at = Some(self.output.len());
-            }
-            if let Some(at) = seen_at {
-                return at;
-            }
-            let mut buffer = [0u8; 8192];
-            match self.file.read(&mut buffer) {
-                Ok(0) | Err(_) => {}
-                Ok(n) => {
-                    self.output.extend_from_slice(&buffer[..n]);
-                    self.feed(&buffer[..n]);
-                }
-            }
-            if Instant::now() > deadline {
-                let screen = self.rendered();
-                let stream = String::from_utf8_lossy(&self.output);
-                panic!("timeout waiting for {what} (needle {needle:?}); rendered screen:\n{screen}\npty stream:\n{stream}");
-            }
-            std::thread::sleep(Duration::from_millis(20));
         }
     }
 }

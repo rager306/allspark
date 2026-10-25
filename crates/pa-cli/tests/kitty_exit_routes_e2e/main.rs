@@ -15,14 +15,13 @@
 //! stack is empty and a synthetic up arrow echoes back clean.
 #![cfg(unix)]
 
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use nix::fcntl::{fcntl, FcntlArg::F_SETFL, OFlag};
 use nix::pty::{openpty, Winsize};
 use serde_json::{json, Value};
 
@@ -668,73 +667,6 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     find_subsequence_from(haystack, 0, needle).is_some()
 }
 
-/// Non-blocking reader over the pty master, collecting the child's whole byte stream.
-struct PtyReader {
-    file: std::fs::File,
-    output: Vec<u8>,
-}
-
-impl PtyReader {
-    fn new(master: OwnedFd) -> PtyReader {
-        let fd = master.as_raw_fd();
-        fcntl(fd, F_SETFL(OFlag::O_NONBLOCK)).expect("pty master non-blocking");
-        PtyReader {
-            file: master.into(),
-            output: Vec::new(),
-        }
-    }
-
-    fn mark(&self) -> usize {
-        self.output.len()
-    }
-
-    /// One non-blocking read; `Ok(0)` when nothing was pending (the caller waits).
-    fn try_read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        self.file.read(buffer)
-    }
-
-    fn write(&mut self, payload: &[u8]) {
-        self.file.write_all(payload).expect("write to the pty");
-    }
-
-    fn drain_until_quiet(&mut self, quiet_polls: usize) {
-        let mut quiet = 0;
-        while quiet < quiet_polls {
-            let mut buffer = [0u8; 8192];
-            match self.file.read(&mut buffer) {
-                Ok(0) | Err(_) => quiet += 1,
-                Ok(n) => {
-                    self.output.extend_from_slice(&buffer[..n]);
-                    quiet = 0;
-                }
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-    }
-
-    fn wait_from(&mut self, mark: usize, needle: &[u8], what: &str) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            if find_subsequence_from(&self.output, mark, needle).is_some() {
-                return;
-            }
-            let mut buffer = [0u8; 8192];
-            let result = self.file.read(&mut buffer);
-            match result {
-                Ok(0) | Err(_) => {}
-                Ok(n) => self.output.extend_from_slice(&buffer[..n]),
-            }
-            if Instant::now() > deadline {
-                let text = String::from_utf8_lossy(&self.output[mark..]);
-                panic!(
-                    "timeout waiting for {what} (needle {needle:?}); pty tail since mark:\n{text}"
-                );
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-}
-
 /// A child of this very binary, re-executed in child mode with the pty slave
 /// as its CONTROLLING terminal (setsid + TIOCSCTTY).
 fn spawn_child(route: Route, socket: &Path, slave: &OwnedFd, known_terminal: bool) -> Child {
@@ -785,3 +717,7 @@ fn slave_as_stdio(slave: &OwnedFd) -> Stdio {
 }
 mod child;
 use child::{child_run, MockSupervisor};
+
+#[path = "../support/mod.rs"]
+mod support;
+use support::PtyReader;
