@@ -61,6 +61,9 @@ struct FakeSupervisorScript {
     child: FakeChild,
     child_subagents: Arc<FakeChildSubagents>,
     peers: Arc<std::sync::Mutex<Vec<Value>>>,
+    /// The `create` requests the fake received (the child config the host
+    /// sent), for tests that assert on what the spawn admitted.
+    creates: Arc<std::sync::Mutex<Vec<Value>>>,
 }
 
 async fn spawn_fake_supervisor(
@@ -75,6 +78,7 @@ async fn spawn_fake_supervisor(
         child,
         child_subagents,
         peers,
+        creates,
     } = script;
     let kill_behavior = std::sync::Arc::new(kill_behavior);
     // Per-fake child session file: a fixed path would let a leftover file
@@ -110,6 +114,7 @@ async fn spawn_fake_supervisor(
             let child_session_file = std::sync::Arc::clone(&child_session_file);
             let child_subagents = Arc::clone(&child_subagents);
             let peers = Arc::clone(&peers);
+            let creates = Arc::clone(&creates);
             tokio::spawn(async move {
                 let (reader, mut writer) = stream.split();
                 let mut reader = BufReader::new(reader);
@@ -165,16 +170,19 @@ async fn spawn_fake_supervisor(
                                 None,
                             )
                         }
-                        "create" => response_success(
-                            Some(&id),
-                            command_type,
-                            Some(json!({
-                                "activeSessionId": "child-live",
-                                "sessionId": "child-file",
-                                "sessionFile": *child_session_file,
-                                "sessionName": "f20-worker",
-                            })),
-                        ),
+                        "create" => {
+                            creates.lock().unwrap().push(command.clone());
+                            response_success(
+                                Some(&id),
+                                command_type,
+                                Some(json!({
+                                    "activeSessionId": "child-live",
+                                    "sessionId": "child-file",
+                                    "sessionFile": *child_session_file,
+                                    "sessionName": "f20-worker",
+                                })),
+                            )
+                        }
                         "prompt" => {
                             if let Some(gate) = child_subagents
                                 .prompt_gate
@@ -394,6 +402,7 @@ async fn sessions_with_fake_child_subagents(
             child,
             child_subagents,
             peers: Arc::new(std::sync::Mutex::new(Vec::new())),
+            creates: Arc::new(std::sync::Mutex::new(Vec::new())),
         },
     )
     .await;
@@ -453,6 +462,7 @@ async fn sessions_with_roster_peers(
             child: FakeChild::Healthy,
             child_subagents: Arc::new(FakeChildSubagents::default()),
             peers,
+            creates: Arc::new(std::sync::Mutex::new(Vec::new())),
         },
     )
     .await;
@@ -587,6 +597,7 @@ async fn a_delayed_roster_reply_keeps_the_newer_settled_observation() {
             child: FakeChild::Healthy,
             child_subagents: state,
             peers: Arc::clone(&peers),
+            creates: Arc::new(std::sync::Mutex::new(Vec::new())),
         },
     )
     .await;
@@ -2776,4 +2787,132 @@ async fn the_unreachable_give_up_skips_the_exit_capture_when_a_capture_stands() 
     assert_eq!(record.answer_preview.as_deref(), Some("the captured say"));
     assert_eq!(record.answer_text.as_deref(), Some("the captured say"));
     assert!(record.answer_captured);
+}
+
+/// The isolated-agent-dir variant of the watcher fixture: the spawn path
+/// reads `subagentModel` from `agent_dir/settings.json`, so the ladder test
+/// points the host at a per-test directory instead of the machine temp dir.
+async fn sessions_with_agent_dir(
+    follow_up_tx: mpsc::UnboundedSender<Value>,
+    agent_dir: std::path::PathBuf,
+) -> (
+    SupervisorChildSessions,
+    mpsc::UnboundedReceiver<Value>,
+    Arc<std::sync::Mutex<Vec<Value>>>,
+) {
+    let socket = std::env::temp_dir().join(format!(
+        "pa-rlm-ladder-{}.sock",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let (kill_tx, kill_rx) = mpsc::unbounded_channel();
+    let creates = Arc::new(std::sync::Mutex::new(Vec::new()));
+    spawn_fake_supervisor(
+        socket.clone(),
+        follow_up_tx,
+        0,
+        kill_tx,
+        FakeSupervisorScript {
+            kill: FakeKill::Success,
+            child: FakeChild::Healthy,
+            child_subagents: Arc::new(FakeChildSubagents::default()),
+            peers: Arc::new(std::sync::Mutex::new(Vec::new())),
+            creates: Arc::clone(&creates),
+        },
+    )
+    .await;
+    let link = Arc::new(crate::supervisor_link::SupervisorLink::new(socket));
+    let sessions = SupervisorChildSessions::new(
+        link,
+        agent_dir,
+        "parent-live".to_string(),
+        Arc::new(crate::model_allowlist::ModelRefusalTelemetry::new(
+            std::env::temp_dir(),
+            /*telemetry_disabled*/ true,
+        )),
+        String::new(),
+    );
+    sessions.set_identity(ParentIdentity {
+        model: Some("mock/mock-1".to_string()),
+        cwd: Some(std::env::temp_dir().to_string_lossy().to_string()),
+        ..ParentIdentity::with_default_depth()
+    });
+    (sessions, kill_rx, creates)
+}
+
+/// The `subagentModel` ladder feeds unpinned spawn resolution: the ladder's
+/// reference is absent from the (empty) catalog, so the spawn refuses naming
+/// it. Without the ladder wiring the spawn inherits the parent's model and
+/// succeeds, so this test goes red on unwired code.
+#[tokio::test]
+async fn spawn_without_model_resolves_the_subagent_model_ladder() {
+    let dir = tempfile::tempdir().expect("ladder fixture dir");
+    let agent_dir = dir.path().join("agent");
+    std::fs::create_dir_all(&agent_dir).expect("agent dir");
+    std::fs::write(
+        agent_dir.join("settings.json"),
+        r#"{"subagentModel":{"default":"mock/mock-ladder"}}"#,
+    )
+    .expect("ladder settings");
+    let (follow_up_tx, _follow_up_rx) = mpsc::unbounded_channel();
+    let (sessions, _kill_rx, _creates) = sessions_with_agent_dir(follow_up_tx, agent_dir).await;
+    let error = sessions
+        .spawn(RlmSpawnRequest {
+            prompt: "ladder child task".to_string(),
+            name: Some("ladder-worker".to_string()),
+            model: None,
+            thinking: None,
+            spawned_by_request_id: None,
+        })
+        .await
+        .expect_err("the ladder reference must feed resolution");
+    let rendered = format!("{error:#}");
+    assert!(
+        rendered.contains("mock/mock-ladder"),
+        "the refusal must name the ladder reference, got: {rendered}"
+    );
+}
+
+/// The pinned rung thinking reaches the child config when the spawn gives no
+/// level: the ladder's model resolves by parent equality (no catalog needed)
+/// and the child's create config carries the rung's level.
+#[tokio::test]
+async fn spawn_ladder_rung_pins_the_child_thinking() {
+    let dir = tempfile::tempdir().expect("ladder fixture dir");
+    let agent_dir = dir.path().join("agent");
+    std::fs::create_dir_all(&agent_dir).expect("agent dir");
+    std::fs::write(
+        agent_dir.join("settings.json"),
+        r#"{"subagentModel":{"default":{"model":"mock/mock-1","thinking":"high"}}}"#,
+    )
+    .expect("ladder settings");
+    let (follow_up_tx, _follow_up_rx) = mpsc::unbounded_channel();
+    let (sessions, _kill_rx, creates) = sessions_with_agent_dir(follow_up_tx, agent_dir).await;
+    let handle = sessions
+        .spawn(RlmSpawnRequest {
+            prompt: "ladder thinking task".to_string(),
+            name: Some("ladder-thinker".to_string()),
+            model: None,
+            thinking: None,
+            spawned_by_request_id: None,
+        })
+        .await
+        .expect("the parent-equality ladder model resolves");
+    assert_eq!(handle.model, "mock/mock-1");
+    // The create config the fake supervisor received carries the pinned level.
+    let create = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let snapshot = creates.lock().unwrap().len();
+            if snapshot > 0 {
+                return creates.lock().unwrap()[0].clone();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the create arrives");
+    let rendered = create.to_string();
+    assert!(
+        rendered.contains("\"thinking\":\"high\""),
+        "the child config must carry the rung's pinned thinking, got: {rendered}"
+    );
 }

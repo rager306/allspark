@@ -111,9 +111,29 @@ impl RlmSubagentHost for SupervisorChildSessions {
             let admission = async {
                 this.assert_name_available(&name, identity.rlm_depth + 1)
                     .await?;
+                // The `subagentModel` effort ladder (settings): an unpinned
+                // spawn resolves its model — and the rung's pinned thinking —
+                // from settings before the catalog resolution and the
+                // allowlist gate. The read is file I/O, so it runs on the
+                // blocking pool like the allowlist load below.
+                let ladder = {
+                    let ladder_cwd = identity.cwd.clone().unwrap_or_else(|| "/".to_string());
+                    let ladder_agent_dir = this.agent_dir.clone();
+                    let effort = request.thinking.clone();
+                    tokio::task::spawn_blocking(move || {
+                        pa_core::settings::SettingsManager::create(&ladder_cwd, &ladder_agent_dir)
+                            .get_subagent_model_for_effort(effort.as_deref())
+                    })
+                    .await
+                    .context("the subagent model ladder load task join failed")?
+                };
+                let reference = request
+                    .model
+                    .clone()
+                    .or_else(|| ladder.as_ref().map(|choice| choice.model.clone()));
                 let model = resolve_child_model_allowlisted(
                     &this,
-                    request.model.as_deref(),
+                    reference.as_deref(),
                     "spawn",
                     "subagent",
                 )
@@ -149,8 +169,18 @@ impl RlmSubagentHost for SupervisorChildSessions {
                 if !stagger.is_zero() {
                     tokio::time::sleep(stagger).await;
                 }
-                assert_thinking_supported(&this.agent_dir, request.thinking.as_deref(), &model)?;
-                let thinking = request.thinking.as_deref().or(identity.thinking.as_deref());
+                // Explicit spawn thinking wins; the ladder rung's pinned
+                // level is the settings' default for the effort; the parent's
+                // level is the last fallback. The assert covers exactly what
+                // the request and the settings contributed (the parent's
+                // level launched with the parent, so it stays unchecked, TS
+                // parity).
+                let rung_thinking = ladder
+                    .as_ref()
+                    .and_then(|choice| choice.thinking.as_deref());
+                let pinned_thinking = request.thinking.as_deref().or(rung_thinking);
+                assert_thinking_supported(&this.agent_dir, pinned_thinking, &model)?;
+                let thinking = pinned_thinking.or(identity.thinking.as_deref());
                 let child_dir = this.child_session_dir(&child_id, &identity)?;
                 let cwd = identity.cwd.clone().unwrap_or_else(|| "/".to_string());
                 let runtime_metadata = json!({
