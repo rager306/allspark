@@ -34,6 +34,7 @@ async fn list(options: &RunOptions) -> Result<i32, String> {
         registry
             .get_discoverable_models()
             .into_iter()
+            .filter(|model| pa_ai::serves_chat_turns(&model.api))
             .cloned()
             .collect()
     };

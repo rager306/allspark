@@ -100,6 +100,16 @@ fn picker_set_equality_holds_at_the_source_level() {
             model.provider,
             model.id
         );
+        // The picker surfaces only chat-capable dialects: a judgment-only
+        // model in the picker is a selection that fails on its first turn
+        // (the subq-snap-preview incident).
+        assert!(
+            pa_ai::serves_chat_turns(&model.api),
+            "judgment-only dialect in the discoverable set: {}/{} (api {})",
+            model.provider,
+            model.id,
+            model.api
+        );
     }
 
     // 2. The matrix parses.

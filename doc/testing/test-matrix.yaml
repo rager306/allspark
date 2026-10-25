@@ -289,12 +289,6 @@ rows:
       logic: [compare_exchange loops, guard release]
       semantics: [exactly one acquire per release, no lost wakeup]
       flow: [lock -> guard -> release]
-    status: gap
-    gate: advisory
-    owner: ADR-0001
-    source: >-
-      360 lines of hand-rolled atomic ordering; a bug here is invisible on
-      x86 and visible on aarch64-apple-darwin which we ship
     oracle: []
     kill_mutation: >-
       weaken the release ordering from Release to Relaxed in SpinGuard::drop; a loom
@@ -683,12 +677,6 @@ rows:
       logic: [compare_exchange loops, guard release]
       semantics: [exactly one acquire per release, no lost wakeup]
       flow: [lock -> guard -> release]
-    status: gap
-    gate: advisory
-    owner: ADR-0001
-    source: >-
-      360 lines of hand-rolled atomic ordering; a bug here is invisible on
-      x86 and visible on aarch64-apple-darwin which we ship
     oracle: []
     kill_mutation: >-
       weaken the release ordering from Release to Relaxed in SpinGuard::drop;

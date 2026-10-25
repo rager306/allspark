@@ -43,6 +43,15 @@ pub(crate) async fn set_model(
         .find(|candidate| candidate.provider == provider && candidate.id == model_id)
         .cloned()
         .ok_or_else(|| format!("Model not found: {provider}/{model_id}"))?;
+    // A dialect without a session provider can never serve a chat turn:
+    // refuse the switch instead of installing a target that fails on the
+    // first message (`typesafe` is the judgment dialect).
+    if !pa_ai::serves_chat_turns(&model.api) {
+        return Err(format!(
+            "Model {provider}/{model_id} does not serve chat turns (api {}).",
+            model.api
+        ));
+    }
     apply_model_selection(state, &mut registry, &model).await?;
     Ok(ResponseData::Present(
         serde_json::to_value(&model).unwrap_or(Value::Null),
@@ -159,6 +168,7 @@ pub(crate) async fn get_available_models(state: &Arc<RpcState>) -> Result<Respon
     let models: Vec<pa_types::ai::Model> = registry
         .get_discoverable_models()
         .into_iter()
+        .filter(|model| pa_ai::serves_chat_turns(&model.api))
         .cloned()
         .collect();
     let deprecated: Vec<(String, String)> = registry.deprecated_opencode_ids();

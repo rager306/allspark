@@ -1044,6 +1044,34 @@ mod tests {
     }
 
     #[test]
+    fn every_catalog_dialect_except_the_judgment_one_serves_chat_turns() {
+        // The picker filters on `serves_chat_turns`; the catalog cross-check
+        // keeps the predicate and the catalog in lockstep: a new chat dialect
+        // must join the predicate or its models silently vanish from every
+        // picker, and a judgment-only dialect must never leak back in.
+        for model in fork_provider_models() {
+            let expected = model.api != "typesafe";
+            assert_eq!(
+                crate::providers::serves_chat_turns(&model.api),
+                expected,
+                "{}/{} (api {})",
+                model.provider,
+                model.id,
+                model.api
+            );
+        }
+        let models = fork_provider_models();
+        let snap = models
+            .iter()
+            .find(|model| model.provider == "subquadratic")
+            .expect("the subquadratic catalog entry exists");
+        assert!(
+            !crate::providers::serves_chat_turns(&snap.api),
+            "the judgment dialect must never resolve as a chat backend"
+        );
+    }
+
+    #[test]
     fn muse_pins_the_responses_wire_and_the_api_version_header() {
         for model in fork_provider_models()
             .iter()
