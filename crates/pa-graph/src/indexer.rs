@@ -12,6 +12,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ignore::WalkBuilder;
+
+/// The per-repository graph ignore file (gitignore syntax, nearest wins). Owned
+/// by the graph, not git: it expresses "tracked but not code" and "ignored but
+/// graph-visible", which `.gitignore` cannot (issue #11).
+pub(crate) const GRAPHIGNORE_FILE: &str = ".graphignore";
 use rayon::prelude::*;
 use serde_json::json;
 
@@ -696,6 +701,14 @@ fn skip_reason(abs: &Path, opts: &IndexOptions) -> String {
 }
 
 /// Discover candidate source files under `root`.
+///
+/// Honours `.graphignore` (gitignore syntax, one per directory, nearest wins)
+/// independently of `respect_gitignore`: the file is the repository's own
+/// statement about what is *not code*, which gitignore cannot express for trees
+/// the repository tracks (see issue #11). The two mechanisms are ANDed — a file
+/// is a candidate only if neither excludes it — and a `!path` re-include in
+/// `.graphignore` wins over gitignore, because custom ignores take precedence
+/// in the `ignore` crate.
 pub(crate) fn discover(root: &Path, opts: &IndexOptions) -> Vec<PathBuf> {
     let mut builder = WalkBuilder::new(root);
     builder
@@ -703,7 +716,8 @@ pub(crate) fn discover(root: &Path, opts: &IndexOptions) -> Vec<PathBuf> {
         .git_ignore(opts.respect_gitignore)
         .git_global(opts.respect_gitignore)
         .git_exclude(opts.respect_gitignore)
-        .parents(opts.respect_gitignore);
+        .parents(opts.respect_gitignore)
+        .add_custom_ignore_filename(GRAPHIGNORE_FILE);
     let mut out = Vec::new();
     for entry in builder.build().flatten() {
         let path = entry.path();
@@ -711,6 +725,11 @@ pub(crate) fn discover(root: &Path, opts: &IndexOptions) -> Vec<PathBuf> {
             continue;
         }
         if path.components().any(|c| c.as_os_str() == ".git") {
+            continue;
+        }
+        // The rule file is not a symbol source: it would otherwise surface in
+        // `search` and `file_tree` like any other parsed file.
+        if path.file_name().is_some_and(|name| name == GRAPHIGNORE_FILE) {
             continue;
         }
         if pa_ast::SupportLang::from_path(path).is_none() {
