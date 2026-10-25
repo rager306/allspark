@@ -152,6 +152,7 @@ fn quick_policy() -> ProviderRetryPolicy {
         base_delay_ms: 2_000,
         max_retry_delay_ms: 60_000,
         max_delay_ms: UNBOUNDED_BACKOFF_MS,
+        max_wait_ms: UNBOUNDED_BACKOFF_MS,
     }
 }
 
@@ -517,6 +518,7 @@ async fn drill_a_wait_exceeding_the_cap_gives_up() {
         base_delay_ms: 2_000,
         max_retry_delay_ms: 60_000,
         max_delay_ms: UNBOUNDED_BACKOFF_MS,
+        max_wait_ms: UNBOUNDED_BACKOFF_MS,
     };
 
     let (message, observed) = run_quick(&model, &policy).await;
@@ -549,6 +551,7 @@ async fn transport_death_waits_only_for_the_configured_timeout() {
         base_delay_ms: 10,
         max_retry_delay_ms: 60_000,
         max_delay_ms: UNBOUNDED_BACKOFF_MS,
+        max_wait_ms: UNBOUNDED_BACKOFF_MS,
     };
     let (message, observed) = run_quick(&model, &policy).await;
     assert_eq!(message.stop_reason, StopReason::Error);

@@ -67,6 +67,7 @@ fn fast_policy() -> ProviderRetryPolicy {
         base_delay_ms: 5,
         max_retry_delay_ms: 50,
         max_delay_ms: UNBOUNDED_BACKOFF_MS,
+        max_wait_ms: UNBOUNDED_BACKOFF_MS,
     }
 }
 
@@ -335,6 +336,59 @@ async fn exhausted_retries_surface_the_final_error() {
         })
     );
     assert_eq!(events.len(), 4); // three starts + one end
+}
+
+/// The total-wait budget (`retry.provider.waitForUsage.maxWaitMs`): once the
+/// cumulative backoff reaches it the loop gives up like exhaustion does, no
+/// matter how many retries the policy still allows. The default is unbounded
+/// (every other test runs the unbounded default and asserts full retries).
+#[tokio::test]
+async fn the_wait_budget_stops_the_retry_loop() {
+    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let events_for_emit = Arc::clone(&events);
+    let policy = ProviderRetryPolicy {
+        max_retries: 10,
+        base_delay_ms: 100,
+        max_wait_ms: 150, // the first retry (100ms) fits; the second (200ms) busts it
+        ..fast_policy()
+    };
+    let message = run_turn_with_auto_retry(
+        &policy,
+        0,
+        None,
+        || {
+            let attempts = Arc::clone(&attempts);
+            async move {
+                attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(error_message(Some("server_error"), None, None))
+            }
+        },
+        move |event| {
+            let events = Arc::clone(&events_for_emit);
+            async move {
+                events.lock().unwrap().push(event);
+                Ok(())
+            }
+        },
+        |_| async { true },
+        None,
+    )
+    .await
+    .unwrap();
+    // One initial attempt plus ONE budgeted retry (the second busts the budget).
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(message.stop_reason, StopReason::Error);
+    let events = events.lock().unwrap().clone();
+    assert_eq!(
+        events.last(),
+        Some(&AutoRetryEvent::End {
+            success: false,
+            attempt: 1,
+            final_error: Some("provider down".to_string()),
+            restored_model: None,
+        })
+    );
 }
 
 /// A failed turn carrying the `stream_drop` class (the provider ended

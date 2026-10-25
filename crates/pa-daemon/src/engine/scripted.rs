@@ -106,6 +106,7 @@ impl ScriptedEngine {
                         .and_then(Value::as_u64)
                         .unwrap_or(0),
                     max_delay_ms: UNBOUNDED_BACKOFF_MS,
+                    max_wait_ms: UNBOUNDED_BACKOFF_MS,
                 }),
             })
             .unwrap_or_default();

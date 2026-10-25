@@ -19,7 +19,7 @@ use super::provider_retry::{
     provider_retry_delay, provider_retry_delay_for_reason, provider_stream_failure_kind,
     provider_stream_failure_retry_after_ms, provider_stream_failure_status,
     rate_limit_reason_for_message, retry_jitter_rand01, ProviderRetryDelay, ProviderRetryPolicy,
-    RateLimitReason,
+    RateLimitReason, UNBOUNDED_BACKOFF_MS,
 };
 
 /// Per-provider retry budget and backoff schedule (settings
@@ -60,6 +60,9 @@ fn per_provider_policy(
         base_delay_ms: failover.base_delay_ms,
         max_retry_delay_ms: server_wait_cap_ms,
         max_delay_ms: failover.max_delay_ms,
+        // The failover chain owns its own total-retry bound
+        // (MAX_TOTAL_PROVIDER_RETRIES); the wait budget stays unbounded.
+        max_wait_ms: UNBOUNDED_BACKOFF_MS,
     }
 }
 
@@ -476,6 +479,7 @@ mod tests {
             base_delay_ms: 2000,
             max_retry_delay_ms: 60000,
             max_delay_ms: super::super::provider_retry::UNBOUNDED_BACKOFF_MS,
+            max_wait_ms: UNBOUNDED_BACKOFF_MS,
         }
     }
 

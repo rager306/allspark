@@ -722,6 +722,9 @@ pub struct Settings {
     pub telemetry: Option<TelemetrySettings>,
     pub branch_summary: Option<BranchSummarySettings>,
     pub retry: Option<RetrySettings>,
+    /// Legacy name of `imageModel`; superseded by it and honored as the
+    /// fallback when `imageModel` is unset (see
+    /// [`SettingsManager::get_image_model`]).
     pub provider_backup_model: Option<String>,
     /// Model ("provider/model-id" or a bare model id) that serves turns attaching images when the
     /// session model does not accept image input. Default: none - image turns on a text-only model

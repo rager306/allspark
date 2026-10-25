@@ -17,6 +17,9 @@ pub struct ProviderRetryPolicy {
     /// Ceiling on the exponential backoff; the default is unbounded
     /// (the TS quick-retry loop grows without bound).
     pub max_delay_ms: u64,
+    /// Budget on the loop's cumulative backoff (`retry.provider.waitForUsage.maxWaitMs`);
+    /// the default is unbounded (the TS quick-retry loop has no total cap).
+    pub max_wait_ms: u64,
 }
 
 /// No backoff ceiling (the TS quick-retry schedule).
@@ -29,6 +32,7 @@ pub const DEFAULT_PROVIDER_RETRY_POLICY: ProviderRetryPolicy = ProviderRetryPoli
     base_delay_ms: 2000,
     max_retry_delay_ms: 60000,
     max_delay_ms: UNBOUNDED_BACKOFF_MS,
+    max_wait_ms: UNBOUNDED_BACKOFF_MS,
 };
 
 /// Resolution of one retry-delay decision.
@@ -1195,6 +1199,7 @@ mod tests {
             base_delay_ms: 2000,
             max_retry_delay_ms: 60000,
             max_delay_ms: UNBOUNDED_BACKOFF_MS,
+            max_wait_ms: UNBOUNDED_BACKOFF_MS,
         };
         assert_eq!(
             provider_retry_delay(1, None, &policy),
@@ -1222,6 +1227,7 @@ mod tests {
             base_delay_ms: 2000,
             max_retry_delay_ms: 60000,
             max_delay_ms: UNBOUNDED_BACKOFF_MS,
+            max_wait_ms: UNBOUNDED_BACKOFF_MS,
         };
         assert_eq!(
             provider_retry_delay(1, Some(60001), &policy),
@@ -1350,6 +1356,7 @@ mod tests {
             base_delay_ms: 5,
             max_retry_delay_ms: 50,
             max_delay_ms: UNBOUNDED_BACKOFF_MS,
+            max_wait_ms: UNBOUNDED_BACKOFF_MS,
         };
         let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let attempts_for_attempt = std::sync::Arc::clone(&attempts);
@@ -1396,6 +1403,7 @@ mod tests {
             base_delay_ms: 5,
             max_retry_delay_ms: 50,
             max_delay_ms: UNBOUNDED_BACKOFF_MS,
+            max_wait_ms: UNBOUNDED_BACKOFF_MS,
         };
         let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let attempts_for_attempt = std::sync::Arc::clone(&attempts);
@@ -1433,6 +1441,7 @@ mod tests {
             base_delay_ms: 5,
             max_retry_delay_ms: 50,
             max_delay_ms: UNBOUNDED_BACKOFF_MS,
+            max_wait_ms: UNBOUNDED_BACKOFF_MS,
         };
         let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let attempts_for_attempt = std::sync::Arc::clone(&attempts);
@@ -1487,6 +1496,7 @@ mod tests {
             base_delay_ms: 5,
             max_retry_delay_ms: 50,
             max_delay_ms: UNBOUNDED_BACKOFF_MS,
+            max_wait_ms: UNBOUNDED_BACKOFF_MS,
         };
         let mut attempts = 0;
         let message = complete_with_provider_retry(
@@ -1512,6 +1522,7 @@ mod tests {
             base_delay_ms: 5,
             max_retry_delay_ms: 50,
             max_delay_ms: UNBOUNDED_BACKOFF_MS,
+            max_wait_ms: UNBOUNDED_BACKOFF_MS,
         };
         let mut attempts = 0;
         let message = complete_with_provider_retry(
@@ -1537,6 +1548,7 @@ mod tests {
             base_delay_ms: 5,
             max_retry_delay_ms: 50,
             max_delay_ms: UNBOUNDED_BACKOFF_MS,
+            max_wait_ms: UNBOUNDED_BACKOFF_MS,
         };
         let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let attempts_for_attempt = std::sync::Arc::clone(&attempts);
@@ -1575,6 +1587,7 @@ mod tests {
             base_delay_ms: 5,
             max_retry_delay_ms: 50,
             max_delay_ms: UNBOUNDED_BACKOFF_MS,
+            max_wait_ms: UNBOUNDED_BACKOFF_MS,
         };
         let controller = pa_agent::abort::AbortController::new();
         controller.abort();
@@ -1597,6 +1610,7 @@ mod tests {
             base_delay_ms: 5,
             max_retry_delay_ms: 50,
             max_delay_ms: UNBOUNDED_BACKOFF_MS,
+            max_wait_ms: UNBOUNDED_BACKOFF_MS,
         };
         let mut attempts = 0;
         let message = complete_with_provider_retry(
@@ -1622,6 +1636,7 @@ mod tests {
             base_delay_ms: 5,
             max_retry_delay_ms: 50,
             max_delay_ms: UNBOUNDED_BACKOFF_MS,
+            max_wait_ms: UNBOUNDED_BACKOFF_MS,
         };
         let mut lifecycle = error_message(None, None, None);
         lifecycle.diagnostics = Some(vec![AssistantMessageDiagnostic {
@@ -1672,6 +1687,7 @@ mod tests {
             base_delay_ms: 5,
             max_retry_delay_ms: 50,
             max_delay_ms: UNBOUNDED_BACKOFF_MS,
+            max_wait_ms: UNBOUNDED_BACKOFF_MS,
         };
         let error = complete_with_provider_retry(
             &policy,
@@ -1730,6 +1746,7 @@ mod tests {
             base_delay_ms: 5,
             max_retry_delay_ms: 50,
             max_delay_ms: UNBOUNDED_BACKOFF_MS,
+            max_wait_ms: UNBOUNDED_BACKOFF_MS,
         };
         let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let attempts_for_attempt = std::sync::Arc::clone(&attempts);

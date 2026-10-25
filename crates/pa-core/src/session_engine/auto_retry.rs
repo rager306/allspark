@@ -80,6 +80,9 @@ where
     WF: Future<Output = bool>,
 {
     let mut retries_performed = 0u32;
+    // The cumulative backoff the loop has already waited (`max_wait_ms`
+    // budget, `retry.provider.waitForUsage.maxWaitMs`; unbounded by default).
+    let mut waited_ms = 0u64;
     loop {
         let message = attempt().await?;
         if message.stop_reason != StopReason::Error {
@@ -162,6 +165,21 @@ where
                     .await?;
                     return Ok(message);
                 }
+                // The total-wait budget: once the cumulative backoff plus
+                // this delay exceeds it, the loop gives up exactly like the
+                // exhaustion arm (the park seam already had its ExceedsCap
+                // chance; the failover chain re-routes after the settle).
+                if waited_ms.saturating_add(delay_ms) > policy.max_wait_ms {
+                    emit(AutoRetryEvent::End {
+                        success: false,
+                        attempt: retries_performed - 1,
+                        final_error: Some(final_error_of(&message)),
+                        restored_model: None,
+                    })
+                    .await?;
+                    return Ok(message);
+                }
+                waited_ms = waited_ms.saturating_add(delay_ms);
                 if reason.is_some() {
                     delay_ms
                 } else {

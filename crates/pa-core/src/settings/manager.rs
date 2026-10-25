@@ -651,13 +651,17 @@ impl SettingsManager {
 
     /// The "provider/model-id" (or bare id) reference serving image turns on models
     /// without image input; malformed values behave as unset and the refusal names the setting.
+    /// The legacy `providerBackupModel` string is the fallback when `imageModel`
+    /// is unset (the same reference under its older name).
     #[must_use]
     pub fn get_image_model(&self) -> Option<String> {
-        self.merged
-            .image_model
-            .as_ref()
-            .map(|m| m.trim().to_string())
-            .filter(|m| !m.is_empty())
+        let reference_of = |value: Option<&String>| -> Option<String> {
+            value
+                .map(|m| m.trim().to_string())
+                .filter(|m| !m.is_empty())
+        };
+        reference_of(self.merged.image_model.as_ref())
+            .or_else(|| reference_of(self.merged.provider_backup_model.as_ref()))
     }
 
     /// The daemon-level model allowlist (settings `allowedModels`), enforced at every
@@ -800,6 +804,14 @@ impl SettingsManager {
                         .max_retry_delay_ms,
                 ),
             max_delay_ms: crate::session_engine::provider_retry::UNBOUNDED_BACKOFF_MS,
+            max_wait_ms: self
+                .merged
+                .retry
+                .as_ref()
+                .and_then(|retry| retry.provider.as_ref())
+                .and_then(|provider| provider.wait_for_usage.as_ref())
+                .and_then(|wait| wait.max_wait_ms)
+                .unwrap_or(crate::session_engine::provider_retry::UNBOUNDED_BACKOFF_MS),
         }
     }
 
@@ -1786,6 +1798,40 @@ mod tests {
         .unwrap();
         let manager = SettingsManager::in_memory(&settings);
         assert_eq!(manager.get_graph_db_path(), Some(home.join("graph.db")));
+    }
+
+    /// The image-model reference: `imageModel` wins, the legacy
+    /// `providerBackupModel` string is the fallback, malformed values behave
+    /// as unset.
+    #[test]
+    fn image_model_reads_the_legacy_provider_backup_alias() {
+        let choice = |json: serde_json::Value| {
+            let settings: Settings = serde_json::from_value(json).unwrap();
+            SettingsManager::in_memory(&settings).get_image_model()
+        };
+        // Unset everywhere.
+        assert_eq!(choice(serde_json::json!({})), None);
+        // imageModel wins; the legacy alias alone serves.
+        assert_eq!(
+            choice(serde_json::json!({
+                "imageModel": "prov/img",
+                "providerBackupModel": "prov/old",
+            }))
+            .unwrap(),
+            "prov/img"
+        );
+        assert_eq!(
+            choice(serde_json::json!({ "providerBackupModel": " prov/old " })).unwrap(),
+            "prov/old"
+        );
+        // Malformed values behave as unset.
+        assert_eq!(
+            choice(serde_json::json!({
+                "imageModel": "   ",
+                "providerBackupModel": "",
+            })),
+            None
+        );
     }
 
     /// The `subagentModel` effort ladder: the effort picks its rung, unset
