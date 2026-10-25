@@ -249,14 +249,22 @@ used_underscore_binding = "warn"
 # profile below, which is one flag away and documented in AGENTS.md.
 [profile.dev]
 debug = "line-tables-only"
+# Strip the residual debug info from the linked binaries (measured -20% on the
+# pa-cli binary): the e2e sandboxes copy it per test, and a full suite copies
+# it dozens of times. Symbol names stay in the symtab, so panic backtraces
+# still name frames; `[profile.debugging]` overrides this back to nothing
+# stripped for the debugger.
+strip = "debuginfo"
 
 [profile.dev.package."*"]
 debug = false
 
 # `cargo build --profile debugging -p <crate>` when a real debugger needs locals and
 # inlined frames. Same codegen as dev, only the debug info differs, so the switch is a
-# rebuild and not a behaviour change.
+# rebuild and not a behaviour change. `strip = false` undoes dev's strip: a
+# debugger needs the debug info this profile exists to carry.
 [profile.debugging]
+strip = false
 inherits = "dev"
 debug = true
 
