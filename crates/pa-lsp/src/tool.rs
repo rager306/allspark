@@ -168,7 +168,22 @@ impl LspTool {
             )
         })?;
         anyhow::ensure!(line >= 1, "`line` is 1-based");
-        Ok((Position::new(line - 1, 0), None))
+        // Column 0 is the line start, where there is no identifier: a server
+        // resolves a position request at the identifier itself, so a bare
+        // `line` must be resolved to one first. The server's own
+        // `documentSymbol` tree is the authority; the tree-sitter layer is the
+        // fallback (the same two-step `symbol` addressing uses above).
+        let zero_based = line - 1;
+        let server_flat = client.flat_symbols(path).await?;
+        let on_line: Vec<crate::symbols::FlatSymbol> = server_flat
+            .iter()
+            .filter(|flat| flat.selection_range.start.line == zero_based)
+            .cloned()
+            .collect();
+        if let Some(chosen) = choose_on_line(&on_line) {
+            return Ok((chosen.selection_range.start, Some(chosen)));
+        }
+        Ok((Position::new(zero_based, 0), None))
     }
 
     async fn status(&self) -> AgentToolResult {
@@ -1145,6 +1160,22 @@ fn resolve_file(cwd: &Path, raw: &str) -> PathBuf {
 }
 
 /// Pick the symbol whose selection starts on `line` (0-based), else error.
+/// The identifier a line-addressed call means: the symbol whose selection range
+/// starts on the line, innermost when several share it (latest start wins; the
+/// tie-break by end keeps the shorter highlight). `None` when the line carries
+/// no symbol start — the caller then falls back to the line start.
+fn choose_on_line(matches: &[crate::symbols::FlatSymbol]) -> Option<crate::symbols::FlatSymbol> {
+    matches
+        .iter()
+        .max_by_key(|flat| {
+            (
+                flat.selection_range.start.character,
+                std::cmp::Reverse(flat.selection_range.end.character),
+            )
+        })
+        .cloned()
+}
+
 fn pick_on_line(matches: &[FlatSymbol], line: u32) -> anyhow::Result<FlatSymbol> {
     matches
         .iter()
@@ -1410,5 +1441,68 @@ mod tests {
             error.to_string().contains("did not answer within"),
             "the bound itself must fire, not a preparation error: {error}"
         );
+    }
+}
+
+#[cfg(test)]
+mod choose_on_line_tests {
+    use super::choose_on_line;
+    use crate::symbols::FlatSymbol;
+    use lsp_types::{Position, Range, SymbolKind};
+
+    fn flat(start_col: u32, end_col: u32) -> FlatSymbol {
+        FlatSymbol {
+            name: "x".to_string(),
+            kind: SymbolKind::FUNCTION,
+            path: vec!["x".to_string()],
+            overload_idx: None,
+            selection_range: Range {
+                start: Position {
+                    line: 41,
+                    character: start_col,
+                },
+                end: Position {
+                    line: 41,
+                    character: end_col,
+                },
+            },
+            range: Range {
+                start: Position {
+                    line: 41,
+                    character: 0,
+                },
+                end: Position {
+                    line: 41,
+                    character: 90,
+                },
+            },
+        }
+    }
+
+    /// The declaration-line case from issue #8: `    func (c *LocalCache) Set(...)`
+    /// — the identifier `Set` starts at column 22, not at the line start.
+    #[test]
+    fn the_identifier_is_chosen_not_the_line_start() {
+        let matches = vec![flat(0, 8), flat(22, 25)];
+        let chosen = choose_on_line(&matches).expect("a symbol starts on the line");
+        assert_eq!(chosen.selection_range.start.character, 22);
+    }
+
+    #[test]
+    fn an_empty_line_has_no_identifier() {
+        assert!(choose_on_line(&[]).is_none(), "no symbol starts here");
+    }
+
+    #[test]
+    fn the_innermost_symbol_wins_on_a_tie() {
+        // `pub fn f()` inside an impl block: both the impl and the fn start at
+        // the same column after formatting — the later, inner selection wins.
+        let mut outer = flat(4, 10);
+        outer.selection_range.start.character = 0;
+        let mut inner = flat(4, 10);
+        inner.selection_range.start.character = 4;
+        inner.selection_range.end.character = 60;
+        let chosen = choose_on_line(&[outer, inner]).expect("a symbol starts on the line");
+        assert_eq!(chosen.selection_range.start.character, 4);
     }
 }
