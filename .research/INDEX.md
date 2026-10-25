@@ -126,6 +126,10 @@ The module-reachability series starts at `DEADWEIGHT-AUDIT.md` and ends at
 | `subagent-gate-classification.md` | why four gate units were red | **adopted** — classified, not retried |
 | `PREEXISTING-FAILURES-2026-10-21.md` | what was already red before today's work | **open** — one commit does not build alone |
 | `ci-recovery-report.md` | the CI run recovery, unit by unit | **adopted** — the fixture fixes that followed |
+| `GROK-TEST-ARCHITECTURE-VS-OURS.md` | what Grok Build's test architecture does that ours does not, priced, with a plan ordered by what would have caught the 2026-10-24 incident | **planned** — 32 practices compared, 9 ranked; items 9.1-9.2 are the incident's two causes and are not yet wired |
+| `TUI-BLACKBOX-TESTING-2026.md` | how a TUI is tested black-box in 2026, the empty-vs-broken oracle class, and build identity for a Rust binary | **planned** — T1-T8 with red-without-fix; three live probes reproduced the incident's causes |
+| `AGENT-ECOSYSTEM-TESTING-2026.md` | what four agent harnesses assert that we do not (tool-choice, catalog contracts, empty-state messages) | **planned** — C1-C5 mechanics, each with a red-first test |
+| `RELEASE-ARTIFACT-CONTRACT-TESTING.md` | is the shipped artifact the artifact we verified (packaged catalog, hashes, install smoke) | **open** — the `--fixture` packaging defect is reproduced; the fix choice is a decision |
 
 ## 6. External systems (read for mechanisms, not for code)
 

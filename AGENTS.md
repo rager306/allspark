@@ -321,6 +321,94 @@ comes from running independent files concurrently (2-3 at a time). Run it with
 Design notes and the per-crate judgement live in
 `.research/VERUS-SOFT-ADAPTATION.md` and `.research/VERUS-ADAPTATION-PLAN.md`.
 
+## Search and structural queries: `rg` first, `ast-grep` when the answer needs shape
+
+Two tools, one rule: **choose by what the question is about, not by what is convenient.**
+`rg` answers "does this text appear"; `ast-grep` answers "does this *construct* appear".
+Reaching for the second when the first suffices costs a parse; reaching for the first when the
+question is structural produces false positives that read as facts.
+
+### Use `rg` (default)
+
+- Any literal or regex text search: a name, an error string, a config key, a `file:line` to cite.
+- "Where is this mentioned / how many times / which files" — including across `.md`, `.toml`,
+  `.yaml`, and shell, where there is no grammar.
+- Anything you will paste into a report as evidence: `rg` output is line-exact and stable.
+
+```bash
+rg -n 'fn ensure_daemon_running' crates/
+rg -c '#\[ignore\]' -g '*.rs' crates/    # count, per file
+rg -v '^\s*//' crates/pa-mem/src/lib.rs   # filter, never `grep -v`
+```
+
+### Use `ast-grep` when the question is about *shape*
+
+The distinction is not academic. Measured on this tree, one real field-read question,
+`$X.settings().compaction`:
+
+| tool | hits | why |
+|---|---|---|
+| `rg 'settings\(\)\.compaction'` | **2** | needs both tokens on one line |
+| `rg -U 'settings\(\)\s*\n\s*\.compaction'` | 8 | right answer, but the pattern now encodes Rust's formatting |
+| `ast-grep --pattern '$X.settings().compaction'` | **9** | matches the *shape*, whatever the line breaks |
+
+The 8-vs-9 gap is the interesting part: a chain broken by a comment or split differently is still
+the same construct, and `rg -U` only matches the layouts you thought of. That is the rule —
+**if the answer changes when the code is reformatted, you need `ast-grep`.**
+
+| question | `rg` | `ast-grep` |
+|---|---|---|
+| text appears | correct | works, slower |
+| **every `unsafe` block, not the word "unsafe" in a comment** | false positives | `--pattern 'unsafe { $$$BODY }'` |
+| **a field read on a specific expression** | misses line-wrapped chains; matches same-named locals and modules | the table above |
+| **a function with a given signature** | cannot express | `--pattern 'fn $NAME(&mut self, $$$ARGS) -> Result<$$$R>'` |
+| **a call inside a closure but not at top level** | impossible | structural pattern + `--strictness` |
+
+```bash
+ast-grep --pattern 'unsafe { $$$BODY }' --lang rust crates/pa-types/src
+ast-grep --pattern '$X.settings().compaction' --lang rust crates/
+```
+
+`pa-ast` (`crates/pa-ast`, FORK-ONLY) is the in-tree binding for the same engine: `ops.rs` exposes
+ast-grep patterns over a parse tree with a `(path, mtime, size)` parse cache, and the `lsp` symbol
+layer plus the `pa-graph` indexer read its parse tree. **A `pa-ast` change is an architectural
+change**: it moves the grammar set or the wasm loader for every consumer. Use the `ast-grep` CLI
+for one-off queries; reach for `pa-ast` only when the product needs the parse tree.
+
+### Do not use either for structure you can query properly
+
+| need | tool, not a search |
+|---|---|
+| "what calls this function" | `lsp` (`references`, `find_symbol`) — a text search cannot see through a re-export or a trait impl |
+| "which tests exist / is this test ignored" | the Rust index in `scripts/testgov/rust_index.py` (attributes are already parsed) |
+| "what does this type look like" | `cargo doc` / the type itself |
+| "is this symbol reachable / dead" | `pa-graph` (`cargo` edges, dependency-aware) |
+
+### Cost, measured (2026-10-24, this tree: 1 574 `.rs`)
+
+| approach | time | when it is right |
+|---|---|---|
+| `rg` literal | ~0.06 s | text questions, always |
+| literal prefilter + one anchored regex | 0.79 s for 19 083 `fn` sites | building a symbol index once |
+| full `ast-grep` parse of the tree | seconds | structural questions, not for counting text |
+
+Anchored multiline regex over every file was **1.08 s** of a 1.94 s index — the regex engine, not
+I/O, was the cost. A literal `in` prefilter before the engine cut that to 0.25 s for the same
+result. This is the `rg` argument in miniature: **filter literally first, parse only candidates.**
+A prefilter must be written against the *shape* (`[visibility] [async] fn name`), never against an
+enumerated list of spellings — an earlier version listed five visibility forms and silently lost
+962 functions, 868 of them real (`pub(crate) async fn`).
+
+### Never
+
+- `grep` or `sed` (see `docs/shell-discipline.md`).
+- `ast-grep` to count text occurrences. It is slower than `rg` and answers a different question.
+- A regex that spans lines to find a construct. If you need `(?s)` to match a function body, the
+  question is structural — use `ast-grep` or read the file in Python.
+- A search result as proof of a *semantic* claim ("no setting is unread") without checking the
+  shapes: `settings-have-consumers` needed three access forms (`.field`, `"field"`, `get_field()`)
+  and produced 14 false positives before they were all included.
+
 ## Lint discipline
 
 - Zero-warning posture: the merge gates run fmt + clippy + tests at `-D warnings`, so a `warn`
@@ -365,6 +453,36 @@ added `the_startup_flush_never_blocks_the_first_frame` (a hanging sink
 must not delay paint) as the permanent guard. Any change touching the
 launch path must keep that test red-first.
 
+
+## Never ask CI a question you can answer locally
+
+CI is the *last* signal, never the first. Every push that exists to find out whether
+something works costs a runner, ~10 minutes of wall clock, and — on this repo — a tag
+move that can publish a broken release. The measured cost of guessing: eight
+`release-fork` runs (~80 minutes) spent discovering a packaging defect that
+`tar -tzf <archive> | head` answers in three seconds.
+
+The order is fixed:
+
+1. **Reproduce locally, cheapest stage first** (the table below: check → clippy → one
+   test → the suite). For an artifact or installer question, extract the real artifact
+   and run the real script step — "does the tarball have the file the installer reads"
+   is `test -x stage/prime-agent`, not a pipeline run.
+2. **Run the whole affected lane locally** before pushing. A green `cargo check` says
+   nothing about a Python fixture, a shell probe, or an archive layout.
+3. **Only then push.** A push is a publication, not a probe. If a CI failure is a
+   surprise, the gap was in step 1 or 2 — close the gap with a test, not with another
+   push.
+
+Two corollaries:
+
+- **A fix in the tree is not a fix installed.** `install-rust.sh` is compiled into the
+  binary with `include_str!`; a protection added today does not exist in a build from
+  yesterday. Before claiming a fix lands, check what the *installed* binary carries
+  (`strings $(which ...) | grep <marker>`), and pin the bundled content with a test
+  (`the_bundled_installer_carries_the_fork_gate`).
+- **Never move or force-push a release tag to test a fix.** The tag publishes. Prove
+  the packaging path with a local build and a local archive, then tag once.
 
 ## Build stages (pick the cheapest that can answer)
 

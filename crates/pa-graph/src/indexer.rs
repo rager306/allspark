@@ -705,7 +705,7 @@ fn skip_reason(abs: &Path, opts: &IndexOptions) -> String {
 /// Honours `.graphignore` (gitignore syntax, one per directory, nearest wins)
 /// independently of `respect_gitignore`: the file is the repository's own
 /// statement about what is *not code*, which gitignore cannot express for trees
-/// the repository tracks (see issue #11). The two mechanisms are ANDed — a file
+/// the repository tracks (see issue #11). The two mechanisms are AND-ed — a file
 /// is a candidate only if neither excludes it — and a `!path` re-include in
 /// `.graphignore` wins over gitignore, because custom ignores take precedence
 /// in the `ignore` crate.
@@ -729,7 +729,10 @@ pub(crate) fn discover(root: &Path, opts: &IndexOptions) -> Vec<PathBuf> {
         }
         // The rule file is not a symbol source: it would otherwise surface in
         // `search` and `file_tree` like any other parsed file.
-        if path.file_name().is_some_and(|name| name == GRAPHIGNORE_FILE) {
+        if path
+            .file_name()
+            .is_some_and(|name| name == GRAPHIGNORE_FILE)
+        {
             continue;
         }
         if pa_ast::SupportLang::from_path(path).is_none() {
