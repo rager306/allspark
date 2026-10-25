@@ -98,6 +98,7 @@ pub(crate) struct DaemonInfo {
     pub schema_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub build_id: Option<String>,
+    pub build_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub executable_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -323,6 +324,7 @@ pub(crate) struct ProbeResult {
     version: Option<String>,
     protocol_version: Option<u64>,
     schema_id: Option<String>,
+    build_hash: Option<String>,
     build_id: Option<String>,
     executable_path: Option<String>,
     session_count: Option<u64>,
@@ -360,6 +362,10 @@ pub(crate) fn probe_daemon(socket_path: &Path) -> ProbeResult {
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
         if let Some(runtime) = hello.get("runtime") {
+            probe.build_hash = runtime
+                .get("buildHash")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
             probe.build_id = runtime
                 .get("buildId")
                 .and_then(serde_json::Value::as_str)
@@ -413,14 +419,26 @@ const LIST_TIMEOUT_MS: u64 = 30_000;
 
 /// Reachable daemons are `current` only when the protocol, schema, and
 /// app version all match this build.
+/// Reachable daemons are `current` only when the wire, the schema, the app
+/// version, AND the build stamp all match this build — the same decision the
+/// TUI attach path makes (`interactive_mode/daemon.rs::probe_daemon`), which is
+/// why both delegate to one predicate here.
 fn classify_reachable(probe: &ProbeResult) -> DaemonStatus {
-    if probe.protocol_version == Some(pa_types::daemon::DAEMON_PROTOCOL_VERSION)
-        && probe.schema_id.as_deref() == Some(pa_types::daemon::DAEMON_SCHEMA_ID)
-        && probe.version.as_deref() == Some(config::version())
-    {
-        DaemonStatus::Current
-    } else {
-        DaemonStatus::Stale
+    let hello_facts = pa_types::daemon::HelloFacts {
+        protocol_version: probe.protocol_version,
+        schema_id: probe.schema_id.clone(),
+        app_version: probe.version.clone(),
+        build_hash: probe.build_hash.clone(),
+    };
+    let own = pa_types::daemon::OwnFacts {
+        protocol_version: pa_types::daemon::DAEMON_PROTOCOL_VERSION,
+        schema_id: pa_types::daemon::DAEMON_SCHEMA_ID,
+        app_version: Some(crate::config::version().to_string()),
+        build_hash: Some(crate::config::build_hash().to_string()),
+    };
+    match pa_types::daemon::daemon_attach_compat(&hello_facts, &own) {
+        pa_types::build_identity::BuildCompat::Match => DaemonStatus::Current,
+        _ => DaemonStatus::Stale,
     }
 }
 
@@ -522,6 +540,7 @@ fn discover_daemons_with(root: &DaemonStateRoot, named_pipes: bool) -> Vec<Daemo
                 DaemonStatus::OrphanFile
             };
             Some(DaemonInfo {
+                build_hash: probe.build_hash.clone(),
                 pid_source: pid.map(|_| {
                     if proc.is_some() {
                         PidSource::Listener

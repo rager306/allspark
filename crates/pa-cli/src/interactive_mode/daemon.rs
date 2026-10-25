@@ -27,19 +27,44 @@ enum DaemonProbe {
     Stale(Box<pa_tui::daemon_client::DaemonClient>),
 }
 
-/// Probe the socket once: connect, read the hello, and classify it.
+/// Probe the socket once: connect, read the hello, and classify it through the
+/// one shared predicate (`daemon_attach_compat`). A daemon that passes this may
+/// be attached to; everything else is `Stale` and gets replaced or refused.
 async fn probe_daemon(socket_path: &Path) -> DaemonProbe {
     let Ok((client, _events)) = pa_tui::daemon_client::DaemonClient::connect(socket_path).await
     else {
         return DaemonProbe::Absent;
     };
     let hello = client.hello();
-    let current = hello.get("protocol").and_then(|p| p.get("version"))
-        == Some(&serde_json::json!(
-            pa_types::daemon::DAEMON_PROTOCOL_VERSION
-        ))
-        && hello.get("schemaId") == Some(&serde_json::json!(pa_types::daemon::DAEMON_SCHEMA_ID));
-    if current {
+    let facts = pa_types::daemon::HelloFacts {
+        protocol_version: hello
+            .get("protocol")
+            .and_then(|protocol| protocol.get("version"))
+            .and_then(serde_json::Value::as_u64),
+        schema_id: hello
+            .get("schemaId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        app_version: hello
+            .get("appVersion")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        build_hash: hello
+            .pointer("/runtime/buildHash")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+    };
+    let own = pa_types::daemon::OwnFacts {
+        protocol_version: pa_types::daemon::DAEMON_PROTOCOL_VERSION,
+        schema_id: pa_types::daemon::DAEMON_SCHEMA_ID,
+        app_version: Some(crate::config::version().to_string()),
+        build_hash: Some(crate::config::build_hash().to_string()),
+    };
+    let matches = matches!(
+        pa_types::daemon::daemon_attach_compat(&facts, &own),
+        pa_types::build_identity::BuildCompat::Match
+    );
+    if matches {
         client.close();
         DaemonProbe::Current
     } else {

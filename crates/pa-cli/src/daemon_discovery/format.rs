@@ -195,6 +195,7 @@ mod tests {
             protocol_version: Some(7),
             schema_id: Some("schema".to_string()),
             build_id: None,
+            build_hash: None,
             executable_path: None,
             pid_source: Some(super::super::PidSource::Listener),
             session_count: Some(2),
