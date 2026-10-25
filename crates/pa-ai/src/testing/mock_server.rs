@@ -103,6 +103,11 @@ enum ScriptedResponse {
 pub struct MockInferenceServer {
     port: u16,
     queue: Arc<Mutex<Vec<ScriptedResponse>>>,
+    /// Path-keyed responses, checked before the FIFO queue. This is what lets a
+    /// test hold two dialects apart: a `/v1/messages` request and a
+    /// `/v1/chat/completions` request consume different queues instead of the same
+    /// one in arrival order.
+    path_queues: Arc<Mutex<Vec<(String, ScriptedResponse)>>>,
     requests: Arc<Mutex<Vec<RecordedRequest>>>,
     shutdown: Arc<AtomicBool>,
     /// Wakes a held [`ScriptedResponse::Hang`] connection when the server
@@ -114,6 +119,86 @@ pub struct MockInferenceServer {
 
 /// `MockServer` is the shorter spelling the drills use.
 pub type MockServer = MockInferenceServer;
+
+#[cfg(test)]
+mod path_routing_tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    fn raw_get(url: &str, path: &str) -> String {
+        let mut stream = std::net::TcpStream::connect(url).expect("connect");
+        stream
+            .write_all(
+                format!("GET {path} HTTP/1.1\r\nhost: {url}\r\nconnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
+            .expect("write");
+        let mut body = String::new();
+        stream.read_to_string(&mut body).expect("read");
+        body
+    }
+
+    fn body_of(raw: &str) -> String {
+        raw.split("\r\n\r\n").nth(1).unwrap_or("").to_string()
+    }
+
+    #[test]
+    fn a_path_keyed_response_is_served_only_to_that_path() {
+        let server = MockInferenceServer::new();
+        server.queue_json_for_path("/v1/messages", 200, r#"{"dialect":"messages"}"#);
+        server.queue_json_for_path("/v1/chat/completions", 200, r#"{"dialect":"chat"}"#);
+
+        let url = format!("127.0.0.1:{}", server.port());
+        let messages = body_of(&raw_get(&url, "/v1/messages"));
+        let chat = body_of(&raw_get(&url, "/v1/chat/completions"));
+
+        assert_eq!(
+            messages, r#"{"dialect":"messages"}"#,
+            "the /v1/messages queue"
+        );
+        assert_eq!(
+            chat, r#"{"dialect":"chat"}"#,
+            "the /v1/chat/completions queue"
+        );
+    }
+
+    #[test]
+    fn an_unkeyed_path_falls_through_to_the_global_queue() {
+        let server = MockInferenceServer::new();
+        server.queue_json(200, r#"{"global":true}"#);
+        let url = format!("127.0.0.1:{}", server.port());
+        let raw = raw_get(&url, "/v1/anything");
+        assert!(body_of(&raw).contains(r#""global":true"#));
+    }
+
+    #[test]
+    fn a_path_queue_that_runs_dry_falls_back_to_the_global_queue() {
+        let server = MockInferenceServer::new();
+        server.queue_json_for_path("/v1/messages", 200, r#"{"first":true}"#);
+        server.queue_json(200, r#"{"global-fallback":true}"#);
+        let url = format!("127.0.0.1:{}", server.port());
+
+        let first = body_of(&raw_get(&url, "/v1/messages"));
+        let second = body_of(&raw_get(&url, "/v1/messages"));
+        assert_eq!(first, r#"{"first":true}"#);
+        assert!(
+            second.contains(r#""global-fallback":true"#),
+            "a dry path queue must degrade to the global queue, not to an error: {second}"
+        );
+    }
+
+    #[test]
+    fn the_key_is_the_path_so_a_query_string_does_not_claim_a_keyed_response() {
+        // The key is the path exactly as queued; a query string is part of the request
+        // target, so this request falls through to the global queue.
+        let server = MockInferenceServer::new();
+        server.queue_json_for_path("/v1/messages", 200, r#"{"exact":true}"#);
+        server.queue_json(200, r#"{"fallback":true}"#);
+        let url = format!("127.0.0.1:{}", server.port());
+        let raw = raw_get(&url, "/v1/messages?stream=true");
+        assert!(body_of(&raw).contains(r#""fallback":true"#), "{raw}");
+    }
+}
 
 impl MockInferenceServer {
     /// Bind the server on `127.0.0.1:0` and start serving.
@@ -129,10 +214,13 @@ impl MockInferenceServer {
             .expect("mock inference server address")
             .port();
         let queue: Arc<Mutex<Vec<ScriptedResponse>>> = Arc::new(Mutex::new(Vec::new()));
+        let path_queues: Arc<Mutex<Vec<(String, ScriptedResponse)>>> =
+            Arc::new(Mutex::new(Vec::new()));
         let requests: Arc<Mutex<Vec<RecordedRequest>>> = Arc::new(Mutex::new(Vec::new()));
         let shutdown = Arc::new(AtomicBool::new(false));
         let hang_wake = Arc::new((Mutex::new(()), std::sync::Condvar::new()));
         let queue_for_thread = Arc::clone(&queue);
+        let path_queues_for_thread = Arc::clone(&path_queues);
         let requests_for_thread = Arc::clone(&requests);
         let shutdown_for_thread = Arc::clone(&shutdown);
         let hang_wake_for_thread = Arc::clone(&hang_wake);
@@ -143,12 +231,14 @@ impl MockInferenceServer {
                 }
                 let Ok(stream) = stream else { continue };
                 let queue = Arc::clone(&queue_for_thread);
+                let path_queues = Arc::clone(&path_queues_for_thread);
                 let requests = Arc::clone(&requests_for_thread);
                 // One connection = one request (`Connection: close`); handle
                 // inline so responses stay in arrival order.
                 let _ = serve(
                     stream,
                     &queue,
+                    &path_queues,
                     &requests,
                     &shutdown_for_thread,
                     &hang_wake_for_thread,
@@ -158,6 +248,7 @@ impl MockInferenceServer {
         MockInferenceServer {
             port,
             queue,
+            path_queues,
             requests,
             shutdown,
             hang_wake,
@@ -192,6 +283,17 @@ impl MockInferenceServer {
     }
 
     /// Queue one raw response (status, headers, body) served on the next turn.
+    /// Queue a response that is served only to `path`, ahead of the arrival-ordered
+    /// queue. This is how a test holds two dialects apart: a `/v1/messages` request and a
+    /// `/v1/chat/completions` request consume different queues, so a test can say
+    /// "the next `/v1/messages` request fails while `/v1/chat/completions` succeeds".
+    ///
+    /// Unscripted requests still answer 500 loudly (a test bug), and a path with an
+    /// empty key-queue falls through to the global queue, so a partial setup degrades
+    /// to the old behaviour rather than to an error.
+    ///
+    /// # Panics
+    ///
     pub fn queue_response(&self, status: u16, headers: &[(&str, &str)], body: impl Into<String>) {
         self.push(ScriptedResponse::Body {
             status,
@@ -304,6 +406,38 @@ impl MockInferenceServer {
     fn push(&self, response: ScriptedResponse) {
         self.queue.lock().expect("mock queue lock").push(response);
     }
+
+    fn push_for_path(&self, path: &str, response: ScriptedResponse) {
+        self.path_queues
+            .lock()
+            .expect("mock path-queue lock")
+            .push((path.to_string(), response));
+    }
+
+    /// Queue a JSON response served only to `path` (see `push_for_path`).
+    pub fn queue_json_for_path(&self, path: &str, status: u16, body: impl Into<String>) {
+        self.push_for_path(
+            path,
+            ScriptedResponse::Body {
+                status,
+                headers: vec![("content-type".to_string(), "application/json".to_string())],
+                body: body.into(),
+            },
+        );
+    }
+
+    /// Queue an SSE response served only to `path` (see `push_for_path`).
+    pub fn queue_sse_for_path(&self, path: &str, chunks: Vec<&str>) {
+        self.push_for_path(
+            path,
+            ScriptedResponse::Sse {
+                status: 200,
+                headers: Vec::new(),
+                frames: chunks.into_iter().map(str::to_string).collect(),
+                drop_after: None,
+            },
+        );
+    }
 }
 
 impl Default for MockInferenceServer {
@@ -338,6 +472,7 @@ fn owned_headers(headers: &[(&str, &str)]) -> Vec<(String, String)> {
 fn serve(
     mut stream: TcpStream,
     queue: &Mutex<Vec<ScriptedResponse>>,
+    path_queues: &Mutex<Vec<(String, ScriptedResponse)>>,
     requests: &Mutex<Vec<RecordedRequest>>,
     shutdown: &AtomicBool,
     hang_wake: &(Mutex<()>, std::sync::Condvar),
@@ -345,13 +480,22 @@ fn serve(
     let Some(request) = read_request(&stream)? else {
         return Ok(());
     };
-    requests.lock().expect("mock requests lock").push(request);
+    requests
+        .lock()
+        .expect("mock requests lock")
+        .push(request.clone());
     let response = {
-        let mut queue = queue.lock().expect("mock queue lock");
-        if queue.is_empty() {
-            None
+        // Path-keyed responses win, then fall back to the arrival-ordered queue. The key is
+        // the path exactly as the test queued it (a `/v1/messages` request never claims a
+        // response queued for `/v1/chat/completions`).
+        let mut keyed = path_queues.lock().expect("mock path-queue lock");
+        if let Some(position) = keyed.iter().position(|(path, _)| path == &request.path) {
+            Some(keyed.remove(position).1)
         } else {
-            Some(queue.remove(0))
+            drop(keyed);
+            let mut queue = queue.lock().expect("mock queue lock");
+            // `then(|| queue.remove(0))` would panic on an empty queue: `then` is eager.
+            (!queue.is_empty()).then(|| queue.remove(0))
         }
     };
     match response {
