@@ -659,13 +659,24 @@ impl RlmSubagentHost for InlineHost {
                     }
                 }
             }
-            // The child's thinking: the requested level, else the parent's
-            // effective one; a real-provider child clamps it to what its
-            // model supports.
+            // The `subagentModel` effort ladder (settings): an unpinned
+            // spawn resolves its model — and the rung's pinned thinking —
+            // from settings; the parent's selector stays the last fallback.
+            let ladder = pa_core::settings::SettingsManager::create(&config.cwd, &config.agent_dir)
+                .get_subagent_model_for_effort(request.thinking.as_deref());
+            // The child's thinking: the requested level, then the ladder
+            // rung's pinned level, else the parent's effective one; a
+            // real-provider child clamps it to what its model supports.
             let thinking = request
                 .thinking
                 .as_deref()
                 .and_then(pa_ai::models::thinking_level_from_str)
+                .or_else(|| {
+                    ladder
+                        .as_ref()
+                        .and_then(|choice| choice.thinking.as_deref())
+                        .and_then(pa_ai::models::thinking_level_from_str)
+                })
                 .or(*node.thinking.lock().unwrap())
                 .unwrap_or(pa_types::ai::ModelThinkingLevel::Medium);
             // The model lane: a scripted child runs its own faux queue under
@@ -706,9 +717,10 @@ impl RlmSubagentHost for InlineHost {
                     thinking,
                 )
             } else {
+                let ladder_reference = ladder.as_ref().map(|choice| choice.model.clone());
                 let selector = pa_daemon::rlm_child_model::resolve_child_model_unchecked(
                     &config.agent_dir,
-                    request.model.as_deref(),
+                    request.model.as_deref().or(ladder_reference.as_deref()),
                     node.model_selector.lock().unwrap().as_deref(),
                     "subagent",
                 )
