@@ -116,6 +116,9 @@ def parse_args(argv):
     parser.add_argument("--platform", help="platform tag (default: derived from this machine)")
     parser.add_argument("--root", type=Path, default=ROOT,
                         help="package assets from this tree (default: the repo root)")
+    parser.add_argument("--allow-fixture-catalog", action="store_true",
+                        help="the assets came from generate --fixture (offline dry-runs only; the "
+                             "release pipeline packs --network assets and keeps the gate)")
     parser.add_argument("--catalog-assets", type=Path, default=None,
                         help="directory with models.bundled.json + "
                              "mcp-services.bundled.json (see "
@@ -213,7 +216,12 @@ def resolve_catalog_assets(args):
             "--catalog-dir <prime-agent-catalog>` (CI: --network; offline "
             "builds: --fixture) and pass --catalog-assets <dir>"
         )
-    validate_bundled_catalog_dir(args.catalog_assets)
+    # A fixture-generated asset carries no fork providers by construction;
+    # the release pipeline never sets this (it packs --network assets and a
+    # missing fork provider there is exactly the mis-named-asset incident).
+    validate_bundled_catalog_dir(
+        args.catalog_assets, allow_small_fixture=args.allow_fixture_catalog
+    )
     return args.catalog_assets
 
 

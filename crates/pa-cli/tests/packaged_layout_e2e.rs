@@ -702,6 +702,9 @@ fn packaging_dry_run_produces_artifact() {
         .arg(tree.path())
         .arg("--binary")
         .arg(&staged_binary)
+        // The dry-run packs the fixture snapshot (offline by design); the
+        // release pipeline packs --network assets and keeps the strict gate.
+        .arg("--allow-fixture-catalog")
         .arg("--catalog-assets")
         .arg(assets.path())
         .arg("--out-dir")
