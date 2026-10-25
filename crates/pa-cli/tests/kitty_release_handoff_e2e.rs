@@ -22,9 +22,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use nix::fcntl::{fcntl, FcntlArg::F_SETFL, OFlag};
 use nix::pty::{openpty, Winsize};
 use serde_json::{json, Value};
+
+mod support;
+
+use support::PtyReader;
 
 use pa_tui::agents_view::{AgentsViewOptions, AgentsViewUiMode};
 use pa_tui::interactive::{
@@ -259,7 +262,7 @@ impl HandoffHarness {
     }
 
     fn output_since(&self, mark: usize) -> Vec<u8> {
-        self.master.output[mark..].to_vec()
+        self.master.since(mark).to_vec()
     }
 
     fn child_alive(&mut self) -> bool {
@@ -292,71 +295,6 @@ impl Drop for HandoffHarness {
         // controlling terminal and outlives the harness.
         let _ = self.child.kill();
         let _ = self.child.wait();
-    }
-}
-
-/// Non-blocking reader over the pty master, collecting the child's byte stream.
-struct PtyReader {
-    file: std::fs::File,
-    output: Vec<u8>,
-}
-
-impl PtyReader {
-    fn new(master: OwnedFd) -> PtyReader {
-        let fd = master.as_raw_fd();
-        fcntl(fd, F_SETFL(OFlag::O_NONBLOCK)).expect("pty master non-blocking");
-        PtyReader {
-            file: master.into(),
-            output: Vec::new(),
-        }
-    }
-
-    fn mark(&self) -> usize {
-        self.output.len()
-    }
-
-    fn write(&mut self, payload: &[u8]) {
-        self.file.write_all(payload).expect("write to the pty");
-    }
-
-    /// Drain until quiet for `quiet_polls` polls: a settle window keeps every
-    /// later byte (the pty driver drops writes on a full kernel buffer).
-    fn drain_until_quiet(&mut self, quiet_polls: usize) {
-        let mut quiet = 0;
-        while quiet < quiet_polls {
-            let mut buffer = [0u8; 8192];
-            match self.file.read(&mut buffer) {
-                Ok(0) | Err(_) => quiet += 1,
-                Ok(n) => {
-                    self.output.extend_from_slice(&buffer[..n]);
-                    quiet = 0;
-                }
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-    }
-
-    /// Drain until the needle appears since the mark (bounded by a generous deadline).
-    fn wait_from(&mut self, mark: usize, needle: &[u8], what: &str) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            if find_subsequence(&self.output[mark..], needle).is_some() {
-                return;
-            }
-            let mut buffer = [0u8; 8192];
-            let result = self.file.read(&mut buffer);
-            match result {
-                Ok(0) | Err(_) => {}
-                Ok(n) => self.output.extend_from_slice(&buffer[..n]),
-            }
-            if Instant::now() > deadline {
-                let text = String::from_utf8_lossy(&self.output[mark..]);
-                panic!(
-                    "timeout waiting for {what} (needle {needle:?}); pty tail since mark:\n{text}"
-                );
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
     }
 }
 
