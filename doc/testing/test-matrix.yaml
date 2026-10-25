@@ -734,7 +734,6 @@ rows:
     axes:
       code: [crates/pa-perf]
       semantics: [baseline comparison, regression threshold]
-      flow: [measure -> change -> re-measure -> compare]
     oracle: []
     kill_mutation: >-
       remove the baseline comparison; a 10x paint regression must still redden

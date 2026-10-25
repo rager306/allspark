@@ -42,7 +42,7 @@ LAYER_AXIS_REACH = {
     # A loom/model-checking run exercises ORDERINGS on purpose, so it is the one
     # cheap layer that observes `flow`. Kept separate from `unit` so a plain unit
     # row cannot claim a sequence it never runs.
-    "interleaving":  frozenset({"logic", "semantics", "data", "flow"}),
+    "interleaving":  frozenset({"code", "logic", "semantics", "data", "flow"}),
     "governor":      frozenset({"code", "logic", "semantics"}),
 }
 
