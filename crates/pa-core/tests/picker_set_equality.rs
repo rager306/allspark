@@ -12,6 +12,15 @@ use pa_core::auth::{AuthStorage, AuthStorageData, NoOAuth};
 use pa_core::models::ModelRegistry;
 use serde_yaml::Value;
 
+const MOCK_ROW_ID: &str = "MOCK-path-routed-responses";
+const MOCK_SERVER: &str = "crates/pa-ai/src/testing/mock_server.rs";
+const PATH_ROUTED_ORACLES: [&str; 4] = [
+    "a_path_keyed_response_is_served_only_to_that_path",
+    "a_path_queue_that_runs_dry_falls_back_to_the_global_queue",
+    "the_key_is_the_path_so_a_query_string_does_not_claim_a_keyed_response",
+    "an_unkeyed_path_falls_through_to_the_global_queue",
+];
+
 /// The repo root sits two levels above `crates/pa-core`.
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -52,7 +61,10 @@ fn unmet_code_citations(root: &Path, rows: &[Value]) -> Vec<String> {
         if cited.is_empty() {
             continue;
         }
-        let id = row.get("id").and_then(Value::as_str).unwrap_or("<missing id>");
+        let id = row
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("<missing id>");
         let honoured = cited
             .iter()
             .any(|path| path.starts_with("doc/") || root.join(path).exists());
@@ -102,14 +114,6 @@ fn picker_set_equality_holds_at_the_source_level() {
     );
 
     // 4. The path-routed oracle row cites exactly the tests the mock server defines.
-    const MOCK_ROW_ID: &str = "MOCK-path-routed-responses";
-    const MOCK_SERVER: &str = "crates/pa-ai/src/testing/mock_server.rs";
-    const PATH_ROUTED_ORACLES: [&str; 4] = [
-        "a_path_keyed_response_is_served_only_to_that_path",
-        "a_path_queue_that_runs_dry_falls_back_to_the_global_queue",
-        "the_key_is_the_path_so_a_query_string_does_not_claim_a_keyed_response",
-        "an_unkeyed_path_falls_through_to_the_global_queue",
-    ];
     let mock_row = rows
         .iter()
         .find(|row| row.get("id").and_then(Value::as_str) == Some(MOCK_ROW_ID))
