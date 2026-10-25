@@ -1,0 +1,23 @@
+schema: allspark-test-matrix/v1
+rows:
+  - id: FIX-ghost-code-axis
+    plane: product
+    invariant: cites a source file that does not exist
+    layer: unit
+    axes: {code: [crates/fix/src/lib.rs, crates/fix/src/ghost.rs]}
+    oracle: []
+    kill_mutation: delete the file this row cites
+    status: gap
+    gate: default
+    owner: fixture
+  - id: FIX-paths-field-ghost
+    plane: harness
+    invariant: a paths citation outside doc/ must exist; an absent doc/ path is legal
+    layer: governor
+    axes: {logic: [citation exists]}
+    paths: [doc/testing/absent-contract.yaml, crates/fix/src/lib.rs, crates/fix/src/ghost_via_paths.rs]
+    oracle: []
+    kill_mutation: rename a cited source file and leave the row behind
+    status: gap
+    gate: default
+    owner: fixture

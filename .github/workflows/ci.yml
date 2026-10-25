@@ -235,9 +235,42 @@ jobs:
           python3 scripts/release/test_restamp.py
           python3 scripts/release/test_channel_version.py
 
+  # The ADR-0001 test-contract governor (scripts/testgov/): proves the rows
+  # of doc/testing/test-matrix.yaml against the tree — each row's oracle
+  # exists, is not ignored, and every seat of the contract holds — before the
+  # build stage below spends its check+clippy budget. Advisory per ADR-0001
+  # ("ships advisory until the matrix rows it must prove exist for the P0
+  # gaps"): measured 2026-10-25, `testgov ci` still exits 1 on 8 HIGH
+  # findings, so a hard gate here would have red-flagged every wave while the
+  # build stage still waits for it (needs on clippy-test), so a break of the
+  # governor itself surfaces immediately.
+  testgov:
+    name: testgov (ADR-0001 contract governor)
+    needs: trust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    continue-on-error: true
+    if: needs.trust.result == 'success' && needs.trust.outputs.allowed == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      # The governor's one third-party dependency (fsm.py, dictionary.py and
+      # kinds.py import yaml); every CI script above it is stdlib-only, so
+      # the runner image's yaml presence is unproven — install it explicitly.
+      # --break-system-packages is required by the ubuntu-24.04 image's
+      # externally-managed system python and harmless where it is not.
+      - name: Install pyyaml (the governor's one dependency)
+        run: python3 -m pip install --user --break-system-packages pyyaml
+      # No cargo, no test execution: existence and reachability of oracles
+      # only (scripts/testgov/README.md). The exit code decides this job's
+      # own result; continue-on-error keeps it advisory.
+      - name: Run the ADR-0001 contract governor
+        run: PYTHONPATH=scripts python3 -m testgov ci
+
   clippy-test:
     name: check + clippy (workspace)
-    needs: trust
+    needs: [trust, testgov]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     if: needs.trust.result == 'success' && needs.trust.outputs.allowed == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)

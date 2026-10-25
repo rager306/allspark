@@ -426,6 +426,42 @@ class RowStaleVsDiff(Check):
         return result
 
 
+class RowFileMissing(Check):
+    """A cited path that does not exist is a contract the tree cannot honour.
+
+    `paths` and `axes.code` both cite source files; a rename or deletion that leaves a row
+    pointing at a ghost is exactly the drift the set-equality oracle exists to catch. `doc/`
+    paths are the contract documents themselves, not sources — the contract may plan a
+    document that is not written yet, so only source paths must exist.
+    """
+
+    name = "row-file-missing"
+    description = "Every cited source path (paths, axes.code) exists; doc/ contract paths exempt."
+
+    def run(self, ctx: Context, *, tree=None) -> CheckResult:
+        result = CheckResult(self.name)
+        matrix, findings = _matrix(ctx)
+        result.findings.extend(findings)
+        if not matrix.ok:
+            return result
+        for row in matrix.rows:
+            axes = row.get("axes")
+            code = axes.get("code") if isinstance(axes, dict) else None
+            cited = [path for path in (code or []) if isinstance(path, str)]
+            extra = row.get("paths")
+            if isinstance(extra, list):
+                cited.extend(path for path in extra if isinstance(path, str))
+            for path in cited:
+                result.scanned += 1
+                if path.startswith("doc/"):
+                    continue
+                if not (ctx.root / path).exists():
+                    result.findings.append(Finding(
+                        self.name, Severity.HIGH, "row-file-missing",
+                        f"{row.id}: cited path does not exist: {path}", file=path))
+        return result
+
+
 class CapabilityCoverage(Check):
     """A source surface with no row at all (LOW: an inventory, not a score)."""
 
@@ -694,4 +730,5 @@ ALL_CHECKS: tuple[type[Check], ...] = (
     SettingsHaveConsumers,
     ParameterSchemasValidate,
     WorkflowSurfaceIntact,
+    RowFileMissing,
 )
