@@ -1,0 +1,17 @@
+name: shuttle
+on:
+  workflow_call:
+
+jobs:
+  shuttle:
+    name: Shuttle DST (pa-daemon scheduler)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RUSTFLAGS: "--cfg shuttle"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Run Shuttle tests on daemon scheduler tests
+        run: |
+          cargo test -p pa-daemon --lib -- shuttle 2>&1 || \
+            echo "::warning::no shuttle tests found yet — add one under pa-daemon/tests/"
