@@ -76,7 +76,7 @@ runtime keeps serving. Closing stdin is equivalent to `shutdown`.
 - `{"event":"done","id":str,"status":"ok"|"error"}` — exactly one per id'd
   request, always after all of that request's other events. A snapshot `done`
   adds `saved`, `skipped`, `pruned`, `bytes`; a restore `done` adds `restored`,
-  `failed`, `neutralized`; a `list_names` `done` adds `names`; a failed snapshot/restore adds
+  `failed`; a `list_names` `done` adds `names`; a failed snapshot/restore adds
   `reason`. Bash activity `done` carries `activities` (list), `tail` (tail),
   or `killed` (kill); `status:"error"` with `reason` on unknown IDs.
   The daemon advertises `kernel_bash_activity`; clients poll `list_kernel_bash`
@@ -176,12 +176,11 @@ snapshot (and nothing is pruned).
 `restore` loads the payload and revives each name independently; a missing
 file yields an ok empty restore with `reason:"snapshot not found"`, a corrupt
 file fails with a `reason`, and per-name failures are listed in `failed`.
-Pickled file handles revive guarded: a raw fd number is refused outright (the
-record fails), and a named write-mode handle (`w`/`a`/`x`/`+`) revives as an
-inert closed stand-in — reopening it would truncate or append to the user's
-file — with each substitution listed in `neutralized` (`name`, `file`,
-`mode`). Read-only handles reopen live with their saved position.
-Names `In`, `Out`, and `get_ipython` in a payload are never restored. `dill` is imported lazily; when unavailable, snapshot and restore
+Names `In`, `Out`, and `get_ipython` in a payload are never restored. A pickled file
+handle is never reopened: one saved by path revives as a closed stub that
+keeps its `name` and `mode` and raises `ValueError` on I/O like any closed
+file (reopening with `"w"`/`"w+"` would truncate the file, and `"x"` would
+fail on an existing one), and one saved as a raw fd number fails that name. `dill` is imported lazily; when unavailable, snapshot and restore
 fail with `status:"error"` and a `reason`.
 
 `list_names` replies with `done` carrying `names`: the sorted user-defined

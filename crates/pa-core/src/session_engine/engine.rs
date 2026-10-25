@@ -570,7 +570,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let cell_timeout_ms =
         super::runtime_wiring::arm_cell_timeout_ms(config.daemonless, python_cell_timeout_ms);
     let provisioner = super::runtime_wiring::kernel_provisioner(
-        session_id,
+        session_id.clone(),
         handlers,
         python_skills.clone(),
         cwd.clone(),
@@ -979,6 +979,13 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         None => timing_stream_fn,
     };
     let agent = Agent::new(AgentOptions {
+        // Every request in the session carries this identity: providers key prompt caching
+        // (`prompt_cache_key`), session headers, and WebSocket/`previous_response_id` reuse on it
+        // (TS `sdk.ts` passes `sessionManager.getSessionId()`).
+        // The provider cache-key identity: the durable id leads, and a
+        // subagent keys by its ROOT session so a spawn tree shares one
+        // cache routing group (see `provider_session_id` above).
+        session_id: Some(provider_session_id),
         initial_state: AgentInitialState {
             system_prompt: Some(system_prompt.clone()),
             system_prompt_cache_prefix,
@@ -1021,7 +1028,6 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         should_stop_before_turn: config.queued_steering_probe.clone(),
         steering_mode: config.steering_mode,
         follow_up_mode: config.follow_up_mode,
-        session_id: Some(provider_session_id),
         ..Default::default()
     });
 
@@ -1341,7 +1347,13 @@ impl SessionEngine {
     /// ends the session but keeps the engine alive; dropping the engine tears the kernel down too.
     /// The native `lsp` tool's language-server clients are shut down here too
     /// (each owns a child process that must not outlive the session).
+    /// The session's cached Codex WebSocket closes with it (TS `cleanupSessionResources` on
+    /// dispose), so a worker that replaces its session does not hold the old socket until the
+    /// idle expiry.
     pub async fn dispose_kernel(&self) {
+        if let Some(session_id) = self.session.agent().session_id() {
+            pa_ai::codex_debug::close_websocket_sessions(Some(session_id));
+        }
         self.provisioner.dispose(None).await;
         if let Some(manager) = &self.lsp_manager {
             manager.shutdown_all().await;

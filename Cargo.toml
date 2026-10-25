@@ -31,7 +31,7 @@ crossterm = { path = "vendor/crossterm" }
 tree-sitter-go = { path = "vendor/tree-sitter-go" }
 
 [workspace.package]
-version = "0.10.2-beta.3"
+version = "0.10.2-beta.10"
 edition = "2021"
 license = "MIT"
 authors = ["Stencil Labs, Inc."]

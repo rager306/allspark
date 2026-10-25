@@ -556,6 +556,7 @@ async fn a_wrapped_stream_holds_its_slot_only_for_its_own_lifetime() {
         tools: Vec::new(),
     };
     let options = StreamRequestOptions {
+        transport: None,
         temperature: None,
         max_tokens: None,
         reasoning: pa_agent::types::ThinkingLevel::Off,
@@ -1000,6 +1001,7 @@ async fn a_refused_acquire_fails_fast_as_a_rate_limit_for_failover() {
             tools: Vec::new(),
         },
         StreamRequestOptions {
+            transport: None,
             temperature: None,
             max_tokens: None,
             reasoning: pa_agent::types::ThinkingLevel::Off,

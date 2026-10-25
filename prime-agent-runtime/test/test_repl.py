@@ -820,176 +820,45 @@ class ReplTest(unittest.TestCase):
             self.assertEqual(one(events, "done")["status"], "ok")
             self.assertEqual(one(events, "result")["text"], "'woken'")
 
-    def test_restore_neutralizes_named_write_handles(self):
-        # dill revives a named handle by reopening it with open(name, mode):
-        # a saved 'w' handle truncates the user's file the moment the restore
-        # reports success (2300 bytes -> 0, verified upstream of the fix).
-        # Restore must refuse that reopen, bind an inert closed stand-in, and
-        # report the substitution in `neutralized`. A handle nested inside a
-        # container is guarded the same way, attributed to its variable.
+    def test_restore_never_reopens_pickled_file_handles(self):
+        # dill saves a file object as (name, mode) and its revival reopens the
+        # path with that mode: "w" truncated the user's file on every restore
+        # even when the handle was closed (discussion #3085).
+        sys.path.insert(0, SRC)
+        self.addCleanup(sys.path.remove, SRC)
+        from rlm import repl as repl_module
+
         with tempfile.TemporaryDirectory() as tmp:
-            data = os.path.join(tmp, "data.txt")
-            log = os.path.join(tmp, "nested.log")
-            payload = "y" * 2300
-            with open(data, "w") as seed:
-                seed.write("old contents that must survive")
-            with open(log, "w") as seed:
-                seed.write("unused seed: the nested open rewrites the file")
-            path = os.path.join(tmp, "kernel-state.dill")
-            manifest_path = os.path.join(tmp, "kernel-state.json")
-            setup = (
-                f"handle = open({data!r}, 'w')\n"
-                f"handle.write({payload!r})\n"
-                "handle.flush()\n"
-                f"nested = {{'inner': open({log!r}, 'w')}}\n"
-                "nested['inner'].write('nested payload')\n"
-                "nested['inner'].flush()\n"
-                "keep = 7\n"
+            target = os.path.join(tmp, "notes.txt")
+            handle = open(target, "w")
+            handle.close()
+            with open(target, "w") as fh:
+                fh.write("precious")
+            # A handle nested in a container takes the same reconstructor.
+            ns = {"handle": handle, "nested": {"inner": [handle]}}
+            path = os.path.join(tmp, "state", "kernel-state.dill")
+            manifest_path = os.path.join(tmp, "state", "kernel-state.json")
+            result = repl_module._snapshot_state(
+                ns,
+                path,
+                manifest_path,
+                repl_module.DEFAULT_SNAPSHOT_MAX_BYTES,
+                repl_module.DEFAULT_SNAPSHOT_MAX_VARIABLE_BYTES,
+                False,
             )
-            self.assertEqual(one(self.repl.execute("s1", setup), "done")["status"], "ok")
-            self.repl.send(
-                {"type": "snapshot", "id": "s2", "path": path, "manifest_path": manifest_path}
-            )
-            done = one(self.repl.until_done("s2"), "done")
-            self.assertEqual(done["status"], "ok")
-            self.assertIn("handle", done["saved"])
-            self.assertIn("nested", done["saved"])
+            self.assertEqual(result["saved"], ["handle", "nested"])
 
-            fresh = ReplProcess()
-            self.addCleanup(fresh.close)
-            fresh.ready()
-            fresh.send({"type": "restore", "id": "r1", "path": path})
-            done = one(fresh.until_done("r1"), "done")
-            self.assertEqual(done["status"], "ok")
-            # The user's bytes survive the restore untouched.
-            with open(data, "rb") as fh:
-                self.assertEqual(fh.read(), payload.encode())
-            with open(log, "rb") as fh:
-                self.assertEqual(fh.read(), b"nested payload")
-            self.assertIn("handle", done["restored"])
-            self.assertIn("nested", done["restored"])
-            self.assertIn("keep", done["restored"])
-            self.assertEqual(done["failed"], [])
-            self.assertEqual(
-                sorted(done["neutralized"], key=lambda entry: entry["name"]),
-                [
-                    {"name": "handle", "file": data, "mode": "w"},
-                    {"name": "nested", "file": log, "mode": "w"},
-                ],
-            )
-            # The revived binding behaves like a closed file of the same name.
-            events = fresh.execute(
-                "p1",
-                "blocked = None\n"
-                "try:\n"
-                "    handle.write('nope')\n"
-                "except ValueError as err:\n"
-                "    blocked = f'{type(err).__name__}: {err}'\n"
-                "blocked\n",
-            )
-            self.assertEqual(
-                one(events, "result")["text"], "'ValueError: I/O operation on closed file.'"
-            )
-            events = fresh.execute("p2", "handle.closed, handle.name, handle.mode")
-            self.assertEqual(one(events, "result")["text"], f"(True, {data!r}, 'w')")
-            # The stand-in pickles again: a revived namespace still snapshots
-            # (the stdin-EOF flush does exactly that) and stays neutralized.
-            cycle_path = os.path.join(tmp, "cycle.dill")
-            cycle_manifest = os.path.join(tmp, "cycle.json")
-            fresh.send(
-                {"type": "snapshot", "id": "s3", "path": cycle_path, "manifest_path": cycle_manifest}
-            )
-            done = one(fresh.until_done("s3"), "done")
-            self.assertEqual(done["status"], "ok")
-            self.assertIn("handle", done["saved"])
-            third = ReplProcess()
-            self.addCleanup(third.close)
-            third.ready()
-            third.send({"type": "restore", "id": "r2", "path": cycle_path})
-            done = one(third.until_done("r2"), "done")
-            self.assertEqual(done["status"], "ok")
-            self.assertIn("handle", done["restored"])
-            events = third.execute("p3", "handle.closed")
-            self.assertEqual(one(events, "result")["text"], "True")
-            with open(data, "rb") as fh:
-                self.assertEqual(fh.read(), payload.encode())
-            self.assertEqual(fresh.shutdown(), 0)
-
-    def test_restore_neutralizes_named_append_handles(self):
-        # 'a' does not truncate, but a revived append handle still aims a live
-        # write cursor at the user's file from the restored kernel; every
-        # write-mode handle is neutralized the same way.
-        with tempfile.TemporaryDirectory() as tmp:
-            log = os.path.join(tmp, "run.log")
-            with open(log, "w") as seed:
-                seed.write("first line\n")
-            path = os.path.join(tmp, "kernel-state.dill")
-            manifest_path = os.path.join(tmp, "kernel-state.json")
-            setup = (
-                f"log_handle = open({log!r}, 'a')\n"
-                "log_handle.write('second line\\n')\n"
-                "log_handle.flush()\n"
-            )
-            self.assertEqual(one(self.repl.execute("s1", setup), "done")["status"], "ok")
-            self.repl.send(
-                {"type": "snapshot", "id": "s2", "path": path, "manifest_path": manifest_path}
-            )
-            done = one(self.repl.until_done("s2"), "done")
-            self.assertEqual(done["status"], "ok")
-            self.assertIn("log_handle", done["saved"])
-
-            fresh = ReplProcess()
-            self.addCleanup(fresh.close)
-            fresh.ready()
-            fresh.send({"type": "restore", "id": "r1", "path": path})
-            done = one(fresh.until_done("r1"), "done")
-            self.assertEqual(done["status"], "ok")
-            with open(log, "rb") as fh:
-                self.assertEqual(fh.read(), b"first line\nsecond line\n")
-            self.assertIn("log_handle", done["restored"])
-            self.assertEqual(
-                done["neutralized"], [{"name": "log_handle", "file": log, "mode": "a"}]
-            )
-            events = fresh.execute("p1", "log_handle.closed, log_handle.mode")
-            self.assertEqual(one(events, "result")["text"], "(True, 'a')")
-            self.assertEqual(fresh.shutdown(), 0)
-
-    def test_restore_reopens_named_read_only_handles(self):
-        # A read-only reopen has no side effects (no O_TRUNC, no file created),
-        # so those handles revive live — dill's default handle semantics start
-        # them at position 0 — and reading keeps working across the resume.
-        # Only write-mode handles are neutralized.
-        with tempfile.TemporaryDirectory() as tmp:
-            data = os.path.join(tmp, "digits.txt")
-            with open(data, "w") as seed:
-                seed.write("0123456789")
-            path = os.path.join(tmp, "kernel-state.dill")
-            manifest_path = os.path.join(tmp, "kernel-state.json")
-            setup = (
-                f"reader = open({data!r}, 'r')\n"
-                "reader.read(4)\n"
-            )
-            self.assertEqual(one(self.repl.execute("s1", setup), "done")["status"], "ok")
-            self.repl.send(
-                {"type": "snapshot", "id": "s2", "path": path, "manifest_path": manifest_path}
-            )
-            done = one(self.repl.until_done("s2"), "done")
-            self.assertEqual(done["status"], "ok")
-            self.assertIn("reader", done["saved"])
-
-            fresh = ReplProcess()
-            self.addCleanup(fresh.close)
-            fresh.ready()
-            fresh.send({"type": "restore", "id": "r1", "path": path})
-            done = one(fresh.until_done("r1"), "done")
-            self.assertEqual(done["status"], "ok")
-            self.assertEqual(done["neutralized"], [])
-            self.assertEqual(done["restored"], ["reader"])
-            events = fresh.execute("p1", "reader.read()")
-            self.assertEqual(one(events, "result")["text"], "'0123456789'")
-            with open(data, "rb") as fh:
-                self.assertEqual(fh.read(), b"0123456789")
-            self.assertEqual(fresh.shutdown(), 0)
+            restored_ns = {}
+            result = repl_module._restore_state(restored_ns, path)
+            self.assertEqual((result["restored"], result["failed"]), (["handle", "nested"], []))
+            with open(target) as fh:
+                self.assertEqual(fh.read(), "precious")
+            restored = restored_ns["handle"]
+            self.assertEqual((restored.name, restored.mode, restored.closed), (target, "w", True))
+            self.assertIsInstance(restored_ns["nested"]["inner"][0], repl_module._RestoredFileStub)
+            for call in (lambda: restored.write("x"), restored.read, restored.readline):
+                with self.assertRaisesRegex(ValueError, "closed file"):
+                    call()
 
     def test_stdin_eof_flushes_final_snapshot(self):
         # Host death (EOF, no shutdown request) must persist the namespace

@@ -1264,27 +1264,17 @@ mod tests {
     #[tokio::test]
     async fn threshold_hold_mints_before_the_compaction_and_runs_after() {
         let _guard = FAUX_TEST_LOCK.lock().await;
-        // The estimate counts the harness's system prompt, which varies with the
-        // installed skills inventory (measured 9k and 14k estimated tokens in
-        // this bed). Size the window so the prompt cannot decide the outcome.
-        // The threshold is 53 904 (60 000 - 2 000 output budget - 4 096 estimate
-        // floor). The crossing turn's estimate is its own usage: ~50k of history
-        // plus the prompt (measured 67 089 at a 14k prompt). The post-compaction
-        // estimate is the prompt plus summary and retained tail (measured
-        // 17 447). So the crossing is seen while the prompt exceeds ~3.9k tokens,
-        // and the compacted context falls back under the threshold while the
-        // prompt stays below ~50k: a prompt anywhere in roughly 4k-50k tokens
-        // exercises the arm. An earlier 20 000-token window put the threshold at
-        // 13 904, under the measured 17 447 post-compaction estimate, so the
-        // boundary found itself due again, compacted and minted once more, and
-        // the held turn never ran.
+        // Include faux cache-write usage in the threshold: the resumed history
+        // crosses the 25_904 ceiling (32k - 2_000 output - 4_096 headroom),
+        // while the compacted continuation stays below it.
+
         let mut model_script = script(
             &json!([
                 "crossing reply",
                 "the compaction summary",
                 "continuation reply",
             ]),
-            60_000,
+            32_000,
         );
         model_script["maxTokens"] = json!(2_000);
         let bed = goal_bed_with_resumed_goal(
