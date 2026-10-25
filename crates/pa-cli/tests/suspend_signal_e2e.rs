@@ -17,8 +17,8 @@
 
 #![cfg(unix)]
 
-use std::io::{BufRead, Read, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::io::{BufRead, Write};
+use std::os::fd::OwnedFd;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -57,13 +57,6 @@ fn log_wire(frame: &str) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .push(frame.to_string());
-}
-
-fn wire_log_dump() -> String {
-    WIRE_LOG
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .join("\n")
 }
 
 /// The child half: the real interactive loop against the parent's mock supervisor.
@@ -307,11 +300,6 @@ impl SuspendHarness {
 
     fn wait_from_bounded(&mut self, mark: usize, needle: &[u8], what: &str, bound: Duration) {
         self.master.wait_from_bounded(mark, needle, what, bound);
-    }
-
-    /// Wait until a caret parks at `column` and return its row (DERIVED, not assumed).
-    fn wait_caret_row_from(&mut self, mark: usize, column: u16, what: &str) -> String {
-        wait_caret_row_from(&mut self.master, mark, column, what)
     }
 
     fn region_since(&self, mark: usize) -> Vec<u8> {
