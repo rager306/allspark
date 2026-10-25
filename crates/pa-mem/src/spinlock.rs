@@ -362,8 +362,8 @@ mod tests {
 #[cfg(test)]
 mod concurrency_tests {
     use super::*;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     /// N threads race for the lock and each increments a shared counter inside
     /// the critical section. Without correct mutual exclusion the final count
@@ -401,7 +401,10 @@ mod concurrency_tests {
         let guard = lock.lock();
         assert!(lock.try_lock().is_none(), "try_lock must fail while held");
         drop(guard);
-        assert!(lock.try_lock().is_some(), "try_lock must succeed after release");
+        assert!(
+            lock.try_lock().is_some(),
+            "try_lock must succeed after release"
+        );
     }
 
     /// Batch lock: acquire the batch token, verify the acquire count.
