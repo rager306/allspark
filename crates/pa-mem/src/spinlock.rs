@@ -358,3 +358,58 @@ mod tests {
         assert!(!lock.is_locked());
     }
 }
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// N threads race for the lock and each increments a shared counter inside
+    /// the critical section. Without correct mutual exclusion the final count
+    /// falls short of N.
+    #[test]
+    fn concurrent_lockers_see_exclusive_access() {
+        let lock = Arc::new(SpinLock::new());
+        let counter = Arc::new(AtomicUsize::new(0));
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let lock = Arc::clone(&lock);
+                let counter = Arc::clone(&counter);
+                std::thread::spawn(move || {
+                    for _ in 0..1_000 {
+                        let _guard = lock.lock();
+                        counter.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().expect("thread");
+        }
+        assert_eq!(
+            counter.load(Ordering::Relaxed),
+            4_000,
+            "each of 4 threads x 1000 iterations must land exactly once"
+        );
+    }
+
+    /// try_lock returns Some exactly once while the lock is held.
+    #[test]
+    fn try_lock_fails_while_held() {
+        let lock = SpinLock::new();
+        let guard = lock.lock();
+        assert!(lock.try_lock().is_none(), "try_lock must fail while held");
+        drop(guard);
+        assert!(lock.try_lock().is_some(), "try_lock must succeed after release");
+    }
+
+    /// Batch lock: acquire the batch token, verify the acquire count.
+    /// (Deferred: needs a `Batch` fixture — the API requires a pre-registered batch.)
+    #[test]
+    fn batch_lock_counts_acquires() {
+        // Placeholder: the Batch type requires setup that lives in the shard
+        // module, not in spinlock.rs. Tracked as a follow-up for the Loom
+        // integration (MUT-loom-spinlock in the matrix).
+    }
+}

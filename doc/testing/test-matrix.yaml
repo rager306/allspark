@@ -597,3 +597,139 @@ rows:
     source: >-
       bbtree design/03-decisions.md; ADR-0001 already numbers G-1..G-16,
       so this row tracks the backlog of unnumbered decisions predating it
+
+  # ── testing ladder (#14, bbtree pattern) — the governor is the independent controller ──
+  - id: LADDER-miri-pure-crates
+    plane: harness
+    invariant: >-
+      Miri runs the lib test suite for pa-types, pa-jev and pa-graph (no FFI,
+      no I/O, no unsafe) on every PR, so UB and aliasing violations are caught
+      before they reach the daemon.
+    layer: unit
+    paths:
+      - .github/workflows/miri.yml
+    axes:
+      code: [.github/workflows/miri.yml]
+      semantics: [no UB on any test input]
+    oracle:
+      - miri_workflow_covers_pure_crates
+    kill_mutation: >-
+      remove the miri job from the workflow; the file-existence and content
+      oracle must redden
+    status: gap
+    gate: advisory
+    owner: ADR-0001
+    source: issue #14, bbtree ladder item 1
+
+  - id: LADDER-sanitizer-pure-crates
+    plane: harness
+    invariant: >-
+      AddressSanitizer runs the lib test suite for pa-types, pa-jev and
+      pa-graph on every PR, catching memory errors that Miri's interpreted
+      model misses on real allocations.
+    layer: unit
+    paths:
+      - .github/workflows/sanitizer.yml
+    axes:
+      code: [.github/workflows/sanitizer.yml]
+      semantics: [no memory errors on any test input]
+    oracle:
+      - sanitizer_workflow_covers_pure_crates
+    kill_mutation: >-
+      remove the sanitizer workflow; the file-existence and content oracle
+      must redden
+    status: gap
+    gate: advisory
+    owner: ADR-0001
+    source: issue #14, bbtree ladder item 1
+
+  - id: LADDER-shuttle-daemon
+    plane: harness
+    invariant: >-
+      At least one daemon scheduler test runs under Shuttle deterministic
+      simulation (thousands of interleavings per PR), so a scheduling race is
+      caught deterministically instead of probabilistically.
+    layer: daemon
+    paths:
+      - .github/workflows/shuttle.yml
+      - crates/pa-daemon/src
+    axes:
+      code: [crates/pa-daemon/src]
+      logic: [scheduling, retry, landing]
+      semantics: [deterministic outcome regardless of interleaving]
+    oracle: []
+    kill_mutation: >-
+      remove a memory barrier from the scheduler; Shuttle must find the race
+    status: gap
+    gate: advisory
+    owner: ADR-0001
+    source: issue #14, bbtree lesson "one DST tool does not mean tested"
+
+  - id: LADDER-shuttle-pa-mem-spinlock
+    plane: product
+    invariant: >-
+      The hand-rolled spinlock in pa-mem (spinlock.rs:76 lock, :87 try_lock)
+      is free of interleavings that lose a wakeup, double-release, or observe
+      a stale state under any ordering the Shuttle scheduler explores.
+    layer: interleaving
+    paths:
+      - crates/pa-mem/src/spinlock.rs
+    axes:
+      code: [crates/pa-mem/src/spinlock.rs]
+      logic: [compare_exchange loops, guard release]
+      semantics: [exactly one acquire per release, no lost wakeup]
+      flow: [lock -> guard -> release]
+    oracle: []
+    kill_mutation: >-
+      weaken the release ordering from Release to Relaxed in SpinGuard::drop;
+      a Shuttle interleaving test must redden
+    status: gap
+    gate: advisory
+    owner: ADR-0001
+    source: >-
+      360 lines of hand-rolled atomic ordering; a bug here is invisible on
+      x86 and visible on aarch64-apple-darwin which we ship
+
+  - id: LADDER-decision-log
+    plane: harness
+    invariant: >-
+      Key architectural decisions are numbered, dated, and citable from code
+      and issues via a persistent decision log (design/03-decisions.md),
+      not buried in CHANGELOG prose or a prompt note that dies on clone.
+    layer: unit
+    paths:
+      - design/03-decisions.md
+    axes:
+      code: [design/03-decisions.md]
+      logic: [numbered decisions addressable from issues]
+      semantics: [decision -> evidence -> number]
+    oracle: []
+    kill_mutation: >-
+      remove a numbered decision from the log; the coverage test must redden
+    status: gap
+    gate: default
+    owner: ADR-0001
+    source: bbtree design/03-decisions.md (D1-D9 already recorded, 2026-10-25)
+
+  - id: LADDER-perf-review-procedure
+    plane: harness
+    invariant: >-
+      A performance change requires a measured before-and-after, documented
+      in the commit and in docs/perf-review.md, with the baseline in
+      pa-perf/baseline.json.
+    layer: bench
+    paths:
+      - docs/perf-review.md
+      - crates/pa-perf
+    axes:
+      code: [crates/pa-perf]
+      semantics: [baseline comparison, regression threshold]
+      flow: [measure -> change -> re-measure -> compare]
+    oracle: []
+    kill_mutation: >-
+      remove the baseline comparison; a 10x paint regression must still redden
+    status: gap
+    gate: default
+    owner: ADR-0001
+    source: bbtree perf gate (10% threshold); our pa-perf has the harness but
+      no baseline file

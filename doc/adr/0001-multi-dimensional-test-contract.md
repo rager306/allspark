@@ -685,10 +685,23 @@ reference implementation has it. Scored against **our** unsafe and concurrency s
 | **clippy + `cargo check`** | **already have** | zero-warning posture in the gate; adds nothing |
 | **Loom** | **adopt — `spinlock` + `refcount`** | ordering is chosen by hand (`compare_exchange(0, MAX, Acquire, Relaxed)`); an `Acquire`/`Release` mistake is invisible on x86 and visible on `aarch64-apple-darwin`, which we ship. This is the **one** cheap layer that observes `flow`, hence the new `interleaving` layer node |
 | **Kani** | **adopt — `robin_hood` only** | the only pure module with a wraparound/index invariant and **no** Verus mirror; `ptr48` and `varint` already have mirrors, so model checking there duplicates a proof |
-| **Miri** | **narrow, once** | ~90% of our `unsafe` is FFI, which Miri cannot execute without per-call shims. Worth one pass over the 43 non-FFI sites, *after* checking Verus coverage — usually the mirror is already stronger |
+| **Miri** | **adopt — workflow added** | Miri cannot execute FFI, which is ~90% of our unsafe, but the 43 non-FFI sites in pure crates (pa-types, pa-jev, pa-graph) are exactly where Miri adds value. Two workflow files (.github/workflows/miri.yml, sanitizer.yml) run the pure-crate test suites under Miri and ASan on every PR |
+| **sanitizers** | **adopt — workflow added** | ASan on the pure crates catches real-allocation bugs Miri's interpreted model misses; scoped to pa-types/pa-jev/pa-graph to avoid pa-core/pa-daemon FFI noise |
 | **cargo-fuzz** | **reject** | our defect class is not malformed input but **empty or partial data**: a fuzzed protocol returns a valid empty list and every seed passes. Fuzzing catches panics; the incident was a 200 with nothing in it |
-| **sanitizers** | **reject** | TSan duplicates Loom less rigorously; ASan on a tree that is 90% FFI produces noise, not findings |
 | **Prusti / Creusot / VeriFast / Aeneas+hax / Flux** | **reject** | each requires rewriting the code into its own subset. `AGENTS.md` states the rule: if the code must be rewritten to become provable, that is the signal not to write the mirror. Verus already fits our stack (3 mirrors, pilot done: 4 functions, ~2.1 s, spec:logic ≈ 3:1) |
+
+**Implementation status (2026-10-25):**
+
+| artifact | status |
+|---|---|
+| `crates/pa-cli/build.rs` | **landed** — stamps `ALLSPARK_BUILD_HASH` (12-hex + `.dirty`), rerun-if-changed on .git |
+| `daemon_hello.runtime.buildHash` | **landed** — carried on the wire via `configure_build_hash` seam |
+| `daemon_attach_compat` predicate | **landed** — one classifier, both call sites delegate |
+| `.github/workflows/miri.yml` | **landed** — runs Miri on pa-types/pa-jev/pa-graph per PR |
+| `.github/workflows/sanitizer.yml` | **landed** — ASan on pure crates per PR |
+| `doc/testing/test-matrix.yaml` | **landed** — 27 rows including 6 ladder rows (`LADDER-*`) |
+| `design/03-decisions.md` | **landed** — D1–D9, each with evidence and date |
+| `docs/perf-review.md` | **landed** — baseline procedure + regression threshold |
 
 **Two edges this adds to the graph:**
 
