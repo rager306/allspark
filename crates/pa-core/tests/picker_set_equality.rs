@@ -30,6 +30,39 @@ fn cited_code_paths(row: &Value) -> Vec<&str> {
         .unwrap_or_default()
 }
 
+/// Strict parse: a duplicate key (Python's yaml silently resolves last-wins) is exactly
+/// the two-owners-of-one-state defect this oracle exists to see, so it must fail here.
+fn parse_matrix(root: &Path) -> Vec<Value> {
+    let matrix_text = std::fs::read_to_string(root.join("doc/testing/test-matrix.yaml"))
+        .expect("read test-matrix.yaml");
+    let document: Value = serde_yaml::from_str(&matrix_text).expect("test-matrix.yaml parses");
+    document
+        .get("rows")
+        .and_then(Value::as_sequence)
+        .cloned()
+        .unwrap_or_else(|| panic!("test-matrix.yaml under {} has a rows list", root.display()))
+}
+
+/// Rows citing a code axis that honours none of the cited paths in `root`
+/// (`doc/` contract paths exempt, same rule as the governor's `row-file-missing`).
+fn unmet_code_citations(root: &Path, rows: &[Value]) -> Vec<String> {
+    let mut absent: Vec<String> = Vec::new();
+    for row in rows {
+        let cited = cited_code_paths(row);
+        if cited.is_empty() {
+            continue;
+        }
+        let id = row.get("id").and_then(Value::as_str).unwrap_or("<missing id>");
+        let honoured = cited
+            .iter()
+            .any(|path| path.starts_with("doc/") || root.join(path).exists());
+        if !honoured {
+            absent.push(format!("{id} cites none of {cited:?}"));
+        }
+    }
+    absent
+}
+
 #[test]
 fn picker_set_equality_holds_at_the_source_level() {
     let root = repo_root();
@@ -58,30 +91,10 @@ fn picker_set_equality_holds_at_the_source_level() {
     }
 
     // 2. The matrix parses.
-    let matrix_path = root.join("doc/testing/test-matrix.yaml");
-    let matrix_text = std::fs::read_to_string(&matrix_path).expect("read test-matrix.yaml");
-    let document: Value = serde_yaml::from_str(&matrix_text).expect("test-matrix.yaml parses");
-    let rows = document
-        .get("rows")
-        .and_then(Value::as_sequence)
-        .expect("test-matrix.yaml has a rows list");
+    let rows = parse_matrix(&root);
 
-    // 3. Every row citing a code axis honours at least one path in the tree (`doc/`
-    //    contract paths are exempt, same rule as the governor's `row-file-missing`).
-    let mut absent: Vec<String> = Vec::new();
-    for row in rows {
-        let cited = cited_code_paths(row);
-        if cited.is_empty() {
-            continue;
-        }
-        let id = row.get("id").and_then(Value::as_str).unwrap_or("<missing id>");
-        let honoured = cited
-            .iter()
-            .any(|path| path.starts_with("doc/") || root.join(path).exists());
-        if !honoured {
-            absent.push(format!("{id} cites none of {cited:?}"));
-        }
-    }
+    // 3. Every row citing a code axis honours at least one path in the tree.
+    let absent = unmet_code_citations(&root, &rows);
     assert!(
         absent.is_empty(),
         "matrix rows whose code axis exists nowhere:\n{}",
@@ -119,4 +132,20 @@ fn picker_set_equality_holds_at_the_source_level() {
             "{MOCK_SERVER} must define the path-routed oracle test fn {name}"
         );
     }
+}
+
+/// The green-path canary for the citation rule: the governor's own `row-file-missing`
+/// fixture, whose matrix cites one existing and one ghost path per row and must still
+/// honour at least one path everywhere (`doc/`-only citations are exempt).
+#[test]
+fn the_citation_rule_holds_on_the_governor_fixture() {
+    let root = repo_root();
+    let fixture = root.join("scripts/testgov/fixtures/row-file-missing");
+    let rows = parse_matrix(&fixture);
+    let absent = unmet_code_citations(&fixture, &rows);
+    assert!(
+        absent.is_empty(),
+        "fixture rows whose code axis exists nowhere:\n{}",
+        absent.join("\n")
+    );
 }

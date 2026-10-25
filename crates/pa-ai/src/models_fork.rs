@@ -886,7 +886,6 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
         supports_developer_role: None,
         max_tokens_field: None,
     },
-
     // --- Agnes AI (agnes-ai.com subscription) ---------------------------------
     // Subscription: 1500 model requests / 5 hours, powered by Agnes-3.0-Flash
     // (about 100 TPS, 150 TPS during off-peak). API is OpenAI-compatible.
