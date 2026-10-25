@@ -864,6 +864,8 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="override the MCP service catalog URL")
     parser.add_argument("--allow-small-fixture", action="store_true",
                         help="skip the minimum-count gates (smoke fixtures only)")
+    parser.add_argument("--verify-fixture", action="store_true",
+                        help="verify a --fixture-generated asset (waives the fork-provider gate)")
     return parser.parse_args(argv)
 
 
@@ -871,8 +873,13 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     out_dir = args.out_dir or (ROOT / "target" / "catalog-assets")
     if args.command == "verify":
+        # --fixture waives the same gates as generate --fixture: the fork-provider
+        # check and the minimum-count floor. Without this, generate --fixture +
+        # verify (without --fixture) always exits 1 because the fixture catalog
+        # lacks fork providers.
+        allow_small = args.allow_small_fixture or args.verify_fixture
         result = validate_bundled_catalog_dir(
-            out_dir, allow_small_fixture=args.allow_small_fixture)
+            out_dir, allow_small_fixture=allow_small)
         result["outDir"] = str(out_dir)
         print(json.dumps(result, indent=2))
         return 0
