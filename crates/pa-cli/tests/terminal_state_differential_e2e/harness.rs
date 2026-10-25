@@ -29,13 +29,10 @@ use pa_tui::interactive::{InteractiveOptions, ModelSelection, SessionSelection};
 
 use crate::ledger::ModeLedger;
 
-#[path = "../support/mod.rs"]
-mod support;
-
+pub(crate) use crate::support::PtyReader;
 use crate::{
     CHILD_MODE_ENV, CHILD_SOCKET_ENV, CHILD_TERM, KITTY_ANSWER, KITTY_FLAGS_PUSH, KITTY_QUERY,
 };
-pub(crate) use support::{find_subsequence, PtyReader};
 
 // The pty harness.
 

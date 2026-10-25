@@ -21,6 +21,9 @@
 mod harness;
 mod ledger;
 
+#[path = "../support/mod.rs"]
+mod support;
+
 use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
@@ -30,9 +33,10 @@ use std::time::{Duration, Instant};
 
 use harness::{
     child_options, harness_lock, quiet_child_epilogue, spawn_child, view_options, ChildSpec,
-    DifferentialHarness, PtyReader, Termios,
+    DifferentialHarness, Termios,
 };
 use ledger::ModeLedger;
+use support::{find_subsequence, PtyReader};
 
 use nix::pty::{openpty, Winsize};
 use nix::sys::signal::{kill, Signal};
@@ -703,7 +707,7 @@ fn the_late_kitty_answer_inside_the_exit_window_is_stood_down() {
 
     let stream = harness.output();
     assert!(
-        harness::find_subsequence(&stream, KITTY_FLAGS_PUSH).is_none(),
+        find_subsequence(&stream, KITTY_FLAGS_PUSH).is_none(),
         "the late answer pushed the kitty flags after the exit standdown"
     );
     harness.assert_terminal_state_restored("the late kitty answer inside the exit window");

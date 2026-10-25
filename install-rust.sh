@@ -2646,6 +2646,9 @@ fi
 if [ -n "$rollback_from" ]; then
   step_start "Restoring the previous version"
   stage="$rollback_from"
+  # The kept generation IS the published tree (it was moved aside verbatim),
+  # so it is its own payload root; the tarball path resolves its own below.
+  payload_root="$stage"
 else
 step_start "Installing"
 stage="$(mktemp -d "${PREFIX}/share/prime-agent.stage.XXXXXX")"
