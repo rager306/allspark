@@ -602,12 +602,15 @@ model — do not "fix" either half.
   env-var names (`PRIME_AGENT_*`, `PI_*` wire names) — the collision is
   avoided by the isolated `HOME`, so renaming env vars buys nothing and breaks
   the launcher's socket pin plus parity diffs.
-- **`--version` names the fork and the fork build**:
-  `allspark <version> (fork build <id>; upstream prime-agent <version>)`. The
-  build id is stamped at compile time via
+- **`--version` names the fork, the fork build, and the content hash**:
+  `allspark <version> (fork build <id>; build <hash>; upstream prime-agent <version>)`.
+  The build id is stamped at compile time via
   `ALLSPARK_FORK_BUILD=fork.NNN cargo build ...` and must match the release tag
-  `allspark-v<version>-fork.NNN` (zero-padded counter: `fork.001`...); an unstamped build reports `dev`. Two allspark
-  binaries are told apart by this id. The differential CLI test strips the
+  `allspark-v<version>-fork.NNN` (zero-padded counter: `fork.001`...); an unstamped build reports `dev`. The
+  hash is the content stamp `build.rs` resolves from HEAD (12-hex, `.dirty`
+  when the tree was unclean; omitted when there is no `.git`) — a version
+  string is not an identity, the hash tells two unstamped builds apart. The
+  differential CLI test strips the
   branding before comparing against the upstream TypeScript binary; the words
   are the accepted divergence.
 - **No seeding from the upstream install.** The fork starts standalone: its

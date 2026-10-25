@@ -141,6 +141,27 @@ pub fn main_with_runtime(args: &[String], runtime: &dyn mode::Runtime) -> i32 {
     }
 }
 
+/// The `--version` line: the release stamp (`fork.NNN`; `dev` unstamped)
+/// plus the content hash — a version string is not an identity, the hash is
+/// what tells two unstamped builds apart. The hash is omitted when the build
+/// ran outside a repository (nothing to show; the daemon handshake already
+/// answers `Unknown` for it).
+fn version_line() -> String {
+    let fork_build = crate::config::fork_build();
+    let hash = crate::config::build_hash();
+    let build = if hash.is_empty() {
+        fork_build.to_string()
+    } else {
+        format!("{fork_build}; build {hash}")
+    };
+    format!(
+        "allspark {} (fork build {}; upstream prime-agent {})",
+        crate::config::version(),
+        build,
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
 fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String> {
     use std::io::IsTerminal;
 
@@ -238,12 +259,7 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
         // parity, but `--version` names the product the user actually runs.
         // The differential CLI test normalizes this marker away when
         // comparing against the upstream TypeScript binary.
-        println!(
-            "allspark {} (fork build {}; upstream prime-agent {})",
-            crate::config::version(),
-            crate::config::fork_build(),
-            env!("CARGO_PKG_VERSION")
-        );
+        println!("{}", version_line());
         return Ok(0);
     }
     if parsed.help {
@@ -458,6 +474,32 @@ fn node_style_error(error: &std::io::Error, syscall: &str, from: &str, to: &str)
             format!("EACCES: permission denied, {syscall} '{from}' -> '{to}'")
         }
         _ => error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod version_line_tests {
+    /// The `--version` line carries the content hash when the build has one:
+    /// two unstamped `dev` builds differ exactly there. In-tree builds always
+    /// have a stamp (build.rs resolves HEAD; `unknown` only without `.git`),
+    /// so the branch under test is the present one, and the assertion goes red
+    /// on the pre-hash format (no `; build` field at all).
+    #[test]
+    fn version_line_names_the_build_hash() {
+        let line = super::version_line();
+        let hash = crate::config::build_hash();
+        assert!(
+            !hash.is_empty(),
+            "the test tree builds inside a repository: the hash is resolved"
+        );
+        assert!(
+            line.contains(&format!("; build {hash}")),
+            "the line must carry the content hash: {line}"
+        );
+        assert!(
+            line.starts_with("allspark "),
+            "the fork marker leads: {line}"
+        );
     }
 }
 
