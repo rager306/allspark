@@ -740,6 +740,57 @@ def _is_scratch(path: Path, root: Path) -> bool:
     return is_scratch(path, root)
 
 
+
+class RegistryScheduleAgrees(Check):
+    """Every registered check must be REACHABLE and every scheduled name must exist.
+
+    A checker nobody schedules is dead weight that still looks like a guard (it
+    is registered, its selftest passes, and it never runs in `ci`). This check is
+    the one that notices: the two sides of the contract — `ALL_CHECKS` and
+    `fsm.yaml`'s `run_checks` steps — must name the same set, with an explicit
+    reason for any intentional exclusion.
+    """
+
+    name = "registry-schedule-agrees"
+    description = "ALL_CHECKS and the FSM's run_checks steps name the same set."
+
+    # Checks that are DELIBERATELY not scheduled, each with the reason. An entry
+    # here is a decision, not an oversight: it must say why the check runs only
+    # on demand.
+    INTENTIONAL_EXCLUSIONS: dict[str, str] = {}
+
+    def run(self, ctx: Context, *, tree=None) -> CheckResult:
+        result = CheckResult(self.name)
+        from .kinds import ALL_CHECKS as REGISTERED
+
+        fsm_text = ctx.read("doc/testing/fsm.yaml")
+        if fsm_text is None:
+            result.findings.append(Finding(
+                self.name, Severity.HIGH, "fsm-missing",
+                "doc/testing/fsm.yaml is missing: the schedule cannot be read"))
+            return result
+        import yaml as _yaml
+        document = _yaml.safe_load(fsm_text) or {}
+        scheduled: set[str] = set()
+        for state, spec in (document.get("states") or {}).items():
+            if isinstance(spec, dict) and spec.get("kind") == "run_checks":
+                scheduled.update(spec.get("checks") or [])
+        registered = {check.name for check in REGISTERED}
+        result.scanned = len(registered)
+        for name in sorted(registered - scheduled):
+            if name in self.INTENTIONAL_EXCLUSIONS:
+                continue
+            result.findings.append(Finding(
+                self.name, Severity.HIGH, "check-never-scheduled",
+                f"check {name!r} is registered but no FSM step runs it "
+                f"(add it to a run_checks step, or state the reason in "
+                f"INTENTIONAL_EXCLUSIONS)"))
+        for name in sorted(scheduled - registered):
+            result.findings.append(Finding(
+                self.name, Severity.HIGH, "scheduled-unknown-check",
+                f"fsm.yaml schedules {name!r}, which ALL_CHECKS does not define"))
+        return result
+
 ALL_CHECKS: tuple[type[Check], ...] = (
     MatrixShape,
     OracleExists,
@@ -757,4 +808,5 @@ ALL_CHECKS: tuple[type[Check], ...] = (
     ParameterSchemasValidate,
     WorkflowSurfaceIntact,
     RowFileMissing,
+    RegistryScheduleAgrees,
 )

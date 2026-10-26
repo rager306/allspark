@@ -1,0 +1,8 @@
+schema: allspark-test-fsm/v1
+initial: idle
+states:
+  idle:            { kind: noop }
+  run_one:         { kind: run_checks, checks: [scheduled-check, ghost-check-not-registered] }
+transitions:
+  - { from: idle,    event: done, to: run_one }
+  - { from: run_one, event: done, to: ok }
