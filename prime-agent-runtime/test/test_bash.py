@@ -1598,6 +1598,9 @@ class PersistentBashTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.output, "first\nsecond\n")
         self.assertFalse(done.running)
         self.assertEqual(done.output(), "first\nsecond\n")
+        # The reads above happen outside a live cell, so the durable files are
+        # freed by an explicit discard (audit §6: only an ACK reaps them).
+        done.discard()
         self.assertEqual([r["pid"] for r in self.records()], [held_pid])
         self.assertEqual(len(self.files()), 2)
 
@@ -1611,6 +1614,43 @@ class PersistentBashTest(unittest.IsolatedAsyncioTestCase):
         held.kill()
         await held
         await _poll_group_dead(held_pid)
+        held.discard()
+        self.assertEqual(self.files(), [])
+
+    async def test_a_finished_shell_nobody_read_survives_the_restart(self):
+        """Audit §6, the manifest-until-ACK rule.
+
+        Completion used to delete the record and its rc/out files the moment the
+        watcher saw the leader exit. A shell that finished between turns — the
+        common case, since the model only reads at the start of its next cell —
+        therefore lost its output across a kernel restart: the record survived,
+        the two files that give it meaning did not. The files now outlive
+        completion and are removed by an ACK (`output()` inside a live cell) or
+        an explicit `discard()`.
+        """
+        go = os.path.join(os.path.dirname(self.home), "go-ack")
+        handle = bash(f"while [ ! -e {shlex.quote(go)} ]; do sleep 0.01; done; echo kept; exit 9", persistent=True)
+        self.pgids.append(handle.pid)
+        open(go, "w").close()
+        self.assertEqual((await handle).exit_code, 9)
+        # Nobody read it: the record and its files are still there.
+        self.assertEqual(len(self.files()), 3, self.files())
+        # A restart finds the finished shell and its output.
+        bash_module._rehydrate_persistent_shells()
+        recovered = self.handle_for(handle.pid)
+        self.assertEqual(recovered.output(), "kept\n")
+        self.assertEqual((await recovered).exit_code, 9)
+        recovered.discard()
+        await self.wait_for(lambda: self.files() == [])
+
+    async def test_discard_is_idempotent_and_drops_an_unread_result(self):
+        handle = bash("echo dropping; exit 0", persistent=True)
+        self.pgids.append(handle.pid)
+        await handle
+        self.assertEqual(len(self.files()), 3)
+        handle.discard()
+        self.assertEqual(self.files(), [])
+        handle.discard()  # a second ACK is a no-op, never an error
         self.assertEqual(self.files(), [])
 
     async def test_fresh_persistent_shell_reports_through_files(self):
@@ -1623,8 +1663,16 @@ class PersistentBashTest(unittest.IsolatedAsyncioTestCase):
         open(go, "w").close()
         result = await handle
         self.assertEqual((result.exit_code, result.output), (4, "hi\n"))
-        await self.wait_for(lambda: self.files() == [])
+        # The files OUTLIVE completion (audit §6: the manifest survives until an
+        # ACK): an awaiting cell is not necessarily a reader, and the rc/out pair
+        # is the only copy a restarted kernel could find. This test runs outside
+        # a live cell, so no read can ACK here — the explicit `discard()` is the
+        # other way to say "I do not want it".
+        self.assertNotEqual(self.files(), [], "completion must not delete the durable record")
         self.assertEqual(handle.output(), "hi\n")
+        self.assertNotEqual(self.files(), [], "a read outside a live cell is not an ACK")
+        handle.discard()
+        await self.wait_for(lambda: self.files() == [])
         plain = bash("true")
         rows = {row["pid"]: row for row in bash_module.activity_request("list")["activities"]}
         self.assertFalse(rows[plain.pid]["persistent"])
@@ -1634,6 +1682,9 @@ class PersistentBashTest(unittest.IsolatedAsyncioTestCase):
         handle = bash("( sleep 30 & ); exit 0", persistent=True)
         self.pgids.append(handle.pid)
         self.assertEqual((await handle).exit_code, 0)
+        # The record survives until an ACK (audit §6); what this test proves is
+        # the group, so it discards explicitly.
+        handle.discard()
         self.assertEqual(self.files(), [])
         await _poll_group_dead(handle.pid)
 
@@ -1692,6 +1743,7 @@ class PersistentBashTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((result.exit_code, result.output), (7, "old output\n"))
         self.assertNotIn("a" * 32, [h._activity_id for h in bash_module.persistent_shells()])
         self.assertIsNone(stranger.poll())
+        surfaced[0].discard()
         await self.wait_for(lambda: self.files() == [])
 
     async def test_reattached_shell_whose_pid_is_recycled_finishes_without_a_signal(self):
@@ -1704,6 +1756,7 @@ class PersistentBashTest(unittest.IsolatedAsyncioTestCase):
         handle._start_id = "proc:not-this-process"
         self.assertEqual((await asyncio.wait_for(handle, 10)).exit_code, -1)
         self.assertIsNone(stranger.poll())
+        handle.discard()
         await self.wait_for(lambda: self.files() == [])
 
     async def test_completed_file_errors_settle_waiters_and_leave_records_recoverable(self):
@@ -1737,6 +1790,9 @@ class PersistentBashTest(unittest.IsolatedAsyncioTestCase):
                 recovered = self.handle_for(gone.pid)
                 result = await asyncio.wait_for(recovered, 5)
                 self.assertEqual((result.exit_code, result.output), (7, "old output\n"))
+                # The recovered read happens outside a live cell, so the ACK
+                # that frees the files is explicit (audit §6).
+                recovered.discard()
                 await self.wait_for(lambda: self.files() == [])
 
     async def test_restart_retains_unverified_leaderless_groups_without_signalling(self):

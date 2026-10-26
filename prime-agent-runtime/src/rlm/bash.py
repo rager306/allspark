@@ -833,8 +833,16 @@ class BashHandle:
                 return
             self._result_consumed = True
             notice, self._consumed_notice = self._consumed_notice, None
+        self._reap_after_ack()
         if notice is not None:
             notice()
+
+    def _reap_after_ack(self) -> None:
+        """Hook: a persistent handle deletes its durable files here.
+
+        The in-memory handle has no durable files, so the default is a no-op;
+        `PersistentBashHandle` overrides it.
+        """
 
     def _schedule_background_completion_notice(self) -> None:
         cell_finished = self._creating_cell_finished
@@ -1213,6 +1221,14 @@ class PersistentBashHandle(BashHandle):
         self._consumed_notice: Callable[[], None] | None = None
         self._callback_lock = threading.Lock()
         self._reaped = False
+        # The durable files are the ONLY copy of this shell's exit status and
+        # output once the kernel that watched it is gone, so completion does not
+        # delete them (audit §6, the manifest-until-ACK rule): the reap waits
+        # until the result is ACKed by a live reader, or explicitly discarded.
+        # A shell that ends while nobody is looking therefore survives a kernel
+        # restart with its output, instead of leaving a dangling record whose rc
+        # and out files were already removed.
+        self._reap_pending = False
         self._kill_lock = threading.Lock()
         self._started_at = started_at
         self._started = time.monotonic() - max(
@@ -1239,6 +1255,30 @@ class PersistentBashHandle(BashHandle):
         with self._kill_lock:
             if not self._reaped:
                 _reap_persistent_group(self._pid, self._start_id)
+
+    def _reap_after_ack(self) -> None:
+        """Delete the durable files now that a live reader has the result.
+
+        Called from the ACK path only. Best-effort: a failed removal leaves the
+        record, and the next boot retries it (a record whose rc is gone and whose
+        leader is dead is reaped there).
+        """
+        if not self._reap_pending:
+            return
+        self._reap_pending = False
+        _remove_shell_files(self._home, self._activity_id)
+
+    def discard(self) -> None:
+        """Drop this shell's durable files without reading the result.
+
+        The explicit "I do not want it" ACK: a caller that stops caring (a run
+        that was cancelled, a test that only needed the side effect) should not
+        leave an unread record to survive the restart. Idempotent.
+        """
+        with self._callback_lock:
+            self._result_consumed = True
+        self._reap_pending = True
+        self._reap_after_ack()
 
     def _watch(self, running: bool) -> None:
         # running=False: the shell finished while no kernel ran; its pid may
@@ -1269,8 +1309,10 @@ class PersistentBashHandle(BashHandle):
             cast("_OutputFile", self._buffer).keep()
         except OSError as error:
             self._completion_error = error
-        if self._completion_error is None and reaped:
-            _remove_shell_files(self._home, self._activity_id)
+        # Deletion is the ACK's business, not completion's: mark the reap
+        # pending and let `_note_result_consumed`/`discard` remove the files.
+        # A shell whose output nobody read keeps its rc/out for the next boot.
+        self._reap_pending = self._completion_error is None and reaped
         # Failed I/O must settle waiters too, without losing the recoverable files.
         self._finalize(exit_code, "" if self._completion_error is not None else None)
         with self._callback_lock:
