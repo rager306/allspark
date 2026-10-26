@@ -62,12 +62,16 @@ pub struct CompactOptions<'a> {
 }
 
 /// The model-visible message produced by a session entry (summarizer input).
+///
+/// Tool results ARE summarizer input: `serialize_conversation` renders them
+/// with a label, the tool name, an error marker and a char cap
+/// (`compaction_utils.rs`), and a result is often the only place a fact exists
+/// (the failing test output, the exact error). Dropping them here left the
+/// serializer nothing to work with, so the "Outstanding Work" prompt section
+/// could not recover evidence it had never been handed (audit §5.2).
 fn message_from_entry(entry: &FileEntry) -> Option<AgentMessage> {
     match entry {
-        FileEntry::Message { message, .. } => match message {
-            AgentMessage::ToolResult(_) => None,
-            _ => Some(message.clone()),
-        },
+        FileEntry::Message { message, .. } => Some(message.clone()),
         FileEntry::CustomMessage { payload, .. } => {
             if payload.custom_type == "harness_digest"
                 || payload.custom_type == super::ipython_state::IPYTHON_STATE_CUSTOM_TYPE

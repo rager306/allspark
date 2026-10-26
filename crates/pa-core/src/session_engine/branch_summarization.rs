@@ -107,7 +107,9 @@ fn get_message_from_entry(entry: &FileEntry) -> Option<AgentMessage> {
     match entry {
         FileEntry::Message { message, .. } => match message {
             // Tool results stay attached to their assistant tool call.
-            AgentMessage::ToolResult(_) => None,
+            // A tool result is evidence the branch summary must see: the
+            // serializer renders it with a cap (audit §5.2).
+            AgentMessage::ToolResult(_) => Some(message.clone()),
             _ => Some(message.clone()),
         },
         FileEntry::CustomMessage { payload, .. } => {

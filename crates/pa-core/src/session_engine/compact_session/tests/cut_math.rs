@@ -14,7 +14,7 @@ fn cut_and_tokens_computed_from_entries() {
 }
 
 #[test]
-fn message_extraction_skips_compaction_and_tool_results() {
+fn message_extraction_skips_compaction_but_keeps_tool_results() {
     let mut compaction = FileEntry::Compaction {
         payload: pa_types::session::CompactionEntry {
             summary: "s".to_string(),
@@ -53,7 +53,9 @@ fn message_extraction_skips_compaction_and_tool_results() {
             rest: serde_json::Map::default(),
         },
     };
-    assert!(message_from_entry(&tool_result).is_none());
+    // A tool result IS summarizer input (audit §5.2): the serializer renders
+    // it with a label and a cap, and it often holds the only evidence.
+    assert!(message_from_entry(&tool_result).is_some());
 }
 
 /// A usage-less error turn never anchors `tokensBefore`: the estimate uses
