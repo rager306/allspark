@@ -636,15 +636,37 @@ impl GraphTool {
     /// on-disk store, and a `force` index from the model still overrides this.
     /// Returns the report when a build happened, so the reply can name it.
     fn ensure_indexed(&self, root: &Path, project: &str) -> anyhow::Result<Option<IndexReport>> {
-        let indexed = self.with_reader(|store| {
-            Ok::<_, anyhow::Error>(
-                store
-                    .file_count(project)
-                    .map_err(|err| anyhow::anyhow!("status failed: {err}"))?
-                    > 0,
-            )
+        // The project key is the root's BASENAME, so two checkouts named the
+        // same (`/a/service`, `/b/service`) share one row set in the shared DB.
+        // The write path refuses to overwrite a project with a different root
+        // (`register_project_at`), but the WARM path used to answer from
+        // `file_count > 0` alone — so a query for B read A's rows and returned
+        // another project's symbols as its own answer. The root is validated
+        // before any read below, on every path.
+        let (indexed, stored_root) = self.with_reader(|store| {
+            let count = store
+                .file_count(project)
+                .map_err(|err| anyhow::anyhow!("status failed: {err}"))?;
+            let stored = store
+                .project_root(project)
+                .map_err(|err| anyhow::anyhow!("project root read failed: {err}"))?;
+            Ok::<_, anyhow::Error>((count > 0, stored))
         })?;
         if indexed {
+            let same_root = stored_root.as_deref().is_some_and(|stored| {
+                stored == root.to_string_lossy()
+                    || match (std::fs::canonicalize(&stored), std::fs::canonicalize(root)) {
+                        (Ok(stored), Ok(requested)) => stored == requested,
+                        _ => false,
+                    }
+            });
+            if !same_root {
+                anyhow::bail!(
+                    "graph project {project:?} is indexed from a different root ({}), not {}:                      two checkouts with the same directory name share one project key, and an                      answer from the other tree would be wrong. Set `graph.dbPath` to a                      per-workspace database, or run the `index` action for this root.",
+                    stored_root.as_deref().unwrap_or("<none>"),
+                    root.display()
+                );
+            }
             return Ok(None);
         }
         // single-flight: one cold-start build at a time. A caller that arrives
@@ -3755,6 +3777,47 @@ mod tests {
             vec!["durationMs", "origin", "origin_id", "steps", "truncated"],
             "an unfiltered trace grew new details keys: {}",
             trace.details
+        );
+    }
+    /// §4.1 (audit): the project key is the root's basename, so two checkouts
+    /// named `service` share one row set. The write path refuses to overwrite a
+    /// project with a different root, but the WARM read path answered from
+    /// `file_count > 0` alone — a query for B silently read A's symbols. Each
+    /// root is validated before any read now.
+    #[tokio::test]
+    async fn a_warm_query_for_another_root_with_the_same_basename_refuses() {
+        let a = tempfile::tempdir().unwrap().path().join("service");
+        let b = tempfile::tempdir().unwrap().path().join("service");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("lib.rs"), "pub fn only_in_a() -> u32 { 1 }\n").unwrap();
+        std::fs::write(b.join("lib.rs"), "pub fn only_in_b() -> u32 { 2 }\n").unwrap();
+
+        // One shared DB, as the default `graph.dbPath` gives.
+        let db = tempfile::tempdir().unwrap();
+        let db_path = db.path().join("graph.db");
+        let tool_a = GraphTool::new(db_path.clone(), a.clone());
+        tool_a
+            .dispatch(&serde_json::json!({ "action": "index" }))
+            .unwrap();
+
+        // B is the same basename, a different root: the warm path must not
+        // answer from A's rows.
+        let tool_b = GraphTool::new(db_path, b.clone());
+        // `dispatch` answers Err; the agent loop turns that into an
+        // `is_error` tool result (agent_loop/tool_call.rs), so the refusal is
+        // asserted at the dispatch contract here.
+        let error = tool_b
+            .dispatch(&serde_json::json!({ "action": "search", "query": "only_in_a" }))
+            .expect_err("a query from another root must refuse, not read the other tree");
+        let text = format!("{error:#}");
+        assert!(
+            text.contains("different root"),
+            "the refusal must name the cause: {text}"
+        );
+        assert!(
+            !text.contains("only_in_a"),
+            "no symbol from the other tree may leak into the answer: {text}"
         );
     }
 }
