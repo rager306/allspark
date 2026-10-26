@@ -480,7 +480,17 @@ impl SupervisorChildSessionsInner {
         // FORK: the child link answers the last turn's text AND its failed
         // flag (retry exhaustion surfaces there first — the fake-supervisor
         // fixture and the field reproduction both ride this channel).
-        let observed = self.child_last_answer(&active_session_id).await.ok();
+        // `Err` here is a TRANSPORT failure (the worker is gone or the link
+        // timed out), not "the child finished without an answer". Collapsing it
+        // to `None` let the settle mark a one-shot `done` below, and a later
+        // successful observation could never change the verdict (audit §6:
+        // `outcome_unknown` must stay a distinct state).
+        let observation = self.child_last_answer(&active_session_id).await;
+        let observation_failed = observation.is_err();
+        if let Err(error) = &observation {
+            tracing::debug!(%error, "child answer observation failed; outcome stays unknown");
+        }
+        let observed = observation.ok();
         let child_failed = observed.as_ref().is_some_and(|(_, failed, _)| *failed);
         let child_failure = observed.as_ref().and_then(|(_, _, error)| error.clone());
         let raw_answer = self
@@ -545,6 +555,10 @@ impl SupervisorChildSessionsInner {
                     record.settled_status = Some("error");
                     record.error = Some(error);
                 }
+                // No error observed AND the observation itself failed: the run's
+                // outcome is UNKNOWN, not done. The row keeps `settled_status`
+                // unset so a later successful observation can still decide it.
+                None if observation_failed => {}
                 None => record.settled_status = Some("done"),
             }
         }

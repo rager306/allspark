@@ -46,6 +46,9 @@ enum FakeChild {
     /// The child's last turn DIED (retry exhaustion): idle, with an error row
     /// and no answer text.
     FailedTurn,
+    /// The child reports idle, but every `get_last_assistant_text` read fails
+    /// at the transport: the run is over and its outcome is UNOBSERVABLE.
+    AnswerUnobservable,
     /// Every model call of the task run fails (#3366): the admitted
     /// prompt's run leaves a failed assistant row and the retry
     /// episode's failed outcome row in the child's session file.
@@ -268,6 +271,14 @@ async fn spawn_fake_supervisor(
                             // answer hand-off and reads no text (a None
                             // capture), later reads answer.
                             let reads = child_subagents.answer_reads.fetch_add(1, Ordering::SeqCst);
+                            if matches!(child, FakeChild::AnswerUnobservable) {
+                                response_failure(
+                                    Some(&id),
+                                    command_type,
+                                    "child link refused the answer read",
+                                    None,
+                                )
+                            } else
                             if matches!(child, FakeChild::FailedTurn) {
                                 // A turn that died from retry exhaustion: no
                                 // text, a terminal stopReason, the diagnostic in
@@ -2995,4 +3006,54 @@ async fn spawn_ladder_rung_pins_the_child_thinking() {
         rendered.contains("\"thinking\":\"high\""),
         "the child config must carry the rung's pinned thinking, got: {rendered}"
     );
+}
+
+/// §6 (audit): a TRANSPORT failure while observing the child's answer is not
+/// "the run finished without an answer". It used to collapse to `None` and the
+/// settle wrote a one-shot `done`, which a later successful observation could
+/// never change. The verdict now stays unset, so the outcome remains unknown.
+#[tokio::test]
+async fn a_failed_answer_observation_leaves_the_outcome_unknown() {
+    let (follow_up_tx, _follow_up_rx) = mpsc::unbounded_channel();
+    let (sessions, _kill_rx) = sessions_with_fake_supervisor(
+        follow_up_tx,
+        0,
+        FakeKill::Success,
+        FakeChild::AnswerUnobservable,
+    )
+    .await;
+    let handle = spawn_child(&sessions).await;
+    sessions.notify_turn_done();
+    // The child reports idle but its answer read fails at the transport; the
+    // row must not report a completed run.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        {
+            let row = Arc::clone(&sessions.inner.children.lock().await[0]);
+            let record = row.lock().await;
+            if record.settled_status.is_some() {
+                assert_ne!(
+                    record.settled_status.as_deref(),
+                    Some("done"),
+                    "a transport failure must not settle the run as done"
+                );
+                break;
+            }
+        }
+        if std::time::Instant::now() > deadline {
+            // Never settled: the outcome is unknown, which is the point.
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let roster = sessions.list_subagents().await.expect("child roster");
+    if let Some(row) = roster
+        .iter()
+        .find(|child| child.rlm_child_id == handle.rlm_child_id)
+    {
+        assert_ne!(
+            row.status, "completed",
+            "an unreachable child is not completed"
+        );
+    }
 }
