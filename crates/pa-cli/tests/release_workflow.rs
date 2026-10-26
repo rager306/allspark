@@ -827,6 +827,68 @@ fn zero_artifacts_fail_loudly_instead_of_verifying_nothing() {
     );
 }
 
+/// A Miri lane that runs a crate with no `unsafe` is pure cost: the tool can
+/// only find undefined behaviour, and there is none to find. The lane named
+/// pa-graph and pa-jev for months; neither has a single `unsafe` block.
+///
+/// The rule is a count, not a list: whichever crates the workflow names must
+/// hold the unsafe blocks the lane exists for.
+#[test]
+fn the_miri_lane_names_only_crates_with_unsafe_code() {
+    let root = repo_root();
+    let lane = fs::read_to_string(root.join(".github/workflows/miri.yml"))
+        .expect("read the miri workflow");
+    let mut named: Vec<&str> = Vec::new();
+    for line in lane.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("cargo +nightly miri test -p ") {
+            continue;
+        }
+        if let Some(crate_name) = trimmed
+            .strip_prefix("cargo +nightly miri test -p ")
+            .and_then(|rest| rest.split_whitespace().next())
+        {
+            named.push(crate_name);
+        }
+    }
+    assert!(
+        !named.is_empty(),
+        "the Miri lane runs no crate at all: {lane}"
+    );
+    for crate_name in named {
+        let src = root.join("crates").join(crate_name).join("src");
+        let mut unsafe_blocks = 0usize;
+        let mut stack = vec![src.clone()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    let Ok(text) = fs::read_to_string(&path) else {
+                        continue;
+                    };
+                    // `unsafe {` or `unsafe fn` — not the word in a comment.
+                    // pa-graph mentions `unsafe` in prose and would otherwise
+                    // pass a check it fails by construction.
+                    unsafe_blocks += text.matches("unsafe {").count()
+                        + text.matches("unsafe fn").count()
+                        + text.matches("unsafe impl").count();
+                }
+            }
+        }
+        assert!(
+            unsafe_blocks > 0,
+            "the Miri lane runs {crate_name}, which has no `unsafe` in src/: \
+             Miri can only find undefined behaviour, so this run cannot report \
+             anything (measured: pa-graph 0, pa-jev 0)"
+        );
+    }
+}
+
 /// A `workflow_call` workflow is a definition, not a gate: unless another
 /// workflow `uses` it, nothing runs it. Three lanes (miri, sanitizer, shuttle)
 /// sat in that state — written, documented, kept in sync, never invoked — so a

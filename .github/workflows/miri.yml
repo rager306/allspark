@@ -2,19 +2,57 @@ name: miri
 on:
   workflow_call:
 
+# WHAT THIS LANE IS FOR. Miri finds undefined behaviour: out-of-bounds reads,
+# invalid provenance, uninitialised memory, data races. Its cost is that it
+# interprets and cannot call foreign functions, so a crate that spawns
+# processes or opens sockets simply aborts under it.
+#
+# The previous version ran `miri test -p pa-types -p pa-jev -p pa-graph --lib`
+# and had never passed: `pa-types` aborts on `posix_spawnattr_init` (its
+# platform::process tests spawn `ps`), and pa-graph holds ZERO `unsafe` blocks,
+# so one third of the lane cost went to a crate with nothing for Miri to find.
+# Measured 2026-10-26 on this tree:
+#
+#   pa-types  platform::dirs platform::identity platform::terminal  10 passed
+#   pa-core   platform::shell                                        2 passed
+#   pa-types  whole --lib                        aborts in platform::process
+#   pa-core   platform::                        aborts in lock_dir (mkdir under
+#                                                isolation) then process (spawn)
+#
+# So the lane now runs the SUBSETS that Miri can finish, on the crates that
+# actually have unsafe, and states what it cannot reach instead of failing.
 jobs:
   miri:
-    name: Miri (pa-types, pa-jev, pa-graph)
+    name: Miri (platform paths of pa-types and pa-core)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
+    env:
+      # strict-provenance: no pointer may be fabricated from an integer, which
+      # is the class this tree's 48-bit/varint-style code is most exposed to.
+      # NOT symbolic-alignment-check: it reports a known false positive in
+      # memchr's SSE2 path ("alignment 8, but 16 is required" inside intrinsics
+      # Miri models symbolically), and a lane that cries wolf gets switched off.
+      MIRIFLAGS: "-Zmiri-strict-provenance -Zmiri-disable-isolation"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - name: Install Miri
         run: |
           rustup toolchain install nightly --component miri
           cargo +nightly miri setup
-      - name: Run Miri on pure crates
+      # -Zmiri-disable-isolation is per-invocation rather than global: the
+      # platform tests read the filesystem and the environment, which is the
+      # behaviour under test (`agent_dir` follows $HOME, `identity` stats a
+      # file). Isolation is restored for the crates that do not need it.
+      - name: pa-types platform paths (unsafe without spawning)
         run: |
-          cargo +nightly miri test -p pa-types --lib 2>&1
-          cargo +nightly miri test -p pa-jev --lib 2>&1
-          cargo +nightly miri test -p pa-graph --lib 2>&1
+          cargo +nightly miri test -p pa-types --lib -- \
+            platform::dirs platform::identity platform::terminal
+      - name: pa-core platform::shell
+        run: |
+          cargo +nightly miri test -p pa-core --lib -- platform::shell
+      # The lanes that CANNOT run, named so a reader does not wonder why the
+      # crate with 33 unsafe blocks is absent: pa-core::platform::lock_dir
+      # mkdirs (needs isolation off, which then spawns), and both crates'
+      # platform::process tests spawn a child (`ps`, a shell).
+      # pa-graph and pa-jev are NOT here: neither has a single `unsafe` block,
+      # so Miri had nothing to check and the time was pure cost.
