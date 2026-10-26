@@ -545,18 +545,29 @@ impl GraphStore {
                 r.get::<_, i64>(3)? as u64,
             ))
         })?;
-        let mut chain = crate::witness::ReceiptChain::new();
+        // The STORED rows are the chain: each receipt's `prev_hash` must equal
+        // the hash of the row before it, and the first row's `prev_hash` must be
+        // empty. The previous implementation fed `prev` into
+        // `WitnessReceipt::new` (so the self-hash matched whatever was stored)
+        // and then re-appended to a fresh `ReceiptChain`, which recomputes the
+        // link from ITS OWN head — deleting a middle row verified clean, because
+        // the rebuilt chain was internally consistent. The diagnostic and the
+        // gate must answer the same question from the same evidence: this
+        // function is both now (audit §4.4).
+        let mut expected_prev = String::new();
         for row in rows {
             let (hash, prev, input_hash, at) = row?;
-            let receipt = WitnessReceipt::new(format!("{project}:index"), input_hash, at, prev);
+            let receipt =
+                WitnessReceipt::new(format!("{project}:index"), input_hash, at, prev.clone());
             if receipt.hash() != hash {
                 return Ok(false);
             }
-            // `append` recomputes the link from the chain head, so a receipt
-            // whose recorded `prev_hash` disagrees surfaces as a broken chain.
-            chain.append(receipt.query_hash.clone(), receipt.result_hash.clone(), at);
+            if prev != expected_prev {
+                return Ok(false);
+            }
+            expected_prev = hash;
         }
-        Ok(chain.verify_chain())
+        Ok(true)
     }
 
     /// Hash of the newest receipt for `project`, or empty for a fresh chain.
@@ -1438,5 +1449,43 @@ fn decision_json<S: serde::Serializer>(
             map.serialize_entry("reject", reason.as_str())?;
             map.end()
         }
+    }
+}
+
+#[cfg(test)]
+mod receipt_chain_tests {
+    use super::GraphStore;
+
+    /// §4.4 (audit): deleting a middle receipt verified CLEAN, because the old
+    /// check rebuilt the chain from the surviving rows and compared it against
+    /// itself. The stored `prev_hash` links are the evidence; a gap breaks them.
+    #[test]
+    fn deleting_a_middle_receipt_breaks_the_stored_chain() {
+        let store = GraphStore::open_in_memory().expect("store");
+        // index_receipts carries a FK to projects.
+        store
+            .register_project("p", "/tmp/receipt-chain-test")
+            .unwrap();
+        for at in [1u64, 2, 3] {
+            store.record_index_receipt("p", at).expect("record receipt");
+        }
+        assert!(
+            store.verify_receipt_chain("p").unwrap(),
+            "intact chain verifies"
+        );
+
+        // Remove the middle row directly: the chain's own links can no longer
+        // hold, and no rebuild may paper over it.
+        store
+            .connection()
+            .execute(
+                "DELETE FROM index_receipts WHERE id = (SELECT MIN(id) + 1 FROM index_receipts)",
+                [],
+            )
+            .unwrap();
+        assert!(
+            !store.verify_receipt_chain("p").unwrap(),
+            "a receipt removed from the middle must fail verification"
+        );
     }
 }
