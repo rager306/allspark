@@ -33,12 +33,58 @@ use pa_graph::{
     SearchOptions, TraceOptions, TreeNode,
 };
 
-/// Project name a store rooted at `root` indexes under (its final path
-/// component, or `"project"` when the root has none).
+/// Project name a store rooted at `root` indexes under when no collision is in
+/// play (its final path component, or `"project"` when the root has none).
 fn project_name(root: &std::path::Path) -> String {
     root.file_name()
         .and_then(|name| name.to_str())
         .map_or_else(|| "project".to_string(), str::to_string)
+}
+
+/// The project key a store rooted at `root` indexes under.
+///
+/// The key is the directory's basename, QUALIFIED by a short digest of the
+/// canonical root **when the basename alone is ambiguous**. Two checkouts named
+/// `service` (`/a/service`, `/b/service`) used to share one key: the write path
+/// refused the second (`register_project_at`), which turned "index my second
+/// checkout" into a hard error and left a shared-database user with only one
+/// indexable tree per basename. The qualification keeps the readable name for
+/// the ordinary case (one root per basename in a database) and only forks when
+/// the tree actually differs — which the store can only answer by looking, so
+/// the resolution takes the store.
+///
+/// The digest is over the CANONICAL path, so a symlinked spelling of the same
+/// tree keeps one key (the same rule `register_project_at` compares by).
+fn project_key_in(store: &GraphStore, root: &std::path::Path) -> anyhow::Result<String> {
+    let base = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map_or_else(|| "project".to_string(), str::to_string);
+    let Some(stored) = store.project_root(&base)? else {
+        // Nobody has claimed the plain name: use it.
+        return Ok(base);
+    };
+    let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let same = stored == root.to_string_lossy()
+        || std::fs::canonicalize(&stored).is_ok_and(|theirs| theirs == canonical);
+    if same {
+        return Ok(base);
+    }
+    Ok(format!("{base}#{}", short_path_digest(&canonical)))
+}
+
+/// Eight hex digits over the canonical root path: enough to make a basename
+/// collision distinct inside one database, short enough to read in a report
+/// line.
+///
+/// It reuses the graph's own content hash rather than adding a second hasher,
+/// so the digest is stable across platforms and versions the same way the file
+/// hashes are.
+fn short_path_digest(canonical: &std::path::Path) -> String {
+    let bytes = canonical.to_string_lossy();
+    let meta = std::fs::metadata(canonical).unwrap_or_else(|_| std::fs::metadata(".").unwrap());
+    let hash = pa_graph::hash::hash_bytes(bytes.as_bytes(), &meta);
+    hash.sha256.chars().take(8).collect()
 }
 
 /// Parse a trace direction (`in`/`out`/`both`); anything else is outgoing.
@@ -633,6 +679,18 @@ impl GraphTool {
         self
     }
 
+    /// The project key for `root`, qualified when the plain basename already
+    /// belongs to a DIFFERENT tree in this database (see [`project_key_in`]).
+    ///
+    /// A store read failure falls back to the plain basename: an index action
+    /// must still run when the registration table cannot be read, and the
+    /// write path's own refusal (on a genuine collision) remains the guard.
+    fn project_key(&self, root: &std::path::Path) -> String {
+        self.with_reader(|store| Ok::<_, anyhow::Error>(project_key_in(store, root)))
+            .unwrap_or_else(|_| Ok(project_name(root)))
+            .unwrap_or_else(|_| project_name(root))
+    }
+
     /// The project root an action resolves against: the `path`/`root`
     /// argument when given (resolved against `cwd`), else `cwd`.
     fn resolve_root(&self, params: &serde_json::Value) -> PathBuf {
@@ -887,7 +945,7 @@ impl GraphTool {
     /// never turn an answer into an error.
     fn status_line(&self, params: &serde_json::Value) -> Option<String> {
         let root = self.resolve_root(params);
-        let project = project_name(&root);
+        let project = self.project_key(&root);
         // Memoised: a status line rides every answer, and the full probe costs
         // more than the query it annotates (measured 255 ms against a 2 ms trace).
         let line = self.with_read(|store| {
@@ -926,7 +984,7 @@ impl GraphTool {
 
     fn action_index(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
         let root = self.resolve_root(params);
-        let project = project_name(&root);
+        let project = self.project_key(&root);
         let mut opts = IndexOptions::new(&project);
         if params
             .get("force")
@@ -1004,7 +1062,7 @@ impl GraphTool {
 
     fn action_reindex(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
         let root = self.resolve_root(params);
-        let project = project_name(&root);
+        let project = self.project_key(&root);
         let respect_gitignore = parse_respect_gitignore(params)?;
         // The incremental path shares discovery with `index` and takes the same
         // writer lease, so it reads the same three scope knobs.
@@ -1048,7 +1106,7 @@ impl GraphTool {
             .filter(|query| !query.is_empty())
             .ok_or_else(|| anyhow::anyhow!("search requires a non-empty `query`"))?;
         let root = self.resolve_root(params);
-        let project = project_name(&root);
+        let project = self.project_key(&root);
         // A cold graph answers "0 hits" for everything; building it here turns
         // the first query into a real answer instead of a false negative.
         let indexed_now = self.ensure_indexed(&root, &project)?;
@@ -1316,7 +1374,7 @@ impl GraphTool {
             .filter(|symbol| !symbol.is_empty())
             .ok_or_else(|| anyhow::anyhow!("trace requires a non-empty `symbol`"))?;
         let root = self.resolve_root(params);
-        let project = project_name(&root);
+        let project = self.project_key(&root);
         let indexed_now = self.ensure_indexed(&root, &project)?;
         let mut opts = TraceOptions::new(&project, symbol);
         opts.direction =
@@ -1436,7 +1494,7 @@ impl GraphTool {
 
     fn action_architecture(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
         let root = self.resolve_root(params);
-        let project = project_name(&root);
+        let project = self.project_key(&root);
         let indexed_now = self.ensure_indexed(&root, &project)?;
         let view = ArchitectureView::from_str_or_default(
             params
@@ -1565,7 +1623,7 @@ impl GraphTool {
 
     fn action_coverage(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
         let root = self.resolve_root(params);
-        let project = project_name(&root);
+        let project = self.project_key(&root);
         let report = self.with_read(|store| {
             store
                 .coverage(&project)
@@ -1591,7 +1649,7 @@ impl GraphTool {
 
     fn action_changes(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
         let root = self.resolve_root(params);
-        let project = project_name(&root);
+        let project = self.project_key(&root);
         let ref_a = params
             .get("ref_a")
             .or_else(|| params.get("refA"))
@@ -1633,7 +1691,7 @@ impl GraphTool {
     /// module's first consumer; it was written in 39c66260f and never wired.
     fn action_adr(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
         let root = self.resolve_root(params);
-        let project = project_name(&root);
+        let project = self.project_key(&root);
         let record = params.get("title").and_then(serde_json::Value::as_str);
         let text = |key: &str| {
             params
@@ -1783,7 +1841,7 @@ impl GraphTool {
     /// number, so the verdict is not a self-assessment.
     fn action_verify(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
         let root = self.resolve_root(params);
-        let project = project_name(&root);
+        let project = self.project_key(&root);
         let verdict = self.with_read(|store| {
             store
                 .verify_run(&project)
@@ -1822,7 +1880,7 @@ impl GraphTool {
 
     fn action_status(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
         let root = self.resolve_root(params);
-        let project = project_name(&root);
+        let project = self.project_key(&root);
         let (nodes, edges, files) = self.with_read(|store| {
             let nodes = store
                 .all_nodes(&project)
@@ -3956,13 +4014,17 @@ mod tests {
             trace.details
         );
     }
-    /// §4.1 (audit): the project key is the root's basename, so two checkouts
-    /// named `service` share one row set. The write path refuses to overwrite a
-    /// project with a different root, but the WARM read path answered from
-    /// `file_count > 0` alone — a query for B silently read A's symbols. Each
-    /// root is validated before any read now.
+    /// §4.1 (audit): the project key was the root's basename, so two checkouts
+    /// named `service` shared one row set — and the WARM read path answered from
+    /// `file_count > 0` alone, so a query for B silently read A's symbols. The
+    /// root is validated before any read, and §8 (below) removes the collision
+    /// itself: the second tree gets its own qualified key instead of being
+    /// refused the database for the rest of its life.
+    ///
+    /// Both halves are asserted here: B is indexable in a database A already
+    /// owns, AND B's answer never carries A's symbols.
     #[tokio::test]
-    async fn a_warm_query_for_another_root_with_the_same_basename_refuses() {
+    async fn a_second_root_with_the_same_basename_gets_its_own_rows() {
         let a = tempfile::tempdir().unwrap().path().join("service");
         let b = tempfile::tempdir().unwrap().path().join("service");
         std::fs::create_dir_all(&a).unwrap();
@@ -3978,24 +4040,55 @@ mod tests {
             .dispatch(&serde_json::json!({ "action": "index" }))
             .unwrap();
 
-        // B is the same basename, a different root: the warm path must not
-        // answer from A's rows.
-        let tool_b = GraphTool::new(db_path, b);
-        // `dispatch` answers Err; the agent loop turns that into an
-        // `is_error` tool result (agent_loop/tool_call.rs), so the refusal is
-        // asserted at the dispatch contract here.
-        let error = tool_b
+        // B is the same basename, a different root: it indexes under its own
+        // qualified key instead of being refused the shared database.
+        let tool_b = GraphTool::new(db_path.clone(), b.clone());
+        tool_b
+            .dispatch(&serde_json::json!({ "action": "index" }))
+            .expect("a second tree with the same basename must be indexable");
+
+        let answer_b = tool_b
+            .dispatch(&serde_json::json!({ "action": "search", "query": "only_in_b" }))
+            .expect("B answers from its own rows");
+        assert!(
+            text_of(&answer_b).contains("only_in_b"),
+            "B's own symbol must be found: {}",
+            text_of(&answer_b)
+        );
+        let foreign = tool_b
             .dispatch(&serde_json::json!({ "action": "search", "query": "only_in_a" }))
-            .expect_err("a query from another root must refuse, not read the other tree");
-        let text = format!("{error:#}");
+            .expect("the query itself is well formed");
+        // The reply ECHOES the query (`1 hit(s) for "only_in_a"`), so the oracle
+        // reads the hit names: a cascade answers something even for a miss
+        // (measured: it returned B's own `only_in_b`), and only the symbol can
+        // distinguish an answer from an echo.
+        let hits = foreign
+            .details
+            .get("hits")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         assert!(
-            text.contains("different root"),
-            "the refusal must name the cause: {text}"
+            !hits.iter().any(|hit| {
+                hit.get("name").and_then(serde_json::Value::as_str) == Some("only_in_a")
+            }),
+            "no symbol from the other tree may appear as a hit: {}",
+            text_of(&foreign)
         );
-        assert!(
-            !text.contains("only_in_a"),
-            "no symbol from the other tree may leak into the answer: {text}"
-        );
+
+        // A still answers from its own rows.
+        let answer_a = tool_a
+            .dispatch(&serde_json::json!({ "action": "search", "query": "only_in_a" }))
+            .expect("A answers from its own rows");
+        assert!(text_of(&answer_a).contains("only_in_a"));
+
+        // The qualified key is stable: a second tool over B computes the same
+        // project and sees the rows the first one wrote.
+        let tool_b_again = GraphTool::new(db_path, b);
+        let again = tool_b_again
+            .dispatch(&serde_json::json!({ "action": "search", "query": "only_in_b" }))
+            .expect("the same root resolves to the same project");
+        assert!(text_of(&again).contains("only_in_b"));
     }
     /// §4.2 (audit): the `adr` table had no project field and `action_adr`
     /// queried globally, so two projects with different names shared one set of
