@@ -456,7 +456,13 @@ async fn abort_and_send_queued_delivers_the_steering_batch_then_the_follow_ups()
         )
         .await;
     assert!(prompt.success, "prompt failed: {prompt:?}");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // The admission bound is generous ON PURPOSE: this suite runs beside the
+    // whole workspace battery (the gate shards it), and 1237 sibling tests on
+    // one machine can stretch a 10 s window past a faux reply's 60 s delay
+    // schedule. Measured 2026-10-24: green isolated at ~31 s wall, red once in
+    // a full parallel `pa-daemon --lib` run. The assertion still fails on a real
+    // regression — a turn that is never admitted at all.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
     loop {
         if worker.core.lock().unwrap().busy {
             break;
