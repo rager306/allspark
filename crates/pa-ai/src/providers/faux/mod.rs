@@ -160,6 +160,9 @@ struct FauxSharedState {
     /// Repeat-last mode (verification harness only): `false` by default — the finite queue and its
     /// exhaustion error are the response-budget contract harnesses script against.
     repeat_last_response: std::sync::atomic::AtomicBool,
+    /// Whether `Drop` must assert the queue drained (see
+    /// `FauxProviderRegistration::expect_consumed`).
+    expect_consumed: std::sync::atomic::AtomicBool,
 }
 
 impl FauxSharedState {
@@ -265,6 +268,44 @@ impl FauxProviderRegistration {
     /// Unregister the provider from the api registry.
     pub fn unregister(&self) {
         unregister_api_providers(&self.source_id);
+    }
+
+    /// Assert the script was fully consumed, at drop.
+    ///
+    /// A test that queues three responses and takes one is asserting something
+    /// narrower than it says: the other two were never reached, so the code path
+    /// they were meant to drive never ran, and the test passes on behavior it did
+    /// not exercise. That is the usual shape of a scripted test that stops being
+    /// true — it does not fail, it stops meaning anything.
+    ///
+    /// Off by default, because the legitimate shapes exist: a test that seeds
+    /// extra responses for a retry that never happens, or one that asserts the
+    /// EARLY stop (which is the point of the case). Opt in with
+    /// [`Self::expect_consumed`].
+    pub fn expect_consumed(&self) {
+        self.state
+            .expect_consumed
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl Drop for FauxProviderRegistration {
+    fn drop(&mut self) {
+        if !self
+            .state
+            .expect_consumed
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
+        let leftover = self.state.pending.lock().map_or(0, |pending| pending.len());
+        let total = self.state.call_count.lock().map_or(0, |count| *count);
+        assert_eq!(
+            leftover, 0,
+            "the faux script still has {leftover} unconsumed response(s) after {total} call(s): \
+             the test queued more than it exercised, so the path those steps were written for \
+             never ran (call expect_consumed() only when the whole script must be used)"
+        );
     }
 }
 

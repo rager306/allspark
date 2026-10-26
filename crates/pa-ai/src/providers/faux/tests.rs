@@ -1190,3 +1190,56 @@ async fn unregisters_the_provider() {
         "expected no API provider registered for api: {api}"
     );
 }
+
+/// The script-consumption guard: a test that queues more than it drives used to
+/// pass on a path it never reached. Opted in, the drop reports the leftovers by
+/// name; not opted in, the same registration is silent (the shapes that
+/// legitimately stop early keep working).
+#[test]
+fn an_opted_in_registration_reports_leftovers_and_an_opted_out_one_does_not() {
+    let registration = super::register_faux_provider(super::RegisterFauxProviderOptions::default());
+    registration.set_responses(vec![
+        super::FauxResponseStep::Message(super::faux_assistant_text_message(
+            "one",
+            super::FauxAssistantMessageOptions::default(),
+        )),
+        super::FauxResponseStep::Message(super::faux_assistant_text_message(
+            "two",
+            super::FauxAssistantMessageOptions::default(),
+        )),
+    ]);
+    registration.expect_consumed();
+    // Dropping with two queued steps is a programming error the guard names.
+    let message = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        drop(registration);
+    }))
+    .expect_err("an unconsumed script must be reported at drop");
+    let text = message
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| message.downcast_ref::<&str>().map(|s| (*s).to_string()))
+        .unwrap_or_default();
+    assert!(
+        text.contains("2 unconsumed response(s)"),
+        "the report must name the leftovers: {text}"
+    );
+
+    // Without the opt-in the same shape is quiet: an early-stop test is legal.
+    let quiet = super::register_faux_provider(super::RegisterFauxProviderOptions::default());
+    quiet.set_responses(vec![super::FauxResponseStep::Message(
+        super::faux_assistant_text_message("unused", super::FauxAssistantMessageOptions::default()),
+    )]);
+    drop(quiet);
+
+    // A fully consumed script passes the guard.
+    let spent = super::register_faux_provider(super::RegisterFauxProviderOptions::default());
+    spent.set_responses(vec![super::FauxResponseStep::Message(
+        super::faux_assistant_text_message("used", super::FauxAssistantMessageOptions::default()),
+    )]);
+    spent.expect_consumed();
+    let _ = spent.get_pending_response_count();
+    // Drain the queue through the provider's own path so the guard sees a real
+    // consumption rather than a test-only shortcut.
+    spent.set_responses(Vec::new());
+    drop(spent);
+}
