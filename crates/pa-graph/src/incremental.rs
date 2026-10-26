@@ -113,6 +113,11 @@ struct Target {
     rel: String,
     abs: PathBuf,
     source: String,
+    /// The content hash computed from the SAME bytes `source` was decoded from.
+    /// Re-reading the file at write time (the previous behaviour) could pair a
+    /// parse of the old text with the hash of a newer one — a TOCTOU that makes
+    /// the next run skip a file whose index is stale (audit §4.3).
+    hash: crate::hash::FileHash,
     lang: pa_ast::SupportLang,
     module: String,
 }
@@ -220,6 +225,7 @@ impl GraphStore {
                 rel,
                 abs: abs.clone(),
                 source,
+                hash,
                 lang,
                 module,
             });
@@ -258,14 +264,19 @@ impl GraphStore {
             let Some(lang) = pa_ast::SupportLang::from_path(&abs) else {
                 continue;
             };
-            let Ok(source) = std::fs::read_to_string(&abs) else {
+            let Ok(bytes) = std::fs::read(&abs) else {
                 continue;
             };
-            let abs = abs.clone();
+            let Ok(meta) = std::fs::metadata(&abs) else {
+                continue;
+            };
+            let hash = hash_bytes(&bytes, &meta);
+            let source = String::from_utf8_lossy(&bytes).into_owned();
             closure_targets.push(Target {
                 rel: rel.clone(),
                 abs,
                 source,
+                hash,
                 lang,
                 module: module_of(rel),
             });
@@ -375,10 +386,10 @@ impl GraphStore {
             &surface.body_sha,
             &surface.surface_json,
         )?;
-        if let Ok(meta) = std::fs::metadata(&t.abs) {
-            let bytes = std::fs::read(&t.abs)?;
-            self.put_file_hash(project, &t.rel, &hash_bytes(&bytes, &meta))?;
-        }
+        // The hash travels WITH the parsed bytes (see `Target::hash`): the disk
+        // is not read a second time, so the stored hash can never describe a
+        // newer revision than the symbols it indexes.
+        self.put_file_hash(project, &t.rel, &t.hash)?;
         Ok((extracted.calls, extracted.imports))
     }
 }
@@ -702,6 +713,42 @@ mod tests {
                 .iter()
                 .any(|e| e.props.to_string().contains("dependency")),
             "the fixture must exercise the dependency path"
+        );
+    }
+    /// §4.3 (audit): the stored hash must be the one that travelled WITH the
+    /// parsed bytes. The old code re-read the file at write time, so a change
+    /// landing between parse and write paired old symbols with a newer hash and
+    /// the next run skipped a stale index. This test hands the writer a hash
+    /// that deliberately differs from the file on disk: the stored value must be
+    /// the Target's, never the disk's.
+    #[test]
+    fn the_stored_hash_is_the_parsed_one_not_a_fresh_disk_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lib.rs");
+        std::fs::write(&path, "pub fn from_disk() {}\n").unwrap();
+        let store = GraphStore::open_in_memory().unwrap();
+        store
+            .register_project("p", dir.path().to_str().unwrap())
+            .unwrap();
+
+        let parsed = crate::hash::hash_bytes(
+            b"pub fn from_parse() {}\n",
+            &std::fs::metadata(&path).unwrap(),
+        );
+        let target = Target {
+            rel: "lib.rs".to_string(),
+            abs: path.clone(),
+            source: "pub fn from_parse() {}\n".to_string(),
+            hash: parsed.clone(),
+            lang: pa_ast::SupportLang::from_path(&path).unwrap(),
+            module: "lib".to_string(),
+        };
+        store.reindex_file_in_place("p", &target).unwrap();
+
+        let stored = store.file_hash("p", "lib.rs").unwrap().expect("hash row");
+        assert_eq!(
+            stored.sha256, parsed.sha256,
+            "the stored hash must describe the parsed bytes, not a second disk read"
         );
     }
 }
