@@ -245,12 +245,19 @@ class HarnessEntry:
 
 @dataclass
 class RefinementEvent:
-    """A recorded online harness-refinement pass."""
+    """A recorded online harness-refinement pass.
+
+    ``expected_outcome`` and ``outcome`` are DIFFERENT facts and must not be
+    conflated: the first is the proposal's prediction (written before anything
+    ran), the second is what a later observer reported. An event whose
+    ``outcome`` is empty has not been measured — it is not a success.
+    """
 
     id: str
     trigger: str
     changes: list[str]
     evidence: str = ""
+    expected_outcome: str = ""
     outcome: str = ""
     created_at: str = field(default_factory=_now)
 
@@ -410,7 +417,9 @@ def _validate_entry_shape(
             _validate_factory_arguments(entry_name, arguments)
 
 
-def _validate_refinement_event(trigger: Any, changes: Any, *, evidence: Any, outcome: Any) -> None:
+def _validate_refinement_event(
+    trigger: Any, changes: Any, *, evidence: Any, outcome: Any, expected_outcome: Any = ""
+) -> None:
     """Reject a refinement event whose persisted shape would break the digest."""
     if not isinstance(trigger, str) or not trigger:
         raise ValueError(f"refinement event rejected: trigger must be a non-empty string, got {_type_name(trigger)}")
@@ -428,6 +437,11 @@ def _validate_refinement_event(trigger: Any, changes: Any, *, evidence: Any, out
         raise ValueError(f"refinement event rejected: evidence must be a string when provided, got {_type_name(evidence)}")
     if not isinstance(outcome, str):
         raise ValueError(f"refinement event rejected: outcome must be a string when provided, got {_type_name(outcome)}")
+    if not isinstance(expected_outcome, str):
+        raise ValueError(
+            "refinement event rejected: expected_outcome must be a string when provided, "
+            f"got {_type_name(expected_outcome)}"
+        )
 
 
 class HarnessState:
@@ -1226,15 +1240,25 @@ class HarnessState:
         *,
         evidence: str = "",
         outcome: str = "",
+        expected_outcome: str = "",
         id: str | None = None,
         global_: bool = False,
         **kwargs: Any,
     ) -> RefinementEvent:
         if target := self._global_target(global_, kwargs):
-            return target.record_refinement(trigger, changes, evidence=evidence, outcome=outcome, id=id)
+            return target.record_refinement(
+                trigger,
+                changes,
+                evidence=evidence,
+                outcome=outcome,
+                expected_outcome=expected_outcome,
+                id=id,
+            )
         self._ensure_local_writable()
         with self._locked():
-            _validate_refinement_event(trigger, changes, evidence=evidence, outcome=outcome)
+            _validate_refinement_event(
+                trigger, changes, evidence=evidence, outcome=outcome, expected_outcome=expected_outcome
+            )
             if id is not None and (not isinstance(id, str) or not id):
                 raise ValueError(
                     f"refinement event rejected: id must be a non-empty string when provided, got {_type_name(id)}"
@@ -1246,6 +1270,7 @@ class HarnessState:
                 trigger=trigger,
                 changes=normalized_changes,
                 evidence=evidence,
+                expected_outcome=expected_outcome,
                 outcome=outcome,
             )
             self.refinements.append(event)

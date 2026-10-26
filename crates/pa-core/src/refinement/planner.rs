@@ -485,7 +485,13 @@ pub fn apply_refinement_proposal(
         trigger: proposal.summary.clone(),
         changes,
         evidence: proposal.rationale.clone(),
-        outcome: proposal.expected_outcome.clone(),
+        // The proposal's prediction lands in its own field. `outcome` stays
+        // empty: nothing has been observed yet, and a later
+        // `record_refinement(outcome=…)` is what fills it. Writing the
+        // prediction into `outcome` made every event read as a positive
+        // observation (audit §5.6).
+        expected_outcome: proposal.expected_outcome.clone(),
+        outcome: String::new(),
         created_at: now_iso(),
     });
     super::RefinementResult {
@@ -790,6 +796,38 @@ mod tests {
         assert_eq!(
             validate_edit(&edit, None),
             Some("pass either dag or machine form, not both".to_string())
+        );
+    }
+
+    /// Audit §5.6: the proposal's prediction is a PREDICTION. Writing it into
+    /// `outcome` made every event read as a positive observation, and the
+    /// ranking prompt then showed the model its own guess as evidence.
+    #[test]
+    fn a_prediction_is_not_recorded_as_an_observation() {
+        let mut state = empty_harness_state();
+        let proposal = RefinementProposal {
+            summary: "add a memory".to_string(),
+            rationale: "used twice".to_string(),
+            expected_outcome: "recall improves".to_string(),
+            edits: vec![create_memory_edit("m1", "Fact", "builds are green")],
+        };
+        apply_refinement_proposal(
+            &mut state,
+            &proposal,
+            ApplyOptions {
+                id: "r1".to_string(),
+                rollback_of: None,
+                scope: Some(HarnessScope::Local),
+                baseline_state: None,
+                factory_enabled: false,
+            },
+        );
+        let event = &state.refinements[0];
+        assert_eq!(event.expected_outcome, "recall improves");
+        assert!(
+            event.outcome.is_empty(),
+            "nothing has been observed yet; got {:?}",
+            event.outcome
         );
     }
 

@@ -346,20 +346,31 @@ pub fn format_harness_state_for_prompt(
         } else {
             event.changes.join(", ")
         };
-        let outcome = if event.outcome.is_empty() {
+        // Expected and observed are rendered with DIFFERENT words, so a reader
+        // (the model) cannot mistake a prediction for a measurement. An event
+        // with no observation says nothing about the outcome rather than
+        // repeating the prediction (audit §5.6).
+        let expected = if event.expected_outcome.is_empty() {
             String::new()
         } else {
             format!(
-                "; outcome: {}",
+                "; expected: {}",
+                compact_harness_text(&event.expected_outcome, max_content_length)
+            )
+        };
+        let observed = if event.outcome.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; observed: {}",
                 compact_harness_text(&event.outcome, max_content_length)
             )
         };
         lines.push(format!(
-            "- [{}] {}: {}{}",
+            "- [{}] {}: {}{expected}{observed}",
             event.id,
             compact_harness_text(&event.trigger, max_content_length),
             changes,
-            outcome
         ));
     }
     let refinement_overflow = state.refinements.len().saturating_sub(max_refinements);
@@ -463,6 +474,10 @@ pub fn harness_digest_fingerprint(
             material.insert("trigger".to_string(), serde_json::json!(event.trigger));
             material.insert("changes".to_string(), serde_json::json!(event.changes));
             material.insert("outcome".to_string(), serde_json::json!(event.outcome));
+            material.insert(
+                "expected_outcome".to_string(),
+                serde_json::json!(event.expected_outcome),
+            );
             serde_json::Value::Object(material)
         })
         .collect::<Vec<_>>();
@@ -799,7 +814,8 @@ mod tests {
                 trigger: "after a repeated failure".to_string(),
                 changes: vec!["create skill skill_a".to_string()],
                 evidence: String::new(),
-                outcome: "routing improved".to_string(),
+                expected_outcome: "routing improved".to_string(),
+                outcome: "two turns later the skill fired".to_string(),
                 created_at: String::new(),
             });
         state
@@ -809,6 +825,7 @@ mod tests {
                 trigger: "a later pass".to_string(),
                 changes: vec!["update memory m".to_string()],
                 evidence: String::new(),
+                expected_outcome: String::new(),
                 outcome: String::new(),
                 created_at: String::new(),
             });
@@ -896,7 +913,8 @@ mod tests {
                 trigger: "after a repeated failure".to_string(),
                 changes: vec!["create memory m1".to_string()],
                 evidence: String::new(),
-                outcome: "routing improved".to_string(),
+                expected_outcome: "routing improved".to_string(),
+                outcome: "two turns later the skill fired".to_string(),
                 created_at: String::new(),
             });
         let text = format_harness_state_for_prompt(&state, &HarnessStatePromptOptions::default());
@@ -904,7 +922,10 @@ mod tests {
         assert!(text.contains("memory: 1"));
         assert!(text.contains("- [local:m1] Fact (/m/m1, v2): the build is green"));
         assert!(text.contains("recent refinements: 1"));
-        assert!(text.contains("routing improved"));
+        // The prediction renders under its own word; nothing has been observed,
+        // so no `observed:` clause appears (audit §5.6).
+        assert!(text.contains("; expected: routing improved"));
+        assert!(text.contains("; observed: two turns later the skill fired"));
         assert!(text.contains("When to call `await refine.run()`"));
         let empty_text = format_harness_state_for_prompt(
             &empty_harness_state(),

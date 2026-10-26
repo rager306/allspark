@@ -75,6 +75,22 @@ pub struct HarnessRefinementEvent {
     pub trigger: String,
     pub changes: Vec<String>,
     pub evidence: String,
+    /// What the planner PREDICTED the edit would achieve. A prediction is not
+    /// evidence: it was written by the proposal, before anything ran.
+    // The harness JSON is one file shared with the Python layer
+    // (`prime-agent-runtime/src/rlm/harness.py`), which writes snake_case for
+    // events (see `created_at` above). A camelCase key here would be dropped by
+    // that layer's field filter and vice versa.
+    #[serde(
+        default,
+        skip_serializing_if = "String::is_empty",
+        rename = "expected_outcome"
+    )]
+    pub expected_outcome: String,
+    /// What was OBSERVED after the edit, recorded by a later
+    /// `record_refinement(outcome=…)`. Empty until someone says so — which is
+    /// the distinction the old single `outcome` field erased (audit §5.6): every
+    /// event read as a positive observation.
     pub outcome: String,
     /// The TS event schema keeps the snake-cased `created_at`.
     #[serde(rename = "created_at")]
@@ -581,6 +597,37 @@ pub(crate) use compact_text as compact_harness_text;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The harness JSON is written by BOTH layers (this one and
+    /// `prime-agent-runtime/src/rlm/harness.py`). A key either side does not
+    /// recognize is silently dropped, so the two spellings must agree — proven
+    /// here on a payload shaped exactly like the Python writer's.
+    #[test]
+    fn the_python_writers_event_keys_are_read_back() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        std::fs::write(
+            get_harness_state_path(dir.path()),
+            serde_json::json!({
+                "schema": 1,
+                "entries": {},
+                "refinements": [{
+                    "id": "refine_0001",
+                    "trigger": "skill failed twice",
+                    "changes": ["updated failure_first skill"],
+                    "evidence": "two failed validations",
+                    "expected_outcome": "the skill fires on the next retry",
+                    "outcome": "the skill fired on the third attempt",
+                    "created_at": "2026-10-24T00:00:00Z"
+                }]
+            })
+            .to_string(),
+        )
+        .expect("write the python-shaped state");
+        let state = load_harness_state(dir.path(), HarnessScope::Local);
+        let event = &state.refinements[0];
+        assert_eq!(event.expected_outcome, "the skill fires on the next retry");
+        assert_eq!(event.outcome, "the skill fired on the third attempt");
+    }
 
     fn entry(id: &str, kind: RefinementKind, scope: HarnessScope, content: &str) -> HarnessEntry {
         HarnessEntry {

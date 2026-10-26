@@ -143,6 +143,45 @@ class HarnessStateTest(unittest.TestCase):
 
             self.assertEqual(state.list(), [])
 
+    def test_expected_and_observed_outcome_stay_separate(self) -> None:
+        """A prediction is not a measurement (audit §5.6).
+
+        `expected_outcome` is what the planner proposed the edit would achieve;
+        `outcome` is what someone later observed. Collapsing them into one field
+        made every recorded event read as a positive observation, which is the
+        input a later ranking pass treats as evidence.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = HarnessState(Path(temp_dir) / "harness_state.json")
+            state.record_refinement(
+                "skill failed twice",
+                ["updated failure_first skill"],
+                evidence="two failed validations",
+                expected_outcome="the skill fires on the next retry",
+            )
+            # Nothing observed yet: the prediction must not stand in for one.
+            self.assertEqual(state.refinements[0].expected_outcome, "the skill fires on the next retry")
+            self.assertEqual(state.refinements[0].outcome, "")
+
+            state.record_refinement(
+                "observed the retry",
+                ["no edit"],
+                outcome="the skill fired on the third attempt",
+            )
+            self.assertEqual(state.refinements[1].expected_outcome, "")
+            self.assertEqual(state.refinements[1].outcome, "the skill fired on the third attempt")
+
+            reloaded = HarnessState(state.file_path)
+            self.assertEqual(reloaded.refinements[0].expected_outcome, "the skill fires on the next retry")
+            self.assertEqual(reloaded.refinements[0].outcome, "")
+            self.assertEqual(reloaded.refinements[1].outcome, "the skill fired on the third attempt")
+
+    def test_expected_outcome_must_be_a_string(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = HarnessState(Path(temp_dir) / "harness_state.json")
+            with self.assertRaisesRegex(ValueError, "expected_outcome must be a string"):
+                state.record_refinement("t", "ok", expected_outcome=7)  # type: ignore[arg-type]
+
     def test_persists_entries_and_refinements(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state = HarnessState(Path(temp_dir) / "harness_state.json")
