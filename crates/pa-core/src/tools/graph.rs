@@ -410,10 +410,18 @@ fn unmatched_note(unmatched: &[String]) -> Option<String> {
 /// note belongs to the build rather than to the action, so it is written once here
 /// and says which files the build could see: an implicit build is lean, and a lean
 /// build must not let a symbol under an ignore rule read as a miss.
+fn cold_build_note(report: &IndexReport) -> String {
+    format!(
+        "The graph was empty, so this call indexed the project first: {} nodes, {} edges, \
+         {} files parsed. This build is lean: files the project's gitignore rules exclude are \
+         not in it (run `index` to include them).",
+        report.store_nodes, report.edges, report.parsed,
+    )
+}
 
 /// Whether the store's file set diverges from the working tree.
 ///
-/// The cheap pair (mtime_ns, size) decides first; a file whose pair matches is
+/// The cheap pair (`mtime_ns`, `size`) decides first; a file whose pair matches is
 /// assumed unchanged, which is the same rule the incremental pass uses.
 /// Missing/unreadable files count as stale (the walk will drop them).
 fn root_is_stale(
@@ -435,15 +443,6 @@ fn root_is_stale(
         }
     }
     false
-}
-
-fn cold_build_note(report: &IndexReport) -> String {
-    format!(
-        "The graph was empty, so this call indexed the project first: {} nodes, {} edges, \
-         {} files parsed. This build is lean: files the project's gitignore rules exclude are \
-         not in it (run `index` to include them).",
-        report.store_nodes, report.edges, report.parsed,
-    )
 }
 
 /// Read `candidate_multiplier` as a pool factor of at least 1.

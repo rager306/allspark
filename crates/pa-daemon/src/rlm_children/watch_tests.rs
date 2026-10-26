@@ -278,8 +278,7 @@ async fn spawn_fake_supervisor(
                                     "child link refused the answer read",
                                     None,
                                 )
-                            } else
-                            if matches!(child, FakeChild::FailedTurn) {
+                            } else if matches!(child, FakeChild::FailedTurn) {
                                 // A turn that died from retry exhaustion: no
                                 // text, a terminal stopReason, the diagnostic in
                                 // its own field.
@@ -3032,10 +3031,10 @@ async fn a_failed_answer_observation_leaves_the_outcome_unknown() {
             let row = Arc::clone(&sessions.inner.children.lock().await[0]);
             let record = row.lock().await;
             if record.settled_status.is_some() {
-                assert_ne!(
-                    record.settled_status.as_deref(),
-                    Some("done"),
-                    "a transport failure must not settle the run as done"
+                assert!(
+                    record.settled_status != Some("done"),
+                    "a transport failure must not settle the run as done: {:?}",
+                    record.settled_status
                 );
                 break;
             }

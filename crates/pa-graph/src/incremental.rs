@@ -111,7 +111,6 @@ pub struct IncrementalReport {
 /// A file selected for reindexing, with its parsed inputs.
 struct Target {
     rel: String,
-    abs: PathBuf,
     source: String,
     /// The content hash computed from the SAME bytes `source` was decoded from.
     /// Re-reading the file at write time (the previous behaviour) could pair a
@@ -223,7 +222,6 @@ impl GraphStore {
             }
             targets.push(Target {
                 rel,
-                abs: abs.clone(),
                 source,
                 hash,
                 lang,
@@ -274,7 +272,6 @@ impl GraphStore {
             let source = String::from_utf8_lossy(&bytes).into_owned();
             closure_targets.push(Target {
                 rel: rel.clone(),
-                abs,
                 source,
                 hash,
                 lang,
@@ -737,7 +734,6 @@ mod tests {
         );
         let target = Target {
             rel: "lib.rs".to_string(),
-            abs: path.clone(),
             source: "pub fn from_parse() {}\n".to_string(),
             hash: parsed.clone(),
             lang: pa_ast::SupportLang::from_path(&path).unwrap(),

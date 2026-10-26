@@ -105,13 +105,11 @@ pub fn collect_entries_for_branch_summary(
 /// become their summary message; bookkeeping entries contribute nothing).
 fn get_message_from_entry(entry: &FileEntry) -> Option<AgentMessage> {
     match entry {
-        FileEntry::Message { message, .. } => match message {
-            // Tool results stay attached to their assistant tool call.
-            // A tool result is evidence the branch summary must see: the
-            // serializer renders it with a cap (audit §5.2).
-            AgentMessage::ToolResult(_) => Some(message.clone()),
-            _ => Some(message.clone()),
-        },
+        // Every message kind is summarizer input, tool results included: the
+        // serializer renders a tool result with a label, its name, an error
+        // marker and a char cap, and it is often the only place a fact exists
+        // (audit §5.2).
+        FileEntry::Message { message, .. } => Some(message.clone()),
         FileEntry::CustomMessage { payload, .. } => {
             if payload.custom_type == "harness_digest" {
                 return None;
