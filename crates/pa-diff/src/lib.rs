@@ -1108,3 +1108,113 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod prop_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// A run sequence is only meaningful if it ACCOUNTS for both inputs
+    /// exactly: every token of `old` is consumed by exactly the removed and
+    /// common runs, and every token of `new` by the added and common ones.
+    /// Nothing in the type system says so, and the crate edits user files
+    /// through 31 callers — a miscount here is a corrupted patch, not a panic.
+    fn accounts_for(runs: &[Run], old_len: usize, new_len: usize) -> (bool, String) {
+        let mut old_used = 0usize;
+        let mut new_used = 0usize;
+        for run in runs {
+            let count = run.count as usize;
+            if run.removed {
+                old_used += count;
+            } else if run.added {
+                new_used += count;
+            } else {
+                old_used += count;
+                new_used += count;
+            }
+        }
+        (
+            old_used == old_len && new_used == new_len,
+            format!("runs consumed old={old_used}/{old_len} new={new_used}/{new_len}: {runs:?}"),
+        )
+    }
+
+    proptest! {
+        /// Bounded so the O(ND) walk stays cheap: the failure modes (index
+        /// arithmetic on `best[idx +/- 1]`, the diagonal window) appear at
+        /// small sizes already.
+        #[test]
+        fn every_run_sequence_accounts_for_both_inputs(
+            old in prop::collection::vec(0u32..4, 0..12),
+            new in prop::collection::vec(0u32..4, 0..12),
+        ) {
+            let runs = myers_diff(&old, &new);
+            let (ok, why) = accounts_for(&runs, old.len(), new.len());
+            prop_assert!(ok, "{}", why);
+        }
+
+        /// Common runs must be real matches: the token at the claimed offset is
+        /// equal in both inputs. A run sequence that accounts for the lengths
+        /// but pairs unequal tokens is exactly the silent corruption this
+        /// crate must never produce.
+        #[test]
+        fn common_runs_pair_equal_tokens(
+            old in prop::collection::vec(0u32..3, 0..10),
+            new in prop::collection::vec(0u32..3, 0..10),
+        ) {
+            let runs = myers_diff(&old, &new);
+            let (mut o, mut n) = (0usize, 0usize);
+            for run in &runs {
+                let count = run.count as usize;
+                if run.removed {
+                    o += count;
+                } else if run.added {
+                    n += count;
+                } else {
+                    for k in 0..count {
+                        prop_assert_eq!(
+                            old[o + k], new[n + k],
+                            "common run pairs unequal tokens at old[{}] new[{}]",
+                            o + k, n + k
+                        );
+                    }
+                    o += count;
+                    n += count;
+                }
+            }
+        }
+
+        /// No empty run: a `count == 0` run is a build_runs artefact that would
+        /// make every consumer's join produce an empty chunk.
+        #[test]
+        fn runs_are_never_empty(
+            old in prop::collection::vec(0u32..4, 0..10),
+            new in prop::collection::vec(0u32..4, 0..10),
+        ) {
+            for run in myers_diff(&old, &new) {
+                prop_assert!(run.count > 0, "empty run in {run:?}");
+            }
+        }
+
+        /// `intern` must be a bijection on the values it sees: equal tokens map
+        /// to equal ids, and distinct tokens to distinct ids. Diffing the ids is
+        /// only sound under that.
+        #[test]
+        fn interning_is_a_bijection(
+            old in prop::collection::vec(0u8..6, 0..10),
+            new in prop::collection::vec(0u8..6, 0..10),
+        ) {
+            let (old_ids, new_ids) = intern(&old, &new);
+            for (value, id) in old.iter().zip(&old_ids) {
+                for (other, other_id) in old.iter().zip(&old_ids) {
+                    prop_assert_eq!(value == other, id == other_id);
+                }
+            }
+            for (value, id) in new.iter().zip(&new_ids) {
+                for (other, other_id) in new.iter().zip(&new_ids) {
+                    prop_assert_eq!(value == other, id == other_id);
+                }
+            }
+        }
+    }
+}

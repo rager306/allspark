@@ -9,3 +9,8 @@ repository.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# Property tests for `myers_diff`: the run arithmetic is the part an example
+# test cannot cover, and the crate has 31 consumers that edit user files.
+proptest.workspace = true
