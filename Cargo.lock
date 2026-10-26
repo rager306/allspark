@@ -2225,6 +2225,9 @@ dependencies = [
 [[package]]
 name = "pa-diff"
 version = "0.10.2-beta.10"
+dependencies = [
+ "proptest",
+]
 
 [[package]]
 name = "pa-edit"
