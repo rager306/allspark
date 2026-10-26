@@ -209,27 +209,28 @@ def validate_bundled_model_catalog(path: Path, allow_small_fixture: bool = False
             f"Bundled model catalog has {len(tuples)} transport tuples; "
             f"expected at least {MIN_MODEL_TRANSPORT_TUPLES}"
         )
-    # THE FORK PROVIDERS (a packaging invariant, not a schema one): the bundled
-    # asset is step 2 of the no-cold-start chain and REPLACES the compiled
-    # catalog (`chain.rs`: `Some(bundled) => bundled`). The registry chains the
-    # fork table after it (`registry.rs:600`), so the fork's models survive — but
-    # only because of that chain. A release that ships an upstream-shaped asset
-    # (the fixture snapshot, or a channel fetch of upstream's catalog) still
-    # looks healthy here and in the picker the fork table is the ONLY reason the
-    # list is not empty; a packaging regression in that chain then presents as
-    # "the providers are there, the models are not" with no signal at all.
+    # FIXTURE PROVENANCE (a packaging invariant, not a schema one): the
+    # bundled asset is step 2 of the no-cold-start chain and REPLACES the
+    # compiled catalog (`chain.rs`: `Some(bundled) => bundled`). A SNAPSHOT of
+    # synthetic models must never ship as a release asset — the picker would
+    # then show fixture ids and every real provider would be gone.
     #
-    # A fixture packer passes `allow_small_fixture` and is exempt by design; a
-    # release (the default) must carry the fork's own providers.
-    if not allow_small_fixture:
-        present = {model["provider"] for model in catalog["models"]}
-        missing = sorted(FORK_PROVIDERS - present)
-        if missing:
-            fail(
-                "Bundled model catalog is missing the fork's providers "
-                f"{missing}: a release asset must carry them (chain.rs step 2 "
-                "replaces the compiled catalog with this file)"
-            )
+    # The fork's OWN providers are deliberately NOT required here: they are
+    # compiled into the binary and chained after whatever the asset holds
+    # (`registry.rs`: `.chain(fork_provider_models())`), so an upstream-shaped
+    # asset plus the fork table is the shipped shape. Requiring them in the
+    # asset made the release path impossible — the live upstream catalog has
+    # none of them by definition. That chain is pinned by the Rust test
+    # `an_upstream_shaped_asset_keeps_the_fork_providers` (pa-core), which is
+    # the guard this check was proxying for.
+    fixture_ids = sorted(
+        model["id"] for model in catalog["models"] if str(model["id"]).startswith("fixture-")
+    )
+    if fixture_ids and not allow_small_fixture:
+        fail(
+            f"Bundled model catalog carries {len(fixture_ids)} synthetic fixture models "
+            f"(e.g. {fixture_ids[:3]}): a release asset must be a real catalog"
+        )
     return {"models": len(catalog["models"]), "transportTuples": len(tuples)}
 
 

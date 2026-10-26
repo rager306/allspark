@@ -195,11 +195,28 @@ pub struct DiscoverySnapshot {
 
 impl DiscoverySnapshot {
     /// Merge one refresh into the snapshot, accumulating deprecations.
+    /// Merge one refresh into the snapshot, accumulating deprecations.
+    ///
+    /// Two invariants this used to break:
+    ///
+    /// - `or_default()` left the freshly-created entry with `provider: ""`.
+    ///   `serves`/`ids_for` key off the map key, but a consumer iterating
+    ///   `values()` reads `provider` from the value — and got the empty string.
+    ///   The entry is built from `discovered` instead of defaulted.
+    /// - The tail assignment `entry.deprecated = discovered.deprecated` wiped
+    ///   the history this loop had just accumulated: a refresh reports only the
+    ///   ids that disappeared *this* time, so the previous deprecations have to
+    ///   survive the merge, deduplicated by id.
     pub fn merge(&mut self, discovered: DiscoveredProvider) {
         let entry = self
             .providers
             .entry(discovered.provider.clone())
-            .or_default();
+            .or_insert_with(|| DiscoveredProvider {
+                provider: discovered.provider.clone(),
+                synced_at: discovered.synced_at.clone(),
+                ids: Vec::new(),
+                deprecated: Vec::new(),
+            });
         for id in &entry.ids {
             if !discovered.ids.contains(id) && !entry.deprecated.iter().any(|d| &d.id == id) {
                 entry.deprecated.push(DeprecatedId {
@@ -208,9 +225,16 @@ impl DiscoverySnapshot {
                 });
             }
         }
+        // This refresh's own deprecations join the accumulated history (the
+        // loop above only covers ids that vanished from `entry.ids`; a
+        // provider that reports a deprecation directly must not lose it).
+        for deprecation in discovered.deprecated {
+            if !entry.deprecated.iter().any(|d| d.id == deprecation.id) {
+                entry.deprecated.push(deprecation);
+            }
+        }
         entry.synced_at = discovered.synced_at;
         entry.ids = discovered.ids;
-        entry.deprecated = discovered.deprecated;
     }
 
     /// Whether provider `provider` serves `id` right now.
@@ -410,4 +434,69 @@ pub fn write_snapshot(models_dir: &Path, snapshot: &DiscoverySnapshot) -> std::i
     std::fs::create_dir_all(models_dir)?;
     let json = serde_json::to_string_pretty(snapshot)?;
     std::fs::write(snapshot_path(models_dir), json)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_embedded_dictionary_parses() {
+        // Regression: the parser moved to v2 while the embedded JSON stayed v1,
+        // so every refresh_discovery returned early and the whole dynamic
+        // discovery path was dead on arrival (verified: "schema is v1, expected v2").
+        let dictionary = super::load_embedded_dictionary()
+            .expect("the embedded discovery dictionary must parse");
+        assert!(
+            !dictionary.providers.is_empty(),
+            "the embedded dictionary must name at least one provider"
+        );
+    }
+
+    fn discovered(provider: &str, synced_at: &str, ids: &[&str]) -> DiscoveredProvider {
+        DiscoveredProvider {
+            provider: provider.to_string(),
+            synced_at: synced_at.to_string(),
+            ids: ids.iter().map(|id| (*id).to_string()).collect(),
+            deprecated: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn merge_keeps_the_provider_name_and_the_deprecation_history() {
+        // Two defects the old merge carried: `or_default()` left `provider: ""`
+        // on a first-seen provider, and the tail assignment replaced the
+        // accumulated deprecations with the (usually empty) incoming list.
+        let mut snapshot = DiscoverySnapshot::default();
+        snapshot.merge(discovered("muse", "t1", &["a", "b"]));
+        assert_eq!(
+            snapshot.providers["muse"].provider, "muse",
+            "the value's provider must name the provider, not the empty default"
+        );
+
+        snapshot.merge(discovered("muse", "t2", &["b"]));
+        let entry = &snapshot.providers["muse"];
+        assert_eq!(entry.ids, vec!["b".to_string()]);
+        assert_eq!(
+            entry
+                .deprecated
+                .iter()
+                .map(|d| d.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a"],
+            "the id that vanished must be recorded as deprecated"
+        );
+
+        // A second refresh must not erase the first deprecation.
+        snapshot.merge(discovered("muse", "t3", &["b"]));
+        assert_eq!(
+            snapshot.providers["muse"]
+                .deprecated
+                .iter()
+                .map(|d| d.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a"],
+            "deprecation history survives a refresh that deprecates nothing new"
+        );
+    }
 }

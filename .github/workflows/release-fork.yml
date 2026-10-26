@@ -181,8 +181,14 @@ jobs:
           shutil.copytree(Path("skills"), root / "skills")
           PY
           chmod 755 "package/${root}/bin/allspark" "package/${root}/libexec/prime-agent"
-          tar -C package -czf "${root}.tar.gz" "${root}"
-          sha256sum "${root}.tar.gz" > SHA256SUMS
+          # ONE STAGING DIRECTORY for every release asset. The upload step and
+          # the publish step read the same tree; splitting the producer across
+          # the workspace root (tarball, SHA256SUMS) and dist/ (stable,
+          # latest.json) made the upload glob pick up only the root files, so
+          # publish could never find the channel pointers.
+          mkdir -p dist
+          tar -C package -czf "dist/${root}.tar.gz" "${root}"
+          ( cd dist && sha256sum "${root}.tar.gz" > SHA256SUMS )
           # THE FORK UPDATE CHANNEL (the funnel reads it): a stable pointer
           # (bare version) and the channel manifest (platform -> artifact row
           # + sha256), published as release assets. The launcher exports
@@ -191,9 +197,8 @@ jobs:
           # channel instead of refusing (no upstream channel serves fork
           # builds) or silently keeping the old payload.
           version="${tag#allspark-v}"
-          mkdir -p dist
           printf '%s\n' "$version" > dist/stable
-          sha_row=$(grep "${root}.tar.gz" SHA256SUMS | awk '{print $1}')
+          sha_row=$(grep "${root}.tar.gz" dist/SHA256SUMS | awk '{print $1}')
           python3 - "$version" "$sha_row" "${root}.tar.gz" <<'PY'
           import json, pathlib, sys
           version, sha, archive = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -208,7 +213,7 @@ jobs:
           pathlib.Path("dist/latest.json").write_text(json.dumps(manifest, indent=2) + "\n")
           PY
           echo "channel assets: dist/stable dist/latest.json"
-          cat SHA256SUMS
+          cat dist/SHA256SUMS
       - name: Prove the packaged launcher runs
         run: |
           set -euo pipefail
@@ -230,14 +235,22 @@ jobs:
           test -f "unpack/${root}/libexec/prime-agent-runtime/pyproject.toml"
           test -d "unpack/${root}/libexec/skills"
           test -n "$(ls -A "unpack/${root}/libexec/skills")"
+      - name: Assert the complete release asset set before upload
+        run: |
+          set -euo pipefail
+          tag="${{ needs.tag-check.outputs.tag }}"
+          root="prime-agent-${tag#allspark-v}-linux-x64"
+          # A partial artifact set is the failure mode this guard exists for:
+          # one matched glob proves nothing about the rest.
+          for asset in "dist/${root}.tar.gz" dist/SHA256SUMS dist/stable dist/latest.json; do
+            test -s "$asset" || { echo "::error::missing release asset: $asset"; exit 1; }
+          done
+          test "$(wc -l < dist/SHA256SUMS)" -ge 1
+          test "$(cat dist/stable)" = "${tag#allspark-v}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: fork-payload
-          path: |
-            *.tar.gz
-            SHA256SUMS
-            stable
-            latest.json
+          path: dist/
           if-no-files-found: error
 
   publish:
@@ -257,6 +270,17 @@ jobs:
         with:
           name: fork-payload
           path: dist
+      - name: Assert the downloaded artifact is complete
+        run: |
+          set -euo pipefail
+          tag="${{ needs.tag-check.outputs.tag }}"
+          root="prime-agent-${tag#allspark-v}-linux-x64"
+          for asset in "dist/${root}.tar.gz" dist/SHA256SUMS dist/stable dist/latest.json; do
+            test -s "$asset" || { echo "::error::downloaded artifact is missing $asset"; exit 1; }
+          done
+          # The archive the channel names must be the archive that arrived, with
+          # the digest the manifest carries.
+          ( cd dist && sha256sum -c SHA256SUMS )
       - name: Extract the changelog entry as the release body
         env:
           BUILD: ${{ needs.tag-check.outputs.build }}

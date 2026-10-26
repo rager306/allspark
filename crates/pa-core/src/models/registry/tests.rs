@@ -678,3 +678,33 @@ fn a_custom_model_override_keeps_the_other_fork_models() {
         "a single override must replace one entry, not drop the provider's others"
     );
 }
+
+/// An upstream-shaped bundled asset (the live catalog, which by definition
+/// carries NO fork provider) must still leave the fork's own models in the
+/// built-in set: the registry chains the compiled fork table after whatever
+/// the asset holds (`registry.rs` `.chain(fork_provider_models())`).
+///
+/// This is the guard the packaging gate proxies for. The gate must NOT require
+/// fork providers inside the asset: the upstream catalog cannot carry them, so
+/// such a requirement makes the release path impossible (it did — the fork.011
+/// release job died on it while every fork model was present in the binary).
+#[test]
+fn an_upstream_shaped_asset_keeps_the_fork_providers() {
+    let auth = AuthStorage::in_memory_without_env(&AuthStorageData::default(), Arc::new(NoOAuth));
+    let registry = ModelRegistry::in_memory(auth);
+    let models = registry.load_built_in_models(&CustomModelsResult::default(), None);
+    let providers: std::collections::HashSet<&str> =
+        models.iter().map(|model| model.provider.as_str()).collect();
+    // The fork table's providers ride the built-in set whatever the asset holds.
+    for provider in ["codebuddy", "genspark", "muse", "subquadratic"] {
+        assert!(
+            providers.contains(provider),
+            "the fork provider {provider} must survive an upstream-shaped asset; got {}",
+            {
+                let mut known: Vec<&str> = providers.iter().copied().collect();
+                known.sort_unstable();
+                known.join(", ")
+            }
+        );
+    }
+}

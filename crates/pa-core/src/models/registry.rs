@@ -944,7 +944,7 @@ impl ModelRegistry {
         // opencode passes an empty stamp the same way; the snapshot mtime is the clock.
         let synced_at = String::new();
         for entry in &dictionary.providers {
-            let headers = self.provider_discovery_headers(&entry.provider);
+            let headers = self.provider_discovery_headers(&entry.provider).clone();
             match pa_models::discovery::discover_provider_with_headers(
                 &fetcher,
                 entry,
@@ -971,11 +971,36 @@ impl ModelRegistry {
     /// request carries (`Authorization: Bearer …` for key-auth providers),
     /// straight from the auth storage. OAuth-only providers yield no usable
     /// key and the caller skips them.
-    fn provider_discovery_headers(&self, provider: &str) -> Vec<(String, String)> {
-        self.auth
+    /// Discovery request headers for one provider: the provider's own scoped
+    /// headers (prime-inference's team id) PLUS the bearer credential when the
+    /// provider authenticates that way.
+    ///
+    /// `get_provider_headers` answers the team header for one provider only
+    /// (`auth/manager.rs`: `if provider_id != PRIME_INFERENCE_PROVIDER_ID {
+    /// return None }`), so a dictionary entry with `auth: "bearer"` (muse,
+    /// agnes) used to reach `discover_provider_with_headers` with no
+    /// `Authorization` at all and fail before the request left the process.
+    fn provider_discovery_headers(&mut self, provider: &str) -> Vec<(String, String)> {
+        let mut headers: Vec<(String, String)> = self
+            .auth
             .get_provider_headers(provider)
             .map(|headers| headers.into_iter().collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if !headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+        {
+            if let Some(api_key) = self
+                .auth
+                .get_api_key_with_source_token(provider, false)
+                .api_key
+            {
+                if !api_key.trim().is_empty() {
+                    headers.push(("Authorization".to_string(), format!("Bearer {api_key}")));
+                }
+            }
+        }
+        headers
     }
     pub async fn refresh_available_models(&mut self) -> Vec<Model> {
         self.refresh_available_models_forced(false).await
@@ -996,15 +1021,6 @@ impl ModelRegistry {
     /// auth-filtered catalog.
     async fn refresh_available_models_forced(&mut self, force: bool) -> Vec<Model> {
         self.refresh_opencode_free_tier(force).await;
-        if force {
-            if let Some(models_dir) = self
-                .models_json_path
-                .as_ref()
-                .and_then(|path| path.parent().map(Path::to_path_buf))
-            {
-                self.refresh_discovery(models_dir.as_path()).await;
-            }
-        }
         let previous_ids = self.authorized_private_ids.clone();
         let previous_team = self.authorized_team_id.clone();
         let previous_models = self.authorized_private_models.clone();
@@ -1014,6 +1030,21 @@ impl ModelRegistry {
             .refresh_with_credentials(force, credentials.as_ref())
             .await;
         self.load_models();
+        // Discovery runs AFTER `load_models`: it appends ids the hand table does
+        // not describe, and `load_models` rebuilds `self.models` from the chain —
+        // applying discovery first meant every discovered-only model was erased
+        // before the refresh returned (`apply_discovery_snapshot` at :812).
+        // The merge reads the freshly loaded table, so a hand-table row the
+        // endpoint still serves keeps its curated properties.
+        if force {
+            if let Some(models_dir) = self
+                .models_json_path
+                .as_ref()
+                .and_then(|path| path.parent().map(Path::to_path_buf))
+            {
+                self.refresh_discovery(models_dir.as_path()).await;
+            }
+        }
         self.refresh_private_prime_inference_authorization(
             previous_ids,
             previous_team,

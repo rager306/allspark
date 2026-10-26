@@ -1,5 +1,5 @@
 {
-  "schema": "allspark-model-discovery/v1",
+  "schema": "allspark-model-discovery/v2",
   "providers": [
     {
       "provider": "muse",
