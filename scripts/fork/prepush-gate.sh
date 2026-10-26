@@ -117,25 +117,42 @@ fi
 # pa-mem's spinlock/refcount, Kani needs the kani toolchain. Each prints SKIPPED with the
 # reason instead of a fake green — a guard that cannot fail is the class testgov exists for.
 step "loom (pa-mem interleavings)"
-if cargo metadata --no-deps --format-version 1 2>/dev/null | rg -q '"loom"'; then
-  if ! cargo test -p pa-mem --features loom -- --test-threads=1 >"$OUT/loom.log" 2>&1; then
-    echo "loom: FAILED (see $OUT/loom.log)"; sed -n '1,20p' "$OUT/loom.log"; fail=1
-  else
-    echo "loom: ok"
-  fi
+# The alternative lane that DOES work today is Shuttle, and it is wired
+# (`.github/workflows/shuttle.yml` runs pa-mem's DST test on a schedule). This
+# step stays for the Loom variant, which needs a `loom` dev-dependency and
+# cfg(loom) module copies -- matrix row MUT-loom-spinlock is `status: gap`.
+# Kept honest the same way as kani above: both the dependency AND a loom-gated
+# test have to exist before a run would mean anything.
+if ! cargo metadata --no-deps --format-version 1 2>/dev/null | rg -q '"loom"'; then
+  echo "loom: SKIPPED (no loom dev-dependency in pa-mem — matrix row MUT-loom-spinlock is a gap; shuttle covers this protocol)"
+elif ! grep -rq 'cfg(loom)' crates/pa-mem/src/ 2>/dev/null; then
+  echo "loom: SKIPPED (loom dep present but no cfg(loom) test in pa-mem — nothing to interleave)"
+elif ! cargo test -p pa-mem --features loom -- --test-threads=1 >"$OUT/loom.log" 2>&1; then
+  echo "loom: FAILED (see $OUT/loom.log)"; sed -n '1,20p' "$OUT/loom.log"; fail=1
 else
-  echo "loom: SKIPPED (no loom dev-dependency in pa-mem yet — matrix row MUT-loom-spinlock)"
+  echo "loom: ok"
 fi
 
 step "kani (pa-mem robin_hood)"
-if command -v cargo-kani >/dev/null 2>&1 || cargo kani --version >/dev/null 2>&1; then
+# Two conditions, and the second is the one this step used to miss: the gate
+# named `verify_robin_hood_delete`, a harness that exists NOWHERE in the tree
+# (no `#[kani::proof]` in crates/pa-mem). With the toolchain installed, the
+# command below would fail on a MISSING HARNESS and be reported as a failing
+# proof — an unreachable-step defect dressed as a red test. So the harness has
+# to be present before it is worth running; matrix row MUT-kani-robin-hood is
+# `status: gap`, and this step now says so instead of promising a proof.
+# `grep`, not `rg`: the gate must not gain a dependency on a tool it does not
+# otherwise require, and this is a plain fixed-string presence check.
+if ! grep -q 'fn verify_robin_hood_delete' crates/pa-mem/src/robin_hood.rs 2>/dev/null; then
+  echo "kani: SKIPPED (no verify_robin_hood_delete harness in pa-mem — matrix row MUT-kani-robin-hood is a gap)"
+elif command -v cargo-kani >/dev/null 2>&1 || cargo kani --version >/dev/null 2>&1; then
   if ! cargo kani -p pa-mem --harness verify_robin_hood_delete >"$OUT/kani.log" 2>&1; then
     echo "kani: FAILED (see $OUT/kani.log)"; sed -n '1,20p' "$OUT/kani.log"; fail=1
   else
     echo "kani: ok"
   fi
 else
-  echo "kani: SKIPPED (toolchain absent — matrix row MUT-kani-robin-hood, advisory)"
+  echo "kani: SKIPPED (harness present, toolchain absent — matrix row MUT-kani-robin-hood, advisory)"
 fi
 
 if [[ $fail -ne 0 ]]; then
