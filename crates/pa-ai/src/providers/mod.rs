@@ -17,6 +17,12 @@ pub fn serves_chat_turns(api: &str) -> bool {
             | openai_codex_responses::API_OPENAI_CODEX_RESPONSES
             | openai_completions::API_OPENAI_COMPLETIONS
             | openai_responses::API_OPENAI_RESPONSES
+            // The scripted lane IS a chat dialect (the faux provider answers
+            // model turns from a script): the QA lanes and the RPC fixtures
+            // register faux models and expect them in the picker. Omitting it
+            // here filtered every scripted model out of the surfaces this
+            // predicate gates (`rpc_get_available_models_lists_the_catalog`).
+            | faux::DEFAULT_API
     )
 }
 

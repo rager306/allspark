@@ -639,6 +639,7 @@ fn assembled_archives_carry_the_platform_alias_the_reader_demands() {
             binary.as_os_str(),
             "--decoder".as_ref(),
             decoder.as_os_str(),
+            "--allow-fixture-catalog".as_ref(),
             "--catalog-assets".as_ref(),
             catalog.as_os_str(),
             "--out-dir".as_ref(),

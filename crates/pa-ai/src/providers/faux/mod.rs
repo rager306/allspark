@@ -20,7 +20,7 @@ use crate::types::{
 use crate::utils_inner::diagnostics::now_ms;
 use rand::Rng;
 
-const DEFAULT_API: &str = "faux";
+pub const DEFAULT_API: &str = "faux";
 const DEFAULT_PROVIDER: &str = "faux";
 const DEFAULT_MODEL_ID: &str = "faux-1";
 const DEFAULT_MODEL_NAME: &str = "Faux Model";

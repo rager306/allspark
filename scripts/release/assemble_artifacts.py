@@ -208,6 +208,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sha", default=None,
                         help="full commit SHA to stamp into the binary's "
                              "version manifest (continuous builds)")
+    parser.add_argument("--allow-fixture-catalog", action="store_true",
+                        default=False,
+                        help="the assets came from generate --fixture (offline fixtures only)")
     parser.add_argument("--catalog-assets", type=Path, default=None,
                         help="directory with models.bundled.json + "
                              "mcp-services.bundled.json (see "
@@ -331,7 +334,12 @@ def stage_tree(staging: Path, args: argparse.Namespace, stamped_version: str | N
             "builds: --fixture) and pass --catalog-assets <dir>"
         )
     catalog_assets = Path(args.catalog_assets)
-    catalog_facts = validate_bundled_catalog_dir(catalog_assets)
+    # A fixture-generated asset is legitimate for the offline packers (the
+    # release-channel fixtures and the packaging dry-run); the release pipeline
+    # packs --network assets and never sets this flag.
+    catalog_facts = validate_bundled_catalog_dir(
+        catalog_assets, allow_small_fixture=args.allow_fixture_catalog
+    )
     for name in BUNDLED_CATALOG_FILES:
         shutil.copyfile(catalog_assets / name, staging / name)
     payload = [binary_name if entry == BINARY_PLACEHOLDER else entry
