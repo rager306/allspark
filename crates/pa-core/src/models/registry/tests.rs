@@ -708,3 +708,41 @@ fn an_upstream_shaped_asset_keeps_the_fork_providers() {
         );
     }
 }
+
+/// §3.2 (audit): an offline restart must still offer the ids discovery found
+/// last time. The saved snapshot used to be read only on a forced refresh, so
+/// a fresh process with no network lost every discovered-only model.
+#[test]
+fn a_saved_snapshot_survives_an_offline_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let models_json = dir.path().join("models.json");
+    std::fs::write(&models_json, r#"{"providers":{}}"#).unwrap();
+    // A snapshot naming an id the hand table does not describe.
+    let mut snapshot = pa_models::discovery::DiscoverySnapshot::default();
+    snapshot.providers.insert(
+        "subquadratic".to_string(),
+        pa_models::discovery::DiscoveredProvider {
+            provider: "subquadratic".to_string(),
+            synced_at: "t1".to_string(),
+            ids: vec!["subq-snap-fresh-id".to_string()],
+            deprecated: Vec::new(),
+        },
+    );
+    // The snapshot lives beside models.json (models_json.parent()), the same
+    // directory `refresh_discovery` writes it to.
+    pa_models::discovery::write_snapshot(dir.path(), &snapshot).unwrap();
+
+    // A fresh registry (the restart) sees it without any refresh.
+    let auth = AuthStorage::in_memory_without_env(&AuthStorageData::default(), Arc::new(NoOAuth));
+    let registry = ModelRegistry::create(auth, models_json);
+    let ids: Vec<(&str, &str)> = registry
+        .get_all()
+        .iter()
+        .map(|model| (model.provider.as_str(), model.id.as_str()))
+        .collect();
+    assert!(
+        ids.contains(&("subquadratic", "subq-snap-fresh-id")),
+        "the saved snapshot's id must survive an offline restart: {} total models",
+        ids.len()
+    );
+}

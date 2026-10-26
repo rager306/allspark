@@ -194,7 +194,37 @@ impl ModelRegistry {
             discovery_snapshot: None,
         };
         registry.load_models();
+        // The SAVED discovery snapshot is applied at construction, not only on a
+        // refresh: an offline restart (no network, no forced refresh) must still
+        // offer the ids discovery found last time. Applying it here keeps
+        // `load_models`' order (built-in set first, discovery appends after) —
+        // the same order `refresh_available_models_forced` uses (audit §3.2).
+        registry.apply_saved_discovery_snapshot();
         registry
+    }
+
+    /// Load the on-disk discovery snapshot and append its discovered-only ids.
+    ///
+    /// Best-effort: no snapshot, an older schema, or an unreadable file leaves
+    /// the hand table alone. `models.dev` properties are not fetched here — an
+    /// offline start has no network — so appended ids carry `Estimated` values,
+    /// which is the documented discovery precedence for a missing source.
+    fn apply_saved_discovery_snapshot(&mut self) {
+        let Some(models_dir) = self
+            .models_json_path
+            .as_ref()
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+        else {
+            return;
+        };
+        let Some(snapshot) = pa_models::discovery::read_snapshot(&models_dir) else {
+            return;
+        };
+        if snapshot.providers.is_empty() {
+            return;
+        }
+        self.apply_discovery_snapshot(&snapshot, None);
+        self.discovery_snapshot = Some(snapshot);
     }
 
     /// The Prime Inference credentials for the credentialed catalog layer
