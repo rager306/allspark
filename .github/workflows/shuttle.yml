@@ -4,14 +4,22 @@ on:
 
 jobs:
   shuttle:
-    name: Shuttle DST (pa-daemon scheduler)
+    name: Shuttle DST (pa-mem spinlock protocol)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      RUSTFLAGS: "--cfg shuttle"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-      - name: Run Shuttle tests on daemon scheduler tests
+      # A filter that matches nothing is a GREEN lane that proves nothing (the
+      # old shape here ended in `|| echo warning`, so an empty filter reported
+      # success). The list must name at least one test: `--exact`-free `shuttle`
+      # matches the DST test in pa-mem's spinlock module.
+      - name: Run Shuttle DST tests
         run: |
-          cargo test -p pa-daemon --lib -- shuttle 2>&1 || \
-            echo "::warning::no shuttle tests found yet — add one under pa-daemon/tests/"
+          set -euo pipefail
+          cargo test -p pa-mem --lib -- shuttle 2>&1 | tee /tmp/shuttle.log
+          # The lane's own oracle: the run must have executed the DST test, not
+          # an empty filter.
+          grep -q 'shuttle_explores_the_mutual_exclusion_interleavings \.\.\. ok' /tmp/shuttle.log || {
+            echo "::error::the shuttle filter ran no DST test — the lane proves nothing"
+            exit 1
+          }

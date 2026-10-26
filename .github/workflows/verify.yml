@@ -1,0 +1,35 @@
+# The verification lanes: Miri (undefined behaviour / aliasing), AddressSanitizer
+# (use-after-free / overflow on the real allocator), and Shuttle (deterministic
+# simulation of thread interleavings).
+#
+# WHY THIS FILE EXISTS. All three lanes were `workflow_call`-only jobs in their
+# own files, and NOTHING called them: `rg 'uses: ./.github/workflows/(miri|
+# sanitizer|shuttle)'` matched zero workflows, so a lane that was written,
+# documented and kept in sync with the tree could never report anything. A gate
+# nothing invokes is a comment (audit §7.2).
+#
+# They are not per-PR jobs: Miri is minutes-per-crate and ASan needs a nightly
+# `-Z build-std` toolchain. A nightly schedule plus manual dispatch is the
+# cadence where a real answer is still cheap.
+name: verify
+
+on:
+  schedule:
+    # 04:10 UTC, an hour after the perf lane and clear of the nightly cut.
+    - cron: "10 4 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  miri:
+    uses: ./.github/workflows/miri.yml
+  sanitizer:
+    uses: ./.github/workflows/sanitizer.yml
+  shuttle:
+    uses: ./.github/workflows/shuttle.yml

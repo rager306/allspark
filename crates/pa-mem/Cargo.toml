@@ -17,6 +17,8 @@ crc32fast.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+# The DST lane (`shuttle`) explores the sharded map's interleavings.
+shuttle.workspace = true
 
 [lints]
 workspace = true

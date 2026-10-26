@@ -130,6 +130,10 @@ parking_lot = "0.12"
 rusqlite = { version = "0.40", features = ["bundled"] }
 blake3 = "1.8"
 sha2 = "0.10"
+# Deterministic simulation testing (`.github/workflows/shuttle.yml`): a
+# scheduler explores thread interleavings instead of hoping the OS produces
+# the interesting one. Dev-only, and only compiled into the DST test.
+shuttle = "0.9"
 # pa-mem (F9): block-LZ4 snapshot compression. Pure-Rust, safe-only
 # encode/decode; `frame` (and its twox-hash dep) is off — the snapshot
 # format is the raw LZ4 block format plus pogocache's 16-byte header.

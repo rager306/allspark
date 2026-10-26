@@ -827,6 +827,37 @@ fn zero_artifacts_fail_loudly_instead_of_verifying_nothing() {
     );
 }
 
+/// A `workflow_call` workflow is a definition, not a gate: unless another
+/// workflow `uses` it, nothing runs it. Three lanes (miri, sanitizer, shuttle)
+/// sat in that state — written, documented, kept in sync, never invoked — so a
+/// defect they exist to catch could not have been reported by CI (audit §7.2).
+#[test]
+fn every_verification_lane_has_a_caller() {
+    let root = repo_root().join(".github/workflows");
+    for lane in ["miri.yml", "sanitizer.yml", "shuttle.yml"] {
+        let lanes = fs::read_dir(&root).expect("read the workflows dir");
+        let mut callers = Vec::new();
+        for entry in lanes.flatten() {
+            let path = entry.path();
+            if path.file_name().is_some_and(|name| name == lane) {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            if text.contains(&format!("uses: ./.github/workflows/{lane}")) {
+                callers.push(path.display().to_string());
+            }
+        }
+        assert!(
+            !callers.is_empty(),
+            "{lane} is a workflow_call with no caller: a lane nothing invokes \
+             cannot fail, so it gates nothing. Call it from a scheduled \
+             workflow (verify.yml) or delete it."
+        );
+    }
+}
+
 /// The fixture-catalog waiver is a test-only affordance: the packaging and
 /// verification scripts take `--allow-fixture-catalog`, but a publishing
 /// workflow that passed it would ship synthetic model ids to users. The

@@ -407,12 +407,102 @@ mod concurrency_tests {
         );
     }
 
-    /// Batch lock: acquire the batch token, verify the acquire count.
-    /// (Deferred: needs a `Batch` fixture — the API requires a pre-registered batch.)
+    /// The batch API takes no external fixture: a `Batch` is self-registering.
+    /// These are the two properties the shard module relies on — a reentrant
+    /// re-lock is free (`acquires` counts only fresh ones) and it does not
+    /// release the outermost guard.
     #[test]
-    fn batch_lock_counts_acquires() {
-        // Placeholder: the Batch type requires setup that lives in the shard
-        // module, not in spinlock.rs. Tracked as a follow-up for the Loom
-        // integration (MUT-loom-spinlock in the matrix).
+    fn batch_lock_counts_only_fresh_acquires() {
+        let lock = SpinLock::new();
+        let batch = Batch::new();
+        {
+            let outer = lock.lock_batch(&batch);
+            assert_eq!(batch.acquires(), 1);
+            {
+                let inner = lock.lock_batch(&batch);
+                assert_eq!(batch.acquires(), 1, "a reentrant re-lock is not an acquire");
+                // The inner guard must NOT release: the lock stays held by the
+                // batch while `outer` is alive.
+                drop(inner);
+                assert!(lock.is_locked());
+            }
+            assert!(lock.try_lock().is_none(), "another thread cannot take it");
+            drop(outer);
+        }
+        assert!(!lock.is_locked(), "the outermost guard releases");
+    }
+
+    /// Deterministic simulation (`cargo test --lib -- shuttle`, the `shuttle`
+    /// workflow): the OS scheduler decides when to preempt, so the mutual
+    /// exclusion test above only sees the interleavings that happen to occur.
+    /// Shuttle schedules the threads itself and explores the orderings, so a
+    /// lost update becomes a reproduced counterexample instead of a flake.
+    ///
+    /// The body is the same critical section against shuttle's own atomics: the
+    /// cargo test drives the real `SpinLock` (its `AtomicUsize` is std's, not
+    /// shuttle's), so what this pins is the ALGORITHM — CAS-acquire,
+    /// store-release — against an adversarial schedule, not the memory model of
+    /// the shipped atomics. The distinction is the one this lane exists to
+    /// state honestly: a pass here is evidence about the protocol, not a proof.
+    #[test]
+    fn shuttle_explores_the_mutual_exclusion_interleavings() {
+        shuttle::check_random(
+            || {
+                use shuttle::sync::atomic::{AtomicUsize, Ordering};
+
+                /// The protocol under test, over shuttle's atomics.
+                struct Mirrored {
+                    state: AtomicUsize,
+                }
+
+                impl Mirrored {
+                    fn try_acquire(&self) -> bool {
+                        self.state
+                            .compare_exchange(0, usize::MAX, Ordering::Acquire, Ordering::Relaxed)
+                            .is_ok()
+                    }
+                    fn release(&self) {
+                        self.state.store(0, Ordering::Release);
+                    }
+                }
+
+                let lock = std::sync::Arc::new(Mirrored {
+                    state: AtomicUsize::new(0),
+                });
+                let inside = std::sync::Arc::new(AtomicUsize::new(0));
+                let violations = std::sync::Arc::new(AtomicUsize::new(0));
+
+                let threads: Vec<_> = (0..2)
+                    .map(|_| {
+                        let lock = std::sync::Arc::clone(&lock);
+                        let inside = std::sync::Arc::clone(&inside);
+                        let violations = std::sync::Arc::clone(&violations);
+                        shuttle::thread::spawn(move || {
+                            for _ in 0..2 {
+                                while !lock.try_acquire() {
+                                    shuttle::thread::yield_now();
+                                }
+                                // Exactly one thread inside: a CAS-acquire that
+                                // let two in is the defect this lane catches.
+                                if inside.fetch_add(1, Ordering::SeqCst) != 0 {
+                                    violations.fetch_add(1, Ordering::SeqCst);
+                                }
+                                inside.fetch_sub(1, Ordering::SeqCst);
+                                lock.release();
+                            }
+                        })
+                    })
+                    .collect();
+                for thread in threads {
+                    thread.join().expect("thread");
+                }
+                assert_eq!(
+                    violations.load(Ordering::SeqCst),
+                    0,
+                    "the CAS-acquire admitted two holders at once"
+                );
+            },
+            50,
+        );
     }
 }
