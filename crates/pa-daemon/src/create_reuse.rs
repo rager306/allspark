@@ -496,4 +496,83 @@ mod tests {
         let resident = resident_with_identity(u64::from(pid), None);
         assert!(resident_process_alive(&resident).await);
     }
+    /// The single-flight is the contract `opening_guard` exists for: two creates
+    /// for the SAME session file must not both hold a guard, because both would
+    /// launch a worker over one file. It is the one concurrency invariant here,
+    /// and it was verified only by reading the code.
+    ///
+    /// Shape: the first guard blocks the key; a second call for that file stays
+    /// pending until the first is dropped; a DIFFERENT file never waits (the map
+    /// is per-file, not global); and the last release retires the map entry.
+    #[tokio::test]
+    async fn the_open_single_flight_admits_one_guard_per_file() {
+        let (dir, supervisor, root_file, _child) = crate::supervisor::tests::roster_fixture().await;
+        let command = |path: &std::path::Path| DaemonCommand::Create {
+            id: None,
+            session_path: Some(path.to_string_lossy().to_string()),
+            continue_recent: None,
+            no_session: None,
+            name: None,
+            config: None,
+            telemetry_disabled: None,
+            runtime_metadata: None,
+            lifecycle: None,
+            env: None,
+            launch_env: None,
+            rest: serde_json::Map::new(),
+        };
+        let key = canonical_opening_key(&root_file);
+        let first = supervisor
+            .opening_guard(&command(&root_file))
+            .await
+            .expect("the first guard")
+            .expect("a guard for an existing file");
+
+        // Another file must not wait behind this one.
+        let other_file = dir.join("other-session.jsonl");
+        std::fs::write(&other_file, "{}\n").expect("write the other session file");
+        let other = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            supervisor.opening_guard(&command(&other_file)),
+        )
+        .await
+        .expect("a different file must not block")
+        .expect("the other guard")
+        .expect("a guard for an existing file");
+        drop(other);
+
+        // The same file waits: the second open stays pending while the first
+        // guard lives.
+        let pending = tokio::time::timeout(
+            std::time::Duration::from_millis(150),
+            supervisor.opening_guard(&command(&root_file)),
+        )
+        .await;
+        assert!(
+            pending.is_err(),
+            "a second open of the same file must wait for the first guard"
+        );
+
+        drop(first);
+
+        // Released, the wait completes, and the last release retires the entry.
+        let after = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            supervisor.opening_guard(&command(&root_file)),
+        )
+        .await
+        .expect("the released single-flight admits the next open")
+        .expect("the guard after release")
+        .expect("a guard for an existing file");
+        drop(after);
+        assert!(
+            !supervisor
+                .opening_files
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains_key(&key),
+            "the last release retires the map entry"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
