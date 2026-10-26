@@ -67,6 +67,10 @@ pub struct Adr {
     pub consequences: String,
     /// Id of the ADR this one supersedes, if any.
     pub supersedes: Option<i64>,
+    /// The project (workspace) whose history this decision belongs to. A graph
+    /// DB holds several projects, and a decision from one is not another's
+    /// memory: `ADR_LEGACY_PROJECT` marks records written before this column.
+    pub project: String,
 }
 
 impl Adr {
@@ -86,7 +90,15 @@ impl Adr {
             decision: decision.into(),
             consequences: consequences.into(),
             supersedes: None,
+            project: ADR_LEGACY_PROJECT.to_string(),
         }
+    }
+
+    /// Bind the decision to a project (workspace) scope.
+    #[must_use]
+    pub fn in_project(mut self, project: impl Into<String>) -> Self {
+        self.project = project.into();
+        self
     }
 
     /// Set the status.
@@ -111,6 +123,9 @@ pub struct AdrQuery {
     pub status: Option<AdrStatus>,
     /// Case-insensitive substring match against title/context/decision.
     pub text: Option<String>,
+    /// Restrict to one project's decisions. `None` lists every row (an
+    /// admin/overview read); `Some("")` lists the legacy bucket only.
+    pub project: Option<String>,
 }
 
 impl AdrQuery {
@@ -118,6 +133,13 @@ impl AdrQuery {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Restrict to one project's decisions.
+    #[must_use]
+    pub fn in_project(mut self, project: impl Into<String>) -> Self {
+        self.project = Some(project.into());
+        self
     }
 
     /// Restrict to a status.
@@ -143,8 +165,14 @@ const ADR_SCHEMA: &str = r"CREATE TABLE IF NOT EXISTS adr (
     context      TEXT NOT NULL DEFAULT '',
     decision     TEXT NOT NULL DEFAULT '',
     consequences TEXT NOT NULL DEFAULT '',
-    supersedes   INTEGER REFERENCES adr(id) ON DELETE SET NULL
+    supersedes   INTEGER REFERENCES adr(id) ON DELETE SET NULL,
+    project      TEXT NOT NULL DEFAULT ''
 )";
+
+/// The legacy bucket for records written before the project column existed.
+/// An empty scope is not "every project": those rows belong to no project and
+/// are listed only when the caller asks for the global scope.
+pub const ADR_LEGACY_PROJECT: &str = "";
 
 /// A SQLite-backed ADR store.
 pub struct AdrStore<'a> {
@@ -158,6 +186,17 @@ impl<'a> AdrStore<'a> {
     /// Propagates SQLite errors.
     pub fn new(conn: &'a Connection) -> Result<Self> {
         conn.execute_batch(ADR_SCHEMA)?;
+        // A DB written before the project column exists keeps its rows in the
+        // legacy bucket (`ADR_LEGACY_PROJECT`) rather than being dropped.
+        let has_project: bool = conn
+            .prepare("PRAGMA table_info(adr)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|name| name == "project");
+        if !has_project {
+            conn.execute_batch("ALTER TABLE adr ADD COLUMN project TEXT NOT NULL DEFAULT ''")?;
+        }
         Ok(Self { conn })
     }
 
@@ -167,15 +206,16 @@ impl<'a> AdrStore<'a> {
     /// Propagates SQLite errors.
     pub fn record_adr(&self, adr: &Adr) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO adr(title, status, context, decision, consequences, supersedes)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO adr(title, status, context, decision, consequences, supersedes, project)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 adr.title,
                 adr.status.as_str(),
                 adr.context,
                 adr.decision,
                 adr.consequences,
-                adr.supersedes
+                adr.supersedes,
+                adr.project
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -189,7 +229,7 @@ impl<'a> AdrStore<'a> {
         let row = self
             .conn
             .query_row(
-                "SELECT id, title, status, context, decision, consequences, supersedes
+                "SELECT id, title, status, context, decision, consequences, supersedes, project
                  FROM adr WHERE id = ?1",
                 params![id],
                 Self::map_row,
@@ -204,13 +244,17 @@ impl<'a> AdrStore<'a> {
     /// Propagates SQLite errors.
     pub fn query_adr(&self, query: &AdrQuery) -> Result<Vec<Adr>> {
         let mut sql = String::from(
-            "SELECT id, title, status, context, decision, consequences, supersedes FROM adr",
+            "SELECT id, title, status, context, decision, consequences, supersedes, project \n             FROM adr",
         );
         let mut clauses: Vec<String> = Vec::new();
         let mut bindings: Vec<String> = Vec::new();
         if let Some(status) = query.status {
             bindings.push(status.as_str().to_string());
             clauses.push(format!("status = ?{}", bindings.len()));
+        }
+        if let Some(project) = &query.project {
+            bindings.push(project.clone());
+            clauses.push(format!("project = ?{}", bindings.len()));
         }
         if let Some(text) = &query.text {
             bindings.push(format!("%{}%", text.to_lowercase()));
@@ -256,6 +300,7 @@ impl<'a> AdrStore<'a> {
             decision: row.get(4)?,
             consequences: row.get(5)?,
             supersedes: row.get(6)?,
+            project: row.get(7)?,
         })
     }
 }

@@ -512,6 +512,8 @@ const ACCEPTED_PARAMS: &[(&str, &[&str])] = &[
         &[
             "path",
             "root",
+            "id",
+            "scope",
             "title",
             "decision",
             "context",
@@ -1547,6 +1549,7 @@ impl GraphTool {
     /// module's first consumer; it was written in 39c66260f and never wired.
     fn action_adr(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
         let root = self.resolve_root(params);
+        let project = project_name(&root);
         let record = params.get("title").and_then(serde_json::Value::as_str);
         let text = |key: &str| {
             params
@@ -1555,6 +1558,67 @@ impl GraphTool {
                 .unwrap_or_default()
                 .to_string()
         };
+        // The list is scoped: this project's decisions by default, the global
+        // bucket with `scope: "global"`, everything with `scope: "all"`.
+        let query = match params
+            .get("scope")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("all") => pa_graph::adr::AdrQuery::new(),
+            Some("global") => pa_graph::adr::AdrQuery::new().in_project(String::new()),
+            _ => pa_graph::adr::AdrQuery::new().in_project(project.clone()),
+        };
+        let query = match params.get("status").and_then(serde_json::Value::as_str) {
+            Some(status) => {
+                query.with_status(pa_graph::adr::AdrStatus::from_str_or_default(status))
+            }
+            None => query,
+        };
+        // `id` reads one decision's full body; listing stays a summary.
+        if let Some(id) = params.get("id").and_then(serde_json::Value::as_i64) {
+            let found = self.with_reader(|store| {
+                let adrs = pa_graph::adr::AdrStore::new(store.connection())
+                    .map_err(|err| anyhow::anyhow!("adr store: {err}"))?;
+                adrs.get_adr(id)
+                    .map_err(|err| anyhow::anyhow!("get adr: {err}"))
+            })?;
+            let Some(adr) = found else {
+                anyhow::bail!("adr #{id} not found");
+            };
+            let mut body = format!(
+                "#{} [{}] {}\n\nContext:\n{}\n\nDecision:\n{}\n\nConsequences:\n{}\n",
+                adr.id,
+                adr.status.as_str(),
+                adr.title,
+                adr.context.trim(),
+                adr.decision.trim(),
+                adr.consequences.trim()
+            );
+            if let Some(supersedes) = adr.supersedes {
+                body.push_str(&format!("\nSupersedes: #{supersedes}\n"));
+            }
+            if !adr.project.is_empty() {
+                body.push_str(&format!("Project: {}\n", adr.project));
+            }
+            return Ok(AgentToolResult {
+                content: vec![pa_agent::types::ToolResultContent::text(body)],
+                details: serde_json::json!({
+                    "id": adr.id,
+                    "title": adr.title,
+                    "status": adr.status.as_str(),
+                    "context": adr.context,
+                    "decision": adr.decision,
+                    "consequences": adr.consequences,
+                    "supersedes": adr.supersedes,
+                    "project": adr.project,
+                }),
+                terminate: None,
+                is_error: false,
+            });
+        }
         // Recording writes, so it holds the store's lock. Listing reads only the
         // `adr` table — no graph content — so it takes the reader unconditionally
         // and can be answered during an index run.
@@ -1567,6 +1631,22 @@ impl GraphTool {
                     text("context"),
                     text("decision"),
                     text("consequences"),
+                )
+                // A decision belongs to the project it was made in: the graph DB
+                // holds several projects, and one project's history is not
+                // another's memory. `scope: "global"` records an install-wide
+                // decision (the empty legacy bucket is only for rows written
+                // before the column existed).
+                .in_project(
+                    if params
+                        .get("scope")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|scope| scope.eq_ignore_ascii_case("global"))
+                    {
+                        String::new()
+                    } else {
+                        project.clone()
+                    },
                 );
                 if let Some(status) = params.get("status").and_then(serde_json::Value::as_str) {
                     adr = adr.with_status(pa_graph::adr::AdrStatus::from_str_or_default(status));
@@ -1578,13 +1658,13 @@ impl GraphTool {
                 }
                 adrs.record_adr(&adr)
                     .map_err(|err| anyhow::anyhow!("record adr: {err}"))?;
-                adrs.query_adr(&pa_graph::adr::AdrQuery::new())
+                adrs.query_adr(&query)
                     .map_err(|err| anyhow::anyhow!("query adr: {err}"))
             })?,
             None => self.with_reader(|store| {
                 let adrs = pa_graph::adr::AdrStore::new(store.connection())
                     .map_err(|err| anyhow::anyhow!("adr store: {err}"))?;
-                adrs.query_adr(&pa_graph::adr::AdrQuery::new())
+                adrs.query_adr(&query)
                     .map_err(|err| anyhow::anyhow!("query adr: {err}"))
             })?,
         };
@@ -3819,5 +3899,55 @@ mod tests {
             !text.contains("only_in_a"),
             "no symbol from the other tree may leak into the answer: {text}"
         );
+    }
+    /// §4.2 (audit): the `adr` table had no project field and `action_adr`
+    /// queried globally, so two projects with different names shared one set of
+    /// decisions, and the tool answered id/status/title only — an agent could
+    /// record a decision and never read its body back. Both closed: rows are
+    /// scoped to the project, and `id` returns the full body.
+    #[tokio::test]
+    async fn adr_records_are_scoped_to_their_project_and_bodies_are_readable() {
+        let a = tempfile::tempdir().unwrap().path().join("service-a");
+        let b = tempfile::tempdir().unwrap().path().join("service-b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("lib.rs"), "pub fn a() {}\n").unwrap();
+        std::fs::write(b.join("lib.rs"), "pub fn b() {}\n").unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let db_path = db.path().join("graph.db");
+
+        let tool_a = GraphTool::new(db_path.clone(), a.clone());
+        tool_a
+            .dispatch(&serde_json::json!({
+                "action": "adr",
+                "title": "Use SQLite for the graph",
+                "context": "the index must survive restarts",
+                "decision": "one SQLite file per workspace",
+                "consequences": "a broken file is a rebuild, not a lost repo",
+            }))
+            .unwrap();
+
+        // B's list must not carry A's decision.
+        let tool_b = GraphTool::new(db_path.clone(), b.clone());
+        let list_b = tool_b
+            .dispatch(&serde_json::json!({ "action": "adr" }))
+            .unwrap();
+        assert!(
+            !text_of(&list_b).contains("SQLite for the graph"),
+            "another project's decision leaked into the list: {}",
+            text_of(&list_b)
+        );
+
+        // A sees it, and `id: 1` returns the body.
+        let list_a = tool_a
+            .dispatch(&serde_json::json!({ "action": "adr" }))
+            .unwrap();
+        assert!(text_of(&list_a).contains("SQLite for the graph"));
+        let body = tool_a
+            .dispatch(&serde_json::json!({ "action": "adr", "id": 1 }))
+            .unwrap();
+        let text = text_of(&body);
+        assert!(text.contains("the index must survive restarts"), "{text}");
+        assert!(text.contains("a broken file is a rebuild"), "{text}");
     }
 }
