@@ -709,6 +709,27 @@ fn skip_reason(abs: &Path, opts: &IndexOptions) -> String {
 /// is a candidate only if neither excludes it — and a `!path` re-include in
 /// `.graphignore` wins over gitignore, because custom ignores take precedence
 /// in the `ignore` crate.
+/// Whether `path` is a file the graph would parse.
+///
+/// The single owner of "is this indexable": the walk calls it, and a watcher
+/// that only wants to know whether an event is worth a reindex calls it too, so
+/// a new grammar reaches both without a second extension list to drift.
+#[must_use]
+pub fn is_indexable(path: &Path) -> bool {
+    if path.components().any(|c| c.as_os_str() == ".git") {
+        return false;
+    }
+    // The rule file is not a symbol source: it would otherwise surface in
+    // `search` and `file_tree` like any other parsed file.
+    if path
+        .file_name()
+        .is_some_and(|name| name == GRAPHIGNORE_FILE)
+    {
+        return false;
+    }
+    pa_ast::SupportLang::from_path(path).is_some()
+}
+
 pub(crate) fn discover(root: &Path, opts: &IndexOptions) -> Vec<PathBuf> {
     let mut builder = WalkBuilder::new(root);
     builder
@@ -724,18 +745,7 @@ pub(crate) fn discover(root: &Path, opts: &IndexOptions) -> Vec<PathBuf> {
         if !entry.file_type().is_some_and(|t| t.is_file()) {
             continue;
         }
-        if path.components().any(|c| c.as_os_str() == ".git") {
-            continue;
-        }
-        // The rule file is not a symbol source: it would otherwise surface in
-        // `search` and `file_tree` like any other parsed file.
-        if path
-            .file_name()
-            .is_some_and(|name| name == GRAPHIGNORE_FILE)
-        {
-            continue;
-        }
-        if pa_ast::SupportLang::from_path(path).is_none() {
+        if !is_indexable(path) {
             continue;
         }
         if !opts.extensions.is_empty() {

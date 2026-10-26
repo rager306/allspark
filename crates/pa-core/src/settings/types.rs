@@ -273,12 +273,14 @@ pub struct GraphSettings {
     /// background task refreshes it while the session works. `"off"` disables
     /// both, leaving the explicit `index` action as the only build path.
     ///
-    /// `"watch"` is accepted and behaves exactly like `auto`: the filesystem
-    /// watcher it names is not wired into a session (`pa-graph::fs_watcher` exists
-    /// and is exercised only by its own tests), so edits reach the graph when the
-    /// next query finds it stale, not live. Kept as an accepted value rather than
-    /// rejected so an existing `settings.json` does not start failing; see
-    /// `.research/GRAPH-VISIBILITY-BOUNDARIES.md` for what wiring it would take.
+    /// `"watch"` additionally keeps the graph live: the session starts a
+    /// filesystem watcher over its `cwd` and reindexes incrementally when source
+    /// files change, so an edit is visible to the next query without waiting for
+    /// that query to notice staleness (see
+    /// `session_engine::graph_watch`). A burst of events is coalesced into one
+    /// reindex and the pass never waits for another process's build lease: when
+    /// the writer is busy the batch is dropped and the next change (or the
+    /// query-time staleness check, still in place) repairs it.
     pub auto: Option<GraphAuto>,
 }
 
@@ -289,8 +291,8 @@ pub enum GraphAuto {
     /// Build in the background at session start; refresh on query when stale.
     #[default]
     Auto,
-    /// Accepted, and behaves like [`Self::Auto`] today: the watcher is not wired
-    /// into a session. See `GraphSettings::auto`.
+    /// Like [`Self::Auto`], plus a filesystem watcher over the session's `cwd`
+    /// that feeds the graph's incremental reindex. See `GraphSettings::auto`.
     Watch,
     /// Never build on its own; the explicit `index` action is the only path.
     Off,

@@ -1225,3 +1225,80 @@ async fn edit_tool_disable_flag_drops_only_edit() {
         .collect();
     assert_eq!(native, ["lsp", "graph"]);
 }
+
+/// `graph.auto = "watch"` is wired, not decorative: the session that reads it
+/// starts a live watcher, and a session under `auto`/`off` does not. The
+/// property is the wiring itself — the watch loop's own behaviour is proven in
+/// `session_engine::graph_watch`.
+#[tokio::test]
+async fn the_watch_setting_starts_a_live_watcher() {
+    async fn session_with(setting: &str) -> (tempfile::TempDir, Option<bool>) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cwd = dir.path().join("watched");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::write(cwd.join("a.rs"), "pub fn seeded() {}\n").unwrap();
+        std::fs::write(
+            dir.path().join("settings.json"),
+            serde_json::json!({ "graph": { "enabled": true, "auto": setting } }).to_string(),
+        )
+        .unwrap();
+        let agent_dir = dir.path().to_path_buf();
+        let settings = crate::settings::SettingsManager::create(&cwd, &agent_dir);
+        assert_eq!(
+            settings
+                .settings()
+                .graph
+                .as_ref()
+                .and_then(|graph| graph.auto),
+            Some(match setting {
+                "watch" => crate::settings::types::GraphAuto::Watch,
+                "off" => crate::settings::types::GraphAuto::Off,
+                _ => crate::settings::types::GraphAuto::Auto,
+            }),
+            "the fixture must actually reach the setting"
+        );
+        let registration =
+            pa_ai::faux::register_faux_provider(pa_ai::faux::RegisterFauxProviderOptions {
+                models: Some(vec![pa_ai::faux::FauxModelDefinition {
+                    id: format!("faux-{setting}"),
+                    name: Some("Faux".to_string()),
+                    reasoning: Some(false),
+                    input: Some(vec![pa_types::ai::ModelInput::Text]),
+                    context_window: Some(100_000),
+                    max_tokens: Some(4_096),
+                    cost: None,
+                }]),
+                ..Default::default()
+            });
+        let model = registration.get_model();
+        let engine = create_session(SessionEngineConfig {
+            cron_store: None,
+            cwd: cwd.clone(),
+            agent_dir,
+            model: Some(crate::session_engine::provider_adapter::json_round_trip(&model).unwrap()),
+            stream_fn: Some(crate::session_engine::provider_adapter::real_stream_fn(
+                None,
+                model.clone(),
+            )),
+            tools: Vec::new(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let watching = engine.graph_watch.is_some();
+        engine.dispose_kernel().await;
+        (dir, Some(watching))
+    }
+
+    let (_w, watch) = session_with("watch").await;
+    assert_eq!(
+        watch,
+        Some(true),
+        "graph.auto = \"watch\" must start the watcher; without it the value \
+         silently behaves like `auto`"
+    );
+    let (_a, auto) = session_with("auto").await;
+    assert_eq!(auto, Some(false), "`auto` must not watch");
+    let (_o, off) = session_with("off").await;
+    assert_eq!(off, Some(false), "`off` must not watch");
+}

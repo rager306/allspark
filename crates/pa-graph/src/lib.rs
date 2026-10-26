@@ -210,7 +210,7 @@ pub use fs_watcher::{
 pub use hash::FileHash;
 pub use hybrid::{cosine, mmr_rerank, rrf_fuse, rrf_fuse_weighted, MmrCandidate, RRF_K};
 pub use incremental::{IncrementalReport, ReindexReason};
-pub use indexer::IndexOptions;
+pub use indexer::{is_indexable, IndexOptions};
 pub use lsp_surface::{cache_lsp_surface, CachedSurface, LspSurfaceRow, RefBloom, SurfaceDef};
 pub use minhash::{
     ast_leaf_tokens, find_near_duplicates, jaccard_estimate, jaccard_exact, lsh_bands, minhash,

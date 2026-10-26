@@ -22,6 +22,9 @@ pub mod error_classify;
 pub mod factory_host;
 pub mod goal_boundary;
 pub mod goal_driver;
+/// FORK-ONLY: `graph.auto = "watch"` — the filesystem watcher feeding the
+/// graph's incremental reindex (the value the setting always accepted).
+pub mod graph_watch;
 pub mod harness_digest;
 pub mod headless;
 pub mod host_requests;

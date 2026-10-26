@@ -148,6 +148,11 @@ pub struct SessionEngine {
     /// loops the graph and keeps a dropped session's kernel process alive
     /// until the process exits.
     pub(crate) provisioner: std::sync::Arc<crate::kernel::provisioner::IpythonKernelProvisioner>,
+    /// FORK-ONLY (`graph.auto = "watch"`): the session's live filesystem
+    /// watcher. `None` under `auto`/`off`, or when the OS watcher could not be
+    /// created (watching is an optimisation; the query-time staleness check
+    /// remains the fallback).
+    pub graph_watch: Option<super::graph_watch::WatchHandle>,
     /// The native `lsp` tool's language-server manager, when `lsp.enabled`.
     /// The engine holds it so the live clients (each a child process) live
     /// for the whole session and can be shut down explicitly; dropping the
@@ -606,6 +611,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // for the whole session and can be shut down on teardown; the tool holds a
     // second `Arc` clone. The graph store opens lazily inside the tool.
     let mut lsp_manager = None;
+    // FORK-ONLY (graph.auto = "watch"): the session's live watcher, stopped in
+    // `dispose_kernel` and by the engine's drop (the task's cancel token).
+    let mut graph_watch: Option<super::graph_watch::WatchHandle> = None;
     // FORK-ONLY: collect the fork tool names actually pushed, in push order.
     let mut native_tool_names: Vec<String> = Vec::new();
     // FORK-ONLY (fork: jev): the judge chain, resolved once when the layer is
@@ -686,6 +694,18 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                     Err(err) => tracing::warn!("graph auto-index task failed: {err}"),
                 }
             });
+        }
+        // FORK-ONLY (graph.auto = "watch"): the value means what it says. The
+        // setting was accepted and silently behaved like `auto` — an edit only
+        // reached the graph when the next query happened to find the store
+        // stale. The watcher is started here, after the start-up build is
+        // queued, so the first batch it sees is the tree as it stands.
+        if graph_auto == crate::settings::types::GraphAuto::Watch {
+            if let Some(handle) =
+                super::graph_watch::start(&cwd, &db_path, &super::graph_watch::project_name(&cwd))
+            {
+                graph_watch = Some(handle);
+            }
         }
         // FORK-ONLY (jev Phase 2): the `search` re-rank, installed only when
         // `[jev] graphRerank = auto` resolves behind a native judge.
@@ -1245,6 +1265,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         rlm_progress_notes: Arc::clone(&wiring.rlm.notes),
         provisioner,
         lsp_manager,
+        graph_watch,
         native_tool_names,
     })
 }
@@ -1358,6 +1379,12 @@ impl SessionEngine {
         self.provisioner.dispose(None).await;
         if let Some(manager) = &self.lsp_manager {
             manager.shutdown_all().await;
+        }
+        // The watcher's task polls its cancel token, so a session that is torn
+        // down stops watching instead of keeping the tree warm for nobody.
+        // `WatchHandle::stop` consumes the handle, hence the take.
+        if let Some(watch) = &self.graph_watch {
+            watch.stop().await;
         }
     }
 
