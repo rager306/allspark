@@ -657,7 +657,7 @@ impl GraphTool {
         if indexed {
             let same_root = stored_root.as_deref().is_some_and(|stored| {
                 stored == root.to_string_lossy()
-                    || match (std::fs::canonicalize(&stored), std::fs::canonicalize(root)) {
+                    || match (std::fs::canonicalize(stored), std::fs::canonicalize(root)) {
                         (Ok(stored), Ok(requested)) => stored == requested,
                         _ => false,
                     }
@@ -1598,10 +1598,12 @@ impl GraphTool {
                 adr.consequences.trim()
             );
             if let Some(supersedes) = adr.supersedes {
-                body.push_str(&format!("\nSupersedes: #{supersedes}\n"));
+                use std::fmt::Write as _;
+                let _ = writeln!(body, "\nSupersedes: #{supersedes}");
             }
             if !adr.project.is_empty() {
-                body.push_str(&format!("Project: {}\n", adr.project));
+                use std::fmt::Write as _;
+                let _ = writeln!(body, "Project: {}", adr.project);
             }
             return Ok(AgentToolResult {
                 content: vec![pa_agent::types::ToolResultContent::text(body)],
@@ -1905,6 +1907,15 @@ pub fn params_schema() -> serde_json::Value {
             "title": {
                 "type": "string",
                 "description": "ADR title; when present the record is written, otherwise the list is returned."
+            },
+            "id": {
+                "type": "integer",
+                "description": "ADR id for action=\"adr\": returns that decision's full body (context, decision, consequences)."
+            },
+            "scope": {
+                "type": "string",
+                "enum": ["project", "global", "all"],
+                "description": "ADR scope: this project's decisions (default), install-wide decisions, or every record."
             },
             "decision": {
                 "type": "string",
@@ -2505,6 +2516,7 @@ mod tests {
                 "edge_types",
                 "extensions",
                 "force",
+                "id",
                 "index_depth",
                 "label",
                 "lease_wait",
@@ -2517,6 +2529,7 @@ mod tests {
                 "ref_b",
                 "regex",
                 "respect_gitignore",
+                "scope",
                 "status",
                 "supersedes",
                 "symbol",
@@ -3876,14 +3889,14 @@ mod tests {
         // One shared DB, as the default `graph.dbPath` gives.
         let db = tempfile::tempdir().unwrap();
         let db_path = db.path().join("graph.db");
-        let tool_a = GraphTool::new(db_path.clone(), a.clone());
+        let tool_a = GraphTool::new(db_path.clone(), a);
         tool_a
             .dispatch(&serde_json::json!({ "action": "index" }))
             .unwrap();
 
         // B is the same basename, a different root: the warm path must not
         // answer from A's rows.
-        let tool_b = GraphTool::new(db_path, b.clone());
+        let tool_b = GraphTool::new(db_path, b);
         // `dispatch` answers Err; the agent loop turns that into an
         // `is_error` tool result (agent_loop/tool_call.rs), so the refusal is
         // asserted at the dispatch contract here.
@@ -3916,7 +3929,7 @@ mod tests {
         let db = tempfile::tempdir().unwrap();
         let db_path = db.path().join("graph.db");
 
-        let tool_a = GraphTool::new(db_path.clone(), a.clone());
+        let tool_a = GraphTool::new(db_path.clone(), a);
         tool_a
             .dispatch(&serde_json::json!({
                 "action": "adr",
@@ -3928,7 +3941,7 @@ mod tests {
             .unwrap();
 
         // B's list must not carry A's decision.
-        let tool_b = GraphTool::new(db_path.clone(), b.clone());
+        let tool_b = GraphTool::new(db_path, b);
         let list_b = tool_b
             .dispatch(&serde_json::json!({ "action": "adr" }))
             .unwrap();
