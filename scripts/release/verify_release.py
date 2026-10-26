@@ -96,6 +96,10 @@ def main() -> int:
     parser.add_argument("--expect-package-json", default=None, metavar="VERSION",
                         help="the consume-route restamp shape: a package.json "
                              "carrying exactly this release version")
+    parser.add_argument("--allow-fixture-catalog", action="store_true", default=False,
+                        help="accept a synthetic fixture catalog (offline dry-runs "
+                             "and the release scripts' own test battery; the "
+                             "publishing workflow never passes this)")
     args = parser.parse_args()
     if args.sha is not None:
         args.sha = args.sha.lower()
@@ -180,8 +184,11 @@ def main() -> int:
                         shutil.copyfileobj(source, sink)
                     os.chmod(target, member.mode)
         # The bundled catalog assets must be present and valid in the
-        # installed layout (the full packer gates: no small-fixture waiver).
-        catalog_facts = validate_bundled_catalog_dir(scratch)
+        # installed layout: the same gate the packer ran, so a waiver has to
+        # be asked for twice (once to pack, once to verify) and never defaults
+        # on.
+        catalog_facts = validate_bundled_catalog_dir(
+            scratch, allow_small_fixture=args.allow_fixture_catalog)
         if args.expect_package_json is not None:
             stamped = json.loads((scratch / "package.json").read_text(encoding="utf-8"))
             if stamped.get("version") != args.expect_package_json:

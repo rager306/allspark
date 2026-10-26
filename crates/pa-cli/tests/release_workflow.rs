@@ -827,6 +827,25 @@ fn zero_artifacts_fail_loudly_instead_of_verifying_nothing() {
     );
 }
 
+/// The fixture-catalog waiver is a test-only affordance: the packaging and
+/// verification scripts take `--allow-fixture-catalog`, but a publishing
+/// workflow that passed it would ship synthetic model ids to users. The
+/// publish route must never name the flag, on either workflow.
+#[test]
+fn no_publishing_workflow_passes_the_fixture_catalog_waiver() {
+    for workflow in [
+        ".github/workflows/release.yml",
+        ".github/workflows/release-fork.yml",
+    ] {
+        let text = fs::read_to_string(repo_root().join(workflow)).expect("read the workflow");
+        assert!(
+            !text.contains("allow-fixture-catalog"),
+            "{workflow} must not waive the fixture-catalog gate: a release asset \
+             carries the real catalog, and the waiver exists for offline test runs"
+        );
+    }
+}
+
 /// Production installer updates require a stable release on both platforms;
 /// beta releases publish only the explicitly selected beta installer pair.
 #[test]

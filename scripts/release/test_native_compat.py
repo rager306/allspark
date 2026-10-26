@@ -39,6 +39,10 @@ class NativeCompatibilityTests(unittest.TestCase):
         args = argparse.Namespace(
             repo_root=self.root, target=target, binary=self.binary,
             runtime_dir=None, catalog_assets=self.root, version="1.0.0", sha="a" * 40,
+            # The validator is patched out below; the attribute must still exist
+            # because the packer's resolve step reads it (the same Namespace is
+            # shared by stage_tree and the catalog path).
+            allow_fixture_catalog=True,
         )
         # Catalog validation has its own integration suite; this test exercises
         # packaging with a minimal payload to isolate the migration regression.

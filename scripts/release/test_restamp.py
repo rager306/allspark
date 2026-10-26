@@ -145,7 +145,10 @@ class ContinuousFixture:
             args += ["--decoder", str(self.decoder)]
         if sha:
             args += ["--sha", sha]
-        args += ["--catalog-assets", str(self.catalog)]
+        # The fixture catalog is generate --fixture output (synthetic ids); the
+        # packer must be told, or the provenance gate refuses it - exactly as a
+        # real release would refuse a fixture asset.
+        args += ["--allow-fixture-catalog", "--catalog-assets", str(self.catalog)]
         result = run_cli(ASSEMBLER, args)
         if result.returncode:
             raise AssertionError(result.stderr)
@@ -188,6 +191,9 @@ class RestampTestCase(unittest.TestCase):
     def restamp(self, version="9.9.9-beta.2", commit=None, expect=0):
         out = self.root / "restamped"
         result = run_cli(RESTAMPER, [
+            # The fixture artifact carries a generate --fixture catalog; a real
+            # continuous build carries the live one. The flag states which.
+            "--allow-fixture-catalog",
             "--incoming", str(self.incoming), "--version", version,
             "--expect-commit", commit or self.commit, "--out-dir", str(out)])
         self.assertEqual(result.returncode, expect,
@@ -233,6 +239,7 @@ class TheRestampCase(RestampTestCase):
         # The continuous matrix now runs this verifier on every native runner
         # before uploading: exercise its --sha path on the assembled set.
         verified = run_cli(VERIFIER, [
+            "--allow-fixture-catalog",
             "--dist-dir", str(self.incoming / f"artifacts-{HOST_TARGET}"),
             "--version", self.fixture.version, "--target", HOST_TARGET,
             "--sha", self.commit])
@@ -283,6 +290,7 @@ class TheRestampCase(RestampTestCase):
         # gate set: payload, checksums, manifest, catalog assets, livecheck.
         target_dir = out / f"artifacts-{HOST_TARGET}"
         verified = run_cli(VERIFIER, [
+            "--allow-fixture-catalog",
             "--dist-dir", str(target_dir), "--version", version,
             "--target", HOST_TARGET, "--expect-package-json", version])
         self.assertEqual(verified.returncode, 0, verified.stderr)

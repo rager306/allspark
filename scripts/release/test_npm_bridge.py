@@ -338,6 +338,11 @@ child.on("exit",code=>{process.exitCode=code;});
 PREFIX="$PRIME_AGENT_RUST_PREFIX"
 bin_dir="$PREFIX/bin"
 launcher="$bin_dir/prime-agent"
+# The launcher section reads the layout decision the real script makes far
+# above it (install-rust.sh computes fork_layout once; it drives share_dir,
+# the payload path and the launcher name). This fixture packs the UPSTREAM
+# layout under share/prime-agent, so it states that decision explicitly.
+fork_layout="no"
 WINDOWS=no
 say() { :; }; note() { :; }; die() { echo "$*" >&2; exit 1; }
 trap '[ -z "${launcher_tmp:-}" ] || rm -f "$launcher_tmp"' EXIT
@@ -571,6 +576,12 @@ class InstallerTakeoverTests(unittest.TestCase):
                 result = subprocess.run(["sh", "-eu"], input='''
 bin_dir="$PREFIX/bin"
 launcher="$bin_dir/prime-agent"
+# The extracted sections read the layout decision that the real script makes
+# ~1200 lines above them (install-rust.sh: fork_layout drives share_dir, the
+# payload path and the launcher name). This fixture exercises the UPSTREAM
+# layout, so it must state that decision instead of leaving it unset — an
+# unset variable aborted the slice with "fork_layout: parameter not set".
+fork_layout="no"
 WINDOWS=no
 say() { :; }; note() { :; }; die() { echo "$*" >&2; exit 1; }
 step_start() { :; }; step_ok() { :; }; step_fail() { :; }; todo() { :; }

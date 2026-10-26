@@ -148,7 +148,7 @@ def glibc_baseline_ok(binary: Path) -> bool:
 
 
 def restamp_target(incoming: Path, out_dir: Path, version: str,
-                   expect_commit: str) -> dict:
+                   expect_commit: str, allow_fixture_catalog: bool = False) -> dict:
     manifest = json.loads((incoming / "manifest.json").read_text(encoding="utf-8"))
     binaries = manifest["binaries"]
     if len(binaries) != 1:
@@ -207,7 +207,14 @@ def restamp_target(incoming: Path, out_dir: Path, version: str,
         if sha256_file(staging / "prime-agent") != binary["executableSha256"]:
             fail(f"{incoming.name}: the staged binary does not match the "
                  "manifest's executableSha256")
-        validate_bundled_catalog_dir(staging)
+        # The restamp's provenance checks are the continuous stamp and the
+        # manifest digest; the catalog is validated by the packer that built the
+        # artifact. A synthetic fixture set (the test battery, an offline
+        # dry-run) carries fixture ids by construction, so the caller states
+        # that instead of failing a gate it cannot satisfy.
+        validate_bundled_catalog_dir(
+            staging, allow_small_fixture=allow_fixture_catalog
+        )
 
         # 4. The runtime version manifest moves to the release version; the
         #    built bytes stay the continuous build's.
@@ -282,6 +289,10 @@ def main() -> int:
                         help="the release version to stamp (e.g. 0.9.8-beta.1)")
     parser.add_argument("--expect-commit", required=True,
                         help="the 40-hex commit the artifacts must be stamped with")
+    parser.add_argument("--allow-fixture-catalog", action="store_true",
+                        default=False,
+                        help="the incoming artifact carries a synthetic fixture catalog "
+                             "(offline dry-runs and the test battery)")
     parser.add_argument("--out-dir", required=True, type=Path,
                         help="directory to write the restamped artifacts-<target> sets to")
     args = parser.parse_args()
@@ -294,7 +305,8 @@ def main() -> int:
     if not incoming:
         fail(f"no artifacts-* directories under {args.incoming}")
     results = [restamp_target(directory, args.out_dir, args.version,
-                              args.expect_commit.lower())
+                              args.expect_commit.lower(),
+                              args.allow_fixture_catalog)
                for directory in incoming]
     for result in results:
         print(json.dumps(result, indent=2))
