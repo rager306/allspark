@@ -881,4 +881,35 @@ fn settings_round_trip_preserves_tool_profile() {
     .unwrap();
     let json = serde_json::to_value(&settings).unwrap();
     assert_eq!(json["toolProfile"]["context"], "minimal");
+    /// §5.3 (audit): `no-memories` names `excluded_apis: ["mem"]`, but only the
+    /// TOOL roster consumed it — the Python kernel's `rlm.harness` API is not a
+    /// tool, so the real harness stayed writable under that mode. The resolver
+    /// now surfaces the API exclusions so the kernel env contract can carry
+    /// them.
+    #[test]
+    fn no_memories_surfaces_its_api_exclusion() {
+        let settings = crate::settings::ToolProfileSettings {
+            modes: vec!["no-memories".to_string()],
+            ..Default::default()
+        };
+        let resolved = crate::tool_profile::resolve_profile(Some(&settings), false);
+        assert!(
+            resolved.excluded_apis.contains(&"mem".to_string()),
+            "the mode's API exclusion must reach the resolver: {:?}",
+            resolved.excluded_apis
+        );
+    }
+
+    /// The onboarding mode excludes only its own call; the resolver keeps the
+    /// exclusion as named (prefix matching is the consumer's rule, not the
+    /// resolver's job).
+    #[test]
+    fn onboarding_surfaces_only_its_own_api() {
+        let settings = crate::settings::ToolProfileSettings {
+            modes: vec!["onboarding".to_string()],
+            ..Default::default()
+        };
+        let resolved = crate::tool_profile::resolve_profile(Some(&settings), false);
+        assert_eq!(resolved.excluded_apis, vec!["mem.onboarding".to_string()]);
+    }
 }

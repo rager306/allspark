@@ -25,6 +25,11 @@ pub struct ResolvedProfile {
     /// Whether tool results should be wrapped structurally (`false` for
     /// clients with a broken unwrapper).
     pub structured_tool_output: bool,
+    /// Facade/API names the active context and modes exclude (`mem`,
+    /// `mem.onboarding`, ...). The tool roster is the tool-side projection of
+    /// the same decision; the Python kernel's API surface is not a tool, so it
+    /// travels to the kernel through its env contract (audit §5.3).
+    pub excluded_apis: Vec<String>,
 }
 
 /// Resolve a [`ToolProfileSettings`] document.
@@ -48,6 +53,14 @@ pub fn resolve_profile(
     let mut prompt_addenda = Vec::new();
     let mut context_single_project = false;
     let mut structured_tool_output = true;
+    let mut excluded_apis: Vec<String> = Vec::new();
+    let mut push_apis = |apis: &[String]| {
+        for api in apis {
+            if !excluded_apis.contains(api) {
+                excluded_apis.push(api.clone());
+            }
+        }
+    };
 
     if let Some(name) = settings.context.as_deref() {
         if let Some(context) = Context::preset(name) {
@@ -56,6 +69,7 @@ pub fn resolve_profile(
             if let Some(prompt) = &context.prompt {
                 prompt_addenda.push(prompt.clone());
             }
+            push_apis(&context.excluded_apis);
             layers.push(ToolsetLayer::Context(context));
         }
     }
@@ -66,6 +80,7 @@ pub fn resolve_profile(
             if let Some(prompt) = &mode.prompt_addendum {
                 prompt_addenda.push(prompt.clone());
             }
+            push_apis(&mode.excluded_apis);
             if pinned {
                 layers.push(ToolsetLayer::DynamicMode(mode));
             } else {
@@ -91,5 +106,6 @@ pub fn resolve_profile(
         prompt_addenda,
         single_project: pinned,
         structured_tool_output,
+        excluded_apis,
     }
 }

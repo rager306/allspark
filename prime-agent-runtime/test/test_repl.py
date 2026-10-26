@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import queue
 import signal
 import subprocess
@@ -3304,3 +3305,46 @@ class OwnerExitWaitTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ToolProfileApiExclusionTest(unittest.TestCase):
+    """§5.3: the host's `PRIME_AGENT_EXCLUDED_APIS` contract gates the harness.
+
+    `no-memories`/`benchmark` presets name `excluded_apis`, which the Rust side
+    projects onto the tool roster; the harness API is not a tool, so the host
+    exports the names and this module refuses them. `mem` excludes the whole
+    surface, `mem.<sub>` one call.
+    """
+
+    def setUp(self) -> None:
+        self._saved = os.environ.get("PRIME_AGENT_EXCLUDED_APIS")
+        self._tmp = tempfile.mkdtemp()
+
+    def tearDown(self) -> None:
+        if self._saved is None:
+            os.environ.pop("PRIME_AGENT_EXCLUDED_APIS", None)
+        else:
+            os.environ["PRIME_AGENT_EXCLUDED_APIS"] = self._saved
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_mem_exclusion_refuses_the_harness(self) -> None:
+        os.environ["PRIME_AGENT_EXCLUDED_APIS"] = "mem"
+        with self.assertRaises(RuntimeError):
+            self.harness().get_harness_state(self._tmp)
+
+    def test_a_sub_api_exclusion_keeps_the_harness(self) -> None:
+        os.environ["PRIME_AGENT_EXCLUDED_APIS"] = "mem.onboarding"
+        state = self.harness().get_harness_state(self._tmp)
+        self.assertEqual(type(state).__name__, "HarnessState")
+
+    def test_no_exclusion_keeps_the_harness(self) -> None:
+        os.environ.pop("PRIME_AGENT_EXCLUDED_APIS", None)
+        state = self.harness().get_harness_state(self._tmp)
+        self.assertEqual(type(state).__name__, "HarnessState")
+
+    @staticmethod
+    def harness():
+        import importlib
+
+        sys.path.insert(0, SRC)
+        return importlib.import_module("rlm.harness")

@@ -578,6 +578,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         kernel_shell_path,
         kernel_command_prefix,
         serper_api_key,
+        &resolved_profile.excluded_apis,
         session_artifact_dir,
         cell_timeout_ms,
         on_restore,

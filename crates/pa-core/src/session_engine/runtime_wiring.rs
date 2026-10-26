@@ -241,6 +241,13 @@ pub fn kernel_python_skills(skills: &[Skill]) -> Vec<KernelPythonSkill> {
 /// persistent `bash()` shells' assignment. `cwd` is the SESSION's working directory.
 /// `shell_path` is the session-start-resolved kernel shell: an invalid `shellPath` fails
 /// `create_session`, not the kernel boot.
+///
+/// `excluded_apis` is the tool profile's API-level exclusions (`mem`,
+/// `mem.onboarding`, ...). The runtime roster is the tool-side projection of
+/// that decision; the Python kernel's own API (`rlm.harness`) is not a tool, so
+/// `no-memories`/`benchmark` presets reach it through the
+/// `PRIME_AGENT_EXCLUDED_APIS` env contract — without it those modes kept
+/// memory writes enabled in the real harness (audit §5.3).
 #[allow(clippy::too_many_arguments)] // one wiring funnel, same style as AgentSession::from_session_arc
 #[must_use]
 pub fn kernel_provisioner(
@@ -252,6 +259,7 @@ pub fn kernel_provisioner(
     shell_path: Option<std::path::PathBuf>,
     command_prefix: Option<String>,
     serper_api_key: Option<String>,
+    excluded_apis: &[String],
     session_artifact_dir: Option<std::path::PathBuf>,
     cell_timeout_ms: Option<u64>,
     on_restore: Option<crate::kernel::provisioner::RestoreCallback>,
@@ -285,6 +293,14 @@ pub fn kernel_provisioner(
     }
     if let Some(serper_api_key) = serper_api_key {
         env.insert("SERPER_API_KEY".to_string(), serper_api_key);
+    }
+    if !excluded_apis.is_empty() {
+        // Comma-separated facade names the kernel must refuse (`mem`,
+        // `mem.onboarding`, ...). Absent or empty = nothing excluded.
+        env.insert(
+            "PRIME_AGENT_EXCLUDED_APIS".to_string(),
+            excluded_apis.join(","),
+        );
     }
     Arc::new(KernelProvisioner::new(
         cwd,

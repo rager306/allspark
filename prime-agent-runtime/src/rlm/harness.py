@@ -133,12 +133,45 @@ def _agent_dir() -> Path:
     return Path(raw).expanduser().resolve()
 
 
+def _excluded_apis() -> frozenset[str]:
+    """The tool profile's API exclusions, as the host exported them.
+
+    `no-memories` and `benchmark` presets, and a project's own
+    `excludedApis`, name facades the session must not use. The Rust side
+    projects them onto the tool roster; the harness API is not a tool, so the
+    host also exports `PRIME_AGENT_EXCLUDED_APIS` (comma-separated) and this
+    module enforces it. An absent/empty value excludes nothing.
+    """
+    raw = (os.environ.get("PRIME_AGENT_EXCLUDED_APIS") or "").strip()
+    if not raw:
+        return frozenset()
+    return frozenset(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _require_api_enabled(facade: str) -> None:
+    """Refuse one harness facade when the profile excludes it.
+
+    `mem` excludes the whole harness surface; `mem.<sub>` excludes one call
+    (`mem.onboarding`). Prefix matching keeps `mem` authoritative over every
+    `mem.*` name.
+    """
+    excluded = _excluded_apis()
+    if not excluded:
+        return
+    for name in (facade, "mem"):
+        if name in excluded:
+            raise RuntimeError(
+                f"The {facade} API is excluded by the active tool profile "
+                f"(excludedApis); use a session without that mode"
+            )
+
+
 def _require_refinements_enabled() -> None:
     """Read the host's global-only master switch, without caching it."""
     try:
         document = json.loads((_agent_dir() / "settings.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return
+        document = None
     value = document.get("harnessRefinements") if isinstance(document, dict) else None
     if value is False:
         raise RuntimeError("Harness refinements are disabled in /settings")
@@ -436,6 +469,7 @@ class HarnessState:
 
     def _ensure_local_writable(self) -> None:
         _require_refinements_enabled()
+        _require_api_enabled("mem")
         if self._local_write_error is not None:
             raise RuntimeError(self._local_write_error)
 
@@ -539,6 +573,7 @@ class HarnessState:
 
     def load(self) -> "HarnessState":
         _require_refinements_enabled()
+        _require_api_enabled("mem")
         if self.file_path is None or not self.file_path.exists():
             self._loaded_mtime = None
             return self
@@ -626,6 +661,7 @@ class HarnessState:
 
     def save(self) -> "HarnessState":
         _require_refinements_enabled()
+        _require_api_enabled("mem")
         if self.file_path is None:
             # in_memory fallback: nothing to persist.
             return self
@@ -1348,6 +1384,7 @@ def get_harness_state(
 ) -> HarnessState:
     """Return the cached local harness state, or global when requested."""
     _require_refinements_enabled()
+    _require_api_enabled("mem")
     global_ = _resolve_global_flag(global_, kwargs)
     file_path = _state_file(state_dir, global_=global_)
     scope: HarnessScope = "global" if global_ else "local"
