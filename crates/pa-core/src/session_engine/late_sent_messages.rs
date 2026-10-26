@@ -70,6 +70,7 @@ pub fn scan_sent_agent_message_entries<'a>(
 /// Patch one receipt onto a `python_repl` tool result's `sentAgentMessages`
 /// details (TS `appendSentAgentMessageToToolResult`): `true` when the row
 /// is the matching tool result, whether or not the receipt is new.
+#[must_use]
 pub(crate) fn append_to_tool_result(
     row: &mut AgentMessage,
     tool_call_id: &str,
@@ -189,7 +190,7 @@ pub(crate) fn landing_transform(
             }
             let mut message = message;
             for entry in session.lock().await.late_sent_agent_messages() {
-                append_to_tool_result(&mut message, &entry.tool_call_id, &entry.message);
+                let _ = append_to_tool_result(&mut message, &entry.tool_call_id, &entry.message);
             }
             message
         })
@@ -363,6 +364,49 @@ mod tests {
             .find_map(tool_result_details)
             .expect("patched details");
         assert_eq!(details["sentAgentMessages"].as_array().unwrap().len(), 2);
+    }
+
+    /// Audit §5.5: a rebuild is a PROJECTION, and the late receipts live only
+    /// in the derived view. Every path that replaced the agent's rows used to
+    /// convert branch entries and stop there, so a receipt that arrived after
+    /// its cell vanished from the model's context at the next `/compact`,
+    /// `/branch` or `/rewind` — while the durable branch still carried it.
+    #[tokio::test]
+    async fn a_rebuild_keeps_the_receipts_its_branch_carries() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = SessionManager::persisted(dir.path(), &dir.path().join("sessions"));
+        session
+            .append_message(pa_types::session::AgentMessage::ToolResult(
+                pa_types::ai::ToolResultMessage {
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: PYTHON_TOOL_NAME.to_string(),
+                    content: vec![],
+                    details: None,
+                    is_error: false,
+                    timestamp: 0,
+                    rest: serde_json::Map::default(),
+                },
+            ))
+            .unwrap();
+        // The receipt lands AFTER its cell's row, which is exactly the case the
+        // custom entry exists for.
+        session
+            .append_custom_entry(
+                IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_TYPE,
+                Some(sent_agent_message_entry("call-1", &receipt("agentmsg_1"))),
+            )
+            .unwrap();
+
+        let rebuilt = crate::session_engine::rebuild_loop_context(&session);
+        let details = rebuilt
+            .iter()
+            .find_map(tool_result_details)
+            .expect("the rebuilt tool result keeps its details");
+        let rows = details["sentAgentMessages"]
+            .as_array()
+            .expect("the projection re-applied the receipt");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], "agentmsg_1");
     }
 
     #[tokio::test]

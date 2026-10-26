@@ -1,8 +1,8 @@
 use super::compact_session::CompactOutcome;
 use super::{
-    compaction, compaction_trace, ipython_state, provider_adapter, rebuilt_loop_messages, refine,
-    session_message_to_loop, standard_message, AgentMessage, AgentSession, FileEntry,
-    SessionAgentMessage, TrailingAssistantFilter,
+    compaction, compaction_trace, ipython_state, provider_adapter, refine, session_message_to_loop,
+    standard_message, AgentMessage, AgentSession, FileEntry, SessionAgentMessage,
+    TrailingAssistantFilter,
 };
 
 impl AgentSession {
@@ -203,11 +203,12 @@ impl AgentSession {
             compaction_trace::trace("compact.skipped", &serde_json::Value::Null);
             return Ok(outcome);
         }
-        let rebuilt = {
+        // One projection, receipts included (audit §5.5): a rebuild that
+        // converted rows alone dropped every late `agent_message.send` receipt.
+        let loop_messages: Vec<AgentMessage> = {
             let session = self.session.lock().await;
-            crate::session_engine::compact_session::rebuilt_context_after_compaction(&session)
+            crate::session_engine::rebuild_loop_context(&session)
         };
-        let loop_messages: Vec<AgentMessage> = rebuilt_loop_messages(rebuilt);
         let rebuilt_message_count = loop_messages.len();
         self.agent.set_messages(loop_messages).await;
         compaction_trace::trace(
@@ -374,11 +375,11 @@ impl AgentSession {
         let rebuilt = {
             let mut session = self.session.lock().await;
             session.adopt_entries(branch_entries);
-            crate::session_engine::compact_session::rebuilt_context_after_compaction(&session)
+            // `/branch` and `/fork` land here: the adopted branch carries its
+            // own receipts, and the projection re-applies them (audit §5.5).
+            crate::session_engine::rebuild_loop_context(&session)
         };
-        self.agent
-            .set_messages(rebuilt_loop_messages(rebuilt))
-            .await;
+        self.agent.set_messages(rebuilt).await;
         Ok(())
     }
 

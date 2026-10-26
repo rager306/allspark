@@ -358,16 +358,10 @@ impl AgentSession {
         let messages = {
             let mut session = self.session.lock().await;
             session.adopt_window(window);
-            session.active_context().messages
+            // `/rewind` rebuilds through the same projection (audit §5.5).
+            rebuild_loop_context(&session)
         };
-        self.agent
-            .set_messages(
-                messages
-                    .iter()
-                    .filter_map(session_message_to_loop)
-                    .collect(),
-            )
-            .await;
+        self.agent.set_messages(messages).await;
     }
 
     /// Persisted entries (for UI resume and inspection).
@@ -568,11 +562,50 @@ pub(crate) fn session_message_to_loop(message: &SessionAgentMessage) -> Option<A
 }
 
 /// Rows that fail the conversion drop.
-pub(crate) fn rebuilt_loop_messages(rebuilt: Vec<SessionAgentMessage>) -> Vec<AgentMessage> {
+///
+/// Deliberately PRIVATE: this conversion is the half that forgets the late
+/// receipts. Callers want [`rebuild_loop_context`], which converts AND projects
+/// — making the bare conversion reachable would let a new rebuild path
+/// reintroduce the audit §5.5 defect with one import.
+fn rebuilt_loop_messages(rebuilt: Vec<SessionAgentMessage>) -> Vec<AgentMessage> {
     rebuilt
         .into_iter()
         .filter_map(|message| session_message_to_loop(&message))
         .collect()
+}
+
+/// The ONE projection from durable branch state to the live loop context.
+///
+/// Every path that replaces the agent's message list goes through this
+/// function: session build ([`self`] restore), `/compact`, `/branch` and `/fork`
+/// rebuilds, and `/rewind`'s windowed restore. The reason is the late
+/// `agent_message.send` receipts (audit §5.5): a receipt lands as a `custom`
+/// entry on the branch and is patched onto its cell's `python_repl` tool
+/// result. That patch lives in the DERIVED view, so a rebuild that converts
+/// rows without re-applying it silently drops every receipt that arrived after
+/// the cell — the tool result still says "sent 0 messages" while the durable
+/// branch says otherwise.
+///
+/// Keeping the projection in one place is what makes that impossible: there is
+/// no second conversion loop to forget the receipts in.
+#[must_use]
+pub fn rebuild_loop_context(
+    session: &crate::session::manager::SessionManager,
+) -> Vec<AgentMessage> {
+    let entries = session.active_context().messages;
+    let receipts = session.late_sent_agent_messages();
+    let mut built = rebuilt_loop_messages(entries);
+    if receipts.is_empty() {
+        return built;
+    }
+    for entry in &receipts {
+        for row in built.iter_mut().rev() {
+            if late_sent_messages::append_to_tool_result(row, &entry.tool_call_id, &entry.message) {
+                break;
+            }
+        }
+    }
+    built
 }
 
 fn now_millis() -> u64 {

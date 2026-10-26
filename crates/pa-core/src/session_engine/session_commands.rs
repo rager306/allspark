@@ -209,16 +209,13 @@ pub async fn execute_session_command(
 /// path rebuilds mid-execution, the refinement path pushes rows mid-execution.
 async fn sync_live_context(engine: &SessionEngine) {
     let session = engine.session.session_handle().clone();
-    let rebuilt = {
+    // The raw session messages (not the LLM view): custom rows keep their wire
+    // identity in the live context, like TS's state push. The one projection
+    // also re-applies late receipts (audit §5.5).
+    let loop_messages = {
         let session = session.lock().await;
-        session.active_context().messages
+        super::rebuild_loop_context(&session)
     };
-    // The raw session messages (not the LLM view): custom rows keep their
-    // wire identity in the live context, like TS's state push.
-    let loop_messages: Vec<pa_agent::types::AgentMessage> = rebuilt
-        .iter()
-        .filter_map(super::session_message_to_loop)
-        .collect();
     engine.session.agent().set_messages(loop_messages).await;
 }
 

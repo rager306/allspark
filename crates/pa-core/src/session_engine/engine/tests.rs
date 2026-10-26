@@ -746,6 +746,87 @@ async fn engine_build_restores_late_sent_agent_message_receipts() {
     assert_eq!(sent[0]["target"]["sessionName"], "Worker");
 }
 
+/// Audit §5.5 on the path that actually runs: `rebuild_branch_context` is what
+/// `/branch`, `/fork` and the compaction rebuild call. The engine-build restore
+/// (proven above) is one projection; this is the OTHER one, and it used to
+/// convert branch rows and stop — dropping every receipt the branch carried.
+#[tokio::test]
+async fn a_branch_rebuild_keeps_the_receipts_the_branch_carries() {
+    let (engine, _tmp) = engine_over(None, None, true).await;
+    {
+        let mut session = engine.session.session_handle().lock().await;
+        session
+            .append_message(pa_types::session::AgentMessage::ToolResult(
+                pa_types::ai::ToolResultMessage {
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: PYTHON_TOOL_NAME.to_string(),
+                    content: Vec::new(),
+                    details: Some(serde_json::json!({ "status": "ok" })),
+                    is_error: false,
+                    timestamp: 1,
+                    rest: pa_types::JsonMap::new(),
+                },
+            ))
+            .unwrap();
+        session
+            .append_custom_entry(
+                crate::session_engine::late_sent_messages::IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_TYPE,
+                Some(serde_json::json!({
+                    "toolCallId": "call-1",
+                    "message": {
+                        "id": "agentmsg_1",
+                        "message": "Ping.",
+                        "deliveryStatus": "delivered",
+                        "receiverRole": "parent",
+                        "target": {
+                            "activeSessionId": "a1",
+                            "sessionId": "s1",
+                            "sessionName": "Worker",
+                        },
+                    },
+                })),
+            )
+            .unwrap();
+    }
+    // `rebuild_branch_context` is an `AgentSession` method: it is the entry
+    // `/branch`, `/fork` and the compaction rebuild all take. Re-adopting the
+    // branch it already holds is the shape a navigation takes after the
+    // session's rows are replaced (the receipts ride the branch, not the view),
+    // so this isolates the projection rather than the branch switch.
+    let mut entries = Vec::new();
+    entries.extend(
+        engine
+            .session
+            .session_handle()
+            .lock()
+            .await
+            .get_entries()
+            .iter()
+            .cloned(),
+    );
+    engine
+        .session
+        .rebuild_branch_context(entries)
+        .await
+        .expect("the rebuild runs");
+    let state = engine.session.agent().state().await;
+    let details = state
+        .messages
+        .iter()
+        .find_map(|row| match row {
+            pa_agent::types::AgentMessage::Standard(pa_agent::types::Message::ToolResult(
+                result,
+            )) if result.tool_call_id == "call-1" => result.details.clone(),
+            _ => None,
+        })
+        .expect("the rebuilt tool result");
+    let sent = details["sentAgentMessages"]
+        .as_array()
+        .expect("the rebuild must re-apply the branch's receipts (audit §5.5)");
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["id"], "agentmsg_1");
+}
+
 /// The late-receipt race (#10): a receipt recorded while its cell's
 /// tool-result row has not landed yet (the kernel callback fires before
 /// `execute_ipython` returns) applies to the row as it lands, so the
