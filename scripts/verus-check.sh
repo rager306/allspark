@@ -17,11 +17,52 @@ if [ ! -d "$DIR" ]; then
   exit 0
 fi
 
+# Two classes, and the difference is the point:
+#
+#  * NO-TRUST mirrors model the property over data the verifier understands
+#    (a `Seq<u8>`, an enum), so they need no `assume` and no `external_body`.
+#    They run under `--no-cheating`, which turns any such shortcut into an
+#    error instead of a silent axiom.
+#  * TRUSTED mirrors wrap a std conversion Verus cannot see into (from_le_bytes,
+#    to_le_bytes). Their `external_body` posts a spec the body is not checked
+#    against; that surface is declared in each file's header. They run normally,
+#    because `--no-cheating` would reject the declared trust, not a defect.
+#
+# A new mirror starts in NO-TRUST. Moving one to TRUSTED is a decision that has
+# to be written down in the file, which is why the list is explicit here.
+NO_TRUST=(pa_core_truncate.rs)
+TRUSTED=(pa_core_gates.rs pa_mem_bucket.rs pa_mem_ptr48.rs)
+
 fail=0
 for f in "$DIR"/*.rs; do
-  echo "verus-check: verifying $(basename "$f")"
-  if ! "$VERUS_BIN" "$f"; then
-    echo "verus-check: FAILED $(basename "$f")" >&2
+  base="$(basename "$f")"
+  strict=0
+  for name in "${NO_TRUST[@]}"; do
+    if [ "$name" = "$base" ]; then strict=1; fi
+  done
+  flags=()
+  if [ "$strict" -eq 1 ]; then
+    flags+=(--no-cheating)
+    echo "verus-check: verifying $base (no-cheating)"
+  else
+    echo "verus-check: verifying $base (declared trust surface)"
+  fi
+  if ! "$VERUS_BIN" "${flags[@]}" "$f"; then
+    echo "verus-check: FAILED $base" >&2
+    fail=1
+  fi
+done
+
+# Every mirror file must be classified: an unlisted file silently opts out of
+# the strict mode the list exists to enforce.
+for f in "$DIR"/*.rs; do
+  base="$(basename "$f")"
+  known=0
+  for name in "${NO_TRUST[@]}" "${TRUSTED[@]}"; do
+    if [ "$name" = "$base" ]; then known=1; fi
+  done
+  if [ "$known" -eq 0 ]; then
+    echo "verus-check: $base is in neither NO_TRUST nor TRUSTED — classify it" >&2
     fail=1
   fi
 done
