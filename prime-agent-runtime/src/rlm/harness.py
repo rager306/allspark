@@ -462,6 +462,10 @@ class HarnessState:
         # writes (e.g. the host `/refine` command) and avoid clobbering them.
         self._loaded_mtime: int | None = None
         self._held_lock: tuple[Path, str] | None = None
+        # Set when load() met a corrupt payload: the bytes are quarantined on the
+        # next successful save instead of being overwritten in place.
+        self._corrupt_payload: bytes | None = None
+        self._last_quarantine_path: Path | None = None
         # The proxy's empty fallback must remain constructible for kernel API
         # introspection while disabled; every actual read/write still checks the gate.
         if not in_memory:
@@ -578,12 +582,22 @@ class HarnessState:
             self._loaded_mtime = None
             return self
         mtime = self._disk_mtime()
+        self._corrupt_payload: bytes | None = None
         try:
             with self.file_path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
-        except (OSError, ValueError):
-            # A corrupt or unreadable state file must not crash the kernel or block
-            # refinement. Treat it as empty; the next save() rewrites it cleanly.
+        except ValueError:
+            # A corrupt state file must not crash the kernel or block refinement,
+            # BUT it must not be silently replaced either: treating it as empty
+            # and letting the next save() overwrite it destroys the only copy of
+            # whatever evidence it held (audit §5.4 — verified: the original
+            # bytes were gone after one create). The payload is quarantined next
+            # to the file on the first mutation, and the degraded read stays
+            # available so the session can still start.
+            data = {}
+            with contextlib.suppress(OSError):
+                self._corrupt_payload = self.file_path.read_bytes()
+        except OSError:
             data = {}
         # json.load returns non-dict types for valid JSON like `null`, `[]`, or a bare
         # string; coerce those to an empty object before attribute access.
@@ -668,6 +682,19 @@ class HarnessState:
         if self._held_lock is None:
             raise RuntimeError("harness state lock not acquired")
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
+        if self._corrupt_payload is not None:
+            # Keep the damaged file beside the clean one before it is replaced, so
+            # the bytes a bug produced are still on disk for a later read. A
+            # quarantine write failure must not block the save (the session keeps
+            # working; the loss is reported by the returned path being absent).
+            quarantine = self.file_path.with_name(
+                f"{self.file_path.name}.corrupt-{int(time.time())}"
+            )
+            with contextlib.suppress(OSError):
+                quarantine.write_bytes(self._corrupt_payload)
+            if quarantine.exists():
+                self._last_quarantine_path = quarantine
+            self._corrupt_payload = None
         data = {
             "schema": 1,
             "entries": {

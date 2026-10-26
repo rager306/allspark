@@ -3348,3 +3348,42 @@ class ToolProfileApiExclusionTest(unittest.TestCase):
 
         sys.path.insert(0, SRC)
         return importlib.import_module("rlm.harness")
+
+
+class CorruptStateQuarantineTest(unittest.TestCase):
+    """§5.4: a corrupt state file is preserved, not overwritten.
+
+    The old load() treated a corrupt payload as empty and the next save()
+    atomically replaced the file — the only copy of the corrupt bytes was gone
+    (verified on the real module). Now the bytes are captured at load and
+    written beside the clean file before the replace.
+    """
+
+    def test_a_corrupt_payload_is_quarantined_before_the_rewrite(self) -> None:
+        import importlib
+
+        sys.path.insert(0, SRC)
+        harness = importlib.import_module("rlm.harness")
+        with tempfile.TemporaryDirectory() as tmp:
+            state_root = os.path.join(tmp, "session-artifacts", "01a15d0b-0000", "harness")
+            os.makedirs(state_root)
+            state_dir = state_root
+            state_file = os.path.join(state_dir, "harness_state.json")
+            corrupt = b'{"entries": {"memory": {"x": '
+            with open(state_file, "wb") as handle:
+                handle.write(corrupt)
+
+            state = harness.get_harness_state(state_root)
+            # The degraded read stays usable, so the session can start.
+            self.assertEqual(type(state).__name__, "HarnessState")
+            state.create_memory("t", "c")
+
+            quarantined = [
+                name for name in os.listdir(state_dir) if ".corrupt-" in name
+            ]
+            self.assertTrue(quarantined, f"no quarantine file in {os.listdir(state_dir)}")
+            with open(os.path.join(state_dir, quarantined[0]), "rb") as handle:
+                self.assertEqual(handle.read(), corrupt, "the original bytes must survive")
+            # And the live file is the clean rewrite.
+            with open(state_file, "rb") as handle:
+                self.assertIn(b'"t"', handle.read())
