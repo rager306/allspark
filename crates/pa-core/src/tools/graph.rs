@@ -410,6 +410,33 @@ fn unmatched_note(unmatched: &[String]) -> Option<String> {
 /// note belongs to the build rather than to the action, so it is written once here
 /// and says which files the build could see: an implicit build is lean, and a lean
 /// build must not let a symbol under an ignore rule read as a miss.
+
+/// Whether the store's file set diverges from the working tree.
+///
+/// The cheap pair (mtime_ns, size) decides first; a file whose pair matches is
+/// assumed unchanged, which is the same rule the incremental pass uses.
+/// Missing/unreadable files count as stale (the walk will drop them).
+fn root_is_stale(
+    root: &Path,
+    stored: &std::collections::HashMap<String, pa_graph::hash::FileHash>,
+) -> bool {
+    for (rel, hash) in stored {
+        let Ok(meta) = std::fs::metadata(root.join(rel)) else {
+            return true;
+        };
+        let mtime_ns = meta
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|delta| delta.as_nanos() as i64)
+            .unwrap_or_default();
+        if meta.len() as i64 != hash.size || mtime_ns != hash.mtime_ns {
+            return true;
+        }
+    }
+    false
+}
+
 fn cold_build_note(report: &IndexReport) -> String {
     format!(
         "The graph was empty, so this call indexed the project first: {} nodes, {} edges, \
@@ -637,7 +664,7 @@ impl GraphTool {
     /// first call is the only one that pays the build cost; later calls hit the
     /// on-disk store, and a `force` index from the model still overrides this.
     /// Returns the report when a build happened, so the reply can name it.
-    fn ensure_indexed(&self, root: &Path, project: &str) -> anyhow::Result<Option<IndexReport>> {
+    fn ensure_indexed(&self, root: &Path, project: &str) -> anyhow::Result<Option<String>> {
         // The project key is the root's BASENAME, so two checkouts named the
         // same (`/a/service`, `/b/service`) share one row set in the shared DB.
         // The write path refuses to overwrite a project with a different root
@@ -655,6 +682,17 @@ impl GraphTool {
             Ok::<_, anyhow::Error>((count > 0, stored))
         })?;
         if indexed {
+            // READ-YOUR-EDIT: a warm store is not a fresh one. The previous
+            // implementation answered from `file_count > 0` and never looked at
+            // the files again, so an edit made after the index was invisible
+            // until something forced a full rebuild (audit §4.3). A cheap
+            // mtime/size pass decides staleness; only a changed set is re-parsed.
+            let stale = self.with_reader(|store| {
+                let stored = store
+                    .all_file_hashes(project)
+                    .map_err(|err| anyhow::anyhow!("hash read failed: {err}"))?;
+                Ok::<_, anyhow::Error>(root_is_stale(root, &stored))
+            })?;
             let same_root = stored_root.as_deref().is_some_and(|stored| {
                 stored == root.to_string_lossy()
                     || match (std::fs::canonicalize(stored), std::fs::canonicalize(root)) {
@@ -668,6 +706,40 @@ impl GraphTool {
                     stored_root.as_deref().unwrap_or("<none>"),
                     root.display()
                 );
+            }
+            if stale {
+                // A refresh must never make a reader wait for a writer: another
+                // session's build can hold the lease for seconds, and a search
+                // that queues behind it is the defect this test pins
+                // (`a_search_answers_while_an_index_holds_the_writer`). One
+                // non-blocking attempt; when the writer is busy the answer comes
+                // from the current index and SAYS it is stale.
+                let refreshed = self.try_with_store(|store| {
+                    store
+                        .reindex_incremental(
+                            root,
+                            &IndexOptions::new(project)
+                                .with_respect_gitignore(true)
+                                .with_lease_wait(std::time::Duration::ZERO),
+                        )
+                        .map_err(|err| anyhow::anyhow!("incremental reindex failed: {err}"))
+                });
+                return match refreshed {
+                    Ok(Some(report)) => Ok(Some(format!(
+                        "The graph was stale, so this call refreshed it first: {} file(s) \
+                         re-parsed, {} dependent file(s), {} removed. The answer below reflects \
+                         the working tree as of this call.",
+                        report.files_reindexed, report.closure_files, report.removed
+                    ))),
+                    // The writer is busy here or elsewhere: answer from the index
+                    // that exists and flag it, rather than block the turn.
+                    Ok(None) | Err(_) => Ok(Some(format!(
+                        "The graph is STALE: files changed since the last index and another \
+                         writer holds the build lease, so this answer reflects the last indexed \
+                         revision of `{project}`. Re-run once the build settles, or run the \
+                         `index` action to force a rebuild."
+                    ))),
+                };
             }
             return Ok(None);
         }
@@ -699,7 +771,7 @@ impl GraphTool {
                 .index_project(root, &opts)
                 .map_err(|err| anyhow::anyhow!("index failed: {err}"))
         })?;
-        Ok(Some(report))
+        Ok(Some(cold_build_note(&report)))
     }
 
     /// Open (once) and return a lock on the write store, creating the DB on
@@ -714,6 +786,19 @@ impl GraphTool {
             .map_err(|_| anyhow::anyhow!("graph store lock poisoned"))?;
         let store = Self::open_into(&mut guard, &self.db_path)?;
         f(store)
+    }
+
+    /// `with_store`, but never waiting: a writer busy elsewhere means the caller
+    /// answers from the current index instead of queueing behind a build.
+    fn try_with_store<T>(
+        &self,
+        f: impl FnOnce(&mut GraphStore) -> anyhow::Result<T>,
+    ) -> anyhow::Result<Option<T>> {
+        let Ok(mut guard) = self.store.try_lock() else {
+            return Ok(None);
+        };
+        let store = Self::open_into(&mut guard, &self.db_path)?;
+        f(store).map(Some)
     }
 
     /// Run `f` on the reader connection: one no writer holds, so it runs while
@@ -1034,7 +1119,7 @@ impl GraphTool {
         })?;
         let mut lines = Vec::new();
         if let Some(report) = &indexed_now {
-            lines.push(cold_build_note(report));
+            lines.push(report.clone());
         }
         // The cascade decides which channels may run; say so when it pruned one, so a
         // narrow result is attributable to the query's shape instead of looking like a
@@ -1267,7 +1352,7 @@ impl GraphTool {
         })?;
         let mut lines = Vec::new();
         if let Some(report) = &indexed_now {
-            lines.push(cold_build_note(report));
+            lines.push(report.clone());
         }
         lines.push(format!(
             "Trace from {} ({} step(s)){}{}:",
@@ -1372,7 +1457,7 @@ impl GraphTool {
         // renders exactly that view.
         let mut lines = Vec::new();
         if let Some(report) = &indexed_now {
-            lines.push(cold_build_note(report));
+            lines.push(report.clone());
         }
         lines.push(format!(
             "Architecture view `{}` for project `{}`:",
@@ -3962,5 +4047,50 @@ mod tests {
         let text = text_of(&body);
         assert!(text.contains("the index must survive restarts"), "{text}");
         assert!(text.contains("a broken file is a rebuild"), "{text}");
+    }
+    /// §4.3 (audit): an edit made after the index must be visible to the next
+    /// query (read-your-edit), and a query must never wait for a writer.
+    #[tokio::test]
+    async fn an_edit_after_the_index_is_visible_to_the_next_search() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "pub fn before_edit() -> u32 { 1 }\n",
+        )
+        .unwrap();
+        let tool = tool(dir.path());
+        tool.dispatch(&serde_json::json!({ "action": "index" }))
+            .unwrap();
+        let first = tool
+            .dispatch(&serde_json::json!({ "action": "search", "query": "before_edit" }))
+            .unwrap();
+        assert!(
+            text_of(&first).contains("before_edit"),
+            "{}",
+            text_of(&first)
+        );
+
+        // The edit lands AFTER the index; a stale mtime makes the pair differ.
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "pub fn after_edit() -> u32 { 2 }\n// a longer body changes the (mtime, size) pair\n",
+        )
+        .unwrap();
+        // `ensure_indexed` compares (mtime_ns, size); the new body is longer, so
+        // the pair differs even when the filesystem's mtime granularity is coarse.
+
+        let second = tool
+            .dispatch(&serde_json::json!({ "action": "search", "query": "after_edit" }))
+            .unwrap();
+        assert!(
+            text_of(&second).contains("after_edit"),
+            "the edit must be visible: {}",
+            text_of(&second)
+        );
+        assert!(
+            text_of(&second).contains("refreshed"),
+            "the answer must say the graph was refreshed: {}",
+            text_of(&second)
+        );
     }
 }
