@@ -301,6 +301,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // native-tool gates (`lsp.enabled` / `graph.enabled`, both default ON)
     // and the graph store path (`graph.dbPath`, defaulting under agentDir).
     let lsp_enabled = settings.get_lsp_enabled();
+    let lsp_idle_timeout = settings.get_lsp_idle_timeout();
     let graph_enabled = settings.get_graph_enabled();
     let graph_db_path = settings.get_graph_db_path();
     let graph_auto = settings.get_graph_auto();
@@ -637,7 +638,15 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             crate::jev::resolve_judge(&jev_settings, &mut registry)
         };
     if lsp_enabled {
-        let manager = Arc::new(pa_lsp::LspManager::new());
+        // `lsp.idleTimeoutMs`: a bound means an idle client is evicted instead
+        // of living until the session ends. Unset keeps the session-long
+        // lifetime every build before this had.
+        let manager = Arc::new(match lsp_idle_timeout {
+            Some(idle) => {
+                pa_lsp::LspManager::with_idle_timeout(idle, Arc::new(pa_lsp::SystemClock))
+            }
+            None => pa_lsp::LspManager::new(),
+        });
         tools.push(Arc::new(pa_lsp::LspTool::new(
             Arc::clone(&manager),
             cwd.clone(),

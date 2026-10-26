@@ -124,11 +124,73 @@ impl InitFailureBackoff {
     }
 }
 
+/// Which live clients were used when, for the idle sweep.
+///
+/// Split out from [`LspManager`] so the decision ("is this key stale?") is a pure
+/// function of stamps and a clock. A manager test cannot seed a real client (a
+/// client only exists by spawning a language server), so the arithmetic that
+/// decides EVICTION lives here, where it is testable without one.
+#[derive(Debug, Default)]
+struct IdleRoster {
+    last_used: RwLock<HashMap<(String, PathBuf), Instant>>,
+}
+
+impl IdleRoster {
+    /// Record a use of `key` at `now`.
+    async fn mark(&self, key: &(String, PathBuf), now: Instant) {
+        self.last_used.write().await.insert(key.clone(), now);
+    }
+
+    /// Record one `now` for several keys (the roster-wide read path).
+    async fn mark_all(&self, keys: &[(String, PathBuf)], now: Instant) {
+        let mut guard = self.last_used.write().await;
+        for key in keys {
+            guard.insert(key.clone(), now);
+        }
+    }
+
+    /// The keys not used for at least `limit`.
+    async fn stale(&self, now: Instant, limit: Duration) -> Vec<(String, PathBuf)> {
+        let guard = self.last_used.read().await;
+        let mut stale: Vec<(String, PathBuf)> = guard
+            .iter()
+            .filter(|(_, at)| now.duration_since(**at) >= limit)
+            .map(|(key, _)| key.clone())
+            .collect();
+        // Stable output: `HashMap` iteration order is not, and a test that
+        // compares the evicted set should not depend on hashing.
+        stale.sort();
+        stale
+    }
+
+    /// Forget `key` (it is gone from the roster).
+    async fn forget(&self, key: &(String, PathBuf)) {
+        self.last_used.write().await.remove(key);
+    }
+}
+
 /// Owns the session's live clients, keyed by `(server name, root)`.
-#[derive(Default)]
 pub struct LspManager {
     clients: RwLock<HashMap<(String, PathBuf), Arc<LspClient>>>,
     backoff: InitFailureBackoff,
+    /// When each live client was last handed to a caller, for the idle sweep.
+    /// `None` is the default manager: nothing evicts, which is what every
+    /// caller got before `lsp.idleTimeoutMs` had a reader.
+    idle_limit: Option<Duration>,
+    clock: Arc<dyn Clock>,
+    idle: IdleRoster,
+}
+
+impl Default for LspManager {
+    fn default() -> Self {
+        Self {
+            clients: RwLock::new(HashMap::new()),
+            backoff: InitFailureBackoff::default(),
+            idle_limit: None,
+            clock: Arc::new(SystemClock),
+            idle: IdleRoster::default(),
+        }
+    }
 }
 
 impl LspManager {
@@ -143,15 +205,75 @@ impl LspManager {
     #[must_use]
     pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
         Self {
-            clients: RwLock::new(HashMap::new()),
-            backoff: InitFailureBackoff::with_clock(INIT_FAILURE_BACKOFF, clock),
+            backoff: InitFailureBackoff::with_clock(INIT_FAILURE_BACKOFF, Arc::clone(&clock)),
+            clock,
+            ..Self::default()
         }
     }
 
-    /// The init-failure backoff, for status/introspection.
+    /// A manager that evicts a client it has not handed out for `idle` — the
+    /// `lsp.idleTimeoutMs` setting.
+    ///
+    /// The setting was declared and documented as "idle timeout for a live
+    /// language-server client" while nothing read it: a session's servers lived
+    /// until the session ended, however long the agent spent on something else.
+    /// The sweep runs on the same clock seam the backoff uses, so the bound is
+    /// testable without sleeping.
     #[must_use]
-    pub fn backoff(&self) -> &InitFailureBackoff {
-        &self.backoff
+    pub fn with_idle_timeout(idle: Duration, clock: Arc<dyn Clock>) -> Self {
+        Self {
+            idle_limit: Some(idle),
+            clock: Arc::clone(&clock),
+            backoff: InitFailureBackoff::with_clock(INIT_FAILURE_BACKOFF, clock),
+            ..Self::default()
+        }
+    }
+
+    /// The idle bound, if one was configured.
+    #[must_use]
+    pub fn idle_timeout(&self) -> Option<Duration> {
+        self.idle_limit
+    }
+
+    /// How many clients are live right now.
+    pub async fn live_count(&self) -> usize {
+        self.clients.read().await.len()
+    }
+
+    /// Evict every client idle past the configured bound; returns how many went.
+    ///
+    /// Dropping the roster's last `Arc` for a key kills that client's process,
+    /// which is the whole point: an idle language server is a real child process
+    /// holding real memory. `None` (the default) evicts nothing.
+    pub async fn evict_idle(&self) -> usize {
+        let Some(limit) = self.idle_limit else {
+            return 0;
+        };
+        let stale = self.idle.stale(self.clock.now(), limit).await;
+        if stale.is_empty() {
+            return 0;
+        }
+        let mut clients = self.clients.write().await;
+        let mut evicted = 0;
+        for key in stale {
+            if clients.remove(&key).is_some() {
+                evicted += 1;
+                // The failure backoff is about STARTUP, not idleness: a server
+                // that worked for an hour and then idled out must not be
+                // reported as "failed to initialize recently" on the next use.
+                self.backoff.clear(&key).await;
+            }
+            self.idle.forget(&key).await;
+        }
+        evicted
+    }
+
+    /// Record that `key` was just handed to a caller. Cheap and unconditional:
+    /// with no idle bound the roster is never read.
+    async fn mark_used(&self, key: &(String, PathBuf)) {
+        if self.idle_limit.is_some() {
+            self.idle.mark(key, self.clock.now()).await;
+        }
     }
 
     /// Return the client owning `path`, spawning one when none is live yet.
@@ -170,8 +292,9 @@ impl LspManager {
         let root = canonical_root(path, server)?;
         let key = (server.name.to_string(), root.clone());
 
-        if let Some(client) = self.clients.read().await.get(&key) {
-            return Ok(Arc::clone(client));
+        if let Some(client) = self.clients.read().await.get(&key).cloned() {
+            self.mark_used(&key).await;
+            return Ok(client);
         }
         // L15: a server that failed to start within the window is not retried.
         if let Some(message) = self.backoff.recent_failure(&key).await {
@@ -186,13 +309,16 @@ impl LspManager {
         // Hold the write guard across the spawn so two racing callers cannot
         // start duplicate servers for the same key.
         let mut guard = self.clients.write().await;
-        if let Some(client) = guard.get(&key) {
-            return Ok(Arc::clone(client));
+        if let Some(client) = guard.get(&key).cloned() {
+            drop(guard);
+            self.mark_used(&key).await;
+            return Ok(client);
         }
         match LspClient::spawn(server, &root).await {
             Ok(client) => {
                 guard.insert(key.clone(), Arc::clone(&client));
                 drop(guard);
+                self.mark_used(&key).await;
                 self.backoff.clear(&key).await;
                 Ok(client)
             }
@@ -207,7 +333,14 @@ impl LspManager {
     /// Every live client, for a request that must reach all servers (a file
     /// rename that every server may want to react to).
     pub async fn clients(&self) -> Vec<Arc<LspClient>> {
-        self.clients.read().await.values().cloned().collect()
+        let guard = self.clients.read().await;
+        let keys: Vec<(String, PathBuf)> = guard.keys().cloned().collect();
+        let rows: Vec<Arc<LspClient>> = guard.values().cloned().collect();
+        drop(guard);
+        if self.idle_limit.is_some() {
+            self.idle.mark_all(&keys, self.clock.now()).await;
+        }
+        rows
     }
 
     /// Any live client, for requests that are not tied to a file (a
@@ -528,5 +661,51 @@ mod tests {
             "the error must name the cause: {error}"
         );
         assert!(!to.exists(), "nothing may be created");
+    }
+    /// `lsp.idleTimeoutMs` had no reader: a live client lived until the session
+    /// ended, however long the agent worked elsewhere. The decision is a pure
+    /// function of the stamps, so it is testable without spawning a server.
+    #[tokio::test]
+    async fn the_idle_roster_separates_a_stale_key_from_a_used_one() {
+        let clock = MockClock::new();
+        let roster = IdleRoster::default();
+        let stale = ("stale".to_string(), PathBuf::from("/stale"));
+        let busy = ("busy".to_string(), PathBuf::from("/busy"));
+        roster.mark(&stale, clock.now()).await;
+        roster.mark(&busy, clock.now()).await;
+
+        // Inside the bound: nothing is stale.
+        clock.advance(Duration::from_mins(4));
+        assert_eq!(
+            roster.stale(clock.now(), Duration::from_mins(5)).await,
+            Vec::new(),
+            "inside the bound"
+        );
+
+        // The busy key is used again; the stale one is not.
+        roster.mark(&busy, clock.now()).await;
+        clock.advance(Duration::from_mins(2));
+        let expired = roster.stale(clock.now(), Duration::from_mins(5)).await;
+        assert_eq!(expired, vec![stale], "exactly the idle key expires");
+    }
+
+    /// The manager-level wiring: no bound means the sweep is inert (the
+    /// pre-change lifetime, byte for byte), and a bound is what the setting
+    /// produces.
+    #[tokio::test]
+    async fn no_bound_means_the_sweep_is_inert() {
+        let manager = LspManager::new();
+        assert_eq!(manager.idle_timeout(), None);
+        assert_eq!(manager.evict_idle().await, 0);
+        assert_eq!(manager.live_count().await, 0);
+
+        let clock = MockClock::new();
+        let bounded = LspManager::with_idle_timeout(Duration::from_mins(5), clock);
+        assert_eq!(bounded.idle_timeout(), Some(Duration::from_mins(5)));
+        assert_eq!(
+            bounded.evict_idle().await,
+            0,
+            "an empty roster evicts nothing"
+        );
     }
 }

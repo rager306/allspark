@@ -65,6 +65,10 @@ impl LspTool {
         params: &LspParams,
         timeout: Duration,
     ) -> anyhow::Result<AgentToolResult> {
+        // One idle sweep per call: the bound is about time passing, and a call is
+        // exactly when a stale client is worth reclaiming (it is the only moment
+        // this tool has a reason to look at its roster).
+        self.manager.evict_idle().await;
         let action = Action::parse(&params.action)?;
         match action {
             Action::Status => Ok(self.status().await),

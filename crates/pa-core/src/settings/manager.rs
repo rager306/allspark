@@ -972,6 +972,19 @@ impl SettingsManager {
             .unwrap_or(true)
     }
 
+    /// The native `lsp` tool's idle bound for a live language-server client
+    /// (`lsp.idleTimeoutMs`).
+    ///
+    /// `None` — the default — keeps a client for the whole session, which is
+    /// what every build did before this setting had a reader. `Some(0)` is
+    /// treated as unset rather than "evict immediately", so a zero cannot
+    /// silently turn a server into a spawn-per-request loop.
+    #[must_use]
+    pub fn get_lsp_idle_timeout(&self) -> Option<std::time::Duration> {
+        let millis = self.merged.lsp.as_ref()?.idle_timeout_ms?;
+        (millis > 0).then(|| std::time::Duration::from_millis(millis))
+    }
+
     /// The native `graph` tool's gate: unset means ON.
     #[must_use]
     pub fn get_graph_enabled(&self) -> bool {
@@ -1798,6 +1811,38 @@ mod tests {
         .unwrap();
         let manager = SettingsManager::in_memory(&settings);
         assert_eq!(manager.get_graph_db_path(), Some(home.join("graph.db")));
+    }
+
+    /// `lsp.idleTimeoutMs` had no reader: the field was declared and documented
+    /// ("idle timeout for a live language-server client") while nothing consumed
+    /// it, and testgov's loose substring rule hid that because the unrelated
+    /// `resolve_stdin_idle_timeout_ms` contains the name. The accessor exists and
+    /// the manager reads it now; a zero reads as unset so a stray `0` cannot turn
+    /// a server into a spawn-per-request loop.
+    #[test]
+    fn lsp_idle_timeout_reads_the_setting_and_treats_zero_as_unset() {
+        let read = |json: serde_json::Value| {
+            let settings: Settings = serde_json::from_value(json).unwrap();
+            SettingsManager::in_memory(&settings).get_lsp_idle_timeout()
+        };
+        assert_eq!(
+            read(serde_json::json!({})),
+            None,
+            "unset stays session-long"
+        );
+        assert_eq!(
+            read(serde_json::json!({ "lsp": { "enabled": true } })),
+            None
+        );
+        assert_eq!(
+            read(serde_json::json!({ "lsp": { "idleTimeoutMs": 90_000 } })),
+            Some(std::time::Duration::from_secs(90))
+        );
+        assert_eq!(
+            read(serde_json::json!({ "lsp": { "idleTimeoutMs": 0 } })),
+            None,
+            "zero must not mean evict-on-every-use"
+        );
     }
 
     /// The image-model reference: `imageModel` wins, the legacy

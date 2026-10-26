@@ -606,13 +606,17 @@ class SettingsHaveConsumers(Check):
         #   `settings.get_default_model()`   — an accessor, the dominant shape
         # A same-named function/module/event is NOT a consumer: `edit_hybrid`, `graph_rerank`
         # and `idle_timeout_ms` all had such collisions, and every one was a false positive.
-        # FOURTH access shape, found the hard way: compound accessors carry the field as a
-        # SUBSTRING — `get_branch_summary_skip_prompt()` for `skip_prompt`,
-        # `get_jev_graph_rerank()` for `graph_rerank`, `get_edit_hybrid_enabled()` for
-        # `edit_hybrid`. So the corpus is reduced to ONE identifier set (every identifier the
-        # corpus mentions), and a field counts as read when any identifier contains it. That is
-        # deliberately loose: a false "read" costs a missed dead field, a false "unread" sends
-        # a maintainer hunting a consumer that exists.
+        #
+        # So the check has to look at the ACCESS SHAPE, not at whether the field name occurs
+        # somewhere. An earlier version did the latter ("any identifier CONTAINS the field"),
+        # and that reintroduced exactly the false positive its own note warned about: the
+        # unrelated `resolve_stdin_idle_timeout_ms` (a piped-stdin constant) contains
+        # `idle_timeout_ms`, so the dead `lsp.idleTimeoutMs` setting reported GREEN while no
+        # code read it at all. A guard that cannot fire on the defect it names gates nothing.
+        #
+        # Two precise shapes are credited here; the third (compound accessors such as
+        # `get_branch_summary_skip_prompt` for `skip_prompt`) is handled by the mediated pass
+        # below, which requires the accessor's BODY to mention the field.
         accessed_names: set[str] = set()
         identifier = re_module.compile(r"\b[a-z][a-z0-9_]*\b")
         for chunk in corpus:
@@ -622,8 +626,18 @@ class SettingsHaveConsumers(Check):
             result.scanned += 1
             if field in self.EXEMPT:
                 continue
-            if not any(field in name for name in accessed_names):
-                unread.append(field)
+            # Shape 1: a direct field access, `x.<field>`.
+            if re_module.search(rf"\.{re_module.escape(field)}\b", "\n".join(corpus)):
+                continue
+            # Shape 2: the conventional accessor whose name ENDS with the field
+            # (`get_image_auto_resize` for `auto_resize`), credited only when it
+            # is actually called outside settings/.
+            if any(
+                name.endswith(f"_{field}") and name.startswith(("get_", "set_", "is_"))
+                for name in accessed_names
+            ):
+                continue
+            unread.append(field)
         if unread:
             # FIFTH access shape (found the hard way): the getter-mediated
             # alias. A legacy field can be consumed ONLY through an accessor
