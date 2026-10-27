@@ -365,7 +365,20 @@ impl GraphStore {
         // 1. Drop this file's FTS rows (the table is contentless; nodes stay).
         self.clear_file_fts(project, &t.rel)?;
         // 2. Drop resolved edges originating here; they are re-resolved below.
-        self.delete_outgoing_edges(project, &t.rel, &[EdgeType::Calls, EdgeType::Imports])?;
+        //
+        // USES goes too: an unresolved fact belongs to its CALL SITE, and the
+        // call site lives in this file. Without the delete a body-only edit
+        // that swaps `missing_old()` for `missing_new()` kept the old callee's
+        // fact forever — the fresh row conflicts with the surviving self-loop's
+        // UNIQUE (source, target, type) and is silently ignored — so the graph
+        // answered questions about a call site that no longer exists (the
+        // lightweight-graph review, §3.1; reproduced by
+        // `probe_missing_old_replaced_by_missing_new`).
+        self.delete_outgoing_edges(
+            project,
+            &t.rel,
+            &[EdgeType::Calls, EdgeType::Imports, EdgeType::Uses],
+        )?;
         // 3. Upsert the File node, symbol nodes, FTS rows, CONTAINS edges.
         self.write_file(project, &t.rel, &extracted)?;
         // 4. Remove symbols that no longer exist (cascades their edges).
@@ -416,6 +429,43 @@ mod tests {
         store
             .index_project(dir, &IndexOptions::new("p"))
             .expect("index");
+    }
+
+    /// The lightweight-graph review §3.1: replacing an unresolved call with a
+    /// DIFFERENT unresolved call inside the same symbol must not leave the old
+    /// callee's fact behind.
+    ///
+    /// Both calls are self-loop USES rows keyed (source, target, type), so the
+    /// fresh row used to lose the UNIQUE race against the surviving stale one
+    /// and the graph kept answering for a call site that no longer existed.
+    /// A body-only edit is the trigger: the surface is unchanged, so the file
+    /// is re-extracted but its unresolved facts were never cleared.
+    #[test]
+    fn a_body_only_edit_replaces_the_unresolved_fact() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(dir.path(), "a.rs", "pub fn caller() { missing_old(); }\n");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        index(&mut store, dir.path());
+        write(dir.path(), "a.rs", "pub fn caller() { missing_new(); }\n");
+        store
+            .reindex_incremental(dir.path(), &IndexOptions::new("p"))
+            .expect("reindex");
+        let edges = store.all_edges("p").expect("edges");
+        let uses: Vec<_> = edges
+            .iter()
+            .filter(|e| e.edge_type == crate::types::EdgeType::Uses)
+            .collect();
+        let props: Vec<String> = uses.iter().map(|e| e.props.to_string()).collect();
+        assert_eq!(uses.len(), 1, "exactly one unresolved fact: {props:?}");
+        assert!(
+            props[0].contains("missing_new"),
+            "the surviving fact must carry the NEW callee: {}",
+            props[0]
+        );
+        assert!(
+            !props[0].contains("missing_old"),
+            "STALE: the old unresolved callee survived the reindex"
+        );
     }
 
     #[test]
