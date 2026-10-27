@@ -796,7 +796,10 @@ pub(crate) fn parse_iso_millis(text: &str) -> Option<u64> {
     let days = era * 146_097 + doe - 719_468;
     let (time, offset_ms) = parse_time_with_offset(time)?;
     let millis = days * 24 * 60 * 60 * 1000 + time - offset_ms;
-    Some(millis as u64)
+    // A cast would WRAP a pre-epoch instant into the far future (1960 became
+    // ~5.8e19 ms), so such a row would never become due and `is_due_job` would
+    // answer "not yet" forever instead of rejecting it (review 6, #3802).
+    u64::try_from(millis).ok()
 }
 
 /// Time-of-day parse: HH:MM[:SS[.fff]][Z|(+/-HH:MM)] -> millis + offset.
@@ -805,7 +808,19 @@ fn parse_time_with_offset(time: &str) -> Option<(i64, i64)> {
         (stripped, 0i64)
     } else if let Some(index) = time
         .rfind('+')
-        .or_else(|| time[1..].rfind('-').map(|i| i + 1))
+        // A leading '-' is a sign on the whole clock, not an offset. The search
+        // must start on a CHARACTER boundary: `time[1..]` panics when the first
+        // character is multi-byte, and `is_due_job` runs this for every job on
+        // every pass, so one such string took the scheduler down (review 6,
+        // #3802).
+        .or_else(|| {
+            let mut characters = time.char_indices();
+            characters.next();
+            characters
+                .filter(|(_, character)| *character == '-')
+                .map(|(index, _)| index)
+                .next_back()
+        })
     {
         let offset = parse_offset(&time[index..])?;
         (&time[..index], offset)
@@ -874,6 +889,41 @@ mod tests {
     use super::*;
 
     const BASE: u64 = 1_700_000_000_000; // 2023-11-14T22:13:20Z
+
+    /// Review 6 (#3802): a non-ASCII byte at index 1 must not panic.
+    ///
+    /// `time[1..]` slices a `&str` by BYTE index. When the time-of-day begins
+    /// with a multi-byte character the offset search panics inside the parser,
+    /// and `is_due_job` — which calls it for every job on every pass — would take
+    /// the scheduler down with a string the user only had to write once.
+    #[test]
+    fn a_non_ascii_time_never_panics_the_parser() {
+        for text in [
+            "2024-01-01T\u{20ac}12:00:00",   // 3-byte char at index 0
+            "2024-01-01T\u{4e2d}:00",        // 3-byte char then a colon
+            "2024-01-01T",                   // empty time-of-day
+            "2024-01-01T\u{1f600}00:00:00Z", // 4-byte char
+        ] {
+            // The contract: an answer or None, never a panic.
+            let parsed = parse_iso_millis(text);
+            assert!(parsed.is_none(), "must parse to None: {text}");
+        }
+    }
+
+    /// Review 6 (#3802): a pre-epoch date must NOT wrap into the far future.
+    ///
+    /// `Some(millis as u64)` casts a NEGATIVE i64, so `1960-01-01` became
+    /// ~584 billion years ahead instead of a past instant. A job written with
+    /// such a date would never become due, and `is_due_job` would keep answering
+    /// "not yet" forever rather than rejecting the row.
+    #[test]
+    fn a_pre_epoch_date_does_not_wrap_into_the_future() {
+        assert_eq!(parse_iso_millis("1960-01-01T00:00:00Z"), None);
+        assert_eq!(parse_iso_millis("1969-12-31T23:59:59Z"), None);
+        // The epoch itself and anything after it still parse.
+        assert_eq!(parse_iso_millis("1970-01-01T00:00:00Z"), Some(0));
+        assert!(parse_iso_millis("1970-01-01T00:00:01Z").is_some_and(|millis| millis == 1000));
+    }
 
     #[test]
     fn parse_one_shot_and_interval_schedules() {
