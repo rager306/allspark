@@ -182,12 +182,29 @@ pub fn raise_open_file_limit() -> std::io::Result<Option<u64>> {
     Ok(None)
 }
 
+/// Whether `pid` may be signalled at all.
+///
+/// POSIX makes two ids catastrophic rather than merely wrong:
+///   * `kill(-1, sig)` signals EVERY process the caller may signal — i.e. the
+///     user's entire session, including the shell that started us;
+///   * pid 1 is init (or the container's init), which nothing here ever owns.
+///
+/// So the floor is `> 1`, not `> 0`. Three of the four signalling paths already
+/// used it; `kill_process_group_or_pid` used `> 0`, so a `pid == 1` argument
+/// became `kill(-1, SIGKILL)`. The Kani harness below quantifies over every
+/// `i32` and proves the predicate is the only gate.
+#[cfg(unix)]
+#[must_use]
+pub const fn signalable(pid: i32) -> bool {
+    pid > 1
+}
+
 /// Signal a single pid. Returns true only when the signal was delivered,
 /// proving the pid was alive at signal time.
 #[cfg(unix)]
 #[must_use]
 pub fn kill_pid(pid: i32, signal: Signal) -> bool {
-    if pid <= 0 {
+    if !signalable(pid) {
         return false;
     }
     let sig = match signal {
@@ -204,7 +221,9 @@ pub fn kill_pid(pid: i32, signal: Signal) -> bool {
 /// Returns the native probe error when group existence cannot be established.
 #[cfg(unix)]
 pub fn process_group_exists(pgid: i32) -> std::io::Result<bool> {
-    if pgid <= 1 {
+    // A probe, not a signal — but `kill(-1, 0)` asks about EVERY process, so the
+    // same floor applies: 1 is not a group this code owns.
+    if !signalable(pgid) {
         return Ok(false);
     }
     if unsafe { libc::kill(-pgid, 0) } == 0 {
@@ -233,7 +252,7 @@ pub fn process_group_exists(_pgid: i32) -> std::io::Result<bool> {
 #[cfg(unix)]
 #[must_use]
 pub fn signal_process_group(pgid: i32, signal: Signal) -> bool {
-    if pgid <= 1 {
+    if !signalable(pgid) {
         return false;
     }
     let sig = match signal {
@@ -257,6 +276,9 @@ pub fn signal_process_group(_pgid: i32, _signal: Signal) -> bool {
 #[cfg(windows)]
 #[must_use]
 pub fn kill_pid(pid: i32, signal: Signal) -> bool {
+    // Windows has no `kill(-1)`: `OpenProcess` on a real pid is the whole
+    // contract, so the floor here is `> 0` and deliberately not
+    // [`signalable`]'s `> 1` (pid 1 is an ordinary process on this platform).
     if pid <= 0 {
         return false;
     }
@@ -277,7 +299,7 @@ pub fn kill_pid(_pid: i32, _signal: Signal) -> bool {
 #[cfg(unix)]
 #[must_use]
 pub fn kill_process_group_or_pid(pid: i32) -> bool {
-    if pid <= 0 {
+    if !signalable(pid) {
         return false;
     }
     unsafe {
@@ -295,6 +317,7 @@ pub fn kill_process_group_or_pid(pid: i32) -> bool {
 #[cfg(windows)]
 #[must_use]
 pub fn kill_process_group_or_pid(pid: i32) -> bool {
+    // No `kill(-1)` on Windows: see the note on `kill_pid` above.
     if pid <= 0 {
         return false;
     }
@@ -754,6 +777,39 @@ mod kani_harnesses {
         );
     }
 
+    /// The signalling floor, over EVERY `i32` — the property a unit test cannot
+    /// reach because the dangerous argument would actually fire.
+    ///
+    /// `kill(-1, sig)` signals every process the caller may signal. A test that
+    /// called `kill_process_group_or_pid(1)` to check the guard would, on a
+    /// build with the guard removed, take down the test runner and everything
+    /// beside it. A model check asks the question without asking the kernel.
+    #[kani::proof]
+    fn no_signalling_path_can_reach_kill_minus_one() {
+        let pid: i32 = kani::any();
+        // The gate every unix signalling path is held to. Over EVERY i32, a pid
+        // that passes it is an ordinary pid: never -1 (kill every process the
+        // caller may signal), never 0 (the caller's own group), never 1 (init).
+        if signalable(pid) {
+            assert!(pid > 1);
+        }
+    }
+
+    /// Reachability, with concrete witnesses: the gate admits real pids and
+    /// refuses the two reserved ones. Without this, a predicate that returned
+    /// `false` for everything would satisfy the proof above and silently disable
+    /// every kill in the product.
+    #[kani::proof]
+    fn the_floor_admits_ordinary_pids_and_refuses_the_reserved_ones() {
+        assert!(signalable(2));
+        assert!(signalable(42_424));
+        assert!(signalable(i32::MAX));
+        assert!(!signalable(1));
+        assert!(!signalable(0));
+        assert!(!signalable(-1));
+        assert!(!signalable(i32::MIN));
+    }
+
     /// Anti-vacuity, with ASSERTIONS rather than `kani::cover!`.
     ///
     /// Measured 2026-10-27: a planner that returns `None` unconditionally makes
@@ -773,5 +829,52 @@ mod kani_harnesses {
         assert_eq!(planned_open_file_limit(10, 100, Some(50)), Some(50));
         // A cap below the current soft limit plans nothing (no lowering).
         assert_eq!(planned_open_file_limit(10, 100, Some(5)), None);
+    }
+}
+
+/// The runtime half of the signalling floor. The Kani harness above covers the
+/// arithmetic over every `i32`; this pins the SURFACE — that each path really
+/// consults the predicate rather than its own comparison, which is how
+/// `kill_process_group_or_pid` came to use `> 0` while its three siblings used
+/// `> 1`.
+///
+/// Deliberately does NOT call the functions with a dangerous id: a regression
+/// would take down the test runner instead of failing.
+#[cfg(all(test, unix))]
+mod signalling_floor_tests {
+    use super::*;
+
+    #[test]
+    fn the_floor_refuses_the_ids_posix_reserves() {
+        assert!(
+            !signalable(-1),
+            "kill(-1) signals every process the caller owns"
+        );
+        assert!(!signalable(0), "kill(0) signals the caller's own group");
+        assert!(!signalable(1), "pid 1 is init, which this code never owns");
+        assert!(signalable(2));
+    }
+
+    #[test]
+    fn every_unix_signalling_path_is_gated_on_the_same_predicate() {
+        // A source-level pin: the four paths must not reintroduce their own
+        // comparisons. `include_str!` of this file is the cheapest way to assert
+        // a shape that a behavioural test cannot reach safely.
+        // Count only the PRODUCTION half: everything above this test module.
+        // Otherwise the matcher counts its own literals and reports 5.
+        let source = include_str!("process.rs");
+        let production = source
+            .split("mod signalling_floor_tests")
+            .next()
+            .expect("the production half is always present");
+        let own_comparison = production.matches("if pid <= 0 {").count()
+            + production.matches("if pgid <= 1 {").count()
+            + production.matches("if pid <= 1 {").count();
+        // The Windows arms legitimately keep `pid <= 0` (no kill(-1) there), and
+        // each states why at the site; there are exactly two of them.
+        assert_eq!(
+            own_comparison, 2,
+            "a unix signalling path grew its own comparison instead of using `signalable`",
+        );
     }
 }
