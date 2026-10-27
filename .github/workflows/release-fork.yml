@@ -221,7 +221,13 @@ jobs:
           # The same root the packaging step built: prime-agent-<version>-linux-x64,
           # version = tag minus the leading "allspark-v".
           root="prime-agent-${tag#allspark-v}-linux-x64"
-          mkdir -p unpack && tar -xzf "${root}.tar.gz" -C unpack
+          # dist/ is the ONE staging directory the packaging step writes and the
+          # publish step reads. This smoke step was the last reader of the old
+          # workspace-root path: it failed with "Cannot open: No such file or
+          # directory" on release run 40464240124 while the archive sat in
+          # dist/, so the release never published (review 3.1). A path written
+          # in two places is the defect; every consumer reads the same one now.
+          mkdir -p unpack && tar -xzf "dist/${root}.tar.gz" -C unpack
           ./unpack/"${root}"/bin/allspark --version
           # The offline catalog assets are part of the packaged contract:
           # a tarball that dropped them ships a release with no offline

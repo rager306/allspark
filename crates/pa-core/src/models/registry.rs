@@ -485,6 +485,18 @@ impl ModelRegistry {
         built_in.extend(private_models.into_values());
         self.models = Self::merge_custom_models(built_in, result.models);
         self.apply_subscription_model_adaptations();
+        // REBUILD APPLIES THE SAVED DISCOVERY OVERLAY. `load_models` rebuilds
+        // `self.models` from curated + custom + private inputs, and it is called
+        // from several places — not only the constructor: a credential change
+        // (`clear_private_authorization`, i.e. a user with no Prime key on the
+        // refresh path), a settings reload, a provider edit. Each of those used
+        // to DROP every discovered id, because discovery was applied once, after
+        // construction, as a mutation rather than as an input to the build
+        // (review 4.1). The overlay is the same saved snapshot, so applying it
+        // here costs one clone and cannot double-append.
+        if let Some(snapshot) = self.discovery_snapshot.clone() {
+            self.apply_discovery_snapshot(&snapshot, None);
+        }
     }
 
     /// Per-model base-URL/API overrides plus the xAI subscription switch,
@@ -1235,6 +1247,13 @@ impl ModelRegistry {
             })
             .map(|model| model.id.clone())
             .collect()
+    }
+
+    /// Test-only: drive the credential-rebuild path that a user with no Prime
+    /// key takes on the refresh, so a test can assert discovery survives it.
+    #[cfg(test)]
+    pub(crate) fn clear_private_authorization_for_test(&mut self) {
+        self.clear_private_authorization();
     }
 
     fn clear_private_authorization(&mut self) {

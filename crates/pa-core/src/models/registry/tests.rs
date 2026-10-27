@@ -746,3 +746,57 @@ fn a_saved_snapshot_survives_an_offline_restart() {
         ids.len()
     );
 }
+
+/// Review 4.1: discovery must survive every REBUILD, not just construction.
+///
+/// `load_models` is called after a credential change (`clear_private_authorization`
+/// — the path a user with no Prime key takes on the refresh), after a settings
+/// reload, and after a custom-model edit. Each rebuild used to replace
+/// `self.models` with the curated set, dropping every discovered-only id that
+/// had been appended after construction: the picker loses models mid-session,
+/// with no error and no way to see it.
+#[test]
+fn a_rebuild_keeps_the_discovered_ids() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let models_json = dir.path().join("models.json");
+    std::fs::write(&models_json, "{\"providers\":{}}").expect("models.json");
+    let mut providers = std::collections::BTreeMap::new();
+    providers.insert(
+        "subquadratic".to_string(),
+        pa_models::discovery::DiscoveredProvider {
+            provider: "subquadratic".to_string(),
+            synced_at: "2026-10-27T00:00:00Z".to_string(),
+            ids: vec!["survives-the-rebuild".to_string()],
+            deprecated: Vec::new(),
+        },
+    );
+    let snapshot = pa_models::discovery::DiscoverySnapshot {
+        synced_at: "2026-10-27T00:00:00Z".to_string(),
+        providers,
+    };
+    pa_models::discovery::write_snapshot(dir.path(), &snapshot).expect("write snapshot");
+
+    let auth = crate::auth::AuthStorage::in_memory_without_env(
+        &crate::auth::AuthStorageData::default(),
+        std::sync::Arc::new(crate::auth::NoOAuth),
+    );
+    let mut registry = ModelRegistry::create(auth, models_json);
+    assert!(
+        registry
+            .get_all()
+            .iter()
+            .any(|model| model.id == "survives-the-rebuild"),
+        "the constructor must see the snapshot"
+    );
+
+    // The rebuild a credential change triggers.
+    registry.clear_private_authorization_for_test();
+    assert!(
+        registry
+            .get_all()
+            .iter()
+            .any(|model| model.id == "survives-the-rebuild"),
+        "a rebuild must not drop the discovered overlay: {:?}",
+        registry.get_all().len()
+    );
+}

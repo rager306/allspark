@@ -711,17 +711,23 @@ fn the_channel_platform_name_matches_the_installer() {
         workflow.contains("\"platform\": \"linux-x64\""),
         "the channel manifest's platform row must match CHANNEL_PLATFORM"
     );
-    for needle in [
-        "dist/stable",
-        "dist/latest.json",
-        "        stable\n",
-        "        latest.json\n",
-    ] {
+    // The channel assets must reach the upload — but the oracle reads the
+    // SEMANTIC contract, not a list of per-line spellings. It asserted the
+    // literal `        stable\n` (a line in an old multi-argument upload) and
+    // broke when the upload moved to `path: dist/` with one guard over the
+    // whole staged set: the guarantee held while its spelling changed (review
+    // 3.2). What must be true: the staging step writes both files under dist/,
+    // and the upload takes that directory.
+    for produced in ["dist/stable", "dist/latest.json"] {
         assert!(
-            workflow.contains(needle),
-            "the archive upload must carry the channel assets ({needle} missing)"
+            workflow.contains(produced),
+            "the packaging step must write the channel asset {produced}"
         );
     }
+    assert!(
+        workflow.contains("path: dist/"),
+        "the upload must take the whole staged directory, so every asset travels together"
+    );
 }
 
 /// The completion line names the product the user actually types.

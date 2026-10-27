@@ -54,10 +54,17 @@ def install_launcher(binary, root, env):
     marker = '# --- the launcher (the takeover lives here)'
     section = marker + installer.split(marker, 1)[1]
     section = section.split('# The cmd/PowerShell launcher twin', 1)[0]
+    # The launcher section reads the layout decision the real script makes
+    # ~1200 lines above it (install-rust.sh computes fork_layout once, driving
+    # share_dir, the payload path and the launcher name). This fixture pins the
+    # UPSTREAM layout under share/prime-agent, so it must STATE that decision:
+    # leaving it unset aborted the extraction with
+    # "fork_layout: parameter not set" (review 3.2, CI shard 1).
     script = '''PREFIX="$PRIME_AGENT_RUST_PREFIX"
 bin_dir="$PREFIX/bin"
 mkdir -p "$bin_dir"
 launcher="$bin_dir/prime-agent"
+fork_layout="no"
 WINDOWS=no
 say() { :; }; note() { :; }; die() { echo "$*" >&2; exit 1; }
 trap '[ -z "${launcher_tmp:-}" ] || rm -f "$launcher_tmp"' EXIT
