@@ -169,6 +169,83 @@ impl IdleRoster {
     }
 }
 
+/// Per-key single-flight: one acquisition at a time PER KEY, and keys never
+/// wait on each other.
+///
+/// The manager needs this because acquiring a client is SLOW — it spawns a
+/// language server and completes an LSP handshake. A single `RwLock` over the
+/// whole roster serialized every key behind whichever spawn was in flight, so
+/// opening a Python file blocked on a Rust server starting (measured shape: a
+/// write guard held across an `await` that spawns a process and waits for
+/// `initialize`).
+///
+/// The map is keyed by the same `(server, root)` tuple as the roster. An entry
+/// is retired by its last holder, so a long-lived session does not accumulate
+/// one mutex per file ever opened.
+#[derive(Debug, Default)]
+struct KeyedGate<K: Eq + std::hash::Hash + Clone> {
+    gates: std::sync::Mutex<HashMap<K, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+/// The held gate for one key. Dropping it releases the key and retires the map
+/// entry when no other caller is waiting on it.
+#[derive(Debug)]
+struct KeyedGuard<'a, K: Eq + std::hash::Hash + Clone> {
+    gate: &'a KeyedGate<K>,
+    key: K,
+    /// Taken first in `drop`, so the mutex releases before the retirement
+    /// check reads the Arc's strong count.
+    held: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl<K: Eq + std::hash::Hash + Clone> Drop for KeyedGuard<'_, K> {
+    fn drop(&mut self) {
+        self.held.take();
+        self.gate.retire(&self.key);
+    }
+}
+
+impl<K: Eq + std::hash::Hash + Clone> KeyedGate<K> {
+    /// The gate for `key`, cloned out of the map so the release can happen
+    /// without holding the map lock.
+    fn gate_for(&self, key: &K) -> Arc<tokio::sync::Mutex<()>> {
+        let mut map = self
+            .gates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(
+            map.entry(key.clone())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
+    }
+
+    /// Retire `key` when this caller is the last one holding it: the Arc's
+    /// strong count is the coordination truth.
+    fn retire(&self, key: &K) {
+        let mut map = self
+            .gates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if map
+            .get(key)
+            .is_some_and(|gate| Arc::strong_count(gate) == 1)
+        {
+            map.remove(key);
+        }
+    }
+
+    /// Wait for `key`'s gate and hand back the held guard.
+    async fn acquire(&self, key: K) -> KeyedGuard<'_, K> {
+        let lock = self.gate_for(&key);
+        let held = lock.lock_owned().await;
+        KeyedGuard {
+            gate: self,
+            key,
+            held: Some(held),
+        }
+    }
+}
+
 /// Owns the session's live clients, keyed by `(server name, root)`.
 pub struct LspManager {
     clients: RwLock<HashMap<(String, PathBuf), Arc<LspClient>>>,
@@ -179,6 +256,10 @@ pub struct LspManager {
     idle_limit: Option<Duration>,
     clock: Arc<dyn Clock>,
     idle: IdleRoster,
+    /// Per-key acquisition single-flight. See [`KeyedGate`]: acquiring a client
+    /// spawns a server, so a global lock over the roster made every project wait
+    /// on whichever language server happened to be starting.
+    gate: KeyedGate<(String, PathBuf)>,
 }
 
 impl Default for LspManager {
@@ -189,6 +270,7 @@ impl Default for LspManager {
             idle_limit: None,
             clock: Arc::new(SystemClock),
             idle: IdleRoster::default(),
+            gate: KeyedGate::default(),
         }
     }
 }
@@ -306,24 +388,42 @@ impl LspManager {
             );
         }
 
-        // Hold the write guard across the spawn so two racing callers cannot
-        // start duplicate servers for the same key.
-        let mut guard = self.clients.write().await;
-        if let Some(client) = guard.get(&key).cloned() {
-            drop(guard);
+        // Single-flight PER KEY, not over the roster. Acquiring a client spawns
+        // a language server and completes an LSP handshake — seconds of work —
+        // and the previous shape held `clients.write()` across it, so opening a
+        // Python file waited on whichever Rust server was starting. The key is
+        // the one this call needs; other keys never wait on it.
+        let _flight = self.gate.acquire(key.clone()).await;
+
+        // Re-check under the gate: a sibling that held it may have spawned the
+        // client, which is exactly what the single-flight is for.
+        if let Some(client) = self.clients.read().await.get(&key).cloned() {
             self.mark_used(&key).await;
             return Ok(client);
         }
+        // The backoff is re-checked here for the same reason: a sibling may have
+        // recorded a failure while this call waited.
+        if let Some(message) = self.backoff.recent_failure(&key).await {
+            anyhow::bail!(
+                "`{}` failed to initialize recently and is backed off for {:?}: {}",
+                server.name,
+                INIT_FAILURE_BACKOFF,
+                message
+            );
+        }
         match LspClient::spawn(server, &root).await {
             Ok(client) => {
-                guard.insert(key.clone(), Arc::clone(&client));
-                drop(guard);
+                // The roster write is brief: insert and release, never across
+                // the spawn.
+                self.clients
+                    .write()
+                    .await
+                    .insert(key.clone(), Arc::clone(&client));
                 self.mark_used(&key).await;
                 self.backoff.clear(&key).await;
                 Ok(client)
             }
             Err(err) => {
-                drop(guard);
                 self.backoff.record(key, err.to_string()).await;
                 Err(err)
             }
@@ -662,6 +762,81 @@ mod tests {
         );
         assert!(!to.exists(), "nothing may be created");
     }
+    /// The property the roster gate exists for, and the one the previous shape
+    /// violated: two DIFFERENT keys never wait on each other, while the SAME key
+    /// does.
+    ///
+    /// This is the whole reason `ensure_client` no longer holds `clients.write()`
+    /// across `LspClient::spawn`: that lock serialized every project behind
+    /// whichever language server was starting.
+    #[tokio::test]
+    async fn different_keys_never_wait_on_each_others_acquisition() {
+        let gate = KeyedGate::<(String, PathBuf)>::default();
+        let key_a = ("rust-analyzer".to_string(), PathBuf::from("/a"));
+        let key_b = ("pyright".to_string(), PathBuf::from("/b"));
+
+        // A slow holder on A (a spawn in flight).
+        let held_a = gate.acquire(key_a.clone()).await;
+
+        // B must not wait: 50 ms is far below A's hold, so a global lock would
+        // time out here.
+        let b = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            gate.acquire(key_b.clone()),
+        )
+        .await
+        .expect("a different key must not wait on the first key's acquisition");
+        drop(b);
+
+        // The SAME key waits until the holder releases.
+        let same = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            gate.acquire(key_a.clone()),
+        )
+        .await;
+        assert!(
+            same.is_err(),
+            "a second acquisition of the same key must wait: that is the single-flight"
+        );
+
+        drop(held_a);
+
+        // Released, the wait completes and the map entry retires.
+        let after = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            gate.acquire(key_a.clone()),
+        )
+        .await
+        .expect("the released gate admits the next acquisition");
+        drop(after);
+    }
+
+    /// The gate retires its entry on the last release: a daemon that has opened
+    /// a thousand session files must not carry a thousand mutexes forever.
+    #[tokio::test]
+    async fn the_gate_retires_its_entry_when_the_last_holder_leaves() {
+        let gate = KeyedGate::<(String, PathBuf)>::default();
+        let key = ("rust-analyzer".to_string(), PathBuf::from("/a"));
+        {
+            let _held = gate.acquire(key.clone()).await;
+            assert_eq!(
+                gate.gates
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .len(),
+                1
+            );
+        }
+        assert_eq!(
+            gate.gates
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            0,
+            "the last release must retire the entry"
+        );
+    }
+
     /// `lsp.idleTimeoutMs` had no reader: a live client lived until the session
     /// ended, however long the agent worked elsewhere. The decision is a pure
     /// function of the stamps, so it is testable without spawning a server.
