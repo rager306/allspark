@@ -9,8 +9,12 @@ fn overflow_patterns() -> &'static Vec<Regex> {
     static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
     PATTERNS.get_or_init(|| {
         [
-            r"prompt is too long", // Anthropic token overflow
-            r"request_too_large",  // Anthropic request byte-size overflow (HTTP 413)
+            // Case-insensitive: oMLX (and several proxies) report `Prompt is
+            // too long` with a capital P, which the case-sensitive spelling
+            // missed, so the overflow reached the user as a provider error
+            // instead of a compaction (review 5, discussion #3793).
+            r"(?i)prompt is too long", // Anthropic token overflow
+            r"request_too_large",      // Anthropic request byte-size overflow (HTTP 413)
             r"(?i)input is too long for (?:the )?(?:requested|selected) model", // Bedrock; opencode #57412 custom endpoints
             r"exceeds the context window", // OpenAI (Completions & Responses API)
             r"(?i)input token count.*exceeds the maximum", // Google (Gemini)
@@ -177,6 +181,19 @@ mod tests {
             usage(0, 0, 0),
         );
         assert!(is_context_overflow(&m, None));
+    }
+
+    /// Review 5 (#3793): the capital-P spelling is the same overflow.
+    #[test]
+    fn detects_a_capitalised_prompt_overflow() {
+        for text in [
+            "Prompt is too long: 213462 tokens > 200000 maximum",
+            "PROMPT IS TOO LONG",
+            "Prompt is too long",
+        ] {
+            let m = message(StopReason::Error, Some(text), usage(0, 0, 0));
+            assert!(is_context_overflow(&m, None), "must detect: {text}");
+        }
     }
 
     #[test]

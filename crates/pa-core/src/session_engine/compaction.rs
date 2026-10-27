@@ -79,6 +79,51 @@ pub fn get_last_assistant_usage(entries: &[FileEntry]) -> Option<pa_types::ai::U
     None
 }
 
+/// The cost of ONE entry as the provider will see it.
+///
+/// `find_cut_point` walks entries but used to charge only
+/// `FileEntry::Message`, while the model-visible projection also carries
+/// `CustomMessage` (notices, digest) and non-empty `BranchSummary`. Trigger and
+/// retention therefore priced the same history differently: the tail could be
+/// kept "because it is under `keep_recent_tokens`" while its real cost was larger
+/// (review 5, discussion #3779). This is the one entry-level estimator both
+/// sides use; it maps an entry to exactly the message the projection builds and
+/// sums that.
+#[must_use]
+pub fn estimate_entry_tokens(entry: &FileEntry) -> u64 {
+    match entry {
+        FileEntry::Message { message, .. } => estimate_tokens(message),
+        // The digest and the kernel notice are regenerable snapshots that the
+        // projection keeps only for the newest of each; an older copy costs
+        // nothing because it is not sent.
+        FileEntry::CustomMessage { payload, .. } => {
+            if payload.custom_type == "harness_digest"
+                || payload.custom_type == super::ipython_state::IPYTHON_STATE_CUSTOM_TYPE
+            {
+                return 0;
+            }
+            estimate_tokens(&AgentMessage::Custom(
+                crate::session::create_custom_message(payload, entry),
+            ))
+        }
+        FileEntry::BranchSummary { payload, .. } => {
+            if payload.summary.is_empty() {
+                return 0;
+            }
+            estimate_tokens(&AgentMessage::BranchSummary(
+                pa_types::session::BranchSummaryMessage {
+                    summary: payload.summary.clone(),
+                    from_id: payload.from_id.clone(),
+                    timestamp: crate::session::timestamp_to_millis(entry.timestamp()),
+                },
+            ))
+        }
+        // Everything else (header, compaction, settings changes) is either not
+        // model-visible or is the boundary the walk stops at.
+        _ => 0,
+    }
+}
+
 /// Chars/4 heuristic token estimate (conservative; overestimates).
 #[must_use]
 pub fn estimate_tokens(message: &AgentMessage) -> u64 {
@@ -456,10 +501,7 @@ pub fn find_cut_point(
         .into_iter()
         .rev()
     {
-        let FileEntry::Message { message, .. } = entry else {
-            continue;
-        };
-        accumulated = accumulated.saturating_add(estimate_tokens(message));
+        accumulated = accumulated.saturating_add(estimate_entry_tokens(entry));
         if accumulated >= keep_recent_tokens {
             cut_index = *cut_points.last().unwrap();
             for &point in &cut_points {
@@ -973,6 +1015,83 @@ mod tests {
         ];
         let points = find_valid_cut_points(&entries, 0, 3);
         assert_eq!(points, vec![0, 1]);
+    }
+
+    /// Review 5 (#3779): the cut walk must price every model-visible entry, not
+    /// only `Message`.
+    ///
+    /// A `CustomMessage` notice is in the projection the provider receives, yet
+    /// the walk charged it zero. So a tail made of notices looked free: the cut
+    /// point stayed far left, keeping a tail whose real cost already exceeded
+    /// `keep_recent_tokens` — and the next trigger saw a prompt larger than the
+    /// retention calculation promised.
+    #[test]
+    fn a_custom_notice_costs_the_same_in_the_walk_as_a_message_of_equal_size() {
+        let big = "x".repeat(4_000); // ~1_000 tokens
+        let notice = |id: &str, parent: &str| FileEntry::CustomMessage {
+            payload: pa_types::session::CustomMessageEntry {
+                custom_type: "the_user_asked_for_this".to_string(),
+                content: pa_types::ai::UserContent::Text(big.clone()),
+                details: None,
+                display: true,
+                rest: serde_json::Map::default(),
+            },
+            base: pa_types::session::EntryBase {
+                id: Some(id.to_string()),
+                parent_id: Some(parent.to_string()),
+                timestamp: Some("2024-01-01T00:00:00.000Z".to_string()),
+                rest: serde_json::Map::default(),
+            },
+        };
+        let with_notice = vec![
+            user_entry("u1", "root", "turn one"),
+            assistant_entry("a1", "u1"),
+            notice("n1", "a1"),
+        ];
+        let with_message = vec![
+            user_entry("u1", "root", "turn one"),
+            assistant_entry("a1", "u1"),
+            user_entry("u2", "a1", &big),
+        ];
+
+        assert_eq!(
+            estimate_entry_tokens(&with_notice[2]),
+            estimate_entry_tokens(&with_message[2]),
+            "a notice of the same text must cost what a message of that text costs"
+        );
+        // Both walk to the same cut point under the same budget: the notice is
+        // as expensive as the user message, so neither may be kept "for free".
+        let keep = 900;
+        assert_eq!(
+            find_cut_point(&with_notice, 0, 3, keep).first_kept_entry_index,
+            find_cut_point(&with_message, 0, 3, keep).first_kept_entry_index,
+        );
+        let only_notice = find_cut_point(&with_notice, 0, 3, keep).first_kept_entry_index;
+        assert!(
+            only_notice > 0,
+            "the expensive tail must be cut, not kept at index 0"
+        );
+    }
+
+    /// A regenerable snapshot is NOT sent, so it must not consume budget.
+    #[test]
+    fn a_stale_digest_entry_costs_nothing_in_the_walk() {
+        let digest = FileEntry::CustomMessage {
+            payload: pa_types::session::CustomMessageEntry {
+                custom_type: "harness_digest".to_string(),
+                content: pa_types::ai::UserContent::Text("x".repeat(40_000)),
+                details: None,
+                display: false,
+                rest: serde_json::Map::default(),
+            },
+            base: pa_types::session::EntryBase {
+                id: Some("d1".to_string()),
+                parent_id: Some("root".to_string()),
+                timestamp: Some("2024-01-01T00:00:00.000Z".to_string()),
+                rest: serde_json::Map::default(),
+            },
+        };
+        assert_eq!(estimate_entry_tokens(&digest), 0);
     }
 
     #[test]
