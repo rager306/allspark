@@ -54,7 +54,8 @@ class DecoderManifest(unittest.TestCase):
                 assemble = (sys.executable, str(ASSEMBLER), "--repo-root", str(repo),
                             "--version", "0.1.0", "--target", target,
                             "--binary", str(shipped), "--decoder", str(decoder),
-                            "--catalog-assets", str(catalog), "--out-dir", str(dist))
+                            "--allow-fixture-catalog", "--catalog-assets", str(catalog),
+                            "--out-dir", str(dist))
                 run(*assemble)
                 if target == TARGETS[0][0]:
                     first_assemble = assemble

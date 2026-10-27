@@ -183,7 +183,8 @@ class SyntheticRepo:
         if split.returncode:
             raise AssertionError(split.stderr)
 
-    def assemble(self, out_dir, catalog_assets=None, sha=None, target=HOST_TARGET):
+    def assemble(self, out_dir, catalog_assets=None, sha=None, target=HOST_TARGET,
+                 allow_fixture_catalog=True):
         args = [
             "--repo-root", str(self.root), "--version", self.version,
             "--target", target, "--binary", str(self.binary),
@@ -194,31 +195,62 @@ class SyntheticRepo:
         if sha:
             args += ["--sha", sha]
         if catalog_assets is not None:
+            # The waiver is the CONSUMER's statement about a synthetic tree, so a
+            # test that exercises the provenance gate must be able to withhold it.
+            # Without the parameter, `assemble` waived unconditionally and every
+            # negative test in `test_packer_fails_on_invalid_assets` silently
+            # stopped failing.
+            if allow_fixture_catalog:
+                args += ["--allow-fixture-catalog"]
             args += ["--catalog-assets", str(catalog_assets)]
         return run_cli(ASSEMBLER, args)
 
 
 class ValidationGates(unittest.TestCase):
 
-    def test_fixture_passes_the_full_gates(self):
-        """Offline build verifier: --fixture produces a VALIDATED snapshot
-        (it clears the transport-tuple and service minimums) without any
-        network."""
+    def test_fixture_passes_the_full_gates_only_when_the_consumer_waives(self):
+        """The producer never validates what it just wrote.
+
+        `generate --fixture` used to waive its own gates and return facts as if
+        the asset had passed: a producer grading its own homework, which is the
+        inert-guard class this repository keeps finding. The contract now is
+        two-sided and this pins BOTH halves:
+
+          * the producer emits and claims nothing;
+          * `verify` refuses the asset WITHOUT a waiver, and accepts it WITH one
+            (the consumer states what it is verifying).
+
+        The fixture still clears the transport-tuple and service minimums —
+        that is what makes it a useful offline asset — it just is not allowed to
+        certify itself.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "assets"
             result = run_cli(BUNDLER, ["generate", "--fixture", "--out", str(out)])
             self.assertEqual(result.returncode, 0, result.stderr)
-            facts = json.loads(result.stdout)
+            produced = json.loads(result.stdout)
+            self.assertEqual(
+                produced,
+                {"outDir": str(out), "fixture": True},
+                "the producer must claim nothing beyond what it wrote",
+            )
+
+            # Strict verify refuses a synthetic catalog: it is a release gate.
+            strict = run_cli(BUNDLER, ["verify", "--out", str(out)])
+            self.assertNotEqual(strict.returncode, 0, strict.stdout)
+            self.assertIn("synthetic fixture models", strict.stderr)
+
+            # The consumer's waiver is the only way through, and the numbers it
+            # then reports are the full gates.
+            waived = run_cli(
+                BUNDLER, ["verify", "--out", str(out), "--verify-fixture"]
+            )
+            self.assertEqual(waived.returncode, 0, waived.stderr)
+            facts = json.loads(waived.stdout)
             self.assertGreaterEqual(facts["models"]["transportTuples"],
                                     bundle_catalog.MIN_MODEL_TRANSPORT_TUPLES)
             self.assertGreaterEqual(facts["mcpServices"]["services"],
                                     bundle_catalog.MIN_MCP_SERVICES)
-            # The verify command (no small-fixture waiver) agrees.
-            verify = run_cli(BUNDLER, ["verify", "--out", str(out)])
-            self.assertEqual(verify.returncode, 0, verify.stderr)
-            self.assertGreaterEqual(
-                json.loads(verify.stdout)["mcpServices"]["services"],
-                bundle_catalog.MIN_MCP_SERVICES)
 
     def test_fixture_shapes_match_the_catalog_contract(self):
         bodies = bundle_catalog.fixture_catalog_bodies()
@@ -420,7 +452,7 @@ class CatalogDirMode(unittest.TestCase):
             out = tmp / "assets"
             result = run_cli(
                 BUNDLER, ["generate", "--catalog-dir", str(checkout),
-                          "--out", str(out)])
+                          "--verify-fixture", "--out", str(out)])
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(
                 (out / "models.bundled.json").read_bytes(),
@@ -454,8 +486,14 @@ class NetworkMode(unittest.TestCase):
         self.server.stop()
 
     def _generate(self, out, env_extra=None, extra=()):
+        # The mock server serves the FIXTURE bodies (the tests below assert
+        # byte-identity against `fixture_catalog_bodies()`), so the consumer --
+        # this harness -- states that it is asking for a synthetic catalog.
+        # Without the waiver the producer's provenance gate refuses it, which is
+        # the contract `test_fixture_passes_the_full_gates_only_when_the_consumer_waives`
+        # pins.
         return run_cli(BUNDLER, [
-            "generate", "--network",
+            "generate", "--network", "--verify-fixture",
             "--models-url", f"{self.server.base}/models/catalog.v1.json",
             "--mcp-services-url", f"{self.server.base}/plugins/catalog.v2.json",
             "--out", str(out), *extra,
@@ -690,7 +728,7 @@ class PackerGates(unittest.TestCase):
         args = ["--root", str(self.repo.root), "--version", "9.9.9",
                 "--binary", str(self.repo.binary),
                 "--decoder", str(self.repo.decoder), "--skip-build",
-                "--catalog-assets", str(self.assets),
+                "--allow-fixture-catalog", "--catalog-assets", str(self.assets),
                 "--out-dir", str(self.tmp / "package-caches")]
         packaged = run_cli(PACKER, args)
         self.assertEqual(packaged.returncode, 0, packaged.stderr)
@@ -710,7 +748,8 @@ class PackerGates(unittest.TestCase):
             bad.mkdir()
             (bad / "models.bundled.json").write_text(models_body)
             (bad / "mcp-services.bundled.json").write_text(plugins_body)
-            result = self.repo.assemble(self.tmp / f"dist-{label}", catalog_assets=bad)
+            result = self.repo.assemble(
+                self.tmp / f"dist-{label}", catalog_assets=bad, allow_fixture_catalog=False)
             self.assertNotEqual(result.returncode, 0, label)
             self.assertIn("Invalid bundled", result.stderr, label)
         # Under-minimum counts fail even with a well-formed envelope.
@@ -721,7 +760,8 @@ class PackerGates(unittest.TestCase):
         good_plugins = json.loads(
             bundle_catalog.fixture_catalog_bodies()["mcp-services.bundled.json"])
         (small / "mcp-services.bundled.json").write_text(json.dumps(good_plugins))
-        result = self.repo.assemble(self.tmp / "dist-small", catalog_assets=small)
+        result = self.repo.assemble(
+            self.tmp / "dist-small", catalog_assets=small, allow_fixture_catalog=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("transport tuples", result.stderr)
         # Missing one of the two files fails too.
@@ -751,7 +791,8 @@ class PackerGates(unittest.TestCase):
                                  (self.assets / name).read_bytes(), name)
         # The full end-to-end verifier (payload shape, checksums, manifest,
         # extracted catalog assets, livecheck) passes on the synthetic tree.
-        verify = run_cli(VERIFIER, ["--dist-dir", str(out), "--version", "9.9.9",
+        verify = run_cli(VERIFIER, ["--allow-fixture-catalog",
+                                   "--dist-dir", str(out), "--version", "9.9.9",
                                    "--target", HOST_TARGET])
         self.assertEqual(verify.returncode, 0, verify.stderr)
         self.assertIn("catalog assets", verify.stdout)
@@ -765,7 +806,8 @@ class PackerGates(unittest.TestCase):
         out = self.tmp / "dist-continuous"
         result = repo.assemble(out, catalog_assets=self.assets, sha=sha)
         self.assertEqual(result.returncode, 0, result.stderr)
-        verify = run_cli(VERIFIER, ["--dist-dir", str(out), "--version", "9.9.9",
+        verify = run_cli(VERIFIER, ["--allow-fixture-catalog",
+                                   "--dist-dir", str(out), "--version", "9.9.9",
                                    "--target", HOST_TARGET, "--sha", sha])
         self.assertEqual(verify.returncode, 0, verify.stderr)
 
@@ -774,11 +816,12 @@ class PackerGates(unittest.TestCase):
         # assets and ships them beside the binary when they are valid.
         args = ["--root", str(self.repo.root), "--version", "9.9.9",
                 "--binary", str(self.repo.binary), "--decoder", str(self.repo.decoder),
-                "--skip-build", "--out-dir", str(self.tmp / "release-package")]
+                "--skip-build", "--out-dir", str(self.tmp / "release-package"),
+                "--allow-fixture-catalog"]
         without = run_cli(PACKER, args)
         self.assertNotEqual(without.returncode, 0)
         self.assertIn("missing bundled catalog assets", without.stderr)
-        with_assets = run_cli(PACKER, [*args, "--catalog-assets", str(self.assets)])
+        with_assets = run_cli(PACKER, [*args, "--allow-fixture-catalog", "--catalog-assets", str(self.assets)])
         self.assertEqual(with_assets.returncode, 0, with_assets.stderr)
         staged = self.tmp / "release-package" / "prime-agent-9.9.9-linux-x64"
         self.assertTrue((staged / "models.bundled.json").is_file())
@@ -791,6 +834,7 @@ class PackerGates(unittest.TestCase):
         result = run_cli(PACKER, ["--root", str(self.repo.root), "--version", "9.9.9",
                                   "--binary", str(self.repo.binary),
                                   "--decoder", str(self.repo.decoder), "--out-dir", str(out),
+                                  "--allow-fixture-catalog",
                                   "--catalog-assets", str(self.assets)])
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("decoder-like sidecar", result.stderr)
@@ -800,6 +844,7 @@ class PackerGates(unittest.TestCase):
         result = run_cli(PACKER, ["--root", str(self.repo.root), "--version", "9.9.9",
                                   "--binary", str(self.repo.binary),
                                   "--out-dir", str(self.tmp / "release-package-raw"),
+                                  "--allow-fixture-catalog",
                                   "--catalog-assets", str(self.assets)])
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("requires --decoder", result.stderr)
@@ -807,7 +852,7 @@ class PackerGates(unittest.TestCase):
     def test_linux_assembler_requires_split_binary_and_decoder(self):
         base = ["--repo-root", str(self.repo.root), "--version", "9.9.9",
                 "--target", HOST_TARGET, "--runtime-dir", str(self.repo.root / "runtime"),
-                "--catalog-assets", str(self.assets), "--out-dir", str(self.tmp / "invalid")]
+                "--allow-fixture-catalog", "--catalog-assets", str(self.assets), "--out-dir", str(self.tmp / "invalid")]
         wrong_dir = self.tmp / "wrong-decoder"
         wrong_dir.mkdir()
         wrong_source = wrong_dir / "wrong.c"

@@ -120,7 +120,12 @@ class TheFoldContracts(FoldTestCase):
         self.fold("0.10.0")
         changelog = (self.root / "CHANGELOG.md").read_text()
         self.assertIn("# Changelog", changelog)
-        self.assertIn("packages/*/CHANGELOG.md", changelog)
+        # The seed links the ONE TS changelog that exists — `packages/coding-agent/`
+        # — not a glob. The glob form was asserted here while `SEED_HEADER` wrote a
+        # concrete path, so this test was red from the commit that introduced both
+        # (`846656dc6`) and nothing noticed: the migration-packaging CI job runs
+        # five OTHER scripts, and this one is not among them.
+        self.assertIn("packages/coding-agent/CHANGELOG.md", changelog)
         self.assertIn("## [0.10.0] - ", changelog)
         self.assertIn("- the first feature", changelog)
 

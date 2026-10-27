@@ -229,11 +229,22 @@ jobs:
           persist-credentials: false
       - name: Verify native and npm compatibility packaging
         run: |
+          # EVERY self-contained release script, and the list is the point: four
+          # more existed (catalog assets, decoder manifest, fold changelog,
+          # channel install) and were red on main because nothing ran them -
+          # `test_fold_changelog` had been failing since the commit that
+          # introduced both the seed header and its assertion.
+          # `test_channel_install` and the legacy npm pair need arguments (an
+          # archive, an installer), so they run from their own harness; the six
+          # below are argument-free.
           python3 scripts/release/test_native_compat.py
           python3 scripts/release/test_npm_bridge.py
           python3 scripts/release/test_release_publication.py
           python3 scripts/release/test_restamp.py
           python3 scripts/release/test_channel_version.py
+          python3 scripts/release/test_catalog_assets.py
+          python3 scripts/release/test_decoder_manifest.py
+          python3 scripts/release/test_fold_changelog.py
 
   # The ADR-0001 test-contract governor (scripts/testgov/): proves the rows
   # of doc/testing/test-matrix.yaml against the tree — each row's oracle

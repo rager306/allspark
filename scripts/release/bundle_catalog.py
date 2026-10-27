@@ -907,7 +907,16 @@ def generate_bundled_catalog_assets(options) -> dict:
         # packer with --allow-fixture-catalog, or verify with
         # --verify-fixture.
         return {"outDir": str(out_dir), "fixture": True}
-    result = validate_bundled_catalog_dir(out_dir)
+    # A NETWORK or --catalog-dir source can still carry synthetic ids: the test
+    # harnesses serve the fixture bodies through a mock server to exercise the
+    # fetch path byte-for-byte, and an offline checkout can be a fixture tree.
+    # The provenance gate would refuse those, correctly — but only the CONSUMER
+    # may waive it, which is what `--verify-fixture` says. Without this the flag
+    # worked for `verify` and silently did nothing for `generate`, so a caller
+    # that asked for the waiver still got a hard failure.
+    result = validate_bundled_catalog_dir(
+        out_dir, allow_small_fixture=options.verify_fixture
+    )
     result["outDir"] = str(out_dir)
     return result
 
