@@ -1435,6 +1435,19 @@ impl GraphTool {
                 String::new()
             },
         ));
+        // A zero with nothing filtered is UNKNOWN, not "none": method-values,
+        // interface dispatch and cross-package calls do not resolve into call
+        // edges, so "0" has read as "no callers" and sent an agent to delete
+        // live code. The tools review's headline finding; the rule is the
+        // fork's own "empty trace = UNKNOWN".
+        let zero_is_unknown = result.steps.is_empty() && result.filtered == 0;
+        if zero_is_unknown {
+            lines.push(
+                "0 resolved edges is UNKNOWN, not \"no callers\": method-value calls, interface                  dispatch and cross-package calls may not resolve into edges. Cross-check with \
+                 `lsp find_referencing_symbols` or a text search before treating this as dead                  code."
+                    .to_string(),
+            );
+        }
         for step in &result.steps {
             lines.push(format!(
                 "- [depth {}] {} ({}:{}) via {} confidence={:.2}{}",
@@ -1478,6 +1491,9 @@ impl GraphTool {
         details.insert("origin".to_string(), serde_json::json!(result.origin));
         details.insert("steps".to_string(), serde_json::Value::Array(steps));
         details.insert("truncated".to_string(), serde_json::json!(result.truncated));
+        if zero_is_unknown {
+            details.insert("unknown".to_string(), serde_json::json!(true));
+        }
         // Only a call that set a floor carries the echo, so a plain trace keeps
         // exactly the answer it had before the parameter existed.
         if let Some(floor) = confidence_floor {
@@ -2241,6 +2257,66 @@ mod tests {
             .unwrap();
         let text = text_of(&search);
         assert!(text.contains("load"), "{text}");
+    }
+
+    /// Review (tools report, #1.2): a zero-step trace is UNKNOWN, not "none".
+    ///
+    /// Go method-values (`r.POST("/", handler.Serve)`), interface dispatch and
+    /// cross-package calls do not resolve into call edges, so an agent that reads
+    /// "0 step(s)" as "no callers" removes live code. The neutral rendering said
+    /// nothing; the answer must say what a zero actually means and name the
+    /// cross-check.
+    #[tokio::test]
+    async fn a_zero_step_trace_says_unknown_not_none() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "pub fn leaf() -> u32 { 1 }\n             pub fn calls_leaf() -> u32 { leaf() }\n             pub fn orphan() -> u32 { 2 }\n",
+        )
+        .unwrap();
+        let tool = tool(dir.path());
+        tool.dispatch(&serde_json::json!({ "action": "index" }))
+            .unwrap();
+        let trace = tool
+            .dispatch(&serde_json::json!({
+                "action": "trace",
+                "symbol": "orphan",
+                "direction": "in",
+            }))
+            .unwrap();
+        let text = text_of(&trace);
+        assert!(
+            text.contains("0 step(s)"),
+            "the fixture has no caller of orphan: {text}"
+        );
+        assert!(
+            text.to_lowercase().contains("unknown"),
+            "a zero-step trace must carry the UNKNOWN caveat: {text}"
+        );
+        assert!(
+            text.contains("lsp") || text.to_lowercase().contains("text search"),
+            "the caveat must name the cross-check: {text}"
+        );
+        assert_eq!(
+            trace.details.get("unknown"),
+            Some(&serde_json::json!(true)),
+            "the flag lets a caller branch on it without parsing text"
+        );
+
+        // A trace WITH steps stays neutral: the caveat must not ride answers
+        // that actually resolved.
+        let forward = tool
+            .dispatch(&serde_json::json!({
+                "action": "trace",
+                "symbol": "calls_leaf",
+                "direction": "out",
+            }))
+            .unwrap();
+        assert!(
+            !text_of(&forward).to_lowercase().contains("unknown"),
+            "a resolved trace is not unknown: {}",
+            text_of(&forward)
+        );
     }
 
     #[tokio::test]
