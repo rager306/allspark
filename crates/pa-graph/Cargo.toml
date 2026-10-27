@@ -32,6 +32,9 @@ notify.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+# `trace` installs a statement hook, used by one test to prove a view issues no
+# query against `edges`. Dev-only: the shipped crate never installs a hook.
+rusqlite = { version = "0.40", features = ["bundled", "trace"] }
 
 [lints]
 workspace = true

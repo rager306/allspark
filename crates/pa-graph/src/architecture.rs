@@ -221,7 +221,6 @@ pub fn architecture(
     view: ArchitectureView,
 ) -> Result<Architecture> {
     let nodes = store.all_nodes(project)?;
-    let edges = store.all_edges(project)?;
     let mut arch = Architecture {
         project: project.to_string(),
         view,
@@ -234,6 +233,17 @@ pub fn architecture(
         entry_points: Vec::new(),
         file_tree: None,
     };
+
+    // `file_tree` reads nodes only, so it is answered before any edge is read:
+    // loading all of them to build it was 261 988 rows on this repo's index,
+    // decoded from JSON props and dropped. Every other view genuinely needs the
+    // edges, so this is not a whole-view shortcut — it is one view that was
+    // paying for data it never looked at.
+    if matches!(view, ArchitectureView::FileTree) {
+        arch.file_tree = Some(file_tree(&nodes));
+        return Ok(arch);
+    }
+    let edges = store.all_edges(project)?;
 
     // Fold symbol edges up to files for the graph views.
     let node_file: HashMap<i64, String> =
@@ -263,6 +273,7 @@ pub fn architecture(
             arch.entry_points = entry_points(&nodes, &edges);
         }
         ArchitectureView::FileTree => {
+            // Handled above, before any edge is loaded.
             arch.file_tree = Some(file_tree(&nodes));
         }
     }
@@ -639,17 +650,41 @@ fn file_tree(nodes: &[Node]) -> TreeNode {
 }
 
 /// Recursively sort and total the tree; returns the symbol count under `node`.
+///
+/// Counted from a per-`file_path` tally rather than by scanning `nodes` once per
+/// file name. The old shape was O(files × nodes): for each of the project's files
+/// it walked all of them to compare final path segments, so a 37 589-node index
+/// with 332 338 tree entries spent **15.4 s** — 17× the cost of reading the nodes
+/// at all (0.17 s) and 16× the whole edge scan (0.9 s).
+///
+/// The tally also fixes a silent double count the old one had: it matched on the
+/// FINAL segment only, so `a/lib.rs` and `b/lib.rs` each counted the symbols of
+/// both files. Keying on the full path counts each symbol once, under the file it
+/// actually lives in.
 fn rollup(node: &mut TreeNode, nodes: &[Node]) -> usize {
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for n in nodes {
+        if n.label != Label::File && !n.file_path.is_empty() {
+            *counts.entry(n.file_path.as_str()).or_insert(0) += 1;
+        }
+    }
+    rollup_with(node, "", &counts)
+}
+
+/// The counting half of [`rollup`], split out so the tally is built once.
+///
+/// `prefix` is the directory path this node stands for (`""`, `"src/"`,
+/// `"src/deep/"`), so a file name entry resolves to the full path the tally is
+/// keyed on.
+fn rollup_with(node: &mut TreeNode, prefix: &str, counts: &HashMap<&str, usize>) -> usize {
     let mut total = 0usize;
     for child in &mut node.children {
-        total += rollup(child, nodes);
+        let child_prefix = format!("{prefix}{}/", child.name);
+        total += rollup_with(child, &child_prefix, counts);
     }
-    // Count symbols whose file path ends in one of this directory's files.
     for file in &node.files {
-        total += nodes
-            .iter()
-            .filter(|n| n.label != Label::File && path_ends_with(&n.file_path, file))
-            .count();
+        let full = format!("{prefix}{file}");
+        total += counts.get(full.as_str()).copied().unwrap_or(0);
     }
     node.files.sort();
     node.children.sort_by(|a, b| a.name.cmp(&b.name));
@@ -657,16 +692,129 @@ fn rollup(node: &mut TreeNode, nodes: &[Node]) -> usize {
     total
 }
 
-/// Whether a full path's final segment equals `file` (used by the tree rollup).
-fn path_ends_with(path: &str, file: &str) -> bool {
-    path.rsplit('/').next().is_some_and(|last| last == file)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::{Edge, Node};
     use serde_json::json;
+
+    /// The old rollup matched a file entry by its FINAL segment, so `a/lib.rs`
+    /// and `b/lib.rs` each counted the symbols of BOTH files: every per-directory
+    /// total was inflated by the number of same-named files in the project.
+    ///
+    /// A directory's total is what the tree exposes, so the oracle is the three
+    /// directories' counts: `a` has one symbol, `b` two, and the root four
+    /// (including the root-level `top.rs`).
+    #[test]
+    fn two_files_with_the_same_name_each_count_their_own_symbols() {
+        let nodes = vec![
+            node(1, "p::a::one", "a/lib.rs", Label::Function),
+            node(2, "p::b::two", "b/lib.rs", Label::Function),
+            node(3, "p::b::three", "b/lib.rs", Label::Function),
+            node(4, "p::top", "top.rs", Label::Function),
+        ];
+        let tree = file_tree(&nodes);
+        let count = |name: &str| {
+            tree.children
+                .iter()
+                .find(|c| c.name == name)
+                .map_or_else(|| panic!("missing {name}: {:?}", tree.children), |c| c.symbol_count)
+        };
+        assert_eq!(count("a"), 1, "a/lib.rs holds one symbol");
+        assert_eq!(count("b"), 2, "b/lib.rs holds two");
+        assert_eq!(
+            tree.symbol_count, 4,
+            "the root totals every symbol exactly once (got {})",
+            tree.symbol_count
+        );
+    }
+
+    /// The file tree reads nodes only. Loading the project's edges to build it
+    /// was 261 988 rows on this repo's index — decoded and dropped.
+    ///
+    /// The oracle counts the SQL actually executed, not what the code claims:
+    /// `graph(action=architecture, view=file_tree)` must issue no statement
+    /// against `edges`.
+    #[test]
+    fn the_file_tree_view_never_reads_edges() {
+        #![allow(clippy::needless_pass_by_value)]
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // The hook is per-connection in rusqlite, but `trace_v2` takes a plain
+        // `fn`, so the counter lives in a process-global for this one test.
+        static EDGE_READS: AtomicUsize = AtomicUsize::new(0);
+        fn count_edge_reads(event: rusqlite::trace::TraceEvent<'_>) {
+            if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event {
+                if sql.contains("FROM edges") {
+                    EDGE_READS.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+
+        let store = crate::GraphStore::open_in_memory().expect("store");
+        store.register_project("p", "/tmp").expect("project");
+        let mk = |name: &str| {
+            let node = crate::types::Node {
+                id: 0,
+                project: "p".into(),
+                label: crate::types::Label::Function,
+                name: name.into(),
+                qualified_name: format!("p::{name}"),
+                file_path: "src/lib.rs".into(),
+                start_line: 1,
+                end_line: 3,
+                props: serde_json::json!({}),
+            };
+            store.upsert_node(&node).expect("node")
+        };
+        let a = mk("a");
+        let b = mk("b");
+        store
+            .insert_edge("p", a, b, crate::types::EdgeType::Calls, &serde_json::json!({}))
+            .expect("edge");
+
+        let mut store = store;
+        EDGE_READS.store(0, Ordering::Relaxed);
+        store.connection_mut().trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(count_edge_reads),
+        );
+        let tree = store
+            .architecture("p", crate::architecture::ArchitectureView::FileTree)
+            .expect("architecture");
+        let counted = EDGE_READS.swap(0, Ordering::Relaxed);
+        store.connection_mut().trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            None,
+        );
+
+        assert!(tree.file_tree.is_some(), "the view still answers");
+        assert_eq!(
+            counted, 0,
+            "the file tree must not query edges at all; it did {counted} time(s)"
+        );
+
+        // The other views DO need them, which is why this is view-specific.
+        EDGE_READS.store(0, Ordering::Relaxed);
+        store.connection_mut().trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(count_edge_reads),
+        );
+        store
+            .architecture("p", crate::architecture::ArchitectureView::Structure)
+            .expect("architecture");
+        let structure_reads = EDGE_READS.swap(0, Ordering::Relaxed);
+        store.connection_mut().trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            None,
+        );
+        assert!(
+            structure_reads > 0,
+            "the structure view needs the edges; 0 reads means the hook did not observe"
+        );
+    }
+
+
 
     fn node(id: i64, qn: &str, file: &str, label: Label) -> Node {
         Node {

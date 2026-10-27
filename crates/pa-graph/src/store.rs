@@ -177,6 +177,16 @@ impl GraphStore {
         &self.conn
     }
 
+    /// The connection, mutably, for a test that has to install a statement hook.
+    ///
+    /// `rusqlite`'s `trace`/`profile` hooks take `&mut Connection`, and the hook
+    /// is the only way to observe which SQL a view actually issued instead of
+    /// trusting what the code says about itself.
+    #[cfg(test)]
+    pub(crate) fn connection_mut(&mut self) -> &mut Connection {
+        &mut self.conn
+    }
+
     // ── projects ────────────────────────────────────────────────────────
 
     /// Register a project (idempotent), updating its root path and timestamp.
