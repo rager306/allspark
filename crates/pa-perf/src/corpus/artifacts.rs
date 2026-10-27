@@ -109,6 +109,11 @@ pub(crate) fn write_artifact_dir(
                 trigger: "test".to_string(),
                 changes: vec![format!("create memory:{seed_text}-memory-1")],
                 evidence: String::new(),
+                // A prediction the planner wrote; the observation stays empty
+                // until a later `record_refinement(outcome=..)`. The two are
+                // separate fields since audit §5.6, and this fixture declares
+                // both so the corpus exercises the shape a real event has.
+                expected_outcome: String::new(),
                 outcome: String::new(),
                 created_at: at,
             }],
