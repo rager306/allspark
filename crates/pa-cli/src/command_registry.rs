@@ -134,7 +134,7 @@ pub const COMMAND_SPECS: &[CommandSpec] = &[
     ]),
     CommandSpec::new(
         &["incident"],
-        "[--since <time>] [--until <time>] [--session <id>]",
+        "incident [--since <time>] [--until <time>] [--session <id>]",
         "Reconstruct a daemon incident from its logs",
     )
     .description(
@@ -613,6 +613,25 @@ pub fn format_command_help(path: &[&str]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Every command's usage line must NAME its own subcommand.
+    ///
+    /// The renderer builds `Usage:\n  {INVOCATION} {spec.usage}`, so a usage of
+    /// `"[--since <time>]"` prints `allspark [--since ...]` — a command the user
+    /// cannot type. Measured 2026-10-27: dropping the word while sweeping stale
+    /// `prime-agent` spellings produced exactly that, and only a live
+    /// `allspark help incident` showed it.
+    #[test]
+    fn every_usage_line_names_its_own_subcommand() {
+        for spec in COMMAND_SPECS {
+            let first = spec.path[0];
+            assert!(
+                spec.usage.split_whitespace().next() == Some(first),
+                "{}'s usage must start with its own name: {spec:?}",
+                first
+            );
+        }
+    }
     use super::*;
 
     #[test]
