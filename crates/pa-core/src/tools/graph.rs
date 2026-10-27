@@ -30,7 +30,7 @@ use pa_agent::abort::AbortSignal;
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
 use pa_graph::{
     ArchitectureView, Direction, EdgeType, GraphStore, IndexOptions, IndexReport, Label,
-    SearchOptions, TraceOptions, TreeNode,
+    SearchOptions, TraceOptions, Truncation, TreeNode,
 };
 
 /// Project name a store rooted at `root` indexes under when no collision is in
@@ -572,6 +572,7 @@ const ACCEPTED_PARAMS: &[(&str, &[&str])] = &[
             "limit",
             "edge_types",
             "confidence_floor",
+            "work_budget",
         ],
     ),
     ("architecture", &["path", "root", "view"]),
@@ -1410,6 +1411,12 @@ impl GraphTool {
         if let Some(limit) = params.get("limit").and_then(serde_json::Value::as_u64) {
             opts.limit = limit as usize;
         }
+        // The work budget is the other half of a cap: `limit` bounds the answer,
+        // this bounds the walk. `work_budget: 0` lifts the ceiling for a caller
+        // that wants an exhaustive walk and accepts the cost.
+        if let Some(budget) = params.get("work_budget").and_then(serde_json::Value::as_u64) {
+            opts = opts.with_work_budget((budget > 0).then_some(budget as usize));
+        }
         let edge_types =
             parse_edge_types(params.get("edge_types").and_then(serde_json::Value::as_str));
         if !edge_types.is_empty() {
@@ -1440,14 +1447,22 @@ impl GraphTool {
             "Trace from {} ({} step(s)){}{}:",
             result.origin,
             result.steps.len(),
-            if result.truncated {
-                format!(
-                    " — TRUNCATED at the {} node limit; more reachable nodes were not listed, \
-                     raise `limit` for the full set",
+            match result.stopped_by {
+                Some(Truncation::Limit) => format!(
+                    " — TRUNCATED at the {} node limit after examining {} edge(s); more \
+                     reachable nodes were not listed, raise `limit` for the full set",
+                    result.steps.len(),
+                    result.edges_examined
+                ),
+                Some(Truncation::WorkBudget) => format!(
+                    " — TRUNCATED at the work budget after examining {} edge(s) and returning \
+                     {} step(s); the walk stopped on COST, not on the graph's size, so a \
+                     narrower query (lower `depth`, fewer `edge_types`, a more specific \
+                     symbol) is what reaches the rest",
+                    result.edges_examined,
                     result.steps.len()
-                )
-            } else {
-                String::new()
+                ),
+                None => String::new(),
             },
             // A floor makes a short listing ambiguous unless the drops are named:
             // "2 steps" from a symbol that calls twenty reads as a small symbol.
@@ -2226,7 +2241,12 @@ pub fn params_schema() -> serde_json::Value {
             },
             "limit": {
                 "type": "integer",
-                "description": "Result cap for search/trace."
+                "description": "Result cap for search/trace: how many hits or steps may be RETURNED."
+            },
+            "work_budget": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "action=\"trace\": how many EDGES the walk may examine (default 1000). This bounds cost, not the answer: `limit` caps the steps returned, while `work_budget` caps the work spent finding them. They differ when a node has many edges below the confidence floor - those are counted as filtered and still expanded, so a high-fanout call can exhaust the budget and return few steps. The header then says the walk stopped on COST, not on the graph's size, which calls for a narrower query rather than a bigger `limit`. 0 lifts the ceiling for an exhaustive walk."
             },
             "rerank": {
                 "type": "boolean",
@@ -2339,6 +2359,64 @@ mod tests {
     /// "0 step(s)" as "no callers" removes live code. The neutral rendering said
     /// nothing; the answer must say what a zero actually means and name the
     /// cross-check.
+    /// A short trace must say whether it stopped on the answer cap or on COST.
+    /// The two call for different next moves — a bigger `limit` versus a
+    /// narrower query — so "truncated" alone is not enough.
+    #[tokio::test]
+    async fn the_trace_header_names_the_budget_that_stopped_it() {
+        use std::fmt::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+        // A fan-out wide enough that a budget of 1 stops the walk immediately.
+        let mut src = String::from("pub fn leaf() -> u32 { 1 }\n");
+        for i in 0..12 {
+            let _ = writeln!(src, "pub fn mid{i}() -> u32 {{ leaf() }}");
+        }
+        src.push_str("pub fn root() -> u32 {\n");
+        for i in 0..12 {
+            let _ = writeln!(src, "    mid{i}() +");
+        }
+        src.push_str("    0 }\n");
+        std::fs::write(dir.path().join("lib.rs"), src).unwrap();
+        let tool = tool(dir.path());
+        tool.dispatch(&serde_json::json!({ "action": "index" }))
+            .unwrap();
+
+        let by_work = tool
+            .dispatch(&serde_json::json!({
+                "action": "trace",
+                "symbol": "root",
+                "work_budget": 1,
+            }))
+            .unwrap();
+        let text = text_of(&by_work);
+        assert!(
+            text.contains("work budget"),
+            "the header must name the work budget: {text}"
+        );
+        assert!(
+            text.contains("COST, not on the graph's size"),
+            "and say what that implies: {text}"
+        );
+
+        let by_limit = tool
+            .dispatch(&serde_json::json!({
+                "action": "trace",
+                "symbol": "root",
+                "limit": 1,
+                "work_budget": 0,
+            }))
+            .unwrap();
+        let text = text_of(&by_limit);
+        assert!(
+            text.contains("node limit"),
+            "the step cap has its own wording: {text}"
+        );
+        assert!(
+            !text.contains("work budget"),
+            "and must not be confused with the work cap: {text}"
+        );
+    }
+
     #[tokio::test]
     async fn a_zero_step_trace_says_unknown_not_none() {
         let dir = tempfile::tempdir().unwrap();
@@ -2958,6 +3036,7 @@ mod tests {
                 "symbol",
                 "title",
                 "view",
+                "work_budget",
             ],
             "the schema drifted from what the actions read",
         );

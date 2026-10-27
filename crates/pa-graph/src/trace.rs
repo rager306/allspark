@@ -99,11 +99,63 @@ pub struct TraceOptions {
     /// edge, an `IMPORTS` edge. Such an edge is read as full confidence (1.0, in
     /// `read_call_props`), so no floor drops it.
     pub confidence_floor: Option<f32>,
+    /// Maximum edges EXAMINED during the walk, or `None` for no ceiling.
+    ///
+    /// [`Self::limit`] caps the answer; this caps the WORK. They are different
+    /// budgets, and a walk can spend the second without producing the first: a
+    /// node below `confidence_floor` is counted in [`TraceResult::filtered`] and
+    /// NOT in `steps`, yet its subtree is still expanded (see the loop's
+    /// comment — pruning there would hide a step that passes the floor). A
+    /// high-fanout hub therefore costs the full walk and returns almost nothing,
+    /// which is exactly the case the graph review's §3.3 calls out: "Trace limit
+    /// считает выданные steps… небольшой ответ может стоить большого обхода".
+    ///
+    /// A capped walk sets [`TraceResult::truncated`] and states the reason, so a
+    /// short answer is never read as the complete reachable set.
+    pub work_budget: Option<usize>,
+}
+
+/// Why a [`trace`] walk stopped early.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Truncation {
+    /// [`TraceOptions::limit`] capped the returned steps.
+    Limit,
+    /// [`TraceOptions::work_budget`] capped the edges examined.
+    WorkBudget,
+}
+
+impl Truncation {
+    /// The spelling the tool prints.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Limit => "step limit",
+            Self::WorkBudget => "work budget",
+        }
+    }
 }
 
 /// Confidence below which a step is labelled `low_confidence` when the caller
 /// set no [`TraceOptions::confidence_floor`].
 pub const DEFAULT_CONFIDENCE_FLOOR: f32 = 0.6;
+
+/// Edges a default [`trace`] may examine.
+///
+/// Measured on this repo's own index (64 717 nodes / 261 988 edges), depth 4:
+///
+/// - a NORMAL symbol reaches the 200-step answer cap after 234–297 edges, so a
+///   budget above that changes nothing it is supposed to change;
+/// - a symbol whose edges fall below the floor is the case this exists for:
+///   `create_session` returned **0 steps after examining 2 251 edges** (903
+///   counted as filtered and still expanded), 226× the cost of its answer, in
+///   140 ms instead of 27 ms.
+///
+/// 4 000 was the first value here and it **did not** stop that case — the review
+/// lists 4–8k as an experiment start, and the experiment says the pathology fits
+/// under it. 1 000 is ~4× the normal case's cost (so it never binds a healthy
+/// walk) and half the measured pathology. A caller that wants the full walk
+/// passes `work_budget: 0`.
+pub const DEFAULT_WORK_BUDGET: usize = 1_000;
 
 impl TraceOptions {
     /// Default options (outgoing CALLS, depth 2).
@@ -117,6 +169,7 @@ impl TraceOptions {
             edge_types: Vec::new(),
             limit: 200,
             confidence_floor: None,
+            work_budget: Some(DEFAULT_WORK_BUDGET),
         }
     }
 
@@ -169,6 +222,13 @@ impl TraceOptions {
         self.edge_types = types;
         self
     }
+
+    /// Cap the edges examined; `None` lifts the ceiling.
+    #[must_use]
+    pub fn with_work_budget(mut self, budget: Option<usize>) -> Self {
+        self.work_budget = budget;
+        self
+    }
 }
 
 /// The full trace result.
@@ -195,6 +255,19 @@ pub struct TraceResult {
     /// filtered step is still walked through, so its callees are judged on their
     /// own confidence and counted in `steps` if they pass.
     pub filtered: usize,
+    /// Why the walk stopped early, or `None` when it reached its depth.
+    ///
+    /// [`Self::truncated`] says *that* the listing is a prefix; this says *which
+    /// budget* made it one. A caller that only sees `truncated` cannot tell "the
+    /// graph has more" from "I spent the walk on a hub", and the two call for
+    /// different next moves — a lower depth versus a narrower query.
+    pub stopped_by: Option<Truncation>,
+    /// Edges examined, whatever their outcome.
+    ///
+    /// The cost of the answer, printed beside it: a 20-step listing that examined
+    /// 4 000 edges is a different result from one that examined 30, and only this
+    /// number tells them apart.
+    pub edges_examined: usize,
 }
 
 impl TraceResult {
@@ -225,7 +298,8 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
     let mut queue: VecDeque<(i64, usize, f32)> = VecDeque::new();
     queue.push_back((origin, 0, 1.0));
 
-    let mut truncated = false;
+    let mut stopped_by: Option<Truncation> = None;
+    let mut edges_examined = 0usize;
     while let Some((node_id, depth, path_conf)) = queue.pop_front() {
         if depth >= opts.depth {
             continue;
@@ -233,7 +307,14 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
         // Reaching the cap with nodes still queued means the listing is a
         // prefix, not the whole reachable set.
         if steps.len() >= opts.limit {
-            truncated = true;
+            stopped_by = Some(Truncation::Limit);
+            break;
+        }
+        // The work budget is checked before expanding, and again per edge: one
+        // node with hundreds of outgoing edges must not overshoot it the way it
+        // used to overshoot `limit`.
+        if opts.work_budget.is_some_and(|budget| edges_examined >= budget) {
+            stopped_by = Some(Truncation::WorkBudget);
             break;
         }
         for edge in outgoing_edges(conn, node_id, &edge_types, opts.direction)? {
@@ -241,7 +322,12 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
             // have hundreds of outgoing edges, and testing only at the top of
             // the loop let a single fan-out overshoot the limit.
             if steps.len() >= opts.limit {
-                truncated = true;
+                stopped_by = Some(Truncation::Limit);
+                break;
+            }
+            edges_examined += 1;
+            if opts.work_budget.is_some_and(|budget| edges_examined >= budget) {
+                stopped_by = Some(Truncation::WorkBudget);
                 break;
             }
             if !visited.insert(edge.target) {
@@ -279,7 +365,7 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
                 queue.push_back((edge.target, depth + 1, path_conf));
             }
         }
-        if truncated {
+        if stopped_by.is_some() {
             break;
         }
     }
@@ -295,8 +381,13 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
         origin_id: origin,
         origin: opts.symbol.clone(),
         steps,
-        truncated,
+        // `truncated` keeps its meaning: the listing is a prefix. The budget
+        // that made it one travels separately, because the two call for
+        // different next moves.
+        truncated: stopped_by.is_some(),
         filtered,
+        stopped_by,
+        edges_examined,
     })
 }
 
@@ -548,6 +639,127 @@ mod tests {
             )
             .expect("e2");
         store
+    }
+
+    /// The graph review §3.3: "Trace limit считает выданные steps… небольшой
+    /// ответ может стоить большого обхода". A hub whose edges all fall below the
+    /// floor is the exact shape: every neighbour is counted as filtered and its
+    /// subtree still expanded, so the answer stays tiny while the walk is huge.
+    #[test]
+    fn a_hub_below_the_floor_costs_the_budget_not_the_answer() {
+        let store = GraphStore::open_in_memory().expect("store");
+        store.register_project("p", "/tmp").expect("project");
+        let mk = |name: &str| {
+            let node = Node {
+                id: 0,
+                project: "p".into(),
+                label: Label::Function,
+                name: name.into(),
+                qualified_name: format!("p::{name}"),
+                file_path: "src/lib.rs".into(),
+                start_line: 1,
+                end_line: 3,
+                props: json!({}),
+            };
+            store.upsert_node(&node).expect("node")
+        };
+        let main = mk("main");
+        // 40 low-confidence callees, each with its own low-confidence callee:
+        // 40 + 40 edges, none of which pass a 0.9 floor.
+        let floor: f32 = 0.9;
+        let mut hubs = Vec::new();
+        for i in 0..40 {
+            let hub = mk(&format!("hub{i}"));
+            store
+                .insert_edge("p", main, hub, EdgeType::Calls,
+                    &json!({"confidence":0.1,"strategy":"suffix"}))
+                .expect("edge");
+            let leaf = mk(&format!("leaf{i}"));
+            store
+                .insert_edge("p", hub, leaf, EdgeType::Calls,
+                    &json!({"confidence":0.1,"strategy":"suffix"}))
+                .expect("edge");
+            hubs.push(hub);
+        }
+
+        let unbounded = trace(
+            &store,
+            &TraceOptions::new("p", "p::main")
+                .with_depth(2)
+                .with_confidence_floor(Some(floor))
+                .with_work_budget(None),
+        )
+        .expect("trace");
+        assert_eq!(unbounded.steps.len(), 0, "every step is below the floor");
+        assert_eq!(unbounded.edges_examined, 80, "but the walk still spent 80 edges");
+        assert_eq!(unbounded.stopped_by, None, "no ceiling was set");
+
+        let bounded = trace(
+            &store,
+            &TraceOptions::new("p", "p::main")
+                .with_depth(2)
+                .with_confidence_floor(Some(floor))
+                .with_work_budget(Some(10)),
+        )
+        .expect("trace");
+        assert_eq!(bounded.steps.len(), 0);
+        assert_eq!(
+            bounded.stopped_by,
+            Some(Truncation::WorkBudget),
+            "the header must say the walk stopped on COST"
+        );
+        assert!(bounded.truncated, "a prefix is still a prefix");
+        assert!(
+            bounded.edges_examined <= 10,
+            "the budget is a ceiling: examined {}",
+            bounded.edges_examined
+        );
+        assert!(
+            bounded.filtered < unbounded.filtered,
+            "the capped walk saw fewer neighbours: {} vs {}",
+            bounded.filtered,
+            unbounded.filtered
+        );
+    }
+
+    /// `limit` and `work_budget` are different budgets and must be reported
+    /// separately: a caller that reads only "truncated" cannot tell "the graph
+    /// has more" from "I spent the walk on a hub".
+    #[test]
+    fn the_stop_reason_distinguishes_the_step_cap_from_the_work_cap() {
+        let store = seed();
+        let by_limit = trace(
+            &store,
+            &TraceOptions::new("p", "p::main")
+                .with_depth(2)
+                .with_limit(1)
+                .with_work_budget(None),
+        )
+        .expect("trace");
+        assert_eq!(by_limit.stopped_by, Some(Truncation::Limit));
+        assert_eq!(by_limit.steps.len(), 1);
+
+        let by_work = trace(
+            &store,
+            &TraceOptions::new("p", "p::main")
+                .with_depth(2)
+                .with_limit(200)
+                .with_work_budget(Some(1)),
+        )
+        .expect("trace");
+        assert_eq!(by_work.stopped_by, Some(Truncation::WorkBudget));
+        assert_eq!(by_work.edges_examined, 1);
+    }
+
+    /// A walk that reaches its depth is not truncated, and says so.
+    #[test]
+    fn a_complete_walk_reports_no_stop_reason() {
+        let store = seed();
+        let r = trace(&store, &TraceOptions::new("p", "p::main").with_depth(2)).expect("trace");
+        assert_eq!(r.stopped_by, None);
+        assert!(!r.truncated);
+        assert_eq!(r.steps.len(), 2);
+        assert!(r.edges_examined >= 2, "examined {}", r.edges_examined);
     }
 
     #[test]

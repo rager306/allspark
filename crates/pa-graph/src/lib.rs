@@ -223,7 +223,7 @@ pub use store::GraphStore;
 pub use strictness::AstMatchStrictness;
 pub use surface::{body_hash, surface_hash, surface_hash_file, FileSurface, SurfaceSymbol};
 pub use tokenize::{fts_match_expr, split_for_fts, split_ident, tokenize};
-pub use trace::{CrossServiceEdge, Direction, TraceOptions, TraceResult, TraceStep};
+pub use trace::{CrossServiceEdge, Direction, TraceOptions, TraceResult, TraceStep, Truncation};
 pub use tri_modal::{tri_modal, tri_modal_search, TriModalHit, TriModalOptions};
 pub use types::{
     CallArg, CallCandidate, CallSiteRow, CallSiteVerdict, CallStrategy, Edge, EdgeType, FileChange,
