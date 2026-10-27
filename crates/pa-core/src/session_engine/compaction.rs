@@ -267,9 +267,39 @@ pub fn compaction_threshold(
         .saturating_add(1);
     let percentage = requested.max(retention_floor);
     let headroom = settings.reserve_tokens.max(COMBINED_LIMIT_HEADROOM_FLOOR);
+    // A DECLARED budget that cannot coexist with any input is not a
+    // simultaneous claim: the provider caps generated output to whatever the
+    // window still holds. Eight models in the compiled catalog declare exactly
+    // that (`gpt-4` 8192/8192, `llama-3.1-8b-instant` 131072/131072,
+    // `moonshotai/kimi-k3` 1048576/1048576, and five more). Subtracting the
+    // whole declared budget drove the threshold to 0, and 0 means DISABLED:
+    // compaction stopped firing for those models and the session grew until the
+    // provider refused it, with nothing logged (review 5, discussion #3793).
+    //
+    // Such a model reserves half the window instead — the most input a response
+    // of that size can leave room for — so the trigger keeps firing while the
+    // window can still hold the retention floor. A budget BELOW the window is a
+    // real claim and is reserved in full, unchanged.
+    // A reservation can never exceed half the window either: the other half is
+    // the input the session exists to hold. A model declaring 124k output on a
+    // 128k window (an explicit `models.json` budget) used to saturate the bound
+    // to 0 and stop compaction entirely.
+    let declared_output = max_output_tokens.min(context_window / 2);
     let combined = context_window
-        .saturating_sub(max_output_tokens)
+        .saturating_sub(declared_output)
         .saturating_sub(headroom);
+    // Reserves are ADVISORY headroom, not physical claims on the window. When
+    // they sum past it — an 8k window (`gpt-4`, 8192/8192) against the 16k
+    // headroom floor alone — the difference saturates to 0, and 0 means
+    // DISABLED. A window still holds input, so the trigger must still fire:
+    // compact at half the window, which leaves the other half for output and
+    // estimation drift. Ordinary windows never reach this branch (their
+    // combined bound is positive), so their thresholds are unchanged.
+    let combined = if combined == 0 && context_window > 0 {
+        context_window / 2
+    } else {
+        combined
+    };
     percentage.min(combined)
 }
 
@@ -807,14 +837,22 @@ mod tests {
             keep_recent_tokens: 10,
         };
         assert_eq!(compaction_threshold(131_072, 32_768, &settings), 94_208);
-        // An output budget that cannot fit any context disables the
-        // trigger.
-        assert_eq!(
-            compaction_threshold(128_000, 124_000, &CompactionSettings::default()),
-            0
-        );
+        // An output budget larger than any context still leaves a LIVE trigger
+        // (see `a_declared_output_budget_at_the_window_never_disables_the_trigger`):
+        // a reservation never exceeds half the window, because the other half is
+        // the input the session exists to hold. Returning 0 here used to read as
+        // "disabled" and stopped compaction for the model entirely.
+        let wide = compaction_threshold(128_000, 124_000, &CompactionSettings::default());
+        assert!(wide > 0, "a live trigger is the contract: {wide}");
+        assert_eq!(wide, 128_000 / 2 - 16_384);
+        assert!(should_compact(
+            wide + 1,
+            128_000,
+            124_000,
+            &CompactionSettings::default()
+        ));
         assert!(!should_compact(
-            126_000,
+            wide,
             128_000,
             124_000,
             &CompactionSettings::default()

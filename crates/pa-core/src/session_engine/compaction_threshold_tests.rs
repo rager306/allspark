@@ -67,7 +67,10 @@ fn invalid_runtime_percentages_fall_back_without_losing_headroom() {
         ..Default::default()
     };
     assert_eq!(compaction_threshold(131_072, 32_768, &settings), 94_208);
-    assert_eq!(compaction_threshold(4_000, 32_000, &settings), 0);
+    // A window smaller than the headroom floor keeps a LIVE trigger: the
+    // difference saturates to 0, and 0 means disabled — see
+    // `a_declared_output_budget_at_the_window_never_disables_the_trigger`.
+    assert_eq!(compaction_threshold(4_000, 32_000, &settings), 2_000);
 }
 
 #[tokio::test]
@@ -127,4 +130,52 @@ fn low_percentages_leave_room_for_retained_history_and_both_summaries() {
         // The hard combined model ceiling wins even if retention cannot fit.
         assert_eq!(compaction_threshold(65_536, 32_000, &settings), 17_152);
     }
+}
+
+/// Review 5 (#3793): a declared output budget that cannot fit alongside any
+/// input must not disable the trigger.
+///
+/// Eight models in the compiled catalog declare `maxTokens == contextWindow`
+/// (`gpt-4` 8192/8192, `llama-3.1-8b-instant` 131072/131072,
+/// `moonshotai/kimi-k3` 1048576/1048576, `moonshotai/kimi-k2.6`,
+/// `meta-llama/Llama-3.2-3B-Instruct`, `openai/gpt-oss-20b`,
+/// `moonshotai/kimi-k2-0905`). Subtracting the whole budget gave a threshold of
+/// 0, which this module reads as DISABLED — so compaction never fired and the
+/// session grew until the provider rejected it.
+#[test]
+fn a_declared_output_budget_at_the_window_never_disables_the_trigger() {
+    let settings = CompactionSettings::default();
+    for (window, output) in [
+        (8_192u64, 8_192u64),
+        (131_072, 131_072),
+        (98_304, 98_304),
+        (1_048_576, 1_048_576),
+        // A budget ABOVE the window is the same shape.
+        (131_072, 200_000),
+    ] {
+        let threshold = compaction_threshold(window, output, &settings);
+        assert!(
+            threshold > 0,
+            "window {window} with declared output {output} must keep a live trigger"
+        );
+        assert!(
+            !should_compact(1, window, output, &settings),
+            "an empty session is never due"
+        );
+        assert!(
+            should_compact(threshold + 1, window, output, &settings),
+            "crossing the threshold must fire for window {window}"
+        );
+    }
+}
+
+/// A budget BELOW the window is a real simultaneous claim and is reserved in
+/// full: the clamp above must not loosen the ordinary cases.
+#[test]
+fn a_real_output_budget_is_still_reserved_in_full() {
+    let settings = CompactionSettings::default();
+    // 131_072 - 32_768 - 16_384 = 81_920 (the 95% ceiling is higher).
+    assert_eq!(compaction_threshold(131_072, 32_768, &settings), 81_920);
+    // 128_000 - 0 - 16_384 = 111_616 < 95% of 128_000.
+    assert_eq!(compaction_threshold(128_000, 0, &settings), 111_616);
 }
