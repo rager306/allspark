@@ -65,6 +65,12 @@ proptest = { workspace = true }
 # interval auto-advances).
 tokio = { workspace = true, features = ["test-util"] }
 
+[lints.rust]
+# `cfg(kani)` is the standard Kani entry condition: `cargo kani` sets it, a plain
+# `cargo build` does not. Kani's docs require the declaration, and this crate's
+# lint bar is -D warnings.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
 [lints.clippy]
 # pa-core keeps its OWN lints table (not `workspace = true`): the
 # workspace's `rust.unsafe_code = "forbid"` would outlaw the platform

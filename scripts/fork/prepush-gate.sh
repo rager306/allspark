@@ -133,26 +133,24 @@ else
   echo "loom: ok"
 fi
 
-step "kani (pa-mem robin_hood)"
-# Two conditions, and the second is the one this step used to miss: the gate
-# named `verify_robin_hood_delete`, a harness that exists NOWHERE in the tree
-# (no `#[kani::proof]` in crates/pa-mem). With the toolchain installed, the
-# command below would fail on a MISSING HARNESS and be reported as a failing
-# proof — an unreachable-step defect dressed as a red test. So the harness has
-# to be present before it is worth running; matrix row MUT-kani-robin-hood is
-# `status: gap`, and this step now says so instead of promising a proof.
-# `grep`, not `rg`: the gate must not gain a dependency on a tool it does not
-# otherwise require, and this is a plain fixed-string presence check.
-if ! grep -q 'fn verify_robin_hood_delete' crates/pa-mem/src/robin_hood.rs 2>/dev/null; then
-  echo "kani: SKIPPED (no verify_robin_hood_delete harness in pa-mem — matrix row MUT-kani-robin-hood is a gap)"
-elif command -v cargo-kani >/dev/null 2>&1 || cargo kani --version >/dev/null 2>&1; then
-  if ! cargo kani -p pa-mem --harness verify_robin_hood_delete >"$OUT/kani.log" 2>&1; then
-    echo "kani: FAILED (see $OUT/kani.log)"; sed -n '1,20p' "$OUT/kani.log"; fail=1
+step "kani (pa-core platform decisions)"
+# The lane moved from pa-mem's robin_hood to pa-core's platform code, and for
+# the reason the audit gave: RobinHoodMap has no consumer outside pa-mem's own
+# tests, so a proof about it proves nothing about the product, while
+# `planned_open_file_limit` decides a process-wide descriptor limit at startup.
+# scripts/kani-check.sh carries the toolchain workaround and its measurements;
+# a missing bundle is a SKIP with the install command, never a fake green.
+if bash scripts/kani-check.sh >"$OUT/kani.log" 2>&1; then
+  if grep -q 'kani-check: no Kani bundle' "$OUT/kani.log"; then
+    echo "kani: SKIPPED (no Kani bundle — cargo install --locked kani-verifier)"
+  elif grep -q 'kani-check: the bundle needs' "$OUT/kani.log"; then
+    echo "kani: SKIPPED (bundle needs a pinned rustup toolchain that is absent)"
   else
-    echo "kani: ok"
+    verified=$(grep -c 'VERIFICATION:- SUCCESSFUL' "$OUT/kani.log" 2>/dev/null || echo 0)
+    echo "kani: ok ($verified harnesses)"
   fi
 else
-  echo "kani: SKIPPED (harness present, toolchain absent — matrix row MUT-kani-robin-hood, advisory)"
+  echo "kani: FAILED (see $OUT/kani.log)"; sed -n '1,20p' "$OUT/kani.log"; fail=1
 fi
 
 if [[ $fail -ne 0 ]]; then

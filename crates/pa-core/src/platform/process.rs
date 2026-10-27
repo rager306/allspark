@@ -94,6 +94,42 @@ pub fn set_no_window(_command: &mut Command) {}
 /// # Errors
 ///
 /// The OS error of a failed `getrlimit`, `sysctlbyname` or `setrlimit`.
+/// The descriptor limit a process should hold, given what the OS reports.
+///
+/// Split out of [`raise_open_file_limit`] so the DECISION is checkable without a
+/// syscall: the caller is a pair of `getrlimit`/`setrlimit` calls around this,
+/// and what can be wrong is the arithmetic, not the calls.
+///
+/// Returns the soft limit to install, or `None` when the current one already
+/// reaches the target (the caller then makes no syscall at all).
+///
+/// The invariant every caller relies on, and the one the `kani::proof` below
+/// checks: a returned limit is never BELOW the current soft limit, so raising a
+/// limit can never lower it. Lowering it would make already-open descriptors
+/// uninheritable — the exact failure this function exists to prevent — and an
+/// off-by-one here is invisible in a normal test, because the OS silently caps a
+/// request at `rlim_max`.
+#[cfg(unix)]
+#[must_use]
+pub fn planned_open_file_limit(
+    current_soft: u64,
+    hard_limit: u64,
+    platform_cap: Option<u64>,
+) -> Option<u64> {
+    let target = match platform_cap {
+        // macOS refuses a soft limit above `kern.maxfilesperproc`.
+        Some(cap) => hard_limit.min(cap),
+        None => hard_limit,
+    };
+    (current_soft < target).then_some(target)
+}
+
+#[cfg(unix)]
+/// Raise this process's open-file soft limit to the ceiling the OS reports.
+///
+/// # Errors
+///
+/// The OS error of a failed `getrlimit`, `sysctl` (macOS) or `setrlimit`.
 #[cfg(unix)]
 pub fn raise_open_file_limit() -> std::io::Result<Option<u64>> {
     let mut limit = libc::rlimit {
@@ -103,10 +139,10 @@ pub fn raise_open_file_limit() -> std::io::Result<Option<u64>> {
     if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) } != 0 {
         return Err(std::io::Error::last_os_error());
     }
-    #[cfg(not(target_os = "macos"))]
-    let target = limit.rlim_max;
+    // macOS refuses a soft limit above `kern.maxfilesperproc`; other targets
+    // take `rlim_max` as the ceiling.
     #[cfg(target_os = "macos")]
-    let target = {
+    let platform_cap = {
         let mut per_process: libc::c_int = 0;
         let mut size = std::mem::size_of::<libc::c_int>();
         let read = unsafe {
@@ -121,13 +157,17 @@ pub fn raise_open_file_limit() -> std::io::Result<Option<u64>> {
         if read != 0 {
             return Err(std::io::Error::last_os_error());
         }
-        limit.rlim_max.min(per_process.unsigned_abs().into())
+        Some(per_process.unsigned_abs().into())
     };
-    if limit.rlim_cur < target {
-        limit.rlim_cur = target;
-        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) } != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
+    #[cfg(not(target_os = "macos"))]
+    let platform_cap = None;
+
+    let Some(target) = planned_open_file_limit(limit.rlim_cur, limit.rlim_max, platform_cap) else {
+        return Ok(Some(limit.rlim_cur));
+    };
+    limit.rlim_cur = target;
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) } != 0 {
+        return Err(std::io::Error::last_os_error());
     }
     Ok(Some(limit.rlim_cur))
 }
@@ -663,5 +703,75 @@ mod exit_wait_tests {
             wait_for_exit(pid).await.is_ok(),
             "a reaped pid resolves at once"
         );
+    }
+}
+
+/// Kani harnesses for the descriptor-limit decision.
+///
+/// This is the "zero annotations yield panic-freedom, contracts yield the
+/// property" tier the 2026 practice describes: `planned_open_file_limit` is a
+/// pure u64 function, so a bounded model checker can quantify over EVERY input
+/// instead of the handful a unit test picks.
+#[cfg(kani)]
+mod kani_harnesses {
+    use super::*;
+
+    /// The safety property: raising a limit never lowers it.
+    ///
+    /// This is not hypothetical. The caller runs at process start, and a soft
+    /// limit BELOW the current one makes every already-open descriptor
+    /// uninheritable — silent, and it looks like a resource bug much later.
+    #[kani::proof]
+    fn planned_limit_never_lowers_the_soft_limit() {
+        let current_soft: u64 = kani::any();
+        let hard_limit: u64 = kani::any();
+        let cap: Option<u64> = kani::any();
+        kani::assume(current_soft <= hard_limit);
+
+        if let Some(planned) = planned_open_file_limit(current_soft, hard_limit, cap) {
+            assert!(planned >= current_soft);
+        }
+    }
+
+    /// The progress property: whenever the OS allows a higher limit, one is
+    /// planned. Without this, a planner returning `None` unconditionally would
+    /// satisfy the safety property and silently stop raising limits at all.
+    #[kani::proof]
+    fn a_raise_is_planned_whenever_the_os_allows_one() {
+        let current_soft: u64 = kani::any();
+        let hard_limit: u64 = kani::any();
+        let cap: Option<u64> = kani::any();
+        kani::assume(current_soft <= hard_limit);
+        let effective = match cap {
+            Some(limit) => hard_limit.min(limit),
+            None => hard_limit,
+        };
+        kani::assume(current_soft < effective);
+
+        assert_eq!(
+            planned_open_file_limit(current_soft, hard_limit, cap),
+            Some(effective)
+        );
+    }
+
+    /// Anti-vacuity, with ASSERTIONS rather than `kani::cover!`.
+    ///
+    /// Measured 2026-10-27: a planner that returns `None` unconditionally makes
+    /// the cover harness report "1 of 2 cover properties satisfied" and still
+    /// print `VERIFICATION: SUCCESSFUL` — cover findings do not fail a run. A
+    /// vacuity check that cannot fail is the same inert guard this repository
+    /// keeps finding elsewhere, so the witnesses are plain assertions: one per
+    /// outcome, on concrete inputs. Both proofs above are vacuous without them
+    /// (a stuck planner satisfies "never lowers" trivially).
+    #[kani::proof]
+    fn both_outcomes_are_reached_by_concrete_witnesses() {
+        // No raise needed: the soft limit already reaches the ceiling.
+        assert_eq!(planned_open_file_limit(10, 10, None), None);
+        // A raise is planned: the ceiling is above the current soft limit.
+        assert_eq!(planned_open_file_limit(10, 20, None), Some(20));
+        // The macOS cap limits the target without ever going below the start.
+        assert_eq!(planned_open_file_limit(10, 100, Some(50)), Some(50));
+        // A cap below the current soft limit plans nothing (no lowering).
+        assert_eq!(planned_open_file_limit(10, 100, Some(5)), None);
     }
 }
