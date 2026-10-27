@@ -1720,12 +1720,36 @@ impl GraphTool {
             None => query,
         };
         // `id` reads one decision's full body; listing stays a summary.
+        //
+        // The read is SCOPED like the list: `scope: "all"` answers any
+        // workspace's decision, everything else requires the decision to belong
+        // to this project or the global bucket. An unscoped `get_adr` let an id
+        // read in one checkout return another checkout's decision (review 4.4).
         if let Some(id) = params.get("id").and_then(serde_json::Value::as_i64) {
+            let unscoped = matches!(
+                params
+                    .get("scope")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .map(str::to_ascii_lowercase)
+                    .as_deref(),
+                Some("all")
+            );
             let found = self.with_reader(|store| {
                 let adrs = pa_graph::adr::AdrStore::new(store.connection())
                     .map_err(|err| anyhow::anyhow!("adr store: {err}"))?;
-                adrs.get_adr(id)
-                    .map_err(|err| anyhow::anyhow!("get adr: {err}"))
+                if unscoped {
+                    adrs.get_adr(id)
+                        .map_err(|err| anyhow::anyhow!("get adr: {err}"))
+                } else {
+                    adrs.get_adr_in_project(id, &project)
+                        .map_err(|err| anyhow::anyhow!("get adr: {err}"))
+                }
+                .map(|found| {
+                    // A row may live in the GLOBAL bucket (empty project): it is
+                    // shared vocabulary, so a scoped read accepts it too.
+                    found.filter(|adr| unscoped || adr.project == project || adr.project.is_empty())
+                })
             })?;
             let Some(adr) = found else {
                 anyhow::bail!("adr #{id} not found");
@@ -4062,12 +4086,16 @@ mod tests {
         // reads the hit names: a cascade answers something even for a miss
         // (measured: it returned B's own `only_in_b`), and only the symbol can
         // distinguish an answer from an echo.
+        // The key is `results` (the tool's own details shape). Reading `hits`
+        // returned an empty vec for ever, so this negative assertion could never
+        // fail: the oracle passed on the broken code it was written to catch
+        // (review 4.4). Assert the key first, so a rename fails loudly here.
         let hits = foreign
             .details
-            .get("hits")
+            .get("results")
             .and_then(serde_json::Value::as_array)
             .cloned()
-            .unwrap_or_default();
+            .expect("the search details carry a `results` array");
         assert!(
             !hits.iter().any(|hit| {
                 hit.get("name").and_then(serde_json::Value::as_str) == Some("only_in_a")
@@ -4090,6 +4118,65 @@ mod tests {
             .expect("the same root resolves to the same project");
         assert!(text_of(&again).contains("only_in_b"));
     }
+    /// Review 4.4: `id` must not read another workspace's decision.
+    ///
+    /// The list was scoped in a previous change; the by-id read was not, so an
+    /// agent that saw a decision id in one checkout could read a different
+    /// checkout's body — the same cross-tree leak the warm search path had.
+    #[tokio::test]
+    async fn an_adr_body_is_scoped_to_its_workspace_unless_scope_all() {
+        let a = tempfile::tempdir().unwrap().path().join("service-a");
+        let b = tempfile::tempdir().unwrap().path().join("service-b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("lib.rs"), "pub fn a() {}\n").unwrap();
+        std::fs::write(b.join("lib.rs"), "pub fn b() {}\n").unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let db_path = db.path().join("graph.db");
+
+        let tool_a = GraphTool::new(db_path.clone(), a);
+        tool_a
+            .dispatch(&serde_json::json!({
+                "action": "adr",
+                "title": "A-only decision",
+                "context": "the A tree",
+                "decision": "keep it here",
+                "consequences": "B must not see it",
+            }))
+            .unwrap();
+        // The list is a SUMMARY (text lines + a count), so the id comes off the
+        // rendering `- #<id> [status] title`, which is the shape a model reads.
+        let listed = tool_a
+            .dispatch(&serde_json::json!({ "action": "adr" }))
+            .unwrap();
+        let listing = text_of(&listed);
+        let id: i64 = listing
+            .split("- #")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|digits| digits.parse().ok())
+            .unwrap_or_else(|| panic!("the decision id must be in the listing: {listing}"));
+
+        // B asks for A's id: the scoped read refuses it.
+        let tool_b = GraphTool::new(db_path, b);
+        let refused = tool_b.dispatch(&serde_json::json!({ "action": "adr", "id": id }));
+        let message = format!("{refused:?}");
+        assert!(
+            refused.is_err() || !message.contains("keep it here"),
+            "another workspace's decision body leaked: {message}"
+        );
+
+        // `scope: all` is the explicit opt-in that reads it.
+        let all = tool_b
+            .dispatch(&serde_json::json!({ "action": "adr", "id": id, "scope": "all" }))
+            .expect("scope=all answers any workspace");
+        assert!(
+            text_of(&all).contains("keep it here"),
+            "scope=all must return the body: {}",
+            text_of(&all)
+        );
+    }
+
     /// §4.2 (audit): the `adr` table had no project field and `action_adr`
     /// queried globally, so two projects with different names shared one set of
     /// decisions, and the tool answered id/status/title only — an agent could

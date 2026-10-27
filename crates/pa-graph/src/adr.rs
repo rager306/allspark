@@ -225,6 +225,34 @@ impl<'a> AdrStore<'a> {
     ///
     /// # Errors
     /// Propagates SQLite errors.
+    /// Default list scope: the ADR must belong to `project`.
+    ///
+    /// The unscoped [`Self::get_adr`] answered any id from any workspace, so an
+    /// agent that read a decision id in one checkout could read another
+    /// checkout's decision — the same cross-tree leak the graph warm path had
+    /// (review 4.4). Workspace memory is per-workspace unless the caller asks
+    /// for `scope: all`.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    pub fn get_adr_in_project(&self, id: i64, project: &str) -> Result<Option<Adr>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT id, title, status, context, decision, consequences, supersedes, project
+                 FROM adr WHERE id = ?1 AND project = ?2",
+                params![id, project],
+                Self::map_row,
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Any id, in any workspace. Only for a caller that asked for `scope: all`
+    /// or for a migration that must see every row.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
     pub fn get_adr(&self, id: i64) -> Result<Option<Adr>> {
         let row = self
             .conn
@@ -284,6 +312,25 @@ impl<'a> AdrStore<'a> {
             .query_row(
                 "SELECT id FROM adr WHERE supersedes = ?1 ORDER BY id LIMIT 1",
                 params![id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// The superseding id WITHIN `project`.
+    ///
+    /// An unscoped answer let a decision in one workspace appear superseded by
+    /// another workspace's row that happened to name the same id (review 4.4).
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    pub fn superseded_by_in_project(&self, id: i64, project: &str) -> Result<Option<i64>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT id FROM adr WHERE supersedes = ?1 AND project = ?2 ORDER BY id LIMIT 1",
+                params![id, project],
                 |r| r.get(0),
             )
             .optional()?;
