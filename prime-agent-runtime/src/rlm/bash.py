@@ -300,6 +300,17 @@ class BashResult:
         # repr, equality, and positional construction stay unchanged.
         return False
 
+    @property
+    def handle(self) -> "BashHandle | None":
+        """Always None: a finished result has nothing left to collect.
+
+        The tools report's trip-hazard: `r.handle` is taught for a
+        still-running snapshot, and a completed result answered the same
+        attribute with an AttributeError — two shapes for one idiom. Reading
+        `.handle` on either shape now answers; only the snapshot's is live.
+        """
+        return None
+
     def tail(self, n: int = 50) -> str:
         """The last n output lines: the same shape as `BashHandle.tail`."""
         return "\n".join(self.output.splitlines()[-n:])

@@ -124,6 +124,36 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
         awaited = await handle
         self.assertEqual(handle.poll(), awaited)
 
+    async def test_a_finished_result_answers_handle_with_none(self):
+        # The tools report's trip-hazard: `.handle` is taught for a
+        # still-running snapshot, and a completed result used to raise
+        # AttributeError for the same attribute — two shapes for one idiom.
+        # The degrade needs the harness's completion contract wired, exactly as
+        # the bounded-await tests arrange it.
+        bash_module._set_completion_notices_wired(True)
+        self.addCleanup(bash_module._set_completion_notices_wired, False)
+        result = await bash("echo hi")
+        self.assertIsNone(result.handle)
+        self.assertFalse(result.running)
+
+        # The snapshot's handle stays live; poll() collects the final result
+        # once the command is done (the degrade's own re-await path re-bounds).
+        handle = bash("sleep 0.8; echo slow; exit 0", yield_after=0.2)
+        snapshot = await handle
+        try:
+            self.assertIsInstance(snapshot, bash_module.BashSnapshot)
+            self.assertIsNotNone(snapshot.handle)
+            final = None
+            for _ in range(400):
+                final = handle.poll()
+                if final is not None:
+                    break
+                await asyncio.sleep(0.05)
+            self.assertIsNotNone(final, "the command finishes inside the poll window")
+            self.assertEqual(final.exit_code, 0)
+        finally:
+            handle.kill()
+
     async def test_result_carries_pid_command_and_a_matching_tail(self):
         command = "printf 'one\\ntwo\\nthree\\n'"
         handle = bash(command)
