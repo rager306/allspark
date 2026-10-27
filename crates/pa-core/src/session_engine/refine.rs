@@ -211,49 +211,53 @@ pub fn load_refinement_history(
 
 /// The session's local harness state directory.
 ///
-/// This MUST be `get_session_artifact_dir()`'s `<artifact>/harness`, and not
-/// `get_session_dir()/harness`. The two are not the same path:
-/// `get_session_dir()` is the directory sessions are STORED in — for a daemon
-/// worker it is `<agent>/sessions`, the shared parent of every session — so
-/// `get_session_dir()/harness` is one store for the whole install, while the
-/// kernel is handed `get_local_harness_state_dir(artifact)` (a per-session
-/// directory under `<agent>/session-artifacts/<id>/harness`,
-/// `runtime_wiring.rs:276`) and the digest reads the same one
-/// (`engine.rs:457`). Using the session dir therefore wrote refinements to a
-/// path nothing ever read back: the on-disk evidence was
-/// `<agent>/sessions/harness` holding 55 refinements, while the prompt digest
-/// rendered the global store with 0 (review R1).
-///
-/// The daemon worker deliberately keeps the session manager non-persisted
-/// (the durable JSONL belongs to the worker, not the manager), so
-/// `get_session_artifact_dir()` answers `None` there — and the fallback below
-/// used to write to `<sessions>/harness`, one directory shared by the whole
-/// install, while the kernel and the digest read
-/// `session-artifacts/<id>/harness`. Two addresses for one "local memory".
+/// This MUST be the artifact tree (`<artifact>/harness`), never the session
+/// directory: an in-memory manager's artifact dir is `None` (the durable JSONL
+/// belongs to the worker, not the manager), so a fallback to the session dir
+/// writes to `<sessions>/harness`, one directory shared by the whole install,
+/// while the kernel and the digest read `session-artifacts/<id>/harness` — two
+/// addresses for one "local memory".
 ///
 /// The worker's conversation-log path carries the same identity the engine
-/// already derives (`session_artifact_dir_for_log`), so it is the third
-/// source here — the SAME rule the engine applies at `engine.rs:453`.
+/// already derives (`local_harness_dir_for_log`), so it is a first-class input
+/// here, not a last resort: a daemon worker builds a NON-persisted manager and
+/// keeps the real path in `SessionEngineConfig::conversation_log_path`, so
+/// `get_session_file()` is `None` there (review 4.2).
 ///
-/// Fallback order: manager artifact dir → conversation-log-implied artifact
-/// dir → the session dir (an in-memory manager with neither).
+/// Fallback order: manager artifact dir → manager file → conversation log →
+/// the session dir (an in-memory manager with neither).
 ///
 /// # Panics
 ///
-/// Never in practice: the mapping is total for any directory, and both branches
-/// supply one.
+/// Never in practice: the mapping is total for any directory, and every branch
+/// supplies one.
+#[must_use]
+pub fn local_harness_state_dir_for(
+    session: &SessionManager,
+    conversation_log: Option<&std::path::Path>,
+) -> PathBuf {
+    let from_log = |log: &std::path::Path| super::harness_digest::local_harness_dir_for_log(log);
+    if let Some(dir) = session.get_session_artifact_dir() {
+        return crate::refinement::get_local_harness_state_dir(Some(&dir))
+            .expect("an artifact dir always yields a local harness dir");
+    }
+    if let Some(dir) = session
+        .get_session_file()
+        .and_then(from_log)
+        .or_else(|| conversation_log.and_then(from_log))
+    {
+        return dir;
+    }
+    crate::refinement::get_local_harness_state_dir(Some(session.get_session_dir()))
+        .expect("a session dir always yields a local harness dir")
+}
+
+/// A caller that holds only the manager. Prefer [`local_harness_state_dir_for`]
+/// wherever the conversation log is in reach: a daemon worker's manager carries
+/// no file, so this loses the identity there.
 #[must_use]
 pub fn local_harness_state_dir(session: &SessionManager) -> PathBuf {
-    let artifact_dir = session
-        .get_session_artifact_dir()
-        .or_else(|| {
-            session
-                .get_session_file()
-                .and_then(super::harness_digest::session_artifact_dir_for_log)
-        })
-        .unwrap_or_else(|| session.get_session_dir().to_path_buf());
-    crate::refinement::get_local_harness_state_dir(Some(&artifact_dir))
-        .expect("a session dir always yields a local harness dir")
+    local_harness_state_dir_for(session, None)
 }
 
 /// Strip display-only `local:`/`global:` prefixes from edit ids.
@@ -1314,6 +1318,46 @@ Reviewer instructions: record it"
     /// per-session path (`engine.rs:457`). Refinements were therefore written to
     /// `<agent>/sessions/harness` and read from nowhere: the live install had 55
     /// refinements in the store the digest never opened.
+    /// Review 4.2: the WORKER's manager has no session file, and the resolver
+    /// must still land where the writer wrote.
+    ///
+    /// A daemon worker builds `SessionManager::in_memory_in_session_dir` and
+    /// copies only the durable header id; `get_session_file()` is `None` there.
+    /// The previous test called `manager.set_session_file(..)` by hand — a step
+    /// no production path performs — so it proved the helper, not the wiring.
+    #[test]
+    fn the_worker_resolver_reads_the_conversation_log_when_the_manager_has_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_dir = dir.path().join("sessions");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let log = session_dir.join("0192a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b.jsonl");
+        std::fs::write(&log, "").unwrap();
+
+        // The worker's manager: a session dir and nothing else.
+        let manager = SessionManager::in_memory_in_session_dir(dir.path(), &session_dir);
+        assert!(
+            manager.get_session_file().is_none(),
+            "the fixture must model the worker: no session file on the manager"
+        );
+
+        // The artifact tree `harness_digest` resolves for the same log: the
+        // engine and the digest must agree, or the writer and the reader differ.
+        let expected = crate::session_engine::harness_digest::local_harness_dir_for_log(&log)
+            .expect("the log resolves");
+        let from_log = local_harness_state_dir_for(&manager, Some(&log));
+        assert_eq!(
+            from_log, expected,
+            "the conversation log must resolve to the same artifact tree the digest uses"
+        );
+
+        // Without the log the helper still answers, from the session dir — so a
+        // pathless session degrades rather than panicking.
+        let pathless = local_harness_state_dir_for(&manager, None);
+        let from_dir = crate::refinement::get_local_harness_state_dir(Some(&session_dir))
+            .expect("a session dir yields a local harness dir");
+        assert_eq!(pathless, from_dir);
+    }
+
     #[test]
     fn the_local_harness_dir_is_the_session_artifact_dir_not_the_sessions_parent() {
         let dir = tempfile::tempdir().unwrap();

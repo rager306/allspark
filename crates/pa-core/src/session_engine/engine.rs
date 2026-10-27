@@ -453,8 +453,13 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     if compaction_settings.agent_callable.unwrap_or(true) {
         turn_boundary.register_compact_handlers(&mut handlers, keep_recent_tokens);
     }
-    // The daemon worker owns persistence outside the session manager, so
-    // its conversation-log path implies the same artifact tree.
+    // The daemon worker owns persistence outside the session manager: it builds
+    // a NON-persisted manager (which copies only the durable header id) and
+    // keeps the real path in `config.conversation_log_path`. So the conversation
+    // log is a first-class input here, not a fallback for a manager that should
+    // have had the file — see `refine::local_harness_state_dir_for`, the one
+    // resolver both this and `refine` use, so the writer and the reader cannot
+    // land on different directories (review 4.2).
     let session_artifact_dir: Option<PathBuf> = wiring
         .session
         .lock()
