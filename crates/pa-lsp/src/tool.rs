@@ -287,10 +287,15 @@ impl LspTool {
             client.diagnostics(&path).await?
         } else {
             let Some((diagnostics, _)) = client.wait_for_diagnostics(&path, timeout).await else {
+                // The tools report: "no diagnostics" must be distinguishable
+                // from "the server is still starting", so the wait timeout
+                // names the server's state.
+                let warmth = client.warmth().await;
                 return Ok(AgentToolResult::text(format!(
-                    "no diagnostics published for {} within {:?}",
+                    "no diagnostics published for {} within {timeout:?} [lsp: {} {}]",
                     path.display(),
-                    timeout
+                    client.name,
+                    warmth.line()
                 )));
             };
             diagnostics
@@ -302,7 +307,12 @@ impl LspTool {
                 FlatSymbol::name_path,
             )
         });
-        let mut text = format!("{} diagnostics for {}\n", diagnostics.len(), path.display());
+        // "0 diagnostics" is a claim about the file; say "(clean)" so the empty
+        // answer reads as a verdict, and when the server is still indexing say
+        // that the empty answer may not be final (the tools report's cold-start
+        // finding: a warming gopls and a clean file rendered identically).
+        let warmth = client.warmth().await;
+        let mut text = render_diagnostics_header(diagnostics.len(), &path, client.name, &warmth);
         for (severity, name_path, diag) in &grouped {
             let position = diag.range.start;
             let _ = writeln!(
@@ -651,9 +661,16 @@ impl LspTool {
             .collect();
         let budget = params.max_matches.unwrap_or(200);
         let rendered = render::render_references(&refs, budget);
+        // "direct" is the contract the tools report asked to be explicit: an
+        // LSP reference is a textual reference, not a transitive caller —
+        // `handler.Serve` passed as a method-value is invisible here. The graph
+        // answers the other question, so the pointer rides the answer.
         Ok(AgentToolResult::text(format!(
-            "references to {origin} (stage: {}):\n{}",
-            rendered.label, rendered.text
+            "{} direct references to {origin} (stage: {}; transitive callers: \
+             `graph trace direction=in`):\n{}",
+            refs.len(),
+            rendered.label,
+            rendered.text
         )))
     }
 
@@ -1370,9 +1387,71 @@ fn unified_preview(before: &str, after: &str) -> String {
     out
 }
 
+/// The diagnostics answer header.
+///
+/// A zero is a VERDICT about the file, so it reads "(clean)" — and only when
+/// the server is final: a still-indexing gopls used to render exactly like a
+/// clean file, which is the cold-start ambiguity the tools report named. The
+/// warming case appends the server's own state line so the reader can tell
+/// "no diagnostics yet" from "no diagnostics".
+fn render_diagnostics_header(
+    count: usize,
+    path: &std::path::Path,
+    server: &str,
+    warmth: &crate::client::Warmth,
+) -> String {
+    let mut text = if count == 0 {
+        format!("0 diagnostics for {} (clean)\n", path.display())
+    } else {
+        format!("{count} diagnostics for {}\n", path.display())
+    };
+    if count == 0 && !warmth.answers_are_final() {
+        use std::fmt::Write as _;
+        let _ = writeln!(
+            text,
+            "[lsp: {server} {}] the server is still indexing this workspace; the empty \
+             answer may not be final yet.",
+            warmth.line()
+        );
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
+
     use super::*;
+    use crate::client::Warmth;
+
+    /// The tools report's cold-start finding: a warming server and a clean
+    /// file must not render identically.
+    #[test]
+    fn a_zero_diagnostics_answer_distinguishes_clean_from_warming() {
+        let path = Path::new("/work/lib.rs");
+        let clean = render_diagnostics_header(0, path, "gopls", &Warmth::Ready);
+        assert!(clean.contains("(clean)"), "{clean}");
+        assert!(!clean.contains("indexing"), "{clean}");
+
+        let warming = render_diagnostics_header(
+            0,
+            path,
+            "gopls",
+            &Warmth::Warming {
+                message: Some("loading packages".into()),
+            },
+        );
+        assert!(warming.contains("(clean)"), "{warming}");
+        assert!(warming.contains("warming (loading packages)"), "{warming}");
+        assert!(warming.contains("may not be final"), "{warming}");
+
+        // A non-empty answer stays a plain listing with its count.
+        let findings = render_diagnostics_header(3, path, "gopls", &Warmth::Ready);
+        assert!(
+            findings.starts_with("3 diagnostics for /work/lib.rs"),
+            "{findings}"
+        );
+        assert!(!findings.contains("(clean)"), "{findings}");
+    }
 
     #[test]
     fn tool_advertises_its_contract() {
