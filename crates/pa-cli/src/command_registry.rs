@@ -627,8 +627,7 @@ mod tests {
             let first = spec.path[0];
             assert!(
                 spec.usage.split_whitespace().next() == Some(first),
-                "{}'s usage must start with its own name: {spec:?}",
-                first
+                "{first}'s usage must start with its own name: {spec:?}"
             );
         }
     }
