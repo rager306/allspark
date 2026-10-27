@@ -13,6 +13,86 @@ branch (`feat/allspark-identity`). `fork.3` points at the SAME commit as `fork.2
 (`375ad95cf`) and is a duplicate tag, not a separate release — it has no entry here
 because nothing shipped between them. `FORK.md` carries the same correction.
 
+## fork.012 — upstream v0.10.2-beta.10
+
+- Tag: `allspark-v0.10.2-beta.10-fork.012` (2026-10-27)
+- Base: the `v0.10.2-beta.10` upstream merge (15 conflicts resolved), 58 commits
+  since fork.011.
+
+### Closed from the external audit (8 items, each with a red-first proof)
+
+- **Discovery survives an offline restart.** The on-disk snapshot was read only
+  inside a forced refresh, so a fresh process with no network lost every
+  discovered-only id.
+- **The packaging gates run from a clean tree.** Five release scripts were red on
+  `main`: the launcher slices in `test_npm_bridge` read a `fork_layout` computed
+  1200 lines above them, `test_native_compat` built a Namespace without the
+  packer's field, and the restamp/verify fixtures were refused by the provenance
+  gate. The waiver is now the CONSUMER's, pinned by a Rust test that no
+  publishing workflow passes it — and by a second one that the four scripts
+  nothing ran stay in CI.
+- **`graph.auto = "watch"` watches.** The setting always accepted the value and
+  documented itself as "behaves exactly like auto". It now starts a filesystem
+  watcher over the session's cwd: bursts coalesced, `NativeWatcher`, a ZERO-wait
+  writer lease (a busy lease drops the batch rather than queueing the session).
+- **A prediction is not an observation.** A refinement event carried one
+  `outcome` field, filled from the proposal's `expectedOutcome` — a guess written
+  before anything ran, which the ranking prompt then showed the model as
+  evidence. Split into `expected_outcome` / `outcome` in both layers, with a
+  cross-language test that writes the Python payload and reads it back through
+  the Rust loader.
+- **One projection from the branch to the live loop.** Four paths replaced the
+  agent's message list independently, and three rebuilt the context WITHOUT the
+  late `agent_message.send` receipts, which live only in the derived view. After
+  a compaction the tool result said "sent 0 messages" while the branch still
+  carried the receipt.
+- **A finished shell keeps its record until someone reads it.** Persistent bash
+  deleted its rc/out files the instant the watcher saw the leader exit — before
+  anyone read the result — so a shell that finished between turns lost its
+  output across a restart. Deletion is now the ACK's business, with an explicit
+  `discard()` for a caller that stops caring.
+- **A second checkout with the same basename is indexable.** The project key was
+  the directory basename and `register_project_at` refuses a name for a different
+  root, so `/b/service` was permanently unindexable in a shared `graph.db`. The
+  key is now the basename qualified by a short digest of the canonical root —
+  only when a real collision exists.
+- **`lsp.idleTimeoutMs` evicts an idle server.** The field was declared and
+  documented as an idle bound while nothing read it, and the governor hid that:
+  its "any identifier containing the field" rule credited the unrelated
+  `resolve_stdin_idle_timeout_ms`. The rule is shape-based now, the setting has a
+  reader, and an evicted client is not reported as a startup failure.
+
+### Verification lanes that report
+
+- **Miri** runs what it can finish, on the crates that have `unsafe`: the old
+  lane had never passed (`pa-types` aborts on `posix_spawnattr_init`) and two of
+  its three crates hold zero `unsafe`. A Rust pin fails if a named crate has none.
+- **Kani** has harnesses for the first time: 5 proofs, 109 checks. The
+  descriptor-limit decision was extracted from its syscall wrapper so a model
+  checker can quantify over it. `kani::cover!` does NOT fail a run (measured), so
+  vacuity is checked with assertions on concrete inputs.
+- **Verus** grows a variant-set drift check (a mirror proving two of three enum
+  variants verified cleanly), and `pa_core_truncate.rs` is the first mirror with
+  NO trust surface — it passes `--no-cheating`.
+- **Mutation testing the proofs** (`cargo-verus-mutants`) found three real spec
+  holes in the decision kernel, all of the shape "a branch whose outcome nothing
+  constrained". 4 mirrors / 28 obligations / 95% kill on the full 34-mutant set.
+- **Shuttle** now covers the cron claim path: two dispatch passes must never
+  claim one job twice, with a companion test proving the same invariant without
+  concurrency — a mutex says nothing about the function under it.
+- **faux provider** can assert its whole script was consumed
+  (`expect_consumed`), so a test that stops meaning what it says fails.
+
+### Found while looking for the next proof subject
+
+- **No signalling path can reach `kill(-1)`.** `kill_process_group_or_pid`
+  floored at `> 0` while its three siblings floored at `> 1`, so `pid == 1`
+  became `kill(-1, SIGKILL)` — every process the caller may signal. One predicate
+  now gates all four paths, proved over every `i32`.
+- **`lsp::ensure_client` no longer serializes every project.** It held a
+  roster-wide write guard across a spawn plus an LSP handshake; the single-flight
+  is per key now.
+
 ## fork.011 — upstream v0.10.2-beta.3 (+v0.10.2-beta.7 merge)
 
 - Tag: `allspark-v0.10.2-beta.3-fork.011` (2026-10-26)
