@@ -19,6 +19,12 @@ members = [
     "crates/pa-cli",
     "crates/pa-perf",
 ]
+# `verus/` holds proof MIRRORS, not product code: AGENTS.md requires it to stay
+# outside the cargo workspace so no build, test or `cargo fmt` reads it. The
+# mirrors crate exists so `cargo verus verify` / `cargo verus-mutants` have a
+# package to drive; excluding it here is what keeps the rule true now that a
+# Cargo.toml lives there.
+exclude = ["verus/mirrors"]
 
 # Crossterm 0.28.1's kitty support check holds the process-wide event reader
 # for 2s on terminals that do not answer. Keep its parser/queued input intact,

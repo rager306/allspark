@@ -1,0 +1,19 @@
+# cargo-verus-mutants configuration for the proof mirrors.
+#
+# WHY A THRESHOLD RATHER THAN "ZERO SURVIVORS". The campaign found one mutant no
+# proof can kill, and calling it a survival would be wrong:
+#
+#   substitute-match-arm-body on `decide`
+#   replaces the inner `Decision { cont: false, reason: LimitReached }` (inside
+#   `if limit { ... }`) with the whole `if limit { LimitReached } else {
+#   GateFailed }`. Since it lands INSIDE the true branch, `limit` is true there,
+#   so the replacement evaluates to the same value. It is semantically identical,
+#   and an equivalent mutant is invisible to any oracle — a deductive verifier
+#   included.
+#
+# The two survivors this campaign DID find before that one were real spec gaps and
+# are fixed in ../pa_core_gates.rs (the None arm's continue obligation, and the
+# failed-gate-under-limit reason). Their mutations are killed now. So the bar
+# stays high — 90% — while leaving room for the arithmetic of equivalence.
+[verification]
+minimum_kill_rate = 0.9

@@ -33,10 +33,25 @@ pub fn decide(enabled: bool, terminal_stop: bool, gate: Option<GateResult>, limi
         // run is actually autonomous (disabled/error-abort exits earlier as NotNeeded)
         (gate == Some(GateResult::RetryExhausted) && enabled && !terminal_stop)
             ==> (d.reason == Reason::LimitReached && !d.cont),
+        // A FAILED gate under a reached limit reports the limit, not the gate:
+        // the run stops because the budget ran out, and the difference matters
+        // to a reader of the reason. Without this clause the whole inner `if
+        // limit` could be mutated to `if true` and Verus accepted it — measured
+        // by cargo-verus-mutants (condition-to-true survived).
+        (gate == Some(GateResult::Failed) && enabled && !terminal_stop && limit)
+            ==> (d.reason == Reason::LimitReached && !d.cont),
         // disabled or terminal stop reports NotNeeded
         (!enabled || terminal_stop) ==> d.reason == Reason::NotNeeded,
         // limit reached never continues
         limit ==> !d.cont,
+        // THE GAP THE MUTATION FOUND. Without this, `None if limit` could be
+        // mutated to `None if true` and Verus still accepted it: every other
+        // clause is satisfied by reporting LimitReached unconditionally, because
+        // `limit ==> !d.cont` is vacuously true when limit is false. The kernel's
+        // whole point in the no-gate arm is that an autonomous run with budget
+        // left KEEPS GOING; that has to be stated.
+        (gate == None && enabled && !terminal_stop && !limit)
+            ==> (d.cont && d.reason == Reason::MissingTerminalEvidence),
 {
     if !enabled || terminal_stop {
         Decision { cont: false, reason: Reason::NotNeeded }

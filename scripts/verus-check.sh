@@ -4,7 +4,12 @@
 # opt-in, never a hard requirement of `cargo test`.
 set -u
 
-VERUS_BIN="${VERUS_BIN:-/root/verus-pilot/verus-x86-linux/verus}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# The toolchain lives WITH the specs, inside verus/ (gitignored: it is 1.6 GB of
+# binaries). One folder holds the mirrors, their toolchain, and the runner, so a
+# reader looking for "where is the proof" finds one directory.
+VERUS_BIN="${VERUS_BIN:-$ROOT_DIR/verus/toolchain/verus}"
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../verus" && pwd)"
 
 if [ ! -x "$VERUS_BIN" ]; then

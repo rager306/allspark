@@ -133,6 +133,18 @@ else
   echo "loom: ok"
 fi
 
+step "verus-mutants (proof depth)"
+# A proof that passes can still be worthless: mutation testing asks whether the
+# verifier REJECTS a mutated model. Survivors are spec gaps. Opt-in like the
+# Verus lane itself — a missing toolchain is a SKIP with the install command.
+if bash scripts/verus-mutants.sh >"$OUT/verus-mutants.log" 2>&1; then
+  grep -o 'verus-mutants: .*' "$OUT/verus-mutants.log" | tail -1
+else
+  echo "verus-mutants: FAILED (see $OUT/verus-mutants.log)"
+  sed -n '1,20p' "$OUT/verus-mutants.log"
+  fail=1
+fi
+
 step "kani (pa-core platform decisions)"
 # The lane moved from pa-mem's robin_hood to pa-core's platform code, and for
 # the reason the audit gave: RobinHoodMap has no consumer outside pa-mem's own

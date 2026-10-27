@@ -20,3 +20,8 @@ out/
 # worktree's fixtures and a repo-level `rm -rf .tmp` is the whole cleanup story.
 # Set by scripts/fork/prepush-gate.sh and the launcher (TMPDIR).
 .tmp/
+
+# The Verus toolchain lives beside the mirrors it proves (verus/toolchain/): one
+# folder holds the specs AND the prover, so "where is the proof" has one answer.
+# The binaries are 1.6 GB and are installed from the release zip, never committed.
+verus/toolchain/

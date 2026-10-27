@@ -1,0 +1,18 @@
+# A standalone Verus crate, deliberately NOT a workspace member: AGENTS.md requires
+# verus/ to stay outside the cargo workspace so no build, test or `cargo fmt` reads
+# it. `exclude` in the root Cargo.toml enforces that; this file exists so
+# `cargo verus verify` and `cargo verus-mutants` have a package to drive.
+[package]
+name = "allspark-verus-mirrors"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+vstd = "=0.0.0-2026-10-18-0147"
+
+[package.metadata.verus]
+verify = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(verus_only)'] }
