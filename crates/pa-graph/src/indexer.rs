@@ -29,7 +29,7 @@ use crate::misses::MissReason;
 
 use crate::store::GraphStore;
 use crate::tokenize::split_for_fts;
-use crate::types::{CallStrategy, EdgeType, FileChange, IndexReport, Label, Node};
+use crate::types::{CallSiteVerdict, CallStrategy, EdgeType, FileChange, IndexReport, Label, Node};
 
 /// How much of the graph to build.
 ///
@@ -227,7 +227,7 @@ impl GraphStore {
 
         // 2. Write nodes/FTS for changed files; collect call sites to resolve.
         let mut seen: Vec<String> = Vec::with_capacity(work.len());
-        let mut pending_calls: Vec<(String, CallSite)> = Vec::new();
+        let mut pending_calls: Vec<(String, String, CallSite)> = Vec::new();
         let mut pending_imports: Vec<(String, ImportDef)> = Vec::new();
         let mut file_node_ids: HashMap<String, i64> = HashMap::new();
 
@@ -289,7 +289,7 @@ impl GraphStore {
                 file_node_ids.insert(w.rel.clone(), id);
             }
             for call in &extracted.calls {
-                pending_calls.push((call.caller_qn.clone(), call.clone()));
+                pending_calls.push((w.rel.clone(), call.caller_qn.clone(), call.clone()));
             }
             for import in &extracted.imports {
                 pending_imports.push((w.rel.clone(), import.clone()));
@@ -313,8 +313,8 @@ impl GraphStore {
         // empty set, which simply means no call is attributed to a dependency.
         let deps = crate::deps::DependencyCrates::from_workspace(&root).unwrap_or_default();
         let resolver = Resolver::with_deps(symbols, deps);
-        for (caller_qn, call) in &pending_calls {
-            self.record_call_edge(&resolver, &opts.project, caller_qn, call)?;
+        for (rel, caller_qn, call) in &pending_calls {
+            self.record_call_edge(&resolver, &opts.project, rel, caller_qn, call)?;
         }
         for (rel, import) in &pending_imports {
             let Some(&file_id) = file_node_ids.get(rel) else {
@@ -446,10 +446,12 @@ impl GraphStore {
         &self,
         resolver: &Resolver,
         project: &str,
+        rel_path: &str,
         caller_qn: &str,
         call: &CallSite,
     ) -> Result<()> {
         if let Some((source, target, props)) = resolver.resolve_call(caller_qn, call) {
+            self.record_call_site(project, rel_path, caller_qn, call, &CallSiteVerdict::Resolved, &props)?;
             return self.insert_edge(project, source, target, EdgeType::Calls, &props);
         }
         // A path rooted at a workspace dependency names a definition that exists
@@ -460,38 +462,40 @@ impl GraphStore {
             crate::misses::dependency_root(call, resolver.deps()),
             resolver.caller_id(caller_qn),
         ) {
-            return self.insert_edge(
-                project,
-                source,
-                source,
-                EdgeType::Calls,
-                &json!({
-                    "callee": call.callee,
-                    "callee_path": call.callee_path,
-                    "crate": crate_name,
-                    "line": call.line,
-                    "confidence": CallStrategy::Dependency.base_confidence(),
-                    "strategy": CallStrategy::Dependency.as_str(),
-                }),
-            );
+            let props = json!({
+                "callee": call.callee,
+                "callee_path": call.callee_path,
+                "crate": crate_name,
+                "line": call.line,
+                "confidence": CallStrategy::Dependency.base_confidence(),
+                "strategy": CallStrategy::Dependency.as_str(),
+            });
+            self.record_call_site(project, rel_path, caller_qn, call, &CallSiteVerdict::Dependency, &props)?;
+            return self.insert_edge(project, source, source, EdgeType::Calls, &props);
         }
         let Some(source) = resolver.caller_id(caller_qn) else {
             // The caller itself is unknown: that is an indexing bug, not a miss.
             return Ok(());
         };
-        self.insert_edge(
+        let reason = resolver.miss_reason(call).to_string();
+        let props = json!({
+            "callee": call.callee,
+            "line": call.line,
+            "reason": reason,
+            "confidence": 0.0,
+        });
+        self.record_call_site(
             project,
-            source,
-            source,
-            EdgeType::Uses,
-            &json!({
-                "callee": call.callee,
-                "line": call.line,
-                "reason": resolver.miss_reason(call),
-                "confidence": 0.0,
-            }),
-        )
+            rel_path,
+            caller_qn,
+            call,
+            &CallSiteVerdict::Unresolved { reason },
+            &props,
+        )?;
+        self.insert_edge(project, source, source, EdgeType::Uses, &props)
     }
+
+
 
     /// Write a file's definitions and CONTAINS edges, resolving nothing.
     ///

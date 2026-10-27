@@ -10,7 +10,8 @@ use crate::hash::FileHash;
 use crate::proof_gate::{GateDecision, ProofGate};
 use crate::quality::{QualityEnvelope, QualityPolicy};
 use crate::schema;
-use crate::types::{Edge, EdgeType, FileChange, Label, Node};
+use crate::extract::CallSite;
+use crate::types::{CallSiteRow, CallSiteVerdict, Edge, EdgeType, FileChange, Label, Node};
 use crate::witness::WitnessReceipt;
 
 /// An open code-graph database.
@@ -807,6 +808,96 @@ impl GraphStore {
             )?;
         }
         Ok(())
+    }
+
+    /// Write one row into `call_sites`: the call site itself, before any
+    /// aggregation.
+    ///
+    /// `edges` cannot carry this: its UNIQUE key has no callsite column, and an
+    /// unresolved call is a self-loop whose generated `local_name` is always
+    /// `''`, so every miss from one symbol collided into a single row. This is
+    /// the per-site record that keeps multiplicity, line, and the verdict.
+    ///
+    /// `props` is the edge's property bag, so the recorded confidence is the one
+    /// the resolver actually wrote rather than a second opinion.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    pub(crate) fn record_call_site(
+        &self,
+        project: &str,
+        rel_path: &str,
+        caller_qn: &str,
+        call: &CallSite,
+        verdict: &CallSiteVerdict,
+        props: &serde_json::Value,
+    ) -> Result<()> {
+        let confidence = props
+            .get("confidence")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0);
+        self.conn.execute(
+            "INSERT OR REPLACE INTO call_sites
+                (project, rel_path, caller_qn, line, callee, callee_path, resolution, reason, confidence)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                project,
+                rel_path,
+                caller_qn,
+                call.line,
+                call.callee,
+                call.callee_path.as_deref().unwrap_or(""),
+                verdict.as_str(),
+                verdict.reason(),
+                confidence,
+            ],
+        )?;
+        Ok(())
+    }
+    /// Delete a file's recorded call sites.
+    ///
+    /// `call_sites` is keyed by `rel_path` because a site belongs to the file
+    /// that spells it: when the file is re-extracted, every site it recorded is
+    /// stale by construction and is rewritten from the fresh parse.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    pub fn clear_call_sites(&self, project: &str, rel_path: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM call_sites WHERE project = ?1 AND rel_path = ?2",
+            params![project, rel_path],
+        )?;
+        Ok(())
+    }
+
+    /// Every call site recorded for `project`, oldest file first.
+    ///
+    /// This is the per-site view `edges` cannot give: a symbol with three
+    /// unresolved calls has one aggregate row and three rows here.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    pub fn call_sites(&self, project: &str) -> Result<Vec<CallSiteRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT rel_path, caller_qn, line, callee, callee_path, resolution, reason, confidence
+             FROM call_sites WHERE project = ?1 ORDER BY rel_path, line",
+        )?;
+        let rows = stmt
+            .query_map(params![project], |row| {
+                Ok(CallSiteRow {
+                    rel_path: row.get(0)?,
+                    caller_qn: row.get(1)?,
+                    line: row.get(2)?,
+                    callee: row.get(3)?,
+                    callee_path: row.get(4)?,
+                    resolution: row.get(5)?,
+                    reason: row.get(6)?,
+                    confidence: row.get(7)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
+            .map_err(crate::GraphError::from)?;
+        Ok(rows)
     }
 
     /// Delete a file's nodes whose qualified name is **not** in `keep` (plus

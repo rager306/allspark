@@ -280,13 +280,13 @@ impl GraphStore {
         }
 
         // ── 4. reindex in place, collecting call sites to re-resolve ─────
-        let mut pending_calls: Vec<(String, CallSite)> = Vec::new();
+        let mut pending_calls: Vec<(String, String, CallSite)> = Vec::new();
         let mut pending_imports: Vec<(String, ImportDef)> = Vec::new();
 
         for t in targets.iter().chain(closure_targets.iter()) {
             let (calls, imports) = self.reindex_file_in_place(&opts.project, t)?;
             for call in calls {
-                pending_calls.push((call.caller_qn.clone(), call));
+                pending_calls.push((t.rel.clone(), call.caller_qn.clone(), call));
             }
             for import in imports {
                 pending_imports.push((t.rel.clone(), import));
@@ -308,8 +308,8 @@ impl GraphStore {
         // ELSE records a dependency-rooted self-loop, ELSE records a miss row
         // with its reason. Calling it here is what makes the two write paths
         // agree — an unresolved call becomes evidence instead of silence.
-        for (caller_qn, call) in &pending_calls {
-            self.record_call_edge(&resolver, &opts.project, caller_qn, call)?;
+        for (rel, caller_qn, call) in &pending_calls {
+            self.record_call_edge(&resolver, &opts.project, rel, caller_qn, call)?;
         }
         for (rel, import) in &pending_imports {
             let Some(&file_id) = file_nodes.get(rel) else {
@@ -379,6 +379,11 @@ impl GraphStore {
             &t.rel,
             &[EdgeType::Calls, EdgeType::Imports, EdgeType::Uses],
         )?;
+        // The per-site rows go with the edges they describe: a call site that
+        // left the file must not survive as a row the aggregates no longer
+        // back. `edges` deletes by `source`; `call_sites` keys on the file, so
+        // a symbol that disappeared takes its sites with it here.
+        self.clear_call_sites(project, &t.rel)?;
         // 3. Upsert the File node, symbol nodes, FTS rows, CONTAINS edges.
         self.write_file(project, &t.rel, &extracted)?;
         // 4. Remove symbols that no longer exist (cascades their edges).
@@ -465,6 +470,82 @@ mod tests {
         assert!(
             !props[0].contains("missing_old"),
             "STALE: the old unresolved callee survived the reindex"
+        );
+    }
+
+    /// The lightweight-graph review §3.1, second half: "уникальность edge не
+    /// включает callsite". An unresolved call is a self-loop USES row with no
+    /// `local_name`, so `local_name_gen` is `''` for every miss and
+    /// `UNIQUE(source, target, type, '')` collapsed a whole symbol's misses into
+    /// ONE row — `INSERT OR IGNORE` then kept whichever came first.
+    ///
+    /// The aggregate edge still collapses (that is what the algorithms walk),
+    /// but `call_sites` keeps every site, so "how many call sites failed here,
+    /// and why" has an answer.
+    #[test]
+    fn every_call_site_survives_even_when_the_edge_aggregate_collapses() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(
+            dir.path(),
+            "a.rs",
+            "pub fn caller() {\n    missing_one();\n    missing_two();\n    missing_three();\n}\n",
+        );
+        let mut store = GraphStore::open_in_memory().expect("store");
+        index(&mut store, dir.path());
+
+        let sites = store.call_sites("p").expect("call sites");
+        let misses: Vec<&crate::types::CallSiteRow> = sites
+            .iter()
+            .filter(|s| s.resolution == "unresolved")
+            .collect();
+        let callees: Vec<&str> = misses.iter().map(|s| s.callee.as_str()).collect();
+        assert_eq!(
+            misses.len(),
+            3,
+            "all three miss sites must be recorded, got {callees:?}"
+        );
+        for expected in ["missing_one", "missing_two", "missing_three"] {
+            assert!(
+                callees.contains(&expected),
+                "lost the {expected} call site; recorded {callees:?}"
+            );
+        }
+        // The aggregate keeps collapsing: one USES row, by design.
+        let uses = store
+            .all_edges("p")
+            .expect("edges")
+            .into_iter()
+            .filter(|e| e.edge_type == crate::types::EdgeType::Uses)
+            .count();
+        assert_eq!(uses, 1, "edges stays the aggregate the walkers read");
+    }
+
+    /// The per-site rows belong to the file that spells them: a re-extract
+    /// rewrites them, so a call that left the file leaves no row behind.
+    #[test]
+    fn a_removed_call_site_leaves_no_row_behind() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(
+            dir.path(),
+            "a.rs",
+            "pub fn caller() {\n    missing_one();\n    missing_two();\n}\n",
+        );
+        let mut store = GraphStore::open_in_memory().expect("store");
+        index(&mut store, dir.path());
+        write(dir.path(), "a.rs", "pub fn caller() {\n    missing_two();\n}\n");
+        store
+            .reindex_incremental(dir.path(), &IndexOptions::new("p"))
+            .expect("reindex");
+        let callees: Vec<String> = store
+            .call_sites("p")
+            .expect("call sites")
+            .into_iter()
+            .map(|s| s.callee)
+            .collect();
+        assert_eq!(
+            callees,
+            vec!["missing_two".to_string()],
+            "the removed site must not survive: {callees:?}"
         );
     }
 

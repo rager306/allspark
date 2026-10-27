@@ -125,6 +125,68 @@ impl std::fmt::Display for EdgeType {
     }
 }
 
+/// How one call site resolved, and why.
+///
+/// Carried by [`CallSiteRow`] and written by `GraphStore::record_call_site`, so
+/// the reason travels with the site instead of being re-derived at the writer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallSiteVerdict {
+    /// Resolved to a definition inside the indexed tree.
+    Resolved,
+    /// Names a definition outside the tree, through a workspace dependency.
+    Dependency,
+    /// Could not be resolved; `reason` is the resolver's own explanation.
+    Unresolved { reason: String },
+}
+
+impl CallSiteVerdict {
+    /// The stable wire spelling stored in `call_sites.resolution`.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Resolved => "resolved",
+            Self::Dependency => "dependency",
+            Self::Unresolved { .. } => "unresolved",
+        }
+    }
+
+    /// The resolver's explanation, empty when the call did resolve.
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::Resolved | Self::Dependency => "",
+            Self::Unresolved { reason } => reason,
+        }
+    }
+}
+
+/// One recorded call site, resolved or not.
+///
+/// `edges` is an aggregate: every call that reaches the same target collapses
+/// into one row, and every unresolved call from one symbol collapses into a
+/// single self-loop. This row is the call site itself, so multiplicity, line,
+/// and the per-site verdict survive — the lightweight-graph review's §3.1
+/// "уникальность edge не включает callsite".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CallSiteRow {
+    /// Repo-relative path of the file that spells the call.
+    pub rel_path: String,
+    /// Qualified name of the enclosing symbol.
+    pub caller_qn: String,
+    /// 1-based source line.
+    pub line: u32,
+    /// Callee name as written at the site.
+    pub callee: String,
+    /// The callee path as written, when it had one.
+    pub callee_path: String,
+    /// `resolved`, `dependency`, or `unresolved`.
+    pub resolution: String,
+    /// Why it did not resolve (empty when it did).
+    pub reason: String,
+    /// Resolution confidence recorded by the resolver.
+    pub confidence: f64,
+}
+
 /// A graph node as stored in SQLite.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Node {

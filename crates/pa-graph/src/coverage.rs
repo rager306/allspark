@@ -189,9 +189,35 @@ pub struct CoverageReport {
     pub notes: Vec<CoverageNote>,
     /// `true` only when every known file parsed cleanly.
     pub complete: bool,
+    /// Every call site the indexer saw, resolved or not.
+    ///
+    /// Separate from `total`/`parsed` because those measure PARSING while this
+    /// measures the RELATIONS derived from it: a project can parse 100% and
+    /// still resolve half its calls.
+    pub call_sites: usize,
+    /// Call sites that resolved to a definition in the tree.
+    pub call_sites_resolved: usize,
+    /// Call sites naming a definition outside the tree through a dependency.
+    pub call_sites_dependency: usize,
+    /// Call sites that resolved to nothing, with the reason histogram below.
+    pub call_sites_unresolved: usize,
 }
 
 impl CoverageReport {
+    /// Fraction of call sites that resolved to a definition, in `[0.0, 1.0]`.
+    ///
+    /// `1.0` for a project with no recorded call sites, which is NOT the same
+    /// claim as "every call resolves" — check [`Self::call_sites`] first. This
+    /// is the relation-level counterpart to [`Self::clean_ratio`]: parsing every
+    /// file cleanly says nothing about how many calls the graph can answer for.
+    #[must_use]
+    pub fn resolution_ratio(&self) -> f64 {
+        if self.call_sites == 0 {
+            return 1.0;
+        }
+        self.call_sites_resolved as f64 / self.call_sites as f64
+    }
+
     /// Fraction of known files that parsed cleanly, in `[0.0, 1.0]`.
     ///
     /// Returns `1.0` for an empty project (vacuously complete) — callers that
@@ -256,6 +282,22 @@ pub fn coverage(store: &GraphStore, project: &str) -> Result<CoverageReport> {
     let parsed = total.saturating_sub(accounted);
     let complete = total > 0 && accounted == 0;
 
+    // Relation-level counts. A file that parsed cleanly can still contribute
+    // unresolved calls, so these are gathered independently of the parse notes:
+    // before `call_sites` existed the store could not say how many call sites
+    // it had seen at all, only how many files it had read.
+    let sites = store.call_sites(project)?;
+    let mut call_sites_resolved = 0usize;
+    let mut call_sites_dependency = 0usize;
+    let mut call_sites_unresolved = 0usize;
+    for site in &sites {
+        match site.resolution.as_str() {
+            "resolved" => call_sites_resolved += 1,
+            "dependency" => call_sites_dependency += 1,
+            _ => call_sites_unresolved += 1,
+        }
+    }
+
     Ok(CoverageReport {
         project: project.to_string(),
         total,
@@ -266,6 +308,10 @@ pub fn coverage(store: &GraphStore, project: &str) -> Result<CoverageReport> {
         reason_histogram: histogram,
         notes,
         complete,
+        call_sites: sites.len(),
+        call_sites_resolved,
+        call_sites_dependency,
+        call_sites_unresolved,
     })
 }
 
@@ -295,6 +341,47 @@ impl GraphStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A project can parse 100% and still answer for half its calls. The
+    /// report must state both, or "complete=true" reads as "the graph knows
+    /// everything" when it only means "we read every file".
+    #[test]
+    fn the_report_states_relation_coverage_not_only_parsing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "pub fn target() {}\npub fn caller() { target(); missing_one(); missing_two(); }\n",
+        )
+        .expect("write");
+        let mut store = crate::GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &crate::IndexOptions::new("p"))
+            .expect("index");
+        let report = coverage(&store, "p").expect("coverage");
+
+        assert_eq!(report.total, 1);
+        assert_eq!(report.parsed, 1, "the file parses cleanly");
+        assert_eq!(report.call_sites, 3, "one resolved + two misses");
+        assert_eq!(report.call_sites_resolved, 1);
+        assert_eq!(report.call_sites_unresolved, 2);
+        // The parse claim and the relation claim differ, which is the point.
+        assert!(
+            report.clean_ratio() > report.resolution_ratio(),
+            "clean={} resolution={}",
+            report.clean_ratio(),
+            report.resolution_ratio()
+        );
+    }
+
+    /// A store with no call sites must not claim full resolution as a fact.
+    #[test]
+    fn no_call_sites_is_not_a_resolution_claim() {
+        let report = CoverageReport::default();
+        assert_eq!(report.call_sites, 0);
+        assert_eq!(report.resolution_ratio(), 1.0);
+    }
+
+
 
     const BROKEN: &str = "fn main() {\n    let x = ;\n    let y = );\n    ((((((\n}\n";
 

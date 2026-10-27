@@ -1673,7 +1673,9 @@ impl GraphTool {
         Ok(AgentToolResult {
             content: vec![pa_agent::types::ToolResultContent::text(format!(
                 "Coverage for `{project}`: {}/{} files parsed cleanly ({:.0}%), {} partial, \
-                 {} unusable, {} skipped; complete={}.",
+                 {} unusable, {} skipped; complete={}.\n\
+                 Call sites: {} recorded, {} resolved to a definition ({:.0}%), \
+                 {} in a workspace dependency, {} unresolved.",
                 report.parsed,
                 report.total,
                 report.clean_ratio() * 100.0,
@@ -1681,6 +1683,11 @@ impl GraphTool {
                 report.unusable,
                 report.skipped,
                 report.complete,
+                report.call_sites,
+                report.call_sites_resolved,
+                report.resolution_ratio() * 100.0,
+                report.call_sites_dependency,
+                report.call_sites_unresolved,
             ))],
             details: serde_json::to_value(&report).unwrap_or(serde_json::Value::Null),
             terminate: None,

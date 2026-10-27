@@ -58,6 +58,34 @@ pub const SCHEMA: &[&str] = &[
         ) VIRTUAL,
         UNIQUE (source, target, edge_type, local_name_gen)
     )",
+    // One row per CALL SITE, resolved or not (lightweight-graph review §3.1,
+    // "уникальность edge не включает callsite").
+    //
+    // `edges` is an AGGREGATE: its UNIQUE(source,target,edge_type,local_name_gen)
+    // collapses every call site that reaches the same target, and every
+    // *unresolved* call from one symbol collapses into a single row (the
+    // unresolved marker is a self-loop with no `local_name`, so all of them
+    // share ''). Storing the miss in `edges` therefore answered "this symbol has
+    // one unresolved call" while the file had three, and `INSERT OR IGNORE`
+    // kept whichever came first.
+    //
+    // This table carries the call sites themselves: multiplicity, line, and the
+    // resolution verdict per site. Edges stay the aggregate the algorithms walk,
+    // so nothing downstream changes; what changes is that no call site is lost.
+    r"CREATE TABLE IF NOT EXISTS call_sites (
+        project     TEXT NOT NULL REFERENCES projects(name) ON DELETE CASCADE,
+        rel_path    TEXT NOT NULL,
+        caller_qn   TEXT NOT NULL,
+        line        INTEGER NOT NULL,
+        callee      TEXT NOT NULL,
+        callee_path TEXT NOT NULL DEFAULT '',
+        resolution  TEXT NOT NULL,
+        reason      TEXT NOT NULL DEFAULT '',
+        confidence  REAL NOT NULL DEFAULT 0.0,
+        PRIMARY KEY (project, rel_path, caller_qn, line, callee)
+    )",
+    r"CREATE INDEX IF NOT EXISTS idx_call_sites_caller
+        ON call_sites(project, caller_qn)",
     // Per-file surface hashes (G7 closure-repair). `surface_sha` hashes the
     // file's signatures only (bodies excluded), so a body-only edit leaves it
     // unchanged and a depth-1 closure needs no fixpoint iteration.
