@@ -659,6 +659,12 @@ pub struct GraphTool {
     /// the judge (`[jev] graphRerank = auto` behind a native judge). `None`
     /// (the default) returns the store's own order, untouched.
     reranker: Option<Arc<GraphReranker>>,
+    /// FORK-ONLY (jev Phase 2): the raw `[jev] graphRerank` spelling and
+    /// whether the gate resolved ARMED, captured at session start. `status`
+    /// reports it: the tools report's repeated trap was editing
+    /// `settings.json` and expecting the change to be live, with no surface
+    /// saying the gate was read once at construction.
+    rerank_gate: Option<(String, bool)>,
 }
 
 impl GraphTool {
@@ -673,6 +679,7 @@ impl GraphTool {
             in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             schema: params_schema(),
             reranker: None,
+            rerank_gate: None,
         }
     }
 
@@ -681,6 +688,14 @@ impl GraphTool {
     #[must_use]
     pub fn with_reranker(mut self, reranker: Option<Arc<GraphReranker>>) -> Self {
         self.reranker = reranker;
+        self
+    }
+
+    /// FORK-ONLY (jev Phase 2): record the raw `[jev] graphRerank` spelling
+    /// and whether the gate resolved armed, for `status` to report.
+    #[must_use]
+    pub fn with_rerank_gate(mut self, raw_spelling: Option<String>, armed: bool) -> Self {
+        self.rerank_gate = Some((raw_spelling.unwrap_or_else(|| "(unset)".to_string()), armed));
         self
     }
 
@@ -1945,18 +1960,45 @@ impl GraphTool {
                 .map_err(|err| anyhow::anyhow!("status failed: {err}"))?;
             Ok((nodes, edges, files))
         })?;
+        // The jev gate's state, stated where an agent checks it (tools report
+        // finding 5): the gate is read ONCE at session construction, `on`
+        // resolves to `auto` (the judgment layer runs only behind a native
+        // judge), and neither fact was visible anywhere — so a settings.json
+        // edit looked live when it was not.
+        let rerank_line = self.rerank_gate.as_ref().map(|(raw, armed)| {
+            let resolved = if *armed { "armed" } else { "off" };
+            let mut line = format!(
+                "Judge re-rank: {resolved} ([jev] graphRerank = {raw}; read at session                  start — an edit to settings.json applies to the NEXT session)."
+            );
+            if raw.eq_ignore_ascii_case("on") {
+                line.push_str(
+                    " \"on\" resolves to auto: the judgment layer runs only behind a \
+                     native judge, so the two spellings are the same gate.",
+                );
+            }
+            if *armed {
+                line.push_str(" Opt out for one call with `rerank: false`.");
+            }
+            line
+        });
+        let mut text = format!(
+            "Graph store {} — project `{project}`: {nodes} node(s), {edges} edge(s), \
+             {files} file(s).",
+            self.db_path.display(),
+        );
+        if let Some(line) = &rerank_line {
+            text.push('\n');
+            text.push_str(line);
+        }
         Ok(AgentToolResult {
-            content: vec![pa_agent::types::ToolResultContent::text(format!(
-                "Graph store {} — project `{project}`: {nodes} node(s), {edges} edge(s), \
-                 {files} file(s).",
-                self.db_path.display(),
-            ))],
+            content: vec![pa_agent::types::ToolResultContent::text(text)],
             details: serde_json::json!({
                 "db_path": self.db_path.display().to_string(),
                 "project": project,
                 "nodes": nodes,
                 "edges": edges,
                 "files": files,
+                "rerank_gate": rerank_line.map(|line| serde_json::json!(line)),
             }),
             terminate: None,
             is_error: false,
@@ -2507,6 +2549,54 @@ mod tests {
     /// The judge's order is one input among several; a caller who wants the
     /// store's own RRF order — or simply does not want to spend a judgment on a
     /// scoping query — had no way to say so for one call.
+    /// Review (tools report, finding 5): `status` states the jev gate's
+    /// effective resolution, the read-once rule, and the on≡auto equivalence.
+    ///
+    /// The trap was repeated in the reporting session: `settings.json` was
+    /// edited, the agent claimed the change was live, a targeted grep proved
+    /// otherwise — twice. No surface said the gate is read at construction or
+    /// that `on` resolves to `auto`.
+    #[tokio::test]
+    async fn status_states_the_rerank_gate_and_the_read_once_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("lib.rs"), "pub fn a() -> u32 { 1 }\n").unwrap();
+        // The gate wired the way the engine wires `graphRerank: "on"` WITHOUT
+        // a judge: raw spelling "on", resolved off.
+        let tool = indexed_store(dir.path()).with_rerank_gate(Some("on".to_string()), false);
+        let status = tool
+            .dispatch(&serde_json::json!({ "action": "status" }))
+            .unwrap();
+        let text = text_of(&status);
+        assert!(text.contains("Judge re-rank: off"), "{text}");
+        assert!(
+            text.contains("[jev] graphRerank = on"),
+            "the raw spelling is echoed: {text}"
+        );
+        assert!(
+            text.contains("resolves to auto"),
+            "the on≡auto equivalence must be stated: {text}"
+        );
+        assert!(
+            text.contains("NEXT session") || text.contains("NEXT"),
+            "the read-once rule must be stated: {text}"
+        );
+
+        // An armed gate says so and names the per-call opt-out.
+        let judge: std::sync::Arc<dyn crate::jev::Judge> =
+            std::sync::Arc::new(SymbolJudge { relevant: vec![] });
+        let armed = indexed_store(dir.path())
+            .with_reranker(Some(std::sync::Arc::new(crate::jev::GraphReranker::new(
+                judge,
+            ))))
+            .with_rerank_gate(Some("auto".to_string()), true);
+        let status = armed
+            .dispatch(&serde_json::json!({ "action": "status" }))
+            .unwrap();
+        let text = text_of(&status);
+        assert!(text.contains("Judge re-rank: armed"), "{text}");
+        assert!(text.contains("rerank: false"), "{text}");
+    }
+
     #[tokio::test]
     async fn rerank_false_skips_the_judge_for_one_call() {
         let dir = tempfile::tempdir().unwrap();

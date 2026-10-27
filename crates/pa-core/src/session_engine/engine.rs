@@ -322,6 +322,14 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // moves into the resource loader (both default OFF).
     let jev_auto_thinking = settings.get_jev_auto_thinking();
     let jev_graph_rerank = settings.get_jev_graph_rerank();
+    // The raw spelling, for `graph status` to show: "on" and "auto" resolve to
+    // the same gate, and the tools report's trap was that equivalence being
+    // invisible together with the read-once-at-construction rule.
+    let jev_graph_rerank_raw: Option<String> = settings
+        .settings()
+        .jev
+        .as_ref()
+        .and_then(|jev| jev.graph_rerank.clone());
     // FORK-ONLY (jev Phase 2): the tool-selection arbiter's gate. The
     // deterministic table needs no judge, so the object exists whenever the
     // settings admit the layer; it is ARMED once the roster is final (the
@@ -736,8 +744,14 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             })
         })
         .flatten();
+        // The raw spelling rides to `status`: "on" and "auto" resolve to the
+        // same gate, and the tools report's trap was exactly that equivalence
+        // being invisible together with the read-once-at-construction rule.
+        let rerank_armed = reranker.is_some();
         tools.push(Arc::new(
-            crate::tools::graph::GraphTool::new(db_path, cwd.clone()).with_reranker(reranker),
+            crate::tools::graph::GraphTool::new(db_path, cwd.clone())
+                .with_reranker(reranker)
+                .with_rerank_gate(jev_graph_rerank_raw, rerank_armed),
         ));
         native_tool_names.push("graph".to_string());
     }
