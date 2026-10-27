@@ -4,7 +4,7 @@ on:
 
 jobs:
   shuttle:
-    name: Shuttle DST (pa-mem spinlock protocol)
+    name: Shuttle DST (pa-mem spinlock + pa-core cron claim)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -13,13 +13,31 @@ jobs:
       # old shape here ended in `|| echo warning`, so an empty filter reported
       # success). The list must name at least one test: `--exact`-free `shuttle`
       # matches the DST test in pa-mem's spinlock module.
+      # Two subjects, and the second is the one issue #14 asked for:
+      #   pa-mem    the spinlock CAS protocol (a hand-rolled primitive);
+      #   pa-core   the cron CLAIM path — two dispatch passes must never claim one
+      #             job twice. That is the pa-daemon scheduler's queueing
+      #             invariant, and `claim_due_in_state` is a pure state mutation,
+      #             so the scheduler can explore its interleavings without a
+      #             daemon, a clock or a file.
+      #
+      # Issue #14 also warns, from bbtree, that ONE DST tool does not mean
+      # "tested": their Shuttle missed a race that fork-based ffs found. Treat a
+      # Shuttle-found bug as a reason to add a second instrument, not as proof
+      # the class is covered.
       - name: Run Shuttle DST tests
         run: |
           set -euo pipefail
-          cargo test -p pa-mem --lib -- shuttle 2>&1 | tee /tmp/shuttle.log
-          # The lane's own oracle: the run must have executed the DST test, not
-          # an empty filter.
-          grep -q 'shuttle_explores_the_mutual_exclusion_interleavings \.\.\. ok' /tmp/shuttle.log || {
-            echo "::error::the shuttle filter ran no DST test — the lane proves nothing"
+          cargo test -p pa-mem --lib -- shuttle 2>&1 | tee "$TMPDIR/shuttle-mem.log"
+          cargo test -p pa-core --lib -- shuttle 2>&1 | tee "$TMPDIR/shuttle-cron.log"
+          # The lane's own oracle: each filter must have RUN a DST test, not
+          # matched nothing. An empty filter that reports success is the defect
+          # this check exists for.
+          grep -q 'shuttle_explores_the_mutual_exclusion_interleavings \.\.\. ok' "$TMPDIR/shuttle-mem.log" || {
+            echo "::error::the pa-mem shuttle filter ran no DST test"
+            exit 1
+          }
+          grep -q 'shuttle_two_passes_never_claim_one_job_twice \.\.\. ok' "$TMPDIR/shuttle-cron.log" || {
+            echo "::error::the pa-core shuttle filter ran no DST test"
             exit 1
           }

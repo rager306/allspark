@@ -392,3 +392,117 @@ mod tests {
         );
     }
 }
+
+/// Deterministic simulation of the cron CLAIM path — the `pa-daemon` scheduler's
+/// queueing invariant, which no test asserted before (issue #14 AC2).
+///
+/// The property: two dispatch passes racing on one store must never claim the
+/// SAME job twice. `claim_due_in_state` is the whole mechanism (it reads the
+/// outstanding dispatch ids, then rolls each due job), and it is a pure
+/// state mutation — so a scheduler can explore its interleavings without a
+/// daemon, a clock, or a file.
+///
+/// The interleaving that matters is the one a normal test cannot force: pass A
+/// reads `state.dispatches` and is preempted before it appends its claim, while
+/// pass B reads the same (still empty) set. Both then append, and the job fires
+/// twice in one window.
+#[cfg(test)]
+mod shuttle_claim_tests {
+    use super::*;
+    use crate::cron::AgentCronJob;
+
+    fn state_with_one_due_job() -> CronJobsState {
+        let job: AgentCronJob = serde_json::from_value(serde_json::json!({
+            "id": "job-1",
+            "activeSessionId": "s-1",
+            "sessionId": "s-1",
+            "sessionFile": "/tmp/s-1.jsonl",
+            "cwd": "/tmp",
+            "prompt": "ping",
+            "schedule": { "kind": "interval", "expression": "each 30s", "intervalMs": 30000 },
+            "status": "active",
+            "nextRunAt": "2023-11-14T22:20:00.000Z",
+            "createdAt": "2023-11-14T22:13:20.000Z",
+            "updatedAt": "2023-11-14T22:13:20.000Z"
+        }))
+        .expect("the job fixture parses");
+        CronJobsState {
+            jobs: vec![job],
+            dispatches: Vec::new(),
+        }
+    }
+
+    /// The REAL guard, without concurrency: given a state that already carries
+    /// an outstanding claim for a job, a later pass must not dispatch it again.
+    ///
+    /// This is the invariant the `Mutex` above merely serializes access to —
+    /// `claim_due_in_state` reads the outstanding dispatch ids itself and
+    /// records `last_skipped_at` instead of a second claim. Tested here because
+    /// a lock proves nothing about the function under it.
+    #[test]
+    fn a_second_pass_skips_a_job_whose_claim_is_outstanding() {
+        let mut state = state_with_one_due_job();
+        let now = u64::MAX / 2;
+
+        let first = claim_due_in_state(&mut state, now, now);
+        assert_eq!(first.len(), 1, "the first pass claims the due job");
+        assert_eq!(state.dispatches.len(), 1);
+
+        // Roll the job due again, simulating the clock moving past its interval
+        // while the first dispatch is still outstanding.
+        state.jobs[0].next_run_at = Some("2023-11-14T22:20:00.000Z".to_string());
+
+        let second = claim_due_in_state(&mut state, now, now);
+        assert!(
+            second.is_empty(),
+            "a job with an outstanding claim must not be dispatched again: {second:?}"
+        );
+        assert_eq!(state.dispatches.len(), 1, "no second claim was recorded");
+        assert!(
+            state.jobs[0].last_skipped_at.is_some(),
+            "the skipped window is recorded, not silently dropped"
+        );
+    }
+
+    /// One schedule per run, 2 threads, 2 passes each. The assertion is the
+    /// invariant, not the count: a job may be skipped for a window (the store
+    /// records `last_skipped_at`), but it must never be CLAIMED twice while a
+    /// claim for it is outstanding.
+    #[test]
+    fn shuttle_two_passes_never_claim_one_job_twice() {
+        shuttle::check_random(
+            || {
+                use shuttle::sync::Mutex;
+
+                let state = std::sync::Arc::new(Mutex::new(state_with_one_due_job()));
+                let passes = 2;
+                let threads: Vec<_> = (0..2)
+                    .map(|_| {
+                        let state = std::sync::Arc::clone(&state);
+                        shuttle::thread::spawn(move || {
+                            for _ in 0..passes {
+                                let mut guard = state.lock().unwrap();
+                                let _ = claim_due_in_state(&mut guard, u64::MAX / 2, u64::MAX / 2);
+                            }
+                        })
+                    })
+                    .collect();
+                for thread in threads {
+                    thread.join().expect("pass");
+                }
+                let guard = state.lock().unwrap();
+                // The invariant: at most ONE outstanding dispatch per job id.
+                let mut seen = std::collections::HashSet::new();
+                for dispatch in &guard.dispatches {
+                    assert!(
+                        seen.insert(dispatch.job_id.clone()),
+                        "the job {} was claimed twice while a claim was outstanding: {:?}",
+                        dispatch.job_id,
+                        guard.dispatches
+                    );
+                }
+            },
+            50,
+        );
+    }
+}

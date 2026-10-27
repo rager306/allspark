@@ -56,6 +56,9 @@ serde_yaml = { package = "yaml_serde", version = "0.10.7" }
 ignore = "0.4"
 
 [dev-dependencies]
+# Deterministic simulation testing for the cron claim path (Shuttle schedules
+# the interleavings itself; see .github/workflows/shuttle.yml).
+shuttle.workspace = true
 tempfile = "3"
 # The provider session-id wire test runs the real provider transport
 # against `pa_ai::testing`'s mock inference server.
