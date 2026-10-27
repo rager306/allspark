@@ -390,6 +390,41 @@ pub struct ResolveCliModelResult {
 
 /// Resolve one model from `--provider`/`--model` flags against the full
 /// catalog (not just auth-configured models).
+/// The canonical provider name for a caller's spelling.
+///
+/// EXACT identity wins over a case fold, and an ambiguous fold is refused
+/// (review 6, #3726): with a custom `Xiaomi` provider beside a built-in
+/// `xiaomi`, `find(|m| m.provider.to_lowercase() == wanted.to_lowercase())`
+/// returned whichever row came first in catalog order — a different baseUrl and
+/// a different auth source, chosen by accident. Folding is a fallback for the
+/// unambiguous spelling, never a way to resolve two identities.
+fn resolve_provider_identity<'a>(
+    wanted: &str,
+    all_models: &'a [Model],
+) -> Result<Option<&'a str>, ()> {
+    let trimmed = wanted.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if let Some(exact) = all_models
+        .iter()
+        .find(|model| model.provider == trimmed)
+        .map(|model| model.provider.as_str())
+    {
+        return Ok(Some(exact));
+    }
+    let mut folded = all_models
+        .iter()
+        .filter(|model| model.provider.eq_ignore_ascii_case(trimmed))
+        .map(|model| model.provider.as_str());
+    let first = folded.next();
+    // More than one spelling that folds to the same name is ambiguous.
+    if folded.any(|provider| Some(provider) != first) {
+        return Err(());
+    }
+    Ok(first)
+}
+
 #[must_use]
 pub fn resolve_cli_model(
     cli_provider: Option<&str>,
@@ -406,15 +441,18 @@ pub fn resolve_cli_model(
     }
     let mut provider = None;
     if let Some(cli_provider) = cli_provider {
-        let canonical = all_models
-            .iter()
-            .find(|model| model.provider.to_lowercase() == cli_provider.to_lowercase())
-            .map(|model| model.provider.clone());
-        if let Some(p) = canonical {
-            provider = Some(p);
-        } else {
-            result.error = Some(format!("Unknown provider \"{cli_provider}\". Use \"{} model list\" to see available providers/models.", pa_types::brand::INVOCATION));
-            return result;
+        match resolve_provider_identity(cli_provider, all_models) {
+            Ok(Some(canonical)) => provider = Some(canonical.to_string()),
+            Ok(None) => {
+                result.error = Some(format!("Unknown provider \"{cli_provider}\". Use \"{}\" model list\" to see available providers/models.", pa_types::brand::INVOCATION));
+                return result;
+            }
+            Err(()) => {
+                result.error = Some(format!(
+                    "Ambiguous provider \"{cli_provider}\": several providers differ only by case. Use the exact name."
+                ));
+                return result;
+            }
         }
     }
 
@@ -423,12 +461,8 @@ pub fn resolve_cli_model(
     if provider.is_none() {
         if let Some(slash) = cli_model.find('/') {
             let maybe_provider = &cli_model[..slash];
-            let canonical = all_models
-                .iter()
-                .find(|model| model.provider.to_lowercase() == maybe_provider.to_lowercase())
-                .map(|model| model.provider.clone());
-            if let Some(p) = canonical {
-                provider = Some(p);
+            if let Ok(Some(canonical)) = resolve_provider_identity(maybe_provider, all_models) {
+                provider = Some(canonical.to_string());
                 pattern = cli_model[slash + 1..].to_string();
                 inferred_provider = true;
             }
@@ -677,6 +711,52 @@ mod tests {
             model("prime-inference", "z-ai/glm-5.3", "GLM"),
             model("openrouter", "openai/gpt-4o", "GPT-4o"),
         ]
+    }
+
+    /// Review 6 (#3726): an EXACT provider identity outranks a case-folded one.
+    ///
+    /// `resolve_cli_model` used `find(|model| provider.to_lowercase() ==
+    /// cli_provider.to_lowercase())`, so the winner was whichever row happened to
+    /// come first in catalog order. With a custom `Xiaomi` next to a built-in
+    /// `xiaomi`, `--provider xiaomi` could route to the CUSTOM provider (or the
+    /// reverse) — a different baseUrl and a different auth source, chosen by an
+    /// accident of ordering. Exact identity now wins; a case fold is only a
+    /// fallback, and it must be unambiguous.
+    #[test]
+    fn an_exact_provider_identity_outranks_a_case_folded_one() {
+        let mut all = catalog();
+        // The custom entry is FIRST, so a naive `find` picks it for "xiaomi".
+        all.insert(0, model("Xiaomi", "mi-1", "Custom Xiaomi"));
+        all.push(model("xiaomi", "mi-2", "Built-in Xiaomi"));
+
+        let exact_lower = resolve_cli_model(Some("xiaomi"), "mi-2", &all);
+        assert_eq!(
+            exact_lower.model.map(|m| m.provider),
+            Some("xiaomi".to_string()),
+            "--provider xiaomi must select the row whose identity is exactly xiaomi"
+        );
+
+        let exact_upper = resolve_cli_model(Some("Xiaomi"), "mi-1", &all);
+        assert_eq!(
+            exact_upper.model.map(|m| m.provider),
+            Some("Xiaomi".to_string()),
+            "--provider Xiaomi must select the exact custom row, not the built-in"
+        );
+    }
+
+    /// A case fold with TWO candidates is ambiguous and must not pick one by
+    /// ordering.
+    #[test]
+    fn an_ambiguous_case_fold_reports_an_error() {
+        let mut all = catalog();
+        all.push(model("xiaomi", "mi-1", "Built-in"));
+        all.push(model("Xiaomi", "mi-2", "Custom"));
+        let result = resolve_cli_model(Some("XIAOMI"), "mi-1", &all);
+        assert!(
+            result.model.is_none() && result.error.is_some(),
+            "two case-variants and no exact match is ambiguous: {:?}",
+            result.error
+        );
     }
 
     #[test]
