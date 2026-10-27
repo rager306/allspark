@@ -9,10 +9,10 @@ use crate::command_registry::{
     find_command_suggestion, format_command_help, format_top_level_help, get_child_command_specs,
     get_command_spec, is_help_command_request, public_command_names, REMOVED_COMMAND_NAMES,
 };
-use crate::config::APP_NAME;
 use crate::global_flags::{extract_help_command_path, rotate_global_flags_before_command};
 use crate::mcp_command::run_mcp_management_command;
 use crate::package_command::handle_package_command;
+use pa_types::brand::INVOCATION;
 
 /// Environment flag marking an interactive self-update child process.
 pub const SELF_UPDATE_INTERACTIVE_CHILD_ENV: &str = "PRIME_AGENT_INTERACTIVE_SELF_UPDATE";
@@ -182,7 +182,7 @@ pub fn handle_public_command(args: &[String]) -> PublicCommandResult {
         "factory" => handled_with_exit(crate::factory_command::run_factory_command(&rest)),
         "config" => {
             if !rest.is_empty() {
-                return fail(format!("Usage: {APP_NAME} config"), None);
+                return fail(format!("Usage: {INVOCATION} config"), None);
             }
             continue_with(args.clone())
         }
@@ -213,7 +213,7 @@ fn print_requested_help(path: &[String]) -> PublicCommandResult {
     let hint = suggestion.map(|suggestion| {
         let mut full = parent.clone();
         full.push(suggestion);
-        format!("Did you mean \"{APP_NAME} help {}\"?", full.join(" "))
+        format!("Did you mean \"{INVOCATION} help {}\"?", full.join(" "))
     });
     if suggestion.is_none() {
         // The exact TS message includes no hint when there is no suggestion.
@@ -284,7 +284,7 @@ fn run_nested_agent_command(
     let Some(subcommand) = subcommand else {
         return fail(
             format!("Missing {parent} command."),
-            Some(format!("Run \"{APP_NAME} help {parent}\" for usage.")),
+            Some(format!("Run \"{INVOCATION} help {parent}\" for usage.")),
         );
     };
     if !children.contains(&subcommand) {
@@ -292,8 +292,8 @@ fn run_nested_agent_command(
         return fail(
             format!("Unknown {parent} command: {subcommand}"),
             Some(suggestion.map_or_else(
-                || format!("Run \"{APP_NAME} help {parent}\" for usage."),
-                |s| format!("Did you mean \"{APP_NAME} {parent} {s}\"?"),
+                || format!("Run \"{INVOCATION} help {parent}\" for usage."),
+                |s| format!("Did you mean \"{INVOCATION} {parent} {s}\"?"),
             )),
         );
     }
@@ -382,7 +382,7 @@ fn parse_update_options(args: &[String]) -> Option<crate::self_update::SelfUpdat
                     _ => {
                         fail(
                             format!("Missing value for {arg}."),
-                            Some(format!("Run \"{APP_NAME} help update\" for usage.")),
+                            Some(format!("Run \"{INVOCATION} help update\" for usage.")),
                         );
                         return None;
                     }
@@ -397,7 +397,7 @@ fn parse_update_options(args: &[String]) -> Option<crate::self_update::SelfUpdat
             other => {
                 fail(
                     format!("Unknown option for update: {other}"),
-                    Some(format!("Run \"{APP_NAME} help update\" for usage.")),
+                    Some(format!("Run \"{INVOCATION} help update\" for usage.")),
                 );
                 return None;
             }
@@ -431,14 +431,14 @@ fn parse_update_options(args: &[String]) -> Option<crate::self_update::SelfUpdat
         {
             fail(
                 "--source must be an http(s) URL.",
-                Some(format!("Run \"{APP_NAME} help update\" for usage.")),
+                Some(format!("Run \"{INVOCATION} help update\" for usage.")),
             );
             return None;
         }
     } else if invocation.source.is_some() {
         fail(
             "--source is only valid with --archive.",
-            Some(format!("Run \"{APP_NAME} help update\" for usage.")),
+            Some(format!("Run \"{INVOCATION} help update\" for usage.")),
         );
         return None;
     }
@@ -455,7 +455,7 @@ fn parse_boolean_options(
         if !allowed.contains(&arg.as_str()) {
             fail(
                 format!("Unknown option for {command}: {arg}"),
-                Some(format!("Run \"{APP_NAME} help {command}\" for usage.")),
+                Some(format!("Run \"{INVOCATION} help {command}\" for usage.")),
             );
             return None;
         }
@@ -498,7 +498,12 @@ fn run_doctor(args: &[String]) -> PublicCommandResult {
 /// switch as the `/telemetry` slash command, for the current directory's
 /// settings scope.
 fn run_telemetry(args: &[String]) -> PublicCommandResult {
-    let usage = || fail(format!("Usage: {APP_NAME} telemetry [status|on|off]"), None);
+    let usage = || {
+        fail(
+            format!("Usage: {INVOCATION} telemetry [status|on|off]"),
+            None,
+        )
+    };
     if args.len() > 1 {
         return usage();
     }
@@ -535,7 +540,7 @@ fn run_incident_command(args: &[String]) -> PublicCommandResult {
         Err(error) => {
             return fail(
                 error.to_string(),
-                Some(format!("Run \"{APP_NAME} help incident\" for usage.")),
+                Some(format!("Run \"{INVOCATION} help incident\" for usage.")),
             )
         }
     };
@@ -547,14 +552,14 @@ fn run_incident_command(args: &[String]) -> PublicCommandResult {
         Err(error) => {
             return fail(
                 error.to_string(),
-                Some(format!("Run \"{APP_NAME} help incident\" for usage.")),
+                Some(format!("Run \"{INVOCATION} help incident\" for usage.")),
             )
         }
     };
     if let Err(error) = crate::incident::run_incident(&options, Some(window)) {
         return fail(
             error.to_string(),
-            Some(format!("Run \"{APP_NAME} help incident\" for usage.")),
+            Some(format!("Run \"{INVOCATION} help incident\" for usage.")),
         );
     }
     handled()
@@ -617,13 +622,13 @@ fn run_package(args: &[String]) -> PublicCommandResult {
                         pa_types::brand::INVOCATION
                     )
                 },
-                |s| format!("Did you mean \"{APP_NAME} package {s}\"?"),
+                |s| format!("Did you mean \"{INVOCATION} package {s}\"?"),
             )),
         );
     }
     let rest = &args[1..];
     if subcommand == "list" && !rest.is_empty() {
-        return fail(format!("Usage: {APP_NAME} package list"), None);
+        return fail(format!("Usage: {INVOCATION} package list"), None);
     }
     if subcommand == "update" {
         if rest.iter().any(|arg| {
@@ -635,7 +640,7 @@ fn run_package(args: &[String]) -> PublicCommandResult {
             );
         }
         if rest.len() > 1 {
-            return fail(format!("Usage: {APP_NAME} package update [source]"), None);
+            return fail(format!("Usage: {INVOCATION} package update [source]"), None);
         }
         if let Some(source) = rest.first() {
             if is_self_update_source(source) {
@@ -676,7 +681,7 @@ fn run_package(args: &[String]) -> PublicCommandResult {
 }
 
 fn is_self_update_source(source: &str) -> bool {
-    source == "self" || source == "pi" || source == APP_NAME
+    source == "self" || source == "pi" || source == INVOCATION
 }
 
 /// A `--check` invocation: `--check` (or `--version`) with at most one
@@ -725,7 +730,7 @@ fn run_update(args: &[String]) -> PublicCommandResult {
                 return fail(
                     "--nightly and --stable do not apply to --rollback or --archive.",
                     Some(format!(
-                        "Switch channels with \"{APP_NAME} update --nightly\" or \"--stable\"."
+                        "Switch channels with \"{INVOCATION} update --nightly\" or \"--stable\"."
                     )),
                 );
             }
@@ -737,7 +742,7 @@ fn run_update(args: &[String]) -> PublicCommandResult {
                 return fail(
                     "--force does not apply to --rollback or --archive.",
                     Some(format!(
-                        "To stop busy daemons first, run \"{APP_NAME} shutdown --force\" and re-run."
+                        "To stop busy daemons first, run \"{INVOCATION} shutdown --force\" and re-run."
                     )),
                 );
             }
@@ -791,11 +796,11 @@ fn run_update(args: &[String]) -> PublicCommandResult {
 
 fn run_attach(rest: &[String]) -> PublicCommandResult {
     let Some(agent) = rest.first().filter(|agent| !agent.starts_with('-')) else {
-        return fail(format!("Usage: {APP_NAME} attach <agent>"), None);
+        return fail(format!("Usage: {INVOCATION} attach <agent>"), None);
     };
     let options = &rest[1..];
     if has_positional_arguments(options) {
-        return fail(format!("Usage: {APP_NAME} attach <agent>"), None);
+        return fail(format!("Usage: {INVOCATION} attach <agent>"), None);
     }
     if has_conflicting_attach_option(options) {
         return fail(
@@ -845,20 +850,20 @@ fn rewrite_nested_command(
                 fail(
                     format!("Unknown {parent} command: {candidate}"),
                     Some(suggestion.map_or_else(
-                        || format!("Run \"{APP_NAME} help {parent}\" for usage."),
-                        |s| format!("Did you mean \"{APP_NAME} {parent} {s}\"?"),
+                        || format!("Run \"{INVOCATION} help {parent}\" for usage."),
+                        |s| format!("Did you mean \"{INVOCATION} {parent} {s}\"?"),
                     )),
                 )
             }
             None => fail(
                 format!("Missing {parent} command."),
-                Some(format!("Run \"{APP_NAME} help {parent}\" for usage.")),
+                Some(format!("Run \"{INVOCATION} help {parent}\" for usage.")),
             ),
         };
     }
     let usage = get_command_spec(&[parent, subcommand]).map_or_else(
-        || format!("{APP_NAME} {parent} {subcommand}"),
-        |spec| format!("{APP_NAME} {}", spec.usage),
+        || format!("{INVOCATION} {parent} {subcommand}"),
+        |spec| format!("{INVOCATION} {}", spec.usage),
     );
     let Some((operands, options)) = split_operands_and_options(&args[1..]) else {
         return fail(format!("Usage: {usage}"), None);
@@ -915,7 +920,7 @@ fn require_operand_count(
         if arg.starts_with('-') {
             fail(
                 format!(
-                    "Usage: {APP_NAME} {}",
+                    "Usage: {INVOCATION} {}",
                     get_command_spec(&[command]).map_or(command, |s| s.usage)
                 ),
                 None,
@@ -930,7 +935,7 @@ fn require_operand_count(
     }
     fail(
         format!(
-            "Usage: {APP_NAME} {}",
+            "Usage: {INVOCATION} {}",
             get_command_spec(&[command]).map_or(command, |s| s.usage)
         ),
         None,

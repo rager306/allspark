@@ -2,6 +2,12 @@
 
 use std::path::PathBuf;
 
+/// The product's own name, for `--version` output and the CLI's own identity.
+///
+/// Deliberately NOT the command a user types: that is [`pa_types::brand::INVOCATION`]
+/// (`allspark`). `APP_NAME` named both until a review found help text telling users
+/// to run `prime-agent`, which on a co-installed machine is the upstream binary.
+/// Use `APP_NAME` for identity, `INVOCATION` for anything the user should type.
 pub const APP_NAME: &str = "prime-agent";
 
 pub const CONFIG_DIR_NAME: &str = ".prime/agent";

@@ -1,6 +1,7 @@
 //! Command specs and help formatting.
 
 use crate::config::APP_NAME;
+use pa_types::brand::INVOCATION;
 
 #[derive(Debug, Clone)]
 pub struct CommandSpec {
@@ -134,7 +135,7 @@ pub const COMMAND_SPECS: &[CommandSpec] = &[
     ]),
     CommandSpec::new(
         &["incident"],
-        "incident [--since <time>] [--until <time>] [--session <id>]",
+        "[--since <time>] [--until <time>] [--session <id>]",
         "Reconstruct a daemon incident from its logs",
     )
     .description(
@@ -548,11 +549,11 @@ pub fn format_top_level_help() -> String {
         })
         .collect();
     format!(
-        "{APP_NAME} - AI coding assistant with a Python REPL tool\n\
+        "{INVOCATION} - AI coding assistant with a Python REPL tool\n\
          \n\
          Usage:\n\
-         \x20 {APP_NAME} [options] [@files...] [message...]\n\
-         \x20 {APP_NAME} <command> [args...]\n\
+         \x20 {INVOCATION} [options] [@files...] [message...]\n\
+         \x20 {INVOCATION} <command> [args...]\n\
          \n\
          Options:\n\
          {options}\n\
@@ -560,7 +561,7 @@ pub fn format_top_level_help() -> String {
          Commands:\n\
          {}\n\
          \n\
-         Run \"{APP_NAME} help <command>\" for command details.",
+         Run \"{INVOCATION} help <command>\" for command details.",
         command_lines.join("\n")
     )
 }
@@ -570,7 +571,7 @@ pub fn format_command_help(path: &[&str]) -> Option<String> {
     let spec = get_command_spec(path)?;
     let children = get_child_command_specs(path);
     let mut sections = vec![
-        format!("Usage:\n  {APP_NAME} {}", spec.usage),
+        format!("Usage:\n  {INVOCATION} {}", spec.usage),
         String::new(),
         format!("{}.", spec.summary),
     ];
@@ -605,7 +606,7 @@ pub fn format_command_help(path: &[&str]) -> Option<String> {
         sections.push(String::new());
         sections.push("Examples:".to_string());
         for example in spec.examples {
-            sections.push(format!("  {APP_NAME} {example}"));
+            sections.push(format!("  {INVOCATION} {example}"));
         }
     }
     Some(sections.join("\n"))

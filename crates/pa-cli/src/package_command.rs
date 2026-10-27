@@ -3,8 +3,9 @@
 use pa_core::packages::{PackageManager, ProgressEvent, ProgressEventKind, UserOrProject};
 use pa_core::update::version::UpdateChannel;
 
-use crate::config::{get_agent_dir, APP_NAME, CONFIG_DIR_NAME};
+use crate::config::{get_agent_dir, CONFIG_DIR_NAME};
 use crate::self_update::SelfUpdateOptions;
+use pa_types::brand::INVOCATION;
 
 use crate::public_command::{
     DAEMON_UPDATE_RESTART_COORDINATOR_FLAG, DAEMON_UPDATE_RESTART_ORIGIN_FLAG,
@@ -30,7 +31,7 @@ fn fail(message: &str, hint: Option<&str>) -> PackageCommandOutcome {
 }
 
 fn is_self_update_source(source: &str) -> bool {
-    source == "self" || source == "pi" || source == APP_NAME
+    source == "self" || source == "pi" || source == crate::config::APP_NAME
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,12 +45,12 @@ enum PackageCommand {
 impl PackageCommand {
     fn usage(self) -> String {
         match self {
-            PackageCommand::Install => format!("{APP_NAME} package install <source> [--local]"),
-            PackageCommand::Remove => format!("{APP_NAME} package remove <source> [--local]"),
+            PackageCommand::Install => format!("{INVOCATION} package install <source> [--local]"),
+            PackageCommand::Remove => format!("{INVOCATION} package remove <source> [--local]"),
             PackageCommand::Update => format!(
-                "{APP_NAME} update [--force] [--rollback] [--nightly|--stable] or {APP_NAME} package update [source]"
+                "{INVOCATION} update [--force] [--rollback] [--nightly|--stable] or {INVOCATION} package update [source]"
             ),
-            PackageCommand::List => format!("{APP_NAME} package list"),
+            PackageCommand::List => format!("{INVOCATION} package list"),
         }
     }
 }
@@ -363,13 +364,13 @@ fn print_package_command_help(command: PackageCommand) {
     let usage = command.usage();
     match command {
         PackageCommand::Install => println!(
-            "Usage:\n  {usage}\n\nInstall a package and add it to settings.\n\nOptions:\n  --local    Install project-locally ({CONFIG_DIR_NAME}/settings.json)\n\nExamples:\n  {APP_NAME} package install npm:@foo/bar\n  {APP_NAME} package install git:github.com/user/repo\n  {APP_NAME} package install git:git@github.com:user/repo\n  {APP_NAME} package install https://github.com/user/repo\n  {APP_NAME} package install ssh://git@github.com/user/repo\n  {APP_NAME} package install ./local/path\n"
+            "Usage:\n  {usage}\n\nInstall a package and add it to settings.\n\nOptions:\n  --local    Install project-locally ({CONFIG_DIR_NAME}/settings.json)\n\nExamples:\n  {INVOCATION} package install npm:@foo/bar\n  {INVOCATION} package install git:github.com/user/repo\n  {INVOCATION} package install git:git@github.com:user/repo\n  {INVOCATION} package install https://github.com/user/repo\n  {INVOCATION} package install ssh://git@github.com/user/repo\n  {INVOCATION} package install ./local/path\n"
         ),
         PackageCommand::Remove => println!(
-            "Usage:\n  {usage}\n\nRemove a package and its source from settings.\n\nOptions:\n  --local    Remove from project settings ({CONFIG_DIR_NAME}/settings.json)\n\nExamples:\n  {APP_NAME} package remove npm:@foo/bar\n"
+            "Usage:\n  {usage}\n\nRemove a package and its source from settings.\n\nOptions:\n  --local    Remove from project settings ({CONFIG_DIR_NAME}/settings.json)\n\nExamples:\n  {INVOCATION} package remove npm:@foo/bar\n"
         ),
         PackageCommand::Update => println!(
-            "Usage:\n  {usage}\n\nUpdate {APP_NAME} or installed packages.\n\nOptions:\n  --self                  Update {APP_NAME} only\n  --extensions            Update installed packages only\n  --extension <source>    Update one package only\n  --force                 Reinstall {APP_NAME} even if the current version is latest\n  --rollback              Restore the previous compiled release\n  --nightly               Switch updates to the nightly channel (unreleased builds, may be broken)\n  --stable                Return updates to the stable channel\n  --daemon-socket <path>  Restart the daemon listening on this exact socket\n\nCommands:\n  {APP_NAME} update                Update {APP_NAME}\n  {APP_NAME} package update        Update installed packages\n  {APP_NAME} package update <source> Update one package\n"
+            "Usage:\n  {usage}\n\nUpdate {INVOCATION} or installed packages.\n\nOptions:\n  --self                  Update {INVOCATION} only\n  --extensions            Update installed packages only\n  --extension <source>    Update one package only\n  --force                 Reinstall {INVOCATION} even if the current version is latest\n  --rollback              Restore the previous compiled release\n  --nightly               Switch updates to the nightly channel (unreleased builds, may be broken)\n  --stable                Return updates to the stable channel\n  --daemon-socket <path>  Restart the daemon listening on this exact socket\n\nCommands:\n  {INVOCATION} update                Update {INVOCATION}\n  {INVOCATION} package update        Update installed packages\n  {INVOCATION} package update <source> Update one package\n"
         ),
         PackageCommand::List => println!(
             "Usage:\n  {usage}\n\nList installed packages from user and project settings.\n"
@@ -411,7 +412,7 @@ pub fn handle_package_command(args: &[String]) -> PackageCommandOutcome {
         return fail(
             &format!("Unknown option {invalid_option} for \"{command_name}\"."),
             Some(&format!(
-                "Use \"{APP_NAME} --help\" or \"{}\".",
+                "Use \"{INVOCATION} --help\" or \"{}\".",
                 command.usage()
             )),
         );
