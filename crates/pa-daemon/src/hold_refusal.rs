@@ -317,13 +317,16 @@ the same daemon, so this build cannot open the file while that process holds it.
                 }
                 _ => {
                     lines.push(
-                        "  (continue in the TypeScript product — its daemon owns this session; the prime-agent keyword launches this Rust build, so use the TypeScript binary from its preserved install)"
-                            .to_string(),
+                        format!("  (continue in the TypeScript product — its daemon owns this session; the {} keyword launches this Rust build, so use the TypeScript binary from its preserved install)", pa_types::brand::INVOCATION),
                     );
                 }
             }
             lines.push(String::new());
-            lines.extend(take_over_lines(hold, "prime-agent", holder_exe));
+            lines.extend(take_over_lines(
+                hold,
+                pa_types::brand::INVOCATION,
+                holder_exe,
+            ));
         }
         HolderFlavor::ThisBuild => {
             lines.push(format!(
@@ -335,7 +338,8 @@ runtime lease."
             lines.push("• Continue where you left off:".to_string());
             if let Some(id) = id {
                 lines.push(format!(
-                    "  prime-agent --daemon-socket <socket> --resume {}",
+                    "  {} --daemon-socket <socket> --resume {}",
+                    pa_types::brand::INVOCATION,
                     shell_quote(&single_line(id))
                 ));
                 lines.push(
@@ -344,7 +348,7 @@ you started it — that daemon owns this session)"
                         .to_string(),
                 );
             } else {
-                lines.push("  prime-agent --resume".to_string());
+                lines.push(format!("  {} --resume", pa_types::brand::INVOCATION));
                 lines.push(
                     "  (switch to the window or shell where that instance is running — its \
 daemon owns this session)"
@@ -352,7 +356,11 @@ daemon owns this session)"
                 );
             }
             lines.push(String::new());
-            lines.extend(take_over_lines(hold, "prime-agent", holder_exe));
+            lines.extend(take_over_lines(
+                hold,
+                pa_types::brand::INVOCATION,
+                holder_exe,
+            ));
         }
         HolderFlavor::AnotherProcess => {
             lines.push(format!(
@@ -361,7 +369,11 @@ daemon owns this session)"
 runtime lease."
             ));
             lines.push(String::new());
-            lines.extend(take_over_lines(hold, "prime-agent", holder_exe));
+            lines.extend(take_over_lines(
+                hold,
+                pa_types::brand::INVOCATION,
+                holder_exe,
+            ));
         }
     }
     lines.push(String::new());
@@ -424,12 +436,17 @@ Session: ts01ab";
 
         let message = refusal_for_flavor(HolderFlavor::TypeScriptProduct, &hold, None, None);
         assert!(
-            message.contains("the prime-agent keyword launches this Rust build"),
+            message.contains(&format!(
+                "the {} keyword launches this Rust build",
+                pa_types::brand::INVOCATION
+            )),
             "the unresolvable-exe continue path states the takeover: {message}"
         );
         assert!(
-            !message.contains("prime-agent --resume"),
-            "no bare `prime-agent --resume` hint remains (it launches this build): {message}"
+            !message.contains(&format!("{} --resume", pa_types::brand::INVOCATION)),
+            "no bare `{} --resume` hint remains (it launches this build): {message}\n{}",
+            pa_types::brand::INVOCATION,
+            pa_types::brand::INVOCATION
         );
     }
 
@@ -480,7 +497,10 @@ Session: ts01ab";
             "a runtime image never becomes the resume command: {message}"
         );
         assert!(
-            message.contains("the prime-agent keyword launches this Rust build"),
+            message.contains(&format!(
+                "the {} keyword launches this Rust build",
+                pa_types::brand::INVOCATION
+            )),
             "the runtime holder gets the takeover wording: {message}"
         );
 
@@ -508,7 +528,10 @@ Session: ts01ab";
         };
         let message = refusal_for_flavor(HolderFlavor::ThisBuild, &hold, None, None);
         assert!(
-            message.contains("prime-agent --daemon-socket <socket> --resume 'rs01cd'"),
+            message.contains(&format!(
+                "{} --daemon-socket <socket> --resume 'rs01cd'",
+                pa_types::brand::INVOCATION
+            )),
             "the attach command names the flag and the session: {message}"
         );
         assert!(
@@ -530,7 +553,7 @@ Session: ts01ab";
             "the anonymous holder id renders: {message}"
         );
         assert!(
-            message.contains("prime-agent shutdown --force"),
+            message.contains(&format!("{} shutdown --force", pa_types::brand::INVOCATION)),
             "without a pid the sweep command is the take-over path: {message}"
         );
     }

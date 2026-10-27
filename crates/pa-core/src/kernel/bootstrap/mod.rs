@@ -107,9 +107,13 @@ fn format_bootstrap_failure(error: &anyhow::Error) -> anyhow::Error {
     // (packaged layout and source checkout), name it.
     if venv::packaged_runtime_dir().is_none() {
         let package = venv::package_dir();
-        let _ = write!(message,
-            "\nThe packaged prime-agent-runtime directory was not found (looked next to the executable at {} and PI_PACKAGE_DIR); reinstall prime-agent so the kernel runtime ships beside the binary.",
-            package.display()
+        let _ = write!(
+            message,
+            "\nThe packaged prime-agent-runtime directory was not found (looked next to the \
+             executable at {} and PI_PACKAGE_DIR); reinstall {} so the kernel runtime ships \
+             beside the binary.",
+            package.display(),
+            pa_types::brand::INVOCATION
         );
     }
     anyhow!(message)

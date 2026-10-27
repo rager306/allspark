@@ -1092,7 +1092,7 @@ async fn handle_session_new(
         {
             let _ = tx.send(super::internal_error(
                 &id,
-                "prime-agent ACP mode hosts one session per connection; start another prime-agent process for a second session",
+                &format!("{} ACP mode hosts one session per connection; start another {} process for a second session", pa_types::brand::PRODUCT_LOWER, pa_types::brand::INVOCATION),
             ));
             return;
         }
@@ -1517,7 +1517,7 @@ async fn prompt_turn(
         return super::turn_failure_error(
             &id,
             &failure,
-            &format!("prime-agent turn failed: {failure}"),
+            &format!("{} turn failed: {failure}", pa_types::brand::INVOCATION),
         );
     }
     // The autonomous accounting for the completion envelope: the daemon's

@@ -329,9 +329,10 @@ pub fn parse_args(args: &[String]) -> Args {
             }
             "--export" => {
                 if !internal_runtime_command {
-                    result.diagnostics.push(Diagnostic::error(
-                        "--export was removed. Use \"prime-agent session export <file> [output]\".",
-                    ));
+                    result.diagnostics.push(Diagnostic::error(format!(
+                        "--export was removed. Use \"{} session export <file> [output]\".",
+                        pa_types::brand::INVOCATION
+                    )));
                     if let Some(next) = args.get(i + 1) {
                         if !next.starts_with('-') {
                             i += 1;
@@ -426,9 +427,10 @@ pub fn parse_args(args: &[String]) -> Args {
                     .get(i + 1)
                     .is_some_and(|next| !next.starts_with('-') && !next.starts_with('@'));
                 if !internal_runtime_command {
-                    result.diagnostics.push(Diagnostic::error(
-                        "--list-models was removed. Use \"prime-agent model list [search]\".",
-                    ));
+                    result.diagnostics.push(Diagnostic::error(format!(
+                        "--list-models was removed. Use \"{} model list [search]\".",
+                        pa_types::brand::INVOCATION
+                    )));
                     if has_search {
                         i += 1;
                     }
@@ -450,14 +452,16 @@ pub fn parse_args(args: &[String]) -> Args {
                 }
             }
             _ if arg.starts_with("--export=") => {
-                result.diagnostics.push(Diagnostic::error(
-                    "--export was removed. Use \"prime-agent session export <file> [output]\".",
-                ));
+                result.diagnostics.push(Diagnostic::error(format!(
+                    "--export was removed. Use \"{} session export <file> [output]\".",
+                    pa_types::brand::INVOCATION
+                )));
             }
             _ if arg.starts_with("--list-models=") => {
-                result.diagnostics.push(Diagnostic::error(
-                    "--list-models was removed. Use \"prime-agent model list [search]\".",
-                ));
+                result.diagnostics.push(Diagnostic::error(format!(
+                    "--list-models was removed. Use \"{} model list [search]\".",
+                    pa_types::brand::INVOCATION
+                )));
             }
             _ if arg.starts_with('@') => {
                 result.file_args.push(arg[1..].to_string());
@@ -565,7 +569,10 @@ mod tests {
         let parsed = parse(&["--export", "foo"]);
         assert_eq!(
             last_error(&parsed),
-            "--export was removed. Use \"prime-agent session export <file> [output]\"."
+            format!(
+                "--export was removed. Use \"{} session export <file> [output]\".",
+                pa_types::brand::INVOCATION
+            )
         );
         let marker: Vec<String> = vec![
             INTERNAL_RUNTIME_COMMAND_MARKER.into(),

@@ -301,9 +301,7 @@ async fn finish_failure(
     let root = match super::activation_root() {
         Ok(root) => root,
         Err(error) => {
-            fail_hard(format!(
-                "The rollback is unavailable ({error}); the update failed ({reason}). Sessions persist on disk - prime-agent attach recovers them."
-            ))
+            fail_hard(format!("The rollback is unavailable ({error}); the update failed ({reason}). Sessions persist on disk - {} attach recovers them.", pa_types::brand::INVOCATION))
             .await;
             return Ok(());
         }
@@ -311,9 +309,7 @@ async fn finish_failure(
     let previous = match pa_core::update::install::read_rollback_installation(&root) {
         Ok(previous) => previous,
         Err(error) => {
-            fail_hard(format!(
-                "No valid previous release to roll back to ({error}); the update failed ({reason}). Sessions persist on disk - prime-agent attach recovers them."
-            ))
+            fail_hard(format!("No valid previous release to roll back to ({error}); the update failed ({reason}). Sessions persist on disk - {} attach recovers them.", pa_types::brand::INVOCATION))
             .await;
             return Ok(());
         }
@@ -324,17 +320,13 @@ async fn finish_failure(
     ) {
         Ok(target) => target,
         Err(error) => {
-            fail_hard(format!(
-                    "The rollback launcher is missing ({error}); the update failed ({reason}). Sessions persist on disk - prime-agent attach recovers them."
-                ))
+            fail_hard(format!("The rollback launcher is missing ({error}); the update failed ({reason}). Sessions persist on disk - {} attach recovers them.", pa_types::brand::INVOCATION))
                 .await;
             return Ok(());
         }
     };
     if let Err(error) = swap::restore_previous(&root, &previous_target) {
-        fail_hard(format!(
-            "The rollback repoint failed ({error}); the update failed ({reason}). Sessions persist on disk - prime-agent attach recovers them."
-        ))
+        fail_hard(format!("The rollback repoint failed ({error}); the update failed ({reason}). Sessions persist on disk - {} attach recovers them.", pa_types::brand::INVOCATION))
         .await;
         return Ok(());
     }
@@ -347,9 +339,7 @@ async fn finish_failure(
         &spawn_cwd,
     ) {
         writer.lock().await.set_state(UpdateState::Failed)?;
-        writer.lock().await.set_message(Some(format!(
-            "The rollback supervisor could not spawn ({error}); the update failed ({reason}). Sessions persist on disk - prime-agent attach recovers them."
-        )))?;
+        writer.lock().await.set_message(Some(format!("The rollback supervisor could not spawn ({error}); the update failed ({reason}). Sessions persist on disk - {} attach recovers them.", pa_types::brand::INVOCATION)))?;
         return Ok(());
     }
     if let Some(identity) = wait_for_hello(&options.socket_path, options.budget.boot_ms).await {
@@ -364,9 +354,7 @@ async fn finish_failure(
         Ok(())
     } else {
         writer.lock().await.set_state(UpdateState::Failed)?;
-        writer.lock().await.set_message(Some(format!(
-            "The rollback supervisor did not greet within its boot budget; the update failed ({reason}). Sessions persist on disk - prime-agent attach recovers them."
-        )))?;
+        writer.lock().await.set_message(Some(format!("The rollback supervisor did not greet within its boot budget; the update failed ({reason}). Sessions persist on disk - {} attach recovers them.", pa_types::brand::INVOCATION)))?;
         Ok(())
     }
 }

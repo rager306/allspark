@@ -93,13 +93,19 @@ fn parse_factory_command(args: &[String]) -> Result<FactoryCommand, String> {
     match subcommand.as_str() {
         "list" => {
             if !operands.is_empty() {
-                return Err("Usage: prime-agent factory list [--json]".to_string());
+                return Err(format!(
+                    "Usage: {} factory list [--json]",
+                    pa_types::brand::INVOCATION
+                ));
             }
             Ok(FactoryCommand::List { json })
         }
         "import" => {
             if operands.len() != 1 {
-                return Err("Usage: prime-agent factory import <path> [--json]".to_string());
+                return Err(format!(
+                    "Usage: {} factory import <path> [--json]",
+                    pa_types::brand::INVOCATION
+                ));
             }
             Ok(FactoryCommand::Import {
                 path: operands.remove(0),
@@ -108,14 +114,16 @@ fn parse_factory_command(args: &[String]) -> Result<FactoryCommand, String> {
         }
         "export" => {
             if operands.len() != 1 {
-                return Err(
-                    "Usage: prime-agent factory export <name> --out <path> [--json]".to_string(),
-                );
+                return Err(format!(
+                    "Usage: {} factory export <name> --out <path> [--json]",
+                    pa_types::brand::INVOCATION
+                ));
             }
             let Some(out) = out else {
-                return Err(
-                    "Usage: prime-agent factory export <name> --out <path> [--json]".to_string(),
-                );
+                return Err(format!(
+                    "Usage: {} factory export <name> --out <path> [--json]",
+                    pa_types::brand::INVOCATION
+                ));
             };
             Ok(FactoryCommand::Export {
                 name: operands.remove(0),
@@ -133,12 +141,18 @@ pub fn run_factory_command(args: &[String]) -> i32 {
         Ok(command) => command,
         Err(empty_hint) if empty_hint.is_empty() => {
             eprintln!("Missing factory command.");
-            eprintln!("Run \"prime-agent help factory\" for usage.");
+            eprintln!(
+                "Run \"{} help factory\" for usage.",
+                pa_types::brand::INVOCATION
+            );
             return 1;
         }
         Err(error) => {
             eprintln!("Error: {error}");
-            eprintln!("Run `prime-agent help factory` for usage.");
+            eprintln!(
+                "Run `{} help factory` for usage.",
+                pa_types::brand::INVOCATION
+            );
             return 1;
         }
     };
@@ -440,9 +454,10 @@ mod tests {
             .contains("Unknown factory command: run"));
         let missing_out = parse_factory_command(&arg(&["export", "sweep"]));
         assert!(missing_out.is_err());
-        assert!(missing_out
-            .unwrap_err()
-            .starts_with("Usage: prime-agent factory export"));
+        assert!(missing_out.unwrap_err().starts_with(&format!(
+            "Usage: {} factory export",
+            pa_types::brand::INVOCATION
+        )));
         let dangling_out = parse_factory_command(&arg(&["export", "sweep", "--out"]));
         assert!(dangling_out.is_err());
         assert!(dangling_out

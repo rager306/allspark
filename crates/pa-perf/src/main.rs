@@ -8,7 +8,7 @@ use pa_perf::corpus::{self, CacheMode, CorpusOptions, Profile};
 use pa_perf::report::{self, Baseline};
 
 #[derive(Parser)]
-#[command(name = "pa-perf", about = "prime-agent performance tooling", version)]
+#[command(name = "pa-perf", about = &format!("{} performance tooling", pa_types::brand::INVOCATION), version)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

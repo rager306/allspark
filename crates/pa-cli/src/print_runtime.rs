@@ -1481,9 +1481,10 @@ fn stored_session_cwd(
 
 pub(crate) fn render_selector_error(error: &SessionSelectorError) -> String {
     format!(
-        "{}.{}\nOpen prime-agent and press left-arrow to browse sessions.",
+        "{}.{}\nOpen {} and press left-arrow to browse sessions.",
         error.message(),
-        error.suggestion().unwrap_or_default()
+        error.suggestion().unwrap_or_default(),
+        pa_types::brand::INVOCATION
     )
 }
 

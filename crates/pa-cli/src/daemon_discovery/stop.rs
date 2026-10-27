@@ -160,8 +160,10 @@ pub(crate) fn run_shutdown_all(json: bool, force: bool, root: &DaemonStateRoot) 
                 .map(|daemon| {
                     (
                         daemon.socket_path.display().to_string(),
-                        r#"confirmation required; use "prime-agent shutdown --force --json""#
-                            .to_string(),
+                        format!(
+                            r#"confirmation required; use "{} shutdown --force --json""#,
+                            pa_types::brand::INVOCATION
+                        ),
                     )
                 })
                 .collect();
@@ -171,9 +173,7 @@ pub(crate) fn run_shutdown_all(json: bool, force: bool, root: &DaemonStateRoot) 
         ShutdownConfirmationPlan::TtyError => {
             // The public-command wrapper turns the throw into the standard `Error: …`
             // failure (stderr + exit 1); only reachable once there are daemons to stop.
-            eprintln!(
-                "Error: Shutdown requires confirmation in an interactive terminal. Use \"prime-agent shutdown --force\"."
-            );
+            eprintln!("Error: Shutdown requires confirmation in an interactive terminal. Use \"{} shutdown --force\".", pa_types::brand::INVOCATION);
             1
         }
         ShutdownConfirmationPlan::Prompt => {

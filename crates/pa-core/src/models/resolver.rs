@@ -413,9 +413,7 @@ pub fn resolve_cli_model(
         if let Some(p) = canonical {
             provider = Some(p);
         } else {
-            result.error = Some(format!(
-                "Unknown provider \"{cli_provider}\". Use \"prime-agent model list\" to see available providers/models."
-            ));
+            result.error = Some(format!("Unknown provider \"{cli_provider}\". Use \"{} model list\" to see available providers/models.", pa_types::brand::INVOCATION));
             return result;
         }
     }
@@ -529,7 +527,8 @@ pub fn resolve_cli_model(
         None => cli_model.to_string(),
     };
     result.error = Some(format!(
-        "Model \"{display}\" not found. Use \"prime-agent model list\" to see available models."
+        "Model \"{display}\" not found. Use \"{} model list\" to see available models.",
+        pa_types::brand::INVOCATION
     ));
     result
 }

@@ -28,7 +28,7 @@ use pa_tui::view::AgentView;
 #[derive(Parser, Debug)]
 #[command(
     name = "pa-tui-replay",
-    about = "Replay a prime-agent session in the TUI"
+    about = &format!("Replay a {} session in the TUI", pa_types::brand::INVOCATION)
 )]
 struct Args {
     /// Path to the session JSONL file (defaults to the newest session).

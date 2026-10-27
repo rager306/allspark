@@ -86,7 +86,10 @@ pub async fn ensure_daemon_running(socket_path: &Path, spawn_cwd: &Path) -> Resu
         DaemonProbe::Stale(client) => shutdown_stale_daemon(*client, socket_path).await?,
         DaemonProbe::Absent => {}
     }
-    let exe = std::env::current_exe().context("resolve the prime-agent executable")?;
+    let exe = std::env::current_exe().context(format!(
+        "resolve the {} executable",
+        pa_types::brand::INVOCATION
+    ))?;
     ensure_daemon_running_with(&exe, socket_path, spawn_cwd).await
 }
 
@@ -124,8 +127,9 @@ pub async fn ensure_daemon_running_with(
         }
         if Instant::now() > deadline {
             return Err(anyhow!(
-                "Timed out waiting for the Prime Agent daemon to start on {}. Run: prime-agent shutdown --force, then retry the original command.",
-                socket_path.display()
+                "Timed out waiting for the Prime Agent daemon to start on {}. Run: {} shutdown --force, then retry the original command.",
+                socket_path.display(),
+                pa_types::brand::INVOCATION
             ));
         }
         tokio::time::sleep(Duration::from_millis(DAEMON_PROBE_INTERVAL_MS)).await;
@@ -159,8 +163,9 @@ async fn shutdown_stale_daemon(
     client.close();
     if busy {
         return Err(anyhow!(
-            "An incompatible Prime Agent daemon is running on {}.\n\nRun:\n  prime-agent shutdown --force\n\nThen retry the original command (the running daemon has active work).",
-            socket_path.display()
+            "An incompatible Prime Agent daemon is running on {}.\n\nRun:\n  {} shutdown --force\n\nThen retry the original command (the running daemon has active work).",
+            socket_path.display(),
+            pa_types::brand::INVOCATION
         ));
     }
     if let Ok((client, _)) = pa_tui::daemon_client::DaemonClient::connect(socket_path).await {

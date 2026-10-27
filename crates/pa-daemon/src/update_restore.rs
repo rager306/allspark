@@ -829,7 +829,8 @@ impl Supervisor {
             .map(|(session_file, message)| {
                 format!(
                     "Session {selector} failed to restore: {message}. The session file is at \
-                     {session_file} — run `prime-agent attach` to resume it manually."
+                     {session_file} — run `{} attach` to resume it manually.",
+                    pa_types::brand::INVOCATION
                 )
             })
     }

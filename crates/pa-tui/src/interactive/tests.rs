@@ -183,7 +183,10 @@ fn resume_hint_names_a_flushed_session() {
     });
     assert_eq!(
         crate::session_ui::resume_hint_from_stats(&stats),
-        Some("Resume this session with: prime-agent --resume s1".to_string())
+        Some(format!(
+            "Resume this session with: {} --resume s1",
+            pa_types::brand::INVOCATION
+        ))
     );
     // An unflushed empty session and a missing session file are both unresumable
     // (TS omits the hint for either).

@@ -218,15 +218,15 @@ pub const COMMAND_SPECS: &[CommandSpec] = &[
         "--source <url>     The https:// origin recorded as the release's install source (managed installs; required there with --archive)",
     ])
     .description(
-        "Move from the TypeScript version to the Rust port in one step: `prime-agent update` \
+        "Move from the TypeScript version to the Rust port in one step: `allspark update` \
          fetches the update channel's installer (stable: \
          https://app.primeintellect.ai/prime-agent/install.sh; nightly: install-beta.sh from the \
          release download base — never a GitHub raw or workflow URL) and runs it, which \
          uninstalls the TypeScript version and installs the latest Rust build; your sessions and \
-         configuration (~/.prime/agent) are never touched. Restart prime-agent after the update \
+         configuration (~/.prime/agent) are never touched. Restart allspark after the update \
          to run the new build. This command exists only in the Rust binary — the TypeScript \
          version does not have it; the move happens when you run the installer's curl|sh URL (the \
-         README's Install section) or `prime-agent update` (after the Rust install exists).",
+         README's Install section) or `allspark update` (after the Rust install exists).",
     ),
     CommandSpec::new(&["model"], "model list [search]", "Inspect available models"),
     CommandSpec::new(&["model", "list"], "model list [search]", "List available models"),

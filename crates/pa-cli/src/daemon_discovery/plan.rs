@@ -55,10 +55,10 @@ pub(crate) fn plan_reap(daemons: &[DaemonInfo], force: bool) -> Vec<ReapAction> 
                     return ReapAction {
                         kind: ReapActionKind::Skip,
                         daemon: daemon.clone(),
-                        reason: Some(
-                            r#"unreachable; use "prime-agent shutdown --force" to stop it"#
-                                .to_string(),
-                        ),
+                        reason: Some(format!(
+                            r#"unreachable; use "{} shutdown --force" to stop it"#,
+                            pa_types::brand::INVOCATION
+                        )),
                     };
                 }
                 let pid = daemon.pid.unwrap();
@@ -219,10 +219,11 @@ mod tests {
         )];
         let without = plan_reap(&daemons, false);
         assert_eq!(kinds(&without), vec![ReapActionKind::Skip]);
-        assert_eq!(
-            without[0].reason.as_deref(),
-            Some(r#"unreachable; use "prime-agent shutdown --force" to stop it"#)
+        let expected_reason = format!(
+            r#"unreachable; use "{} shutdown --force" to stop it"#,
+            pa_types::brand::INVOCATION
         );
+        assert_eq!(without[0].reason.as_deref(), Some(expected_reason.as_str()));
         let with = plan_reap(&daemons, true);
         assert_eq!(kinds(&with), vec![ReapActionKind::Kill]);
     }

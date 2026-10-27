@@ -154,11 +154,15 @@ pub fn run(options: &UpdateOptions) -> i32 {
         Ok(installed) => {
             match installed.version {
                 Some(version) => {
-                    println!("updated to {version} — restart prime-agent to run the new build");
+                    println!(
+                        "updated to {version} — restart {} to run the new build",
+                        pa_types::brand::INVOCATION
+                    );
                 }
                 None => {
                     println!(
-                        "updated to the latest build — restart prime-agent to run the new build"
+                        "updated to the latest build — restart {} to run the new build",
+                        pa_types::brand::INVOCATION
                     );
                 }
             }
@@ -223,7 +227,10 @@ pub fn run_local(prefix: &std::path::Path, archive: Option<&std::path::Path>) ->
                 "rolled back to"
             };
             let version = installed.version.as_deref().unwrap_or("the previous build");
-            println!("{done} {version} — restart prime-agent to run it");
+            println!(
+                "{done} {version} — restart {} to run it",
+                pa_types::brand::INVOCATION
+            );
             0
         }
         Err(failure) => {
@@ -316,9 +323,9 @@ fn check_verdict(
         );
     }
     let command = match flag {
-        Some(UpdateChannel::Nightly) => "prime-agent update --nightly",
-        Some(UpdateChannel::Stable) => "prime-agent update --stable",
-        None => "prime-agent update",
+        Some(UpdateChannel::Nightly) => format!("{} update --nightly", pa_types::brand::INVOCATION),
+        Some(UpdateChannel::Stable) => format!("{} update --stable", pa_types::brand::INVOCATION),
+        None => format!("{} update", pa_types::brand::INVOCATION),
     };
     format!("An update is available — run `{command}` to install it.")
 }
@@ -350,7 +357,10 @@ mod tests {
         );
         assert_eq!(
             check_verdict(&release("1.2.4"), "1.2.3", UpdateChannel::Stable, None),
-            "An update is available — run `prime-agent update` to install it."
+            format!(
+                "An update is available — run `{} update` to install it.",
+                pa_types::brand::INVOCATION
+            )
         );
         // A switch onto nightly accepts the same-base prerelease the
         // installer would install.
@@ -361,7 +371,10 @@ mod tests {
                 UpdateChannel::Nightly,
                 Some(UpdateChannel::Nightly)
             ),
-            "An update is available — run `prime-agent update --nightly` to install it."
+            format!(
+                "An update is available — run `{} update --nightly` to install it.",
+                pa_types::brand::INVOCATION
+            )
         );
         assert_eq!(
             check_verdict(

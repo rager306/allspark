@@ -239,11 +239,20 @@ fn reject_removed_command(args: &[String]) -> PublicCommandResult {
     let command = args.first().map(String::as_str).unwrap_or_default();
     let subcommand = args.get(1).map(String::as_str);
     let replacement = match (command, subcommand) {
-        ("daemon", _) => Some("Run \"prime-agent help\" to see the agent commands.".to_string()),
-        ("app", Some("update")) => Some("Use \"prime-agent update\".".to_string()),
-        ("install", _) => Some("Use \"prime-agent package install\".".to_string()),
-        ("remove" | "uninstall", _) => Some("Use \"prime-agent package remove\".".to_string()),
-        ("manage", _) => Some("Use \"prime-agent agents\".".to_string()),
+        ("daemon", _) => Some(format!(
+            "Run \"{} help\" to see the agent commands.",
+            pa_types::brand::INVOCATION
+        )),
+        ("app", Some("update")) => Some(format!("Use \"{} update\".", pa_types::brand::INVOCATION)),
+        ("install", _) => Some(format!(
+            "Use \"{} package install\".",
+            pa_types::brand::INVOCATION
+        )),
+        ("remove" | "uninstall", _) => Some(format!(
+            "Use \"{} package remove\".",
+            pa_types::brand::INVOCATION
+        )),
+        ("manage", _) => Some(format!("Use \"{} agents\".", pa_types::brand::INVOCATION)),
         _ => None,
     };
     let joined: Vec<&str> = args.iter().take(2).map(String::as_str).collect();
@@ -304,7 +313,10 @@ fn validate_schedule_args(args: &[String]) -> bool {
             }
             if arg.starts_with('-') {
                 fail(
-                    "Usage: prime-agent schedule list [--all] [agent] [--json]",
+                    format!(
+                        "Usage: {} schedule list [--all] [agent] [--json]",
+                        pa_types::brand::INVOCATION
+                    ),
                     None,
                 );
                 return false;
@@ -312,7 +324,10 @@ fn validate_schedule_args(args: &[String]) -> bool {
             agent_count += 1;
             if agent_count > 1 {
                 fail(
-                    "Usage: prime-agent schedule list [--all] [agent] [--json]",
+                    format!(
+                        "Usage: {} schedule list [--all] [agent] [--json]",
+                        pa_types::brand::INVOCATION
+                    ),
                     None,
                 );
                 return false;
@@ -325,7 +340,13 @@ fn validate_schedule_args(args: &[String]) -> bool {
         if operands.len() == 1 && !operands[0].starts_with('-') {
             return true;
         }
-        fail("Usage: prime-agent schedule cancel <job-id>", None);
+        fail(
+            format!(
+                "Usage: {} schedule cancel <job-id>",
+                pa_types::brand::INVOCATION
+            ),
+            None,
+        );
         return false;
     }
     true
@@ -566,13 +587,19 @@ fn run_package(args: &[String]) -> PublicCommandResult {
     let Some(subcommand) = args.first().map(String::as_str) else {
         return fail(
             "Missing package command.",
-            Some("Run \"prime-agent help package\" for usage.".to_string()),
+            Some(format!(
+                "Run \"{} help package\" for usage.",
+                pa_types::brand::INVOCATION
+            )),
         );
     };
     if subcommand == "uninstall" {
         return fail(
             "Unknown package command: uninstall",
-            Some("Use \"prime-agent package remove\".".to_string()),
+            Some(format!(
+                "Use \"{} package remove\".",
+                pa_types::brand::INVOCATION
+            )),
         );
     }
     let children: Vec<&str> = get_child_command_specs(&["package"])
@@ -584,7 +611,12 @@ fn run_package(args: &[String]) -> PublicCommandResult {
         return fail(
             format!("Unknown package command: {subcommand}"),
             Some(suggestion.map_or_else(
-                || "Run \"prime-agent help package\" for usage.".to_string(),
+                || {
+                    format!(
+                        "Run \"{} help package\" for usage.",
+                        pa_types::brand::INVOCATION
+                    )
+                },
                 |s| format!("Did you mean \"{APP_NAME} package {s}\"?"),
             )),
         );
@@ -598,7 +630,7 @@ fn run_package(args: &[String]) -> PublicCommandResult {
             arg == "--self" || arg == "--extensions" || arg == "--extension" || arg == "--force"
         }) {
             return fail(
-                "Package updates accept only an optional source. Use \"prime-agent update\" to update Prime Agent.",
+                format!("Package updates accept only an optional source. Use \"{} update\" to update Prime Agent.", pa_types::brand::INVOCATION),
                 None,
             );
         }
@@ -607,7 +639,13 @@ fn run_package(args: &[String]) -> PublicCommandResult {
         }
         if let Some(source) = rest.first() {
             if is_self_update_source(source) {
-                return fail("Use \"prime-agent update\" to update Prime Agent.", None);
+                return fail(
+                    format!(
+                        "Use \"{} update\" to update Prime Agent.",
+                        pa_types::brand::INVOCATION
+                    ),
+                    None,
+                );
             }
         }
         let mut package_args: Vec<String> = vec!["update".to_string()];

@@ -219,7 +219,8 @@ pub(crate) fn resume_hint_from_stats(stats: &Value) -> Option<String> {
         return None;
     }
     Some(format!(
-        "Resume this session with: prime-agent --resume {session_id}"
+        "Resume this session with: {} --resume {session_id}",
+        pa_types::brand::INVOCATION
     ))
 }
 

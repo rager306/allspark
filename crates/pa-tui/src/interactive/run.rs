@@ -1652,14 +1652,14 @@ async fn run_interactive_surface(
                         }
                         RecoveryKind::Lost => {
                             session.note(
-                                "could not reconnect to the daemon within 10 minutes — run `prime-agent attach` to resume.",
+                                &format!("could not reconnect to the daemon within 10 minutes — run `{} attach` to resume.", pa_types::brand::INVOCATION),
                                 &mut view,
                             );
                             session.exit_reason = "daemon_reconnect_failed";
                         }
                         RecoveryKind::Update => {
                             session.note(
-                                "could not reconnect to the daemon within 10 minutes — the update finished but this window is detached. Run `prime-agent attach` to resume.",
+                                &format!("could not reconnect to the daemon within 10 minutes — the update finished but this window is detached. Run `{} attach` to resume.", pa_types::brand::INVOCATION),
                                 &mut view,
                             );
                             session.exit_reason = "update_reconnect_failed";
@@ -1723,14 +1723,14 @@ async fn run_interactive_surface(
                         }
                         RecoveryKind::Lost => {
                             session.note(
-                                "could not reconnect to the daemon within 10 minutes — run `prime-agent attach` to resume.",
+                                &format!("could not reconnect to the daemon within 10 minutes — run `{} attach` to resume.", pa_types::brand::INVOCATION),
                                 &mut view,
                             );
                             session.exit_reason = "daemon_reconnect_failed";
                         }
                         RecoveryKind::Update => {
                             session.note(
-                                "could not reconnect to the daemon within 10 minutes — the update finished but this window is detached. Run `prime-agent attach` to resume.",
+                                &format!("could not reconnect to the daemon within 10 minutes — the update finished but this window is detached. Run `{} attach` to resume.", pa_types::brand::INVOCATION),
                                 &mut view,
                             );
                             session.exit_reason = "update_reconnect_failed";
@@ -1794,7 +1794,7 @@ async fn run_interactive_surface(
                                     }
                                 } else {
                                     session.note(
-                                        &format!("reattach after the update failed: {error:#} — run `prime-agent attach` to resume"),
+                                        &format!("reattach after the update failed: {error:#} — run `{} attach` to resume", pa_types::brand::INVOCATION),
                                         &mut view,
                                     );
                                     session.exit_reason = "update_reattach_failed";

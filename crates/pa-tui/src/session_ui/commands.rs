@@ -538,7 +538,7 @@ impl SessionUi {
                 // confirm renders each line truncated, never wrapped).
                 view.confirm = Some(crate::confirm::ConfirmPanel::yes_no(
                     "Update Prime Agent",
-                    "Update uninstalls the TypeScript version and installs the latest Rust build;\nyour sessions and configuration (~/.prime/agent) are never touched.\n\nThe update runs in the background — restart prime-agent after it\nfinishes to run the new build.",
+                    &format!("Update uninstalls the TypeScript version and installs the latest Rust build;\nyour sessions and configuration (~/.prime/agent) are never touched.\n\nThe update runs in the background — restart {} after it\nfinishes to run the new build.", pa_types::brand::INVOCATION),
                 ));
                 self.pending_confirm = Some(PendingConfirm::Update);
                 self.dirty = true;

@@ -720,7 +720,10 @@ fn fork_startup_selection_reports_the_ts_contracts() {
         "unexpected error: {rendered}"
     );
     assert!(
-        rendered.contains("Open prime-agent and press left-arrow to browse sessions."),
+        rendered.contains(&format!(
+            "Open {} and press left-arrow to browse sessions.",
+            pa_types::brand::INVOCATION
+        )),
         "unexpected error: {rendered}"
     );
 }
