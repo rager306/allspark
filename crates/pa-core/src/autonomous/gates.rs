@@ -528,26 +528,54 @@ async fn read_pipe_capped<R: tokio::io::AsyncRead + Unpin>(mut pipe: Option<R>) 
     let mut kept = String::new();
     let mut truncated = false;
     let mut buffer = [0u8; 8192];
+    // A read can end inside a UTF-8 sequence. Decoding each read on its own
+    // turned one character into two replacement characters and left the gate's
+    // text corrupted (review 4.2, #3673), so the incomplete tail is CARRIED into
+    // the next read instead of being decoded prematurely.
+    let mut pending: Vec<u8> = Vec::new();
     if let Some(pipe) = pipe.as_mut() {
         loop {
-            match pipe.read(&mut buffer).await {
+            let read = match pipe.read(&mut buffer).await {
                 Ok(0) | Err(_) => break,
-                Ok(read) => {
-                    let chunk = String::from_utf8_lossy(&buffer[..read]);
-                    if kept.len() < cap {
-                        let remaining = cap - kept.len();
-                        if chunk.len() <= remaining {
-                            kept.push_str(&chunk);
-                        } else {
-                            kept.push_str(&chunk[..remaining]);
+                Ok(read) => read,
+            };
+            pending.extend_from_slice(&buffer[..read]);
+            // Decode only the prefix that ends on a character boundary; keep the
+            // remainder for the next read.
+            let valid_up_to = match std::str::from_utf8(&pending) {
+                Ok(_) => pending.len(),
+                Err(error) => error.valid_up_to(),
+            };
+            if valid_up_to > 0 {
+                let text = String::from_utf8_lossy(&pending[..valid_up_to]).into_owned();
+                pending.drain(..valid_up_to);
+                if kept.chars().count() < cap {
+                    let remaining = cap - kept.chars().count();
+                    // `remaining` is a CHARACTER budget: truncate by chars, never
+                    // by a byte index, or the slice lands inside a character.
+                    for (taken, character) in text.chars().enumerate() {
+                        if taken == remaining {
                             truncated = true;
+                            break;
                         }
-                    } else {
-                        truncated = true;
+                        kept.push(character);
                     }
+                } else {
+                    truncated = true;
                 }
+            } else if pending.len() > 4 {
+                // The stream itself is not UTF-8 (a binary gate output): decode
+                // the buffer the lossy way and move on rather than growing.
+                kept.push_str(&String::from_utf8_lossy(&pending));
+                pending.clear();
+                truncated = true;
             }
         }
+    }
+    if !pending.is_empty() {
+        // A trailing incomplete sequence is a truncated character: say so
+        // rather than emitting a replacement char into the gate's text.
+        truncated = true;
     }
     (kept, truncated)
 }
@@ -565,6 +593,72 @@ mod tests {
     /// a false timeout — which sends the agent into a repair loop over a command
     /// that had already succeeded. The fix polls the readers concurrently with
     /// the wait.
+    ///
+    /// Review 4.2 (#3673): a multi-byte character split across two reads must
+    /// not corrupt the capture, and the cap must not panic mid-character.
+    ///
+    /// Two independent defects lived here:
+    ///  - `String::from_utf8_lossy` ran on each 8 KiB read, so a UTF-8 sequence
+    ///    straddling the boundary became U+FFFD twice (two replacement chars for
+    ///    one character), and the count of the payload changed;
+    ///  - `&chunk[..remaining]` slices a `&str` BY BYTES. `remaining` is a
+    ///    character budget compared against `chunk.len()` (bytes), so the slice
+    ///    can land inside a multi-byte character and PANIC — the gate process
+    ///    dies instead of reporting its result.
+    /// Review 4.2 (#3673), the PANIC half: the cap must be a character budget,
+    /// not a byte index into a `&str`.
+    ///
+    /// The old code compared `chunk.len()` (bytes) against the remaining budget
+    /// and then sliced `&chunk[..remaining]`. With a multi-byte payload the slice
+    /// offset lands inside a character and the process PANICS — the gate dies
+    /// instead of reporting. This drives `read_pipe_capped` directly, so no child
+    /// process is needed.
+    #[tokio::test]
+    async fn the_cap_is_a_character_budget_never_a_byte_slice() {
+        let payload: Vec<u8> = "€"
+            .repeat(MAX_CHILD_PROCESS_OUTPUT_CHARS + 100)
+            .into_bytes();
+        let (captured, truncated) = read_pipe_capped(Some(&payload[..])).await;
+        assert!(truncated, "past the cap the loss is disclosed");
+        assert_eq!(
+            captured.chars().count(),
+            MAX_CHILD_PROCESS_OUTPUT_CHARS,
+            "the cap counts characters"
+        );
+        assert!(
+            captured.chars().all(|character| character == '€'),
+            "no character may be corrupted at the boundary"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_multibyte_character_never_corrupts_or_panics() {
+        // 4093 ASCII bytes then a run of 3-byte euros: the character budget
+        // boundary falls inside a euro for many offsets, and an 8 KiB read
+        // boundary also splits one.
+        let mut payload = String::new();
+        payload.push_str(&"a".repeat(4093));
+        payload.push_str(&"€".repeat(2048)); // ~6144 bytes of 3-byte characters
+        let args = vec!["-c".to_string(), format!("printf '%s' '{payload}'")];
+        let dir = std::env::temp_dir();
+        let result = run_child_process("sh", &args, &dir, 5_000)
+            .await
+            .expect("the child runs");
+        assert!(!result.timed_out, "must not time out");
+        assert!(
+            !result.stdout.contains('\u{FFFD}'),
+            "no replacement character: a split sequence must be carried, not mangled"
+        );
+        assert!(
+            result.stdout.starts_with(&"a".repeat(4093)),
+            "the ASCII prefix survives intact"
+        );
+        assert!(
+            result.stdout.contains('€'),
+            "the multi-byte payload survives"
+        );
+    }
+
     #[tokio::test]
     async fn a_command_that_fills_its_pipe_is_not_a_timeout() {
         // 2 MiB: far past a pipe buffer (64 KiB), past the 1 MiB cap, so the
