@@ -1,6 +1,5 @@
 //! Command specs and help formatting.
 
-use crate::config::APP_NAME;
 use pa_types::brand::INVOCATION;
 
 #[derive(Debug, Clone)]
