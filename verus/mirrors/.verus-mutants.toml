@@ -11,9 +11,16 @@
 #   and an equivalent mutant is invisible to any oracle — a deductive verifier
 #   included.
 #
-# The two survivors this campaign DID find before that one were real spec gaps and
-# are fixed in ../pa_core_gates.rs (the None arm's continue obligation, and the
-# failed-gate-under-limit reason). Their mutations are killed now. So the bar
-# stays high — 90% — while leaving room for the arithmetic of equivalence.
+# THREE real spec gaps were found and fixed in ../pa_core_gates.rs, all of the
+# same shape: a branch whose outcome nothing constrained, so mutating it to a
+# constant still verified.
+#   1. the no-gate arm's continue obligation  (`None if limit` -> `None if true`)
+#   2. the failed-gate-under-limit reason     (inner `if limit` -> `if true`)
+#   3. the failed-gate-with-budget outcome    (the same `if limit`, other side)
+# Their mutations die now: the sampled campaign reports 100%, the full 34-mutant
+# set 95% with only the equivalent mutant above surviving.
+#
+# The floor stays at 90% rather than 100% because that one mutant is
+# unkillable by construction; a future real gap drops the rate below it.
 [verification]
 minimum_kill_rate = 0.9

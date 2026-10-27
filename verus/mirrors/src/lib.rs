@@ -44,6 +44,13 @@ pub fn decide(enabled: bool, terminal_stop: bool, gate: Option<GateResult>, limi
         // by cargo-verus-mutants (condition-to-true survived).
         (gate == Some(GateResult::Failed) && enabled && !terminal_stop && limit)
             ==> (d.reason == Reason::LimitReached && !d.cont),
+        // The OTHER half of the same arm: a failed gate with budget left
+        // CONTINUES and says why. Without this, `if limit` in that arm could be
+        // mutated to `if true` and Verus accepted it — measured twice by
+        // cargo-verus-mutants (condition-to-true survived), because the clause
+        // above only constrains the limit=true side.
+        (gate == Some(GateResult::Failed) && enabled && !terminal_stop && !limit)
+            ==> (d.cont && d.reason == Reason::GateFailed),
         // disabled or terminal stop reports NotNeeded
         (!enabled || terminal_stop) ==> d.reason == Reason::NotNeeded,
         // limit reached never continues
