@@ -74,7 +74,11 @@ pub async fn latest_release(
     base_url: &str,
     timeout: Duration,
 ) -> Result<Option<LatestRelease>> {
-    if std::env::var("PI_SKIP_VERSION_CHECK").is_ok() || std::env::var("PI_OFFLINE").is_ok() {
+    // PARSED, not presence-tested: `PI_OFFLINE=0` used to short-circuit the
+    // version check while every other reader treated it as "online", so the one
+    // flag meant two things depending on the caller (review 6, #3735).
+    let env_flag = |name: &str| pa_types::truthy_env_flag(std::env::var(name).ok().as_deref());
+    if env_flag("PI_SKIP_VERSION_CHECK") || env_flag("PI_OFFLINE") {
         return Ok(None);
     }
     let manifest_path =

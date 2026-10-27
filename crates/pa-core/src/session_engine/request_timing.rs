@@ -39,14 +39,10 @@ const AGENT_LOG_MAX_BYTES: u64 = 20 * 1024 * 1024;
 /// env half stays live.
 pub type RequestTimingEnabled = Arc<dyn Fn() -> bool + Send + Sync>;
 
-/// 1/true/yes, case-insensitive (the `PI_OFFLINE`/`PI_TIMING` convention).
-fn truthy_env_flag(value: Option<&str>) -> bool {
-    let Some(value) = value else {
-        return false;
-    };
-    let normalized = value.to_ascii_lowercase();
-    normalized == "1" || normalized == "true" || normalized == "yes"
-}
+/// 1/true/yes, case-insensitive (the `PI_OFFLINE`/`PI_TIMING` convention) —
+/// re-exported so this module and the release check cannot drift apart again
+/// (review 6, #3735).
+use pa_types::truthy_env_flag;
 
 /// On when either the settings flag or the env override is set.
 #[must_use]

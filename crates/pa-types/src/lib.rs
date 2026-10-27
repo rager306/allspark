@@ -24,6 +24,22 @@ pub mod usage;
 
 use serde::{Deserialize, Serialize};
 
+/// Whether an environment value means ON.
+///
+/// The `PI_OFFLINE` / `PI_TIMING` / `DO_NOT_TRACK` convention: `1`, `true`, or
+/// `yes`, case-insensitive. ANY OTHER VALUE IS OFF — including a bare empty
+/// string. Three crates had grown their own copy of this rule, and one release
+/// check only tested PRESENCE (`env::var(..).is_ok()`), so `PI_OFFLINE=0` meant
+/// "offline" there and "online" everywhere else (review 6, #3735).
+#[must_use]
+pub fn truthy_env_flag(value: Option<&str>) -> bool {
+    let Some(value) = value else {
+        return false;
+    };
+    let normalized = value.trim().to_ascii_lowercase();
+    normalized == "1" || normalized == "true" || normalized == "yes"
+}
+
 /// JSON object map used for opaque payloads and unknown-field catch-alls.
 pub type JsonMap = serde_json::Map<String, serde_json::Value>;
 
@@ -101,5 +117,25 @@ impl<'de> Deserialize<'de> for JsNumber {
             }
         }
         deserializer.deserialize_any(V)
+    }
+}
+
+#[cfg(test)]
+mod env_flag_tests {
+    use super::truthy_env_flag;
+
+    /// The one rule every env flag follows (review 6, #3735).
+    #[test]
+    fn only_one_true_and_yes_mean_on() {
+        for on in ["1", "true", "TRUE", "True", "yes", "YES", " 1 ", "yes\n"] {
+            assert!(truthy_env_flag(Some(on)), "{on:?} must be ON");
+        }
+        // Present but not ON: this is the case a presence check got wrong.
+        for off in [
+            "", "0", "false", "FALSE", "no", "NO", "off", "nope", "2", " ", "\t",
+        ] {
+            assert!(!truthy_env_flag(Some(off)), "{off:?} must be OFF");
+        }
+        assert!(!truthy_env_flag(None), "an unset variable is OFF");
     }
 }
