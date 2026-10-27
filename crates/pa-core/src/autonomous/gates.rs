@@ -15,6 +15,10 @@ use super::{
 const MAX_GATE_OUTPUT_CHARS: usize = 6000;
 /// Output cap for gate child processes (both streams combined per stream).
 const MAX_CHILD_PROCESS_OUTPUT_CHARS: usize = 1024 * 1024;
+/// How long the post-timeout drain may run once the child is killed: a
+/// descendant can hold the pipe's write end open long after the child exits, and
+/// the drain must not inherit the gate's whole budget.
+const DRAIN_AFTER_KILL_MS: u64 = 1_000;
 /// Timeout for the git commands that capture a worktree snapshot.
 const SNAPSHOT_TIMEOUT_MS: u64 = 10_000;
 
@@ -438,18 +442,32 @@ async fn run_child_process(
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
-    let stdout = read_pipe_capped(child.stdout.take());
-    let stderr = read_pipe_capped(child.stderr.take());
+    // The readers are futures, not tasks: unless something polls them the child
+    // blocks in write(2) once a pipe buffer fills, and the timer below would win
+    // the race with a FALSE timeout. So the wait and both readers are polled
+    // together, and the deadline covers the whole exchange.
+    let stdout_reader = read_pipe_capped(child.stdout.take());
+    let stderr_reader = read_pipe_capped(child.stderr.take());
     let timeout = tokio::time::Duration::from_millis(timeout_ms.max(1));
-    let wait = async {
-        let status = child.wait().await?;
-        Ok::<_, std::io::Error>(status)
-    };
-    tokio::select! {
-        status = wait => {
+    // `pin!` keeps both readers owned by this frame, so a branch that does not
+    // await one can still take it below.
+    tokio::pin!(stdout_reader);
+    tokio::pin!(stderr_reader);
+    let outcome = tokio::time::timeout(timeout, async {
+        let (status, stdout, stderr) = tokio::join!(
+            async {
+                let status = child.wait().await?;
+                Ok::<_, std::io::Error>(status)
+            },
+            &mut stdout_reader,
+            &mut stderr_reader
+        );
+        (status, stdout, stderr)
+    })
+    .await;
+    match outcome {
+        Ok((status, (stdout, stdout_truncated), (stderr, stderr_truncated))) => {
             let status = status.map_err(|error| anyhow::anyhow!("{error}"))?;
-            let (stdout, stdout_truncated) = stdout.await;
-            let (stderr, stderr_truncated) = stderr.await;
             Ok(ChildProcessResult {
                 status: status.code(),
                 stdout,
@@ -459,10 +477,25 @@ async fn run_child_process(
                 output_truncated: stdout_truncated || stderr_truncated,
             })
         }
-        () = tokio::time::sleep(timeout) => {
+        Err(_elapsed) => {
+            // `kill_on_drop` reaps the child, but its pipes are still open in
+            // this task; closing them ends the readers, and the drain below is
+            // bounded by the same deadline rather than by the child's lifetime
+            // (a descendant holding the descriptor used to stall us forever).
             let _ = child.kill().await;
-            let (stdout, stdout_truncated) = stdout.await;
-            let (stderr, stderr_truncated) = stderr.await;
+            let _ = child.wait().await;
+            let (stdout, stdout_truncated) = tokio::time::timeout(
+                tokio::time::Duration::from_millis(DRAIN_AFTER_KILL_MS),
+                &mut stdout_reader,
+            )
+            .await
+            .unwrap_or_else(|_| (String::new(), true));
+            let (stderr, stderr_truncated) = tokio::time::timeout(
+                tokio::time::Duration::from_millis(DRAIN_AFTER_KILL_MS),
+                &mut stderr_reader,
+            )
+            .await
+            .unwrap_or_else(|_| (String::new(), true));
             Ok(ChildProcessResult {
                 status: None,
                 stdout,
@@ -522,6 +555,59 @@ async fn read_pipe_capped<R: tokio::io::AsyncRead + Unpin>(mut pipe: Option<R>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Review 4.2: a command that fills its pipe must not be reported as a
+    /// timeout.
+    ///
+    /// `read_pipe_capped` returns a LAZY future. `select!` polled only
+    /// `child.wait()` and the timer, so the readers were not polled at all while
+    /// the child ran: a command writing more than one pipe buffer (64 KiB on
+    /// Linux) blocked in `write(2)` forever, the timer won, and the gate reported
+    /// a false timeout — which sends the agent into a repair loop over a command
+    /// that had already succeeded. The fix polls the readers concurrently with
+    /// the wait.
+    #[tokio::test]
+    async fn a_command_that_fills_its_pipe_is_not_a_timeout() {
+        // 2 MiB: far past a pipe buffer (64 KiB), past the 1 MiB cap, so the
+        // reader must both keep reading and keep draining.
+        let dir = std::env::temp_dir();
+        let args = vec![
+            "-c".to_string(),
+            "head -c 2097152 /dev/zero | tr '\\0' 'a'; echo TAIL-MARK".to_string(),
+        ];
+        let result = run_child_process("sh", &args, &dir, 5_000)
+            .await
+            .expect("the child runs");
+        assert!(
+            !result.timed_out,
+            "a command that fills its pipe must complete, not time out"
+        );
+        assert_eq!(result.status, Some(0));
+        assert!(result.output_truncated, "the cap must have bitten");
+    }
+
+    /// The drain after a kill is bounded: a descendant that holds the write end
+    /// must not inherit the gate's whole budget.
+    #[tokio::test]
+    async fn a_killed_child_does_not_wait_forever_on_a_held_pipe() {
+        let dir = std::env::temp_dir();
+        // The child spawns a grandchild that keeps stdout open past the kill and
+        // then sleeps; the drain must give up at its own bound.
+        let args = vec![
+            "-c".to_string(),
+            "(sleep 30; echo late) & sleep 30".to_string(),
+        ];
+        let started = std::time::Instant::now();
+        let result = run_child_process("sh", &args, &dir, 300)
+            .await
+            .expect("the child runs");
+        assert!(result.timed_out, "the command outlives its budget");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the drain must be bounded, not parked on the grandchild: {:?}",
+            started.elapsed()
+        );
+    }
+
     use crate::autonomous::{
         create_autonomous_runtime_state, AgentAutonomousConfig, AgentAutonomousGateConfig,
         AutonomousDecisionReason,
