@@ -558,6 +558,7 @@ const ACCEPTED_PARAMS: &[(&str, &[&str])] = &[
             "label",
             "regex",
             "candidate_multiplier",
+            "rerank",
         ],
     ),
     (
@@ -1129,6 +1130,10 @@ impl GraphTool {
         // `search` object at all, so its answer stays exactly what it was before
         // these knobs existed.
         let mut applied = serde_json::Map::new();
+        if let Some(raw) = params.get("rerank") {
+            raw.as_bool()
+                .ok_or_else(|| anyhow::anyhow!("`rerank` must be a boolean, got {raw}"))?;
+        }
         if let Some(raw) = params.get("mmr") {
             let diversity = parse_mmr(raw)?;
             applied.insert("mmr".to_string(), serde_json::json!(diversity));
@@ -2001,7 +2006,17 @@ impl AgentTool for GraphTool {
             let tool = Arc::clone(&self);
             // The re-rank's query is read before the store work (the params
             // move into the blocking task).
+            // `rerank: false` is the per-call opt-out the tools report asked
+            // for: the judge's order is one input, and a caller who wants the
+            // store's own RRF order — or does not want to spend a judgment on a
+            // scoping query — says so for this one call. Only an explicit false
+            // opts out; any other spelling falls through to `action_search`'s
+            // validation, which names the type.
+            let rerank_opt_out = params
+                .get("rerank")
+                .is_some_and(|raw| raw == &serde_json::json!(false));
             let rerank_query = (self.reranker.is_some()
+                && !rerank_opt_out
                 && params
                     .get("action")
                     .and_then(serde_json::Value::as_str)
@@ -2163,6 +2178,10 @@ pub fn params_schema() -> serde_json::Value {
             "limit": {
                 "type": "integer",
                 "description": "Result cap for search/trace."
+            },
+            "rerank": {
+                "type": "boolean",
+                "description": "action=\"search\": set false to skip the judge re-rank for THIS call and get the store's own RRF order, every hit included. Default: the session's [jev] graphRerank setting (read at session start). A demoted hit is never deleted — it is moved below the survivors and labelled `demoted-by-jev (p=…)` — so the opt-out is for callers who want the un-judged ordering, not for seeing hidden hits."
             },
             "mmr": {
                 "type": "number",
@@ -2483,6 +2502,65 @@ mod tests {
         );
     }
 
+    /// Review (tools report, #3): `rerank: false` is the per-call opt-out.
+    ///
+    /// The judge's order is one input among several; a caller who wants the
+    /// store's own RRF order — or simply does not want to spend a judgment on a
+    /// scoping query — had no way to say so for one call.
+    #[tokio::test]
+    async fn rerank_false_skips_the_judge_for_one_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let judge: std::sync::Arc<dyn crate::jev::Judge> = std::sync::Arc::new(SymbolJudge {
+            relevant: vec!["lib::load"],
+        });
+        let tool = indexed_store(dir.path()).with_reranker(Some(std::sync::Arc::new(
+            crate::jev::GraphReranker::new(judge),
+        )));
+        let result = pa_agent::types::AgentTool::execute(
+            std::sync::Arc::new(tool),
+            "call".to_string(),
+            serde_json::json!({ "action": "search", "query": "load", "rerank": false }),
+            pa_agent::abort::AbortController::new().signal(),
+            std::sync::Arc::new(|_| {}),
+        )
+        .await
+        .expect("the tool answers");
+        assert!(
+            result
+                .details
+                .get(crate::jev::graph_rerank::VERIFIED_MARKER)
+                .is_none(),
+            "the judge must not have run: {:?}",
+            result
+                .details
+                .as_object()
+                .map(|o| o.keys().collect::<Vec<_>>())
+        );
+        assert!(
+            !text_of(&result).contains("kept-by-jev"),
+            "no judgment labels: {}",
+            text_of(&result)
+        );
+        // The rows are the store's own, still complete.
+        let rows = result.details["results"].as_array().expect("rows");
+        assert_eq!(rows.len(), 2, "the opt-out must not shrink the hit set");
+    }
+
+    /// A misspelt opt-out is an error, not a silent `false`.
+    #[tokio::test]
+    async fn a_non_boolean_rerank_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = indexed_store(dir.path());
+        let error = tool
+            .dispatch(&serde_json::json!({
+                "action": "search",
+                "query": "load",
+                "rerank": "false",
+            }))
+            .unwrap_err();
+        assert!(error.to_string().contains("`rerank`"), "{error}");
+    }
+
     #[tokio::test]
     async fn an_aborted_search_never_waits_for_the_judgment() {
         struct HangingJudge;
@@ -2775,6 +2853,7 @@ mod tests {
                 "ref_a",
                 "ref_b",
                 "regex",
+                "rerank",
                 "respect_gitignore",
                 "scope",
                 "status",
