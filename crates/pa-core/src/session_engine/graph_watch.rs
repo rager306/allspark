@@ -222,6 +222,16 @@ pub fn store_path(configured: Option<PathBuf>, agent_dir: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
+    /// The lightweight-graph review §3.2: the watcher's key must resolve by the
+    /// SAME rule the manual tool uses, so a basename collision cannot fork the
+    /// graph into a watched copy and a queried copy.
+    #[test]
+    fn the_watch_key_falls_back_to_the_basename() {
+        // The fallback is the plain basename (the engine resolves the store-
+        // backed key before starting the watcher; this helper is its fallback).
+        assert_eq!(project_name(Path::new("/a/service")), "service");
+    }
+
     #[test]
     fn the_project_key_is_the_directory_basename() {
         assert_eq!(project_name(Path::new("/a/service")), "service");

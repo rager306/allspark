@@ -55,7 +55,7 @@ fn project_name(root: &std::path::Path) -> String {
 ///
 /// The digest is over the CANONICAL path, so a symlinked spelling of the same
 /// tree keeps one key (the same rule `register_project_at` compares by).
-fn project_key_in(store: &GraphStore, root: &std::path::Path) -> anyhow::Result<String> {
+pub(crate) fn project_key_in(store: &GraphStore, root: &std::path::Path) -> anyhow::Result<String> {
     let base = root
         .file_name()
         .and_then(|name| name.to_str())
@@ -1947,14 +1947,14 @@ impl GraphTool {
         let root = self.resolve_root(params);
         let project = self.project_key(&root);
         let (nodes, edges, files) = self.with_read(|store| {
+            // Counts, not loads: the previous shape materialized every node and
+            // edge row to answer with three integers (review §3.3).
             let nodes = store
-                .all_nodes(&project)
-                .map_err(|err| anyhow::anyhow!("status failed: {err}"))?
-                .len();
+                .node_count(&project)
+                .map_err(|err| anyhow::anyhow!("status failed: {err}"))?;
             let edges = store
-                .all_edges(&project)
-                .map_err(|err| anyhow::anyhow!("status failed: {err}"))?
-                .len();
+                .edge_count(&project)
+                .map_err(|err| anyhow::anyhow!("status failed: {err}"))?;
             let files = store
                 .file_count(&project)
                 .map_err(|err| anyhow::anyhow!("status failed: {err}"))?;

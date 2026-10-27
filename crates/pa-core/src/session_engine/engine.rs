@@ -723,9 +723,17 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         // stale. The watcher is started here, after the start-up build is
         // queued, so the first batch it sees is the tree as it stands.
         if graph_auto == crate::settings::types::GraphAuto::Watch {
-            if let Some(handle) =
-                super::graph_watch::start(&cwd, &db_path, &super::graph_watch::project_name(&cwd))
-            {
+            // The watcher must write to the SAME project key the tool reads.
+            // It used to take the bare basename, so on a genuine basename
+            // collision the tool queried `service-<digest>` while the watcher
+            // repaired plain `service` — two graphs, one stale (the
+            // lightweight-graph review §3.2). One identity rule: the same
+            // store-backed resolution the tool uses, basename as the fallback.
+            let watch_key = pa_graph::GraphStore::open(&db_path)
+                .ok()
+                .and_then(|store| crate::tools::graph::project_key_in(&store, &cwd).ok())
+                .unwrap_or_else(|| super::graph_watch::project_name(&cwd));
+            if let Some(handle) = super::graph_watch::start(&cwd, &db_path, &watch_key) {
                 graph_watch = Some(handle);
             }
         }
