@@ -210,16 +210,20 @@ fn parse_labels(raw: &str) -> anyhow::Result<(Vec<Label>, Vec<String>)> {
     Ok((labels, names))
 }
 
-/// Read `respect_gitignore` as a boolean, defaulting to `false`.
+/// Read `respect_gitignore` as a boolean, defaulting to `true`.
 ///
-/// `false` is [`IndexOptions::new`]'s own default — index what is on disk — so an
-/// absent parameter and an explicit `false` must mean the same run. A non-boolean
-/// value is an error rather than a silent `false`, because the two modes produce
-/// different file sets and a caller that wrote `"true"` would otherwise index the
-/// other one without learning it.
+/// The LEAN view is the default for every path a user did not spell out: the
+/// implicit cold-start build already runs `respect_gitignore(true)`, and an
+/// explicit `index` that defaults the other way re-admits exactly the files the
+/// implicit build refuses — the tools report measured a first index swallowing
+/// 763 files of vendored packages, a docker copy and gitignored state. `false`
+/// stays one parameter away for a caller who wants ignored-but-authored code.
+/// A non-boolean value is an error rather than a silent default, because the two
+/// modes produce different file sets and a caller that wrote `"true"` would
+/// otherwise index the other one without learning it.
 fn parse_respect_gitignore(params: &serde_json::Value) -> anyhow::Result<bool> {
     match params.get("respect_gitignore") {
-        None => Ok(false),
+        None => Ok(true),
         Some(raw) => raw
             .as_bool()
             .ok_or_else(|| anyhow::anyhow!("`respect_gitignore` must be a boolean, got {raw}")),
@@ -821,7 +825,8 @@ impl GraphTool {
         // because anyone asked for an index: the answer must not carry the same
         // symbol twice, and the walk must not drag in `target/` or a scratch copy of
         // the tree. A caller who wants the ignored files in the graph runs the
-        // `index` action, which defaults to them.
+        // `index` action with `respect_gitignore: false` (the explicit default is
+        // the same lean view, so the two entry points cannot disagree).
         let opts = IndexOptions::new(project).with_respect_gitignore(true);
         let report = self.with_store(|store| {
             store
@@ -1963,7 +1968,7 @@ impl AgentTool for GraphTool {
         "Query and build the on-disk code graph for the working directory. \
          Actions: index (full or incremental build of the symbol/call/import \
          graph; index_depth = skeleton|symbols|full, default full; \
-         respect_gitignore = default false, true hides ignored files), reindex \
+         respect_gitignore = default true, false indexes what is on disk), reindex \
          (incremental closure repair), search (hybrid BM25/regex/degree symbol \
          search; mmr, label, regex and candidate_multiplier tune it), trace \
          (callers/callees from a symbol; depth = BFS hops, \
@@ -2198,7 +2203,7 @@ pub fn params_schema() -> serde_json::Value {
             },
             "respect_gitignore": {
                 "type": "boolean",
-                "description": "action=\"index\"/\"reindex\": whether to hide files the project's gitignore rules exclude (.gitignore, .git/info/exclude, the global gitignore, and those of parent directories). Default false: index what is on disk, so a scratch file or deliberately ignored but authored code is visible and searchable. true is the lean view: where the ignored set is build output or copies of the same sources, it removes the duplicate hits and most of the walk. The mode decides the discovered set, so a run in the other mode adds or removes the files only it can see (`removed` counts them). .git is always skipped; `.ignore` files are honoured in both modes. On a large tree, measure both before choosing: the difference can be an order of magnitude of files."
+                "description": "action=\"index\"/\"reindex\": whether to hide files the project's gitignore rules exclude (.gitignore, .git/info/exclude, the global gitignore, and those of parent directories). Default true (the lean view, matching the implicit cold-start build): where the ignored set is build output, vendored copies or state directories, it keeps the duplicate hits and most of the walk out of the graph. false indexes what is on disk, so a deliberately ignored but authored file becomes visible and searchable — one parameter away when wanted. The mode decides the discovered set, so a run in the other mode adds or removes the files only it can see (`removed` counts them). .git is always skipped; `.ignore` files are honoured in both modes. On a large tree, measure both before choosing: the difference can be an order of magnitude of files."
             },
             "supersedes": {
                 "type": "integer",
@@ -2804,46 +2809,28 @@ mod tests {
     }
 
     /// The ignored set is the parameter's whole point, and both modes must be
-    /// reachable from the tool: `index` defaults to what is on disk, `true` is the
-    /// lean view, and `details` says which mode ran so the counts are readable.
+    /// reachable from the tool: `index` defaults to the LEAN view (the implicit
+    /// cold-start build always was lean; a wide explicit default re-admitted
+    /// vendored packages and gitignored state into the first graph — the tools
+    /// report measured 763 such files), `false` is the on-disk view, and
+    /// `details` says which mode ran so the counts are readable.
     #[tokio::test]
-    async fn index_indexes_ignored_files_unless_asked_not_to() {
-        let wide_dir = tempfile::tempdir().unwrap();
-        ignored_fixture(wide_dir.path());
-        let wide = run_action(wide_dir.path(), "index", serde_json::json!({}))
+    async fn index_hides_ignored_files_unless_asked_to_index_them() {
+        let lean_dir = tempfile::tempdir().unwrap();
+        ignored_fixture(lean_dir.path());
+        let lean = run_action(lean_dir.path(), "index", serde_json::json!({}))
             .await
             .expect("index");
         assert_eq!(
-            wide.details["added"], 3,
-            "the default indexes what is on disk: {}",
-            wide.details
-        );
-        assert_eq!(
-            wide.details["respect_gitignore"], false,
-            "the effective mode is echoed: {}",
-            wide.details
-        );
-        assert!(
-            text_of(&wide).contains("3 files parsed"),
-            "{}",
-            text_of(&wide)
-        );
-
-        let lean_dir = tempfile::tempdir().unwrap();
-        ignored_fixture(lean_dir.path());
-        let lean = run_action(
-            lean_dir.path(),
-            "index",
-            serde_json::json!({ "respect_gitignore": true }),
-        )
-        .await
-        .expect("index");
-        assert_eq!(
             lean.details["added"], 1,
-            "the lean mode hides the ignored files: {}",
+            "the default is the lean view: {}",
             lean.details
         );
-        assert_eq!(lean.details["respect_gitignore"], true);
+        assert_eq!(
+            lean.details["respect_gitignore"], true,
+            "the effective mode is echoed: {}",
+            lean.details
+        );
         let search = run_action(
             lean_dir.path(),
             "search",
@@ -2856,11 +2843,32 @@ mod tests {
             "an ignored symbol must not be in a lean graph: {}",
             text_of(&search)
         );
+
+        let wide_dir = tempfile::tempdir().unwrap();
+        ignored_fixture(wide_dir.path());
+        let wide = run_action(
+            wide_dir.path(),
+            "index",
+            serde_json::json!({ "respect_gitignore": false }),
+        )
+        .await
+        .expect("index");
+        assert_eq!(
+            wide.details["added"], 3,
+            "the explicit on-disk view indexes the ignored set: {}",
+            wide.details
+        );
+        assert_eq!(wide.details["respect_gitignore"], false);
+        assert!(
+            text_of(&wide).contains("3 files parsed"),
+            "{}",
+            text_of(&wide)
+        );
     }
 
     /// `reindex` shares `index`'s discovery, so the parameter decides its new-file
-    /// set too: a file that appears under an ignore rule is picked up in the
-    /// default mode and skipped in the lean one.
+    /// set too: a file that appears under an ignore rule is skipped in the
+    /// default (lean) mode and picked up by the explicit on-disk mode.
     #[tokio::test]
     async fn reindex_reads_the_same_ignore_mode() {
         let dir = tempfile::tempdir().unwrap();
@@ -2874,15 +2882,15 @@ mod tests {
         )
         .unwrap();
 
-        let wide = run_action(dir.path(), "reindex", serde_json::json!({}))
+        let lean = run_action(dir.path(), "reindex", serde_json::json!({}))
             .await
             .expect("reindex");
         assert!(
-            wide.details["reindexed_paths"]
+            lean.details["reindexed_paths"]
                 .as_array()
-                .is_some_and(|paths| paths.iter().any(|p| p == "scratch/late.rs")),
-            "the default mode finds the new ignored file: {}",
-            wide.details
+                .is_some_and(Vec::is_empty),
+            "the default mode does not see the new ignored file: {}",
+            lean.details
         );
 
         std::fs::write(
@@ -2890,26 +2898,26 @@ mod tests {
             "pub fn later() -> u32 { 5 }\n",
         )
         .unwrap();
-        let lean = run_action(
+        let wide = run_action(
             dir.path(),
             "reindex",
-            serde_json::json!({ "respect_gitignore": true }),
+            serde_json::json!({ "respect_gitignore": false }),
         )
         .await
         .expect("reindex");
         assert!(
-            lean.details["reindexed_paths"]
+            wide.details["reindexed_paths"]
                 .as_array()
-                .is_some_and(Vec::is_empty),
-            "the lean mode does not see the new ignored file: {}",
-            lean.details
+                .is_some_and(|paths| paths.iter().any(|p| p == "scratch/later.rs")),
+            "the explicit on-disk mode finds the new ignored file: {}",
+            wide.details
         );
-        assert_eq!(lean.details["respect_gitignore"], true);
-        // ... and it pruned what the wide pass had indexed.
+        assert_eq!(wide.details["respect_gitignore"], false);
+        // ... and it pruned nothing: both passes here are on-disk.
         assert_eq!(
-            lean.details["removed"], 3,
-            "the lean pass drops the files only it cannot see: {}",
-            lean.details
+            wide.details["removed"], 0,
+            "the wide pass keeps every file it can see: {}",
+            wide.details
         );
     }
 
