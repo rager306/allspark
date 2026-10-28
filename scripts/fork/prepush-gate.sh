@@ -14,8 +14,12 @@
 set -uo pipefail
 
 cd "$(dirname "$0")/../.." || exit 1
-# Exported: run_unit's per-unit disk floor runs under `xargs bash -c`, and an unexported
-# variable is empty there — `df` got an empty operand and the floor never fired (G-9).
+# The repo root, ASSIGNED and exported. `317cfc4a1` replaced `ROOT="$PWD"` with a bare
+# `export ROOT` while fixing G-9, so `$ROOT` was unbound, `set -u` aborted on the next
+# line, and the gate never ran again — a fix that killed the thing it was fixing. The
+# export is still what G-9 needs: run_unit's per-unit disk floor runs under
+# `xargs bash -c`, where an unexported variable is empty.
+ROOT="$PWD"
 export ROOT
 OUT="$ROOT/.research/gate"
 mkdir -p "$OUT"
@@ -29,6 +33,34 @@ MIN_FREE_GB="${GATE_MIN_FREE_GB:-15}"
 # Floor checked before every unit (see run_unit): the workspace's parallel test binaries can
 # consume several GB while the gate is already running.
 UNIT_MIN_FREE_GB="${GATE_UNIT_MIN_FREE_GB:-2}"
+
+# Target liveness: the gate shares one working tree with other agents, and a `cargo clean` or
+# a vanished worktree copy by ANY of them leaves this run compiling against a path that no
+# longer describes the sources it read. The disk floor above cannot see that: 30 GB free and
+# a dead target look identical to it.
+#
+# The check is cheap and runs ONCE, before the first build: the marker Cargo itself writes
+# into a fresh target (`CACHEDIR.TAG`) must exist and the directory must be writable. A
+# failure here names the cause, because the alternative is a compile error 40 minutes in
+# that reads like a code defect.
+check_target_liveness() {
+  local target="$ROOT/target"
+  if [[ ! -d "$target" ]]; then
+    echo "target missing at $target: this is a clean tree (fine), so the build starts cold" >&2
+    return 0
+  fi
+  if [[ ! -f "$target/CACHEDIR.TAG" ]] && compgen -G "$target/debug/*" >/dev/null; then
+    echo "target at $target has artifacts but no CACHEDIR.TAG: another tool recreated it" >&2
+    echo "  the gate cannot tell whether its fingerprints match this tree; run cargo clean" >&2
+    return 1
+  fi
+  if ! touch "$target/.gate-liveness" 2>/dev/null; then
+    echo "target at $target is not writable: a build here fails at the first artifact" >&2
+    return 1
+  fi
+  rm -f "$target/.gate-liveness"
+  return 0
+}
 
 # The pinned toolchain (rust-toolchain.toml) is what CI uses; no override.
 export CARGO_TERM_COLOR=always
@@ -86,6 +118,13 @@ else
   echo "testgov: FAILED (HIGH findings; see $OUT/testgov.log)"
   grep -E '^\[HIGH\]' "$OUT/testgov.log" | head -20
   fail=1
+fi
+
+step "target liveness"
+if check_target_liveness; then
+  echo "target: live"
+else
+  echo "target: DEAD (see above)"; fail=1
 fi
 
 step "fmt"
