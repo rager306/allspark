@@ -251,6 +251,14 @@ fn node_name(node: Node<'_>, src: &[u8]) -> Option<String> {
     if let Some(n) = node.child_by_field_name("name") {
         return Some(text(n, src));
     }
+    // C/C++ `function_definition` has NO `name` field: the declared name sits
+    // inside a `declarator` chain (`declarator > function_declarator >
+    // declarator > identifier`). Falling through to the `type` field below named
+    // every C function after its RETURN TYPE — `int add(...)` became `m::int`,
+    // so `add` did not exist in the graph and every call to it was a miss.
+    if let Some(named) = declarator_name(node, src) {
+        return Some(named);
+    }
     if let Some(n) = node.child_by_field_name("type") {
         return Some(last_segment(&text(n, src)));
     }
@@ -265,6 +273,34 @@ fn node_name(node: Node<'_>, src: &[u8]) -> Option<String> {
         }
     }
     None
+}
+
+/// The identifier a `declarator` chain names, for grammars that have no `name`
+/// field on the definition (C, C++, and their function/pointer declarators).
+///
+/// The chain nests one level per piece of punctuation — `*fp(int)` is
+/// `declarator > function_declarator > declarator > identifier` — so it is
+/// walked rather than assumed flat.
+fn declarator_name(node: Node<'_>, src: &[u8]) -> Option<String> {
+    fn walk(node: Node<'_>, src: &[u8], depth: usize) -> Option<String> {
+        if depth > 8 {
+            return None;
+        }
+        if let Some(n) = node.child_by_field_name("declarator") {
+            if let Some(found) = walk(n, src, depth + 1) {
+                return Some(found);
+            }
+        }
+        if node.kind() == "identifier" || node.kind() == "field_identifier" {
+            return Some(text(node, src));
+        }
+        // Operator overloads and destructors have no identifier child.
+        if matches!(node.kind(), "operator_name" | "destructor_name") {
+            return Some(text(node, src));
+        }
+        None
+    }
+    walk(node, src, 0)
 }
 
 /// Extract the callee's short name and, when the call is written as a path, the
@@ -483,6 +519,28 @@ mod tests {
 
     fn rust(source: &str) -> ExtractedFile {
         extract(source, SupportLang::Rust, "m")
+    }
+
+    /// C and C++ `function_definition` carry NO `name` field: the name sits in a
+    /// `declarator` chain. `node_name` fell through to the `type` field, so every
+    /// C function was named after its RETURN TYPE — `int add(...)` became
+    /// `m::int`, `add` did not exist in the graph, and every call to it was a
+    /// miss. Measured 2026-10-28 on the shipped extractor.
+    #[test]
+    fn a_c_function_is_named_after_its_declarator_not_its_return_type() {
+        let f = extract("int add(int a, int b) { return a + b; }\n", SupportLang::C, "m");
+        let names: Vec<&str> = f.symbols.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["add"], "got {names:?}");
+        assert_eq!(f.symbols[0].qualified_name, "m::add");
+
+        // The declarator chain nests one level per piece of punctuation.
+        let ptr = extract("static void *fp(int x) { return 0; }\n", SupportLang::C, "m");
+        let names: Vec<&str> = ptr.symbols.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["fp"], "pointer declarator: {names:?}");
+
+        let cpp = extract("int sub(int a, int b) { return a - b; }\n", SupportLang::Cpp, "m");
+        let names: Vec<&str> = cpp.symbols.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["sub"], "C++ shares the grammar shape: {names:?}");
     }
 
     #[test]

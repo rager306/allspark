@@ -273,7 +273,7 @@ impl GraphStore {
                 continue;
             }
 
-            self.account_parse_health(&opts.project, &w.rel, &w.source, lang, &mut report)?;
+            self.account_parse_health(&opts.project, w, lang, &extracted, &mut report)?;
             let (nodes, file_id) = self.write_file(&opts.project, &w.rel, &extracted)?;
             self.drop_stale_symbols(&opts.project, &w.rel, &extracted)?;
             let surface = crate::surface::surface_of(&w.source, lang, &module);
@@ -385,23 +385,18 @@ impl GraphStore {
         }
         Ok(())
     }
-
-    /// Record a file's parse honesty and fold it into the run report.
-    ///
-    /// A tree with ERROR regions still yields symbols, but the reader must know
-    /// it was degraded (G9).
-    ///
     /// # Errors
     /// Propagates SQLite errors.
     fn account_parse_health(
         &self,
         project: &str,
-        rel: &str,
-        source: &str,
+        work: &FileWork,
         lang: pa_ast::SupportLang,
+        extracted: &ExtractedFile,
         report: &mut IndexReport,
     ) -> Result<()> {
-        let health = classify_source(source, lang);
+        let rel = work.rel.as_str();
+        let health = classify_source(&work.source, lang);
         if let Some(kind) = health.coverage_kind() {
             self.record_coverage(project, rel, kind, &health.detail())?;
             match health {
@@ -410,6 +405,21 @@ impl GraphStore {
                 ParseHealth::Unavailable => report.skipped += 1,
                 ParseHealth::Clean => {}
             }
+        }
+        // Clean AND empty: the extension is indexable, the grammar is compiled
+        // in, and nothing came out. Gated on `Clean` so a missing grammar (which
+        // is `skipped`) is not counted twice under two reasons.
+        if health == ParseHealth::Clean
+            && extracted.symbols.is_empty()
+            && extracted.calls.is_empty()
+            && extracted.imports.is_empty()
+        {
+            self.record_coverage(
+                project,
+                &work.rel,
+                crate::coverage::KIND_NO_SYMBOLS,
+                "parsed but yielded no symbols, calls or imports",
+            )?;
         }
         Ok(())
     }

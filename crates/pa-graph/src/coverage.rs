@@ -32,6 +32,15 @@ pub const KIND_PARTIAL: &str = "parse_partial";
 pub const KIND_UNUSABLE: &str = "parse_unusable";
 /// The stored `index_coverage.kind` for a file that was never parsed.
 pub const KIND_SKIPPED: &str = "skipped";
+/// The stored `index_coverage.kind` for a file that PARSED CLEANLY but yielded
+/// no symbols, calls or imports.
+///
+/// `is_indexable` accepts a language by extension; extraction accepts it by
+/// grammar. A language can be in the first set and not the second — measured
+/// 2026-10-28: `.rb`, `.cs`, `.kt`, `.swift`, `.ex` and `.hs` are indexable and
+/// every one of them produced ZERO symbols, so a Ruby repository indexed to an
+/// empty graph and `coverage` called it `complete`.
+pub const KIND_NO_SYMBOLS: &str = "no_symbols";
 
 /// Fraction of a file a single error region must cover to be `unusable`.
 const UNUSABLE_REGION_NUM: usize = 4; // ≥ 4/5 = 80%
@@ -183,6 +192,13 @@ pub struct CoverageReport {
     pub unusable: usize,
     /// Files that were never parsed.
     pub skipped: usize,
+    /// Files that PARSED CLEANLY but produced no symbols, calls or imports.
+    ///
+    /// A separate count, not part of `parsed`: for the graph, a file whose
+    /// grammar yields nothing is as useful as one that failed to parse, and
+    /// folding it into `parsed` is what let a Ruby repository read as
+    /// `complete=true` with an empty graph.
+    pub no_symbols: usize,
     /// `kind` → count, sorted by key for deterministic output.
     pub reason_histogram: BTreeMap<String, usize>,
     /// Per-file notes, sorted by path then kind.
@@ -251,6 +267,7 @@ pub fn coverage(store: &GraphStore, project: &str) -> Result<CoverageReport> {
     let mut partial_paths = std::collections::HashSet::new();
     let mut unusable_paths = std::collections::HashSet::new();
     let mut skipped_paths = std::collections::HashSet::new();
+    let mut empty_paths = std::collections::HashSet::new();
     for (rel_path, kind, detail) in rows {
         *histogram.entry(kind.clone()).or_insert(0) += 1;
         match kind.as_str() {
@@ -262,6 +279,9 @@ pub fn coverage(store: &GraphStore, project: &str) -> Result<CoverageReport> {
             }
             KIND_SKIPPED => {
                 skipped_paths.insert(rel_path.clone());
+            }
+            KIND_NO_SYMBOLS => {
+                empty_paths.insert(rel_path.clone());
             }
             _ => {}
         }
@@ -275,7 +295,12 @@ pub fn coverage(store: &GraphStore, project: &str) -> Result<CoverageReport> {
     let partial = partial_paths.len();
     let unusable = unusable_paths.len();
     let skipped = skipped_paths.len();
-    let accounted = partial + unusable + skipped;
+    // A file that parsed cleanly but yielded nothing counts as NOT clean: the
+    // question this report answers is "can the graph answer for this file", and
+    // an empty extraction answers the same as a failed parse. It is a separate
+    // count so the reason stays visible rather than reading as a parse failure.
+    let no_symbols = empty_paths.len();
+    let accounted = partial + unusable + skipped + no_symbols;
     // `parsed` is what is left of the universe once every non-clean file is
     // subtracted; saturating so a store whose coverage notes outnumber its
     // hashes (possible after a partial reindex) never underflows.
@@ -305,6 +330,7 @@ pub fn coverage(store: &GraphStore, project: &str) -> Result<CoverageReport> {
         partial,
         unusable,
         skipped,
+        no_symbols: empty_paths.len(),
         reason_histogram: histogram,
         notes,
         complete,
@@ -341,6 +367,61 @@ impl GraphStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An indexable extension whose grammar yields nothing must not read as
+    /// clean: for the graph, an empty extraction answers the same as a failed
+    /// parse, and folding it into `parsed` is what lets a repository read as
+    /// `complete=true` with nothing in it.
+    ///
+    /// The fixture is a Rust file that defines nothing — a grammar that IS
+    /// compiled in, returning an empty extraction. A language whose grammar is
+    /// ABSENT (`.rb`, `.cs`, `.kt`, `.swift`, `.ex`, `.hs` here) is a different
+    /// defect and lands in `skipped`; the indexer gates on parse health so one
+    /// file cannot be counted under both reasons.
+    #[test]
+    fn a_file_whose_grammar_yields_nothing_is_not_clean() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("empty.rs"), "// only a comment\n").expect("empty");
+        std::fs::write(dir.path().join("ok.rs"), "pub fn real() -> u32 { 1 }\n").expect("rs");
+
+        let mut store = crate::GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &crate::IndexOptions::new("p"))
+            .expect("index");
+        let report = coverage(&store, "p").expect("coverage");
+
+        assert_eq!(
+            report.no_symbols, 1,
+            "the comment-only file must be counted: {report:?}"
+        );
+        assert_eq!(report.parsed, 1, "only the file with a symbol is clean");
+        assert!(!report.complete, "an empty extraction is not completeness");
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|n| n.kind == KIND_NO_SYMBOLS && n.rel_path == "empty.rs"),
+            "the note must name the file and the reason: {:?}",
+            report.notes
+        );
+    }
+
+    /// A language whose grammar is not compiled in is SKIPPED, not counted as an
+    /// extractor gap: the two are different defects and one file must not
+    /// appear under both.
+    #[test]
+    fn a_missing_grammar_is_skipped_not_an_empty_extraction() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("worker.rb"), "def run\n  1\nend\n").expect("rb");
+        let mut store = crate::GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &crate::IndexOptions::new("p"))
+            .expect("index");
+        let report = coverage(&store, "p").expect("coverage");
+        assert_eq!(report.skipped, 1, "{report:?}");
+        assert_eq!(report.no_symbols, 0, "not double-counted: {report:?}");
+        assert!(!report.complete);
+    }
 
     /// A project can parse 100% and still answer for half its calls. The
     /// report must state both, or "complete=true" reads as "the graph knows

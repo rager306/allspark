@@ -1688,7 +1688,7 @@ impl GraphTool {
         Ok(AgentToolResult {
             content: vec![pa_agent::types::ToolResultContent::text(format!(
                 "Coverage for `{project}`: {}/{} files parsed cleanly ({:.0}%), {} partial, \
-                 {} unusable, {} skipped; complete={}.\n\
+                 {} unusable, {} skipped, {} with no symbols; complete={}.\n\
                  Call sites: {} recorded, {} resolved to a definition ({:.0}%), \
                  {} in a workspace dependency, {} unresolved.",
                 report.parsed,
@@ -1697,6 +1697,7 @@ impl GraphTool {
                 report.partial,
                 report.unusable,
                 report.skipped,
+                report.no_symbols,
                 report.complete,
                 report.call_sites,
                 report.call_sites_resolved,
