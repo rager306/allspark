@@ -58,6 +58,48 @@ pub(crate) struct HeadTailBuffer {
     tail_chars: usize,
     /// Chars dropped from the middle, named by [`Self::finish`].
     omitted: usize,
+    /// Where the dropped text went, once the buffer starts dropping any.
+    ///
+    /// The clip used to be the ONLY record of a long stdout: the middle was
+    /// gone, so "the exact line and the exit status" of a large test run was
+    /// unrecoverable from the session. `None` means no drop has happened (or the
+    /// spill could not open), and the marker then says so instead of implying a
+    /// file that does not exist.
+    spill: Option<SpillSink>,
+    /// Directory for [`Self::spill`]; `None` disables spilling entirely (the
+    /// historical behaviour: the clip is the only record).
+    spill_dir: Option<std::path::PathBuf>,
+}
+
+/// An append-only file holding the ORIGINAL stream text a head/tail buffer
+/// clipped, under the session's artifact directory.
+///
+/// Deliberately minimal: one file per stream per execution, written as the text
+/// arrives, closed on `finish`. The advertised path is the ref; its content is
+/// the whole stream, so a reader can recover a line the preview omitted.
+pub(crate) struct SpillSink {
+    path: std::path::PathBuf,
+    file: std::fs::File,
+}
+
+impl SpillSink {
+    /// Open `path` for appending, creating parent directories.
+    ///
+    /// `None` on any failure: a spill that cannot be written must not turn a
+    /// successful execution into an error, and the clip marker reports the loss.
+    fn open(path: std::path::PathBuf) -> Option<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).ok()?;
+        }
+        let file = std::fs::File::create(&path).ok()?;
+        Some(Self { path, file })
+    }
+
+    fn write(&mut self, text: &str) {
+        use std::io::Write as _;
+        // Best effort by design: a full disk must not fail the cell.
+        let _ = self.file.write_all(text.as_bytes());
+    }
 }
 
 impl HeadTailBuffer {
@@ -75,7 +117,23 @@ impl HeadTailBuffer {
 
     /// Buffer stream text within `max_chars`: fill the head, then roll the
     /// tail window at its cap, counting the chars that fall out of it.
+    ///
+    /// Every byte handed here also goes to the spill, so the file is the whole
+    /// stream rather than a record of what was dropped: reconstructing the
+    /// original from the dropped pieces alone would need the head and tail
+    /// windows to be re-joined in the right order, and they are not contiguous.
     pub(crate) fn push(&mut self, text: &str, max_chars: usize) {
+        // The spill starts at the FIRST push, not at the first drop: once the
+        // middle is omitted the head and tail windows are not contiguous with
+        // the dropped text, so it cannot be reconstructed afterwards.
+        if self.spill.is_none() {
+            if let Some(dir) = &self.spill_dir {
+                self.spill = SpillSink::open(dir.clone());
+            }
+        }
+        if let Some(spill) = self.spill.as_mut() {
+            spill.write(text);
+        }
         let (head_cap, tail_cap) = Self::split_cap(max_chars);
         if self.head_chars < head_cap {
             let remaining = head_cap - self.head_chars;
@@ -141,20 +199,51 @@ impl HeadTailBuffer {
 
     /// Resolve the buffered text: trim the tail to its cap, then return head,
     /// marker, and tail. Text that fit the cap passes through unchanged.
+    ///
+    /// When anything was omitted the marker names the file that holds the whole
+    /// stream. Nothing omitted means the spill is deleted: a file nobody needs
+    /// is litter, and the marker is what makes a path the reader's business.
     pub(crate) fn finish(mut self, max_chars: usize) -> String {
         let (_, tail_cap) = Self::split_cap(max_chars);
         if self.tail_chars > tail_cap {
             self.drop_tail_front(self.tail_chars - tail_cap);
         }
         if self.omitted == 0 {
+            self.drop_spill();
             let mut text = self.head;
             text.push_str(&self.tail);
             return text;
         }
-        format!(
-            "{}\n[... {} chars omitted ...]\n{}",
-            self.head, self.omitted, self.tail
-        )
+        let path = self
+            .spill
+            .as_ref()
+            .map(|sink| sink.path.display().to_string());
+        match path {
+            Some(path) => format!(
+                "{}\n[... {} chars omitted - full stream: {path} ]\n{}",
+                self.head, self.omitted, self.tail
+            ),
+            // No spill: say the text is GONE rather than implying a file.
+            None => format!(
+                "{}\n[... {} chars omitted, not recoverable ]\n{}",
+                self.head, self.omitted, self.tail
+            ),
+        }
+    }
+
+    /// Remove the spill, keeping nothing for text that fit the budget.
+    fn drop_spill(&mut self) {
+        if let Some(sink) = self.spill.take() {
+            let _ = std::fs::remove_file(&sink.path);
+        }
+    }
+
+    /// Buffer that spills the whole stream to `path` when it clips.
+    pub(crate) fn with_spill_dir(path: std::path::PathBuf) -> Self {
+        Self {
+            spill_dir: Some(path),
+            ..Self::default()
+        }
     }
 }
 
@@ -280,6 +369,20 @@ impl ReplKernelManager {
             oneshot::channel::<anyhow::Result<InternalExecuteResult>>();
         let mut buffers = ExecBuffers {
             status: ExecuteStatus::Ok,
+            // One file per stream per execution: a shared file would interleave
+            // stdout and stderr and make the recovered text unreadable.
+            stdout: match &opts.evidence_dir {
+                Some(dir) => HeadTailBuffer::with_spill_dir(
+                    dir.join(format!("kernel-stdout-{request_id}.log")),
+                ),
+                None => HeadTailBuffer::default(),
+            },
+            stderr: match &opts.evidence_dir {
+                Some(dir) => HeadTailBuffer::with_spill_dir(
+                    dir.join(format!("kernel-stderr-{request_id}.log")),
+                ),
+                None => HeadTailBuffer::default(),
+            },
             ..ExecBuffers::default()
         };
         {
@@ -636,7 +739,9 @@ for line in sys.stdin:
             "the tail must keep the verdict printed last"
         );
         let omitted = filler.chars().count() + traceback.chars().count() - DEFAULT_MAX_OUTPUT_CHARS;
-        let marker = format!("\n[... {omitted} chars omitted ...]\n");
+        // No spill was configured for this buffer, so the marker must say the
+        // text is gone rather than imply a file that does not exist.
+        let marker = format!("\n[... {omitted} chars omitted, not recoverable ]\n");
         let marker_at = stdout
             .find(&marker)
             .expect("the dropped middle must be named by a marker");
@@ -646,6 +751,64 @@ for line in sys.stdin:
         );
         assert!(stdout.chars().count() <= DEFAULT_MAX_OUTPUT_CHARS + marker.chars().count());
         manager.kill();
+    }
+
+    /// S4: when a stream is clipped, the ORIGINAL must be recoverable, and the
+    /// marker must name the file. Before this the middle was simply gone — the
+    /// session JSONL holds only the preview, so "the exact line and the exit
+    /// status" of a large run was unrecoverable after compaction.
+    #[test]
+    fn a_clipped_stream_names_a_file_that_holds_the_whole_stream() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("stdout.log");
+        let mut buffer = HeadTailBuffer::with_spill_dir(path.clone());
+
+        // Two halves with a distinctive line in the MIDDLE, which is the part a
+        // head/tail clip drops.
+        let head = "H".repeat(60);
+        let middle = "THE-EXACT-LINE-THAT-MATTERS";
+        let tail = "T".repeat(60);
+        let stream = format!("{head}{middle}{tail}");
+        buffer.push(&stream, 80);
+
+        let shown = buffer.finish(80);
+        assert!(
+            !shown.contains(middle),
+            "the fixture must actually be clipped: {shown}"
+        );
+        let advertised = shown
+            .split("full stream: ")
+            .nth(1)
+            .and_then(|rest| rest.split(" ]").next())
+            .expect("the marker must advertise the spill path");
+        assert_eq!(advertised, path.display().to_string());
+
+        let recovered = std::fs::read_to_string(&path).expect("the spill exists");
+        assert_eq!(
+            recovered, stream,
+            "the file must hold the WHOLE stream, byte for byte"
+        );
+        assert!(
+            recovered.contains(middle),
+            "the clipped line must be recoverable from the file"
+        );
+    }
+
+    /// Nothing omitted means nothing to keep: the spill is removed so a session
+    /// that prints little does not accumulate empty files.
+    #[test]
+    fn a_stream_that_fits_leaves_no_spill_behind() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("stdout.log");
+        let mut buffer = HeadTailBuffer::with_spill_dir(path.clone());
+        buffer.push("short output\n", 4096);
+        let shown = buffer.finish(4096);
+        assert_eq!(shown, "short output\n", "unchanged when it fits");
+        assert!(
+            !path.exists(),
+            "no clip means no file to advertise or keep: {path:?}"
+        );
+        assert!(!shown.contains("omitted"), "and no marker either: {shown}");
     }
 
     #[test]
@@ -743,7 +906,7 @@ for line in sys.stdin:
         let head: String = chars[..head_cap].iter().collect();
         let tail: String = chars[chars.len() - tail_cap..].iter().collect();
         let omitted = chars.len() - head_cap - tail_cap;
-        format!("{head}\n[... {omitted} chars omitted ...]\n{tail}")
+        format!("{head}\n[... {omitted} chars omitted, not recoverable ]\n{tail}")
     }
 
     #[test]

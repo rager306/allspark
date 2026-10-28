@@ -238,6 +238,15 @@ pub struct ExecuteOptions {
     /// the namespace are untouched. `None` and zero disable the watchdog; the
     /// runtime bootstrap never arms it.
     pub cell_timeout_ms: Option<u64>,
+    /// Directory for the spill that holds the ORIGINAL stdout/stderr when
+    /// `max_output_chars` clips them.
+    ///
+    /// `None` keeps the historical behaviour, where the clip is the only record:
+    /// the middle of a long output is then gone from the session for good. With
+    /// `Some(dir)` the whole stream is written under it and the clip marker
+    /// names the file, so "the exact line and the exit status" survives
+    /// compaction and resume.
+    pub evidence_dir: Option<std::path::PathBuf>,
 }
 
 /// The error raised when a new cell cannot start because the previously

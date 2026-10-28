@@ -103,6 +103,14 @@ pub struct BashToolOptions {
     /// pointing at the specialized tool. The command runs unchanged and its
     /// exit status is untouched - the note is appended, never substituted.
     pub arbiter: Option<Arc<crate::jev::ToolArbiter>>,
+    /// Where a spilled full output is kept for later retrieval.
+    ///
+    /// `None` keeps the historical behaviour (an OS temp file that nothing
+    /// owns). `Some(dir)` moves the spill under the session's artifact
+    /// directory, which is what makes a `fullOutputPath` a DURABLE ref rather
+    /// than a path a tmp cleaner may delete: the session JSONL holds only the
+    /// truncated preview, so the spill can be the single copy of the full output.
+    pub evidence_dir: Option<std::path::PathBuf>,
 }
 
 /// Probe for at-risk files via `git status --porcelain`. Returns `Ok(None)`
@@ -336,6 +344,7 @@ pub async fn execute_bash(
     let acc = Arc::new(Mutex::new(OutputAccumulator::new(
         &OutputAccumulatorOptions {
             temp_file_prefix: "pi-bash".to_string(),
+            evidence_dir: options.evidence_dir.clone(),
             ..OutputAccumulatorOptions::default()
         },
     )));
@@ -532,10 +541,12 @@ pub fn create_bash_tool_definition_with_options(
     let shell_path = options.shell_path.clone();
     let spawn_hook = options.spawn_hook.clone();
     let arbiter = options.arbiter.clone();
+    let evidence_dir = options.evidence_dir.clone();
     let execute: crate::tools::tool_definition::ExecuteFn = {
         Arc::new(move |_tool_call_id, params, signal, on_update| {
             let cwd = cwd.clone();
             let options = BashToolOptions {
+                evidence_dir: evidence_dir.clone(),
                 operations: operations.clone(),
                 command_prefix: command_prefix.clone(),
                 shell_path: shell_path.clone(),

@@ -10,6 +10,10 @@ pub struct OutputAccumulatorOptions {
     pub max_lines: usize,
     pub max_bytes: usize,
     pub temp_file_prefix: String,
+    /// Directory for the spill; `None` means the OS temp directory. Set it to
+    /// the session's artifact dir so the advertised `fullOutputPath` survives
+    /// the session and a tmp cleaner.
+    pub evidence_dir: Option<PathBuf>,
 }
 
 impl Default for OutputAccumulatorOptions {
@@ -18,6 +22,7 @@ impl Default for OutputAccumulatorOptions {
             max_lines: crate::tools::truncate::DEFAULT_MAX_LINES,
             max_bytes: crate::tools::truncate::DEFAULT_MAX_BYTES,
             temp_file_prefix: "pi-output".to_string(),
+            evidence_dir: None,
         }
     }
 }
@@ -29,12 +34,17 @@ pub struct OutputSnapshot {
     pub full_output_path: Option<String>,
 }
 
-fn default_temp_file_path(prefix: &str) -> PathBuf {
+/// A unique spill path under `dir`, or the OS temp directory when it is `None`.
+fn default_spill_path(prefix: &str, dir: Option<&Path>) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
     let id = nanos ^ (u128::from(std::process::id()) << 64);
-    std::env::temp_dir().join(format!("{prefix}-{id:032x}.log"))
+    let name = format!("{prefix}-{id:032x}.log");
+    match dir {
+        Some(dir) => dir.join(name),
+        None => std::env::temp_dir().join(name),
+    }
 }
 
 /// Streaming UTF-8 decoder matching `TextDecoder` `{ stream: true }`: incomplete
@@ -152,6 +162,8 @@ fn decode_utf8_char(buf: &[u8]) -> Decoded {
 /// advertised. `finalize()` never fails; the caller keeps its bounded in-memory tail either way.
 pub struct OutputSpill {
     prefix: String,
+    /// Directory for the spill; `None` means the OS temp directory.
+    dir: Option<PathBuf>,
     path: Option<PathBuf>,
     file: Option<File>,
     failed: bool,
@@ -159,8 +171,21 @@ pub struct OutputSpill {
 
 impl OutputSpill {
     pub fn new(prefix: &str) -> Self {
+        Self::with_dir(prefix, None)
+    }
+
+    /// A spill that writes under `dir` (created on open) instead of the OS temp
+    /// directory.
+    ///
+    /// The distinction is durability, not tidiness: a session's JSONL holds only
+    /// the truncated preview, so when `fullOutputPath` points into `$TMPDIR` the
+    /// full output is one age-based cleaner away from being unrecoverable. Under
+    /// the session's artifact directory it is a ref the session owns.
+    #[must_use]
+    pub fn with_dir(prefix: &str, dir: Option<std::path::PathBuf>) -> Self {
         Self {
             prefix: prefix.to_string(),
+            dir,
             path: None,
             file: None,
             failed: false,
@@ -181,8 +206,12 @@ impl OutputSpill {
         if self.file.is_some() || self.failed {
             return;
         }
-        let prefix = self.prefix.clone();
-        let path = default_temp_file_path(&prefix);
+        let path = default_spill_path(&self.prefix, self.dir.as_deref());
+        // A configured directory may not exist on the first spill of a session:
+        // create it rather than silently degrading to "no full output".
+        if let Some(dir) = &self.dir {
+            let _ = std::fs::create_dir_all(dir);
+        }
         if let Ok(mut file) = File::create(&path) {
             for chunk in replay {
                 if file.write_all(chunk).is_err() {
@@ -266,7 +295,7 @@ pub struct OutputAccumulator {
 impl OutputAccumulator {
     pub fn new(options: &OutputAccumulatorOptions) -> Self {
         let max_rolling_bytes = (options.max_bytes * 2).max(1);
-        let spill = OutputSpill::new(&options.temp_file_prefix);
+        let spill = OutputSpill::with_dir(&options.temp_file_prefix, options.evidence_dir.clone());
         Self {
             max_lines: options.max_lines,
             max_bytes: options.max_bytes,
