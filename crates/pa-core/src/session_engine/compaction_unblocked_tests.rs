@@ -320,3 +320,49 @@ async fn repeated_branch_conflicts_fail_the_compaction_after_three_attempts() {
     assert!(!committed, "the capped compaction never committed");
     summarizer.registration.unregister();
 }
+
+/// S5's missing seam: `auto_compaction_due` must price the FIXED PREFIX, not only
+/// the messages. Without this test the prefix could be dropped from the wiring and
+/// every arithmetic test would still pass.
+///
+/// The claim in one line: a two-message history far below the threshold, plus a
+/// system prompt large enough to cross it. The same session with no prompt must NOT
+/// be due — so the difference is the prefix and nothing else.
+#[tokio::test]
+async fn the_turn_boundary_prices_the_system_prompt() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut manager = SessionManager::in_memory(tmp.path());
+    manager
+        .append_message(user_turn("a short turn"))
+        .and_then(|_| manager.append_message(assistant_turn("a short reply")))
+        .unwrap();
+    let agent = Arc::new(Agent::new(AgentOptions::default()));
+    let engine = AgentSession::new(agent, manager, Vec::new()).await.unwrap();
+    engine
+        .set_compaction_settings(crate::session_engine::compaction::CompactionSettings::default());
+
+    // A small window so the prefix is decisive rather than marginal.
+    let registration =
+        pa_ai::faux::register_faux_provider(pa_ai::faux::RegisterFauxProviderOptions::default());
+    let mut model = registration.get_model();
+    model.context_window = 8_192;
+    model.max_tokens = 512;
+
+    let state = engine.agent().state().await;
+    assert!(
+        state.system_prompt.is_empty(),
+        "the fixture must start with no prompt, or the comparison proves nothing"
+    );
+    assert!(
+        !engine.auto_compaction_due(&model).await,
+        "two short messages must not be due without a prefix"
+    );
+
+    // ~6 000 tokens of prompt against an 8k window: the turn boundary must see it.
+    engine.agent().set_system_prompt("x".repeat(24_000)).await;
+    assert!(
+        engine.auto_compaction_due(&model).await,
+        "24 000 characters of system prompt (~6 000 tokens) against an 8k window must make \
+         the boundary due; the wiring is not pricing the prefix"
+    );
+}

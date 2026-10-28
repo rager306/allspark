@@ -43,6 +43,9 @@ impl AgentSession {
         // trigger still said "not due".
         let plan = compaction::ContextPlan {
             messages: compaction::estimate_context_tokens(&messages).tokens,
+            // The prompt is billed on every call and was in NO estimate before
+            // `ContextPlan`: this line is what makes the trigger see it, and
+            // `the_turn_boundary_prices_the_system_prompt` fails without it.
             system_prompt: compaction::estimate_text_tokens(&state.system_prompt),
             tool_schemas: state
                 .tools
