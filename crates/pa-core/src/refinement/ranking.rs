@@ -420,6 +420,22 @@ pub fn harness_digest_fingerprint(
     state: &HarnessState,
     render_flags: HarnessDigestRenderFlags,
 ) -> String {
+    harness_digest_fingerprint_for_render(state, render_flags, DEFAULT_OVERVIEW_CONTENT_LIMIT)
+}
+
+/// The fingerprint of the render produced with `max_content_length`.
+///
+/// The limit is part of the identity because the RENDER clips `content`,
+/// `trigger`, `outcome` and `expected_outcome` to it: a fingerprint over the raw
+/// strings moves when a change lands past the clip, while every rendered byte
+/// stays identical — the digest is then rewritten and (with a prefix breakpoint)
+/// the stable half of the prompt re-billed for nothing.
+#[must_use]
+pub fn harness_digest_fingerprint_for_render(
+    state: &HarnessState,
+    render_flags: HarnessDigestRenderFlags,
+    max_content_length: usize,
+) -> String {
     // The section key is the renderer's grouping: an entry moved between
     // sections renders differently and must invalidate the digest, even
     // when its `kind` field disagrees with its section.
@@ -448,7 +464,14 @@ pub fn harness_digest_fingerprint(
         material.insert("title".to_string(), serde_json::json!(entry.title));
         material.insert("path".to_string(), serde_json::json!(entry.path));
         material.insert("version".to_string(), serde_json::json!(entry.version));
-        material.insert("content".to_string(), serde_json::json!(entry.content));
+        // The CLIPPED text, which is what the render prints: a change past the
+        // clip must not move the fingerprint.
+        // The CLIPPED text, which is what the render prints: a change past the
+        // clip must not move the fingerprint.
+        material.insert(
+            "content".to_string(),
+            serde_json::json!(compact_harness_text(&entry.content, max_content_length)),
+        );
         // Only skills render the kernel call contract, so another kind can
         // change these fields without changing a single digest byte.
         if entry.kind == RefinementKind::Skill {
@@ -471,12 +494,21 @@ pub fn harness_digest_fingerprint(
         .map(|event| {
             let mut material = serde_json::Map::new();
             material.insert("id".to_string(), serde_json::json!(event.id));
-            material.insert("trigger".to_string(), serde_json::json!(event.trigger));
+            material.insert(
+                "trigger".to_string(),
+                serde_json::json!(compact_harness_text(&event.trigger, max_content_length)),
+            );
             material.insert("changes".to_string(), serde_json::json!(event.changes));
-            material.insert("outcome".to_string(), serde_json::json!(event.outcome));
+            material.insert(
+                "outcome".to_string(),
+                serde_json::json!(compact_harness_text(&event.outcome, max_content_length)),
+            );
             material.insert(
                 "expected_outcome".to_string(),
-                serde_json::json!(event.expected_outcome),
+                serde_json::json!(compact_harness_text(
+                    &event.expected_outcome,
+                    max_content_length
+                )),
             );
             serde_json::Value::Object(material)
         })
@@ -726,6 +758,74 @@ mod tests {
             .content
             .push_str(" more");
         assert_ne!(harness_digest_fingerprint(&changed, flags), baseline);
+    }
+
+    /// S6 (view latch): a fingerprint must move exactly when the RENDER moves.
+    ///
+    /// The renderer clips `content`, `trigger`, `outcome` and `expected_outcome`
+    /// to `max_content_length`; the fingerprint hashed them RAW. So appending to
+    /// an entry past the clip changed the fingerprint — the digest was rewritten,
+    /// and (with a prefix breakpoint upstream) the stable half of the prompt was
+    /// re-billed — while every rendered byte stayed identical. That is the
+    /// stability defect in this layer, and it costs tokens rather than
+    /// correctness, which is why nothing failed.
+    #[test]
+    fn a_change_past_the_render_clip_does_not_move_the_fingerprint() {
+        let long = "x".repeat(400);
+        let mut state = empty_harness_state();
+        let mut memory = HarnessEntry {
+            id: "m1".to_string(),
+            kind: RefinementKind::Memory,
+            title: "t".to_string(),
+            content: format!("{long}HEAD"),
+            path: "general".to_string(),
+            scope: Some(HarnessScope::Local),
+            reference: serde_json::Map::new(),
+            arguments: serde_json::Map::new(),
+            metadata: serde_json::Map::new(),
+            source: "agent".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            version: 1,
+        };
+        state
+            .entries
+            .entry(RefinementKind::Memory)
+            .or_default()
+            .insert(memory.id.clone(), memory.clone());
+        let flags = HarnessDigestRenderFlags {
+            include_ipython_examples: true,
+            include_shell_examples: true,
+            include_refine_examples: true,
+        };
+        let options = HarnessStatePromptOptions {
+            max_content_length: Some(64),
+            ..HarnessStatePromptOptions::default()
+        };
+
+        let before_render = format_harness_state_for_prompt(&state, &options);
+        let before_fp = harness_digest_fingerprint(&state, flags);
+
+        // Change only the part the render clips away.
+        memory.content = format!("{long}TAIL");
+        state
+            .entries
+            .get_mut(&RefinementKind::Memory)
+            .expect("kind")
+            .insert(memory.id.clone(), memory);
+
+        let after_render = format_harness_state_for_prompt(&state, &options);
+        let after_fp = harness_digest_fingerprint(&state, flags);
+
+        assert_eq!(
+            before_render, after_render,
+            "the fixture must change only clipped text, or it proves nothing"
+        );
+        assert_eq!(
+            before_fp, after_fp,
+            "the fingerprint moved while every rendered byte stayed the same: \
+             the digest is rewritten and the prompt cache re-billed for no change"
+        );
     }
 
     #[test]

@@ -27,6 +27,80 @@ fn empty_state_digest_renders_placeholder() {
     assert!(message.ends_with("</harness_state>"));
 }
 
+/// The digest's fingerprint must be a function of the RENDER, not of the raw
+/// state: the renderer clips entry content and refinement text, so a change past
+/// the clip used to move the fingerprint while every rendered byte stayed
+/// identical — a digest rewrite and (with a prefix breakpoint) a re-billed stable
+/// prefix for no visible change.
+///
+/// This exercises the real entry point (`render_digest_with_fingerprint`), not
+/// the helper, so the wiring is what is tested.
+#[test]
+fn an_edit_past_the_render_clip_keeps_the_digest_and_its_fingerprint() {
+    let tmp = tempfile::tempdir().unwrap();
+    let global_dir = tmp.path().join("harness");
+    std::fs::create_dir_all(&global_dir).unwrap();
+    // The clip keeps a PREFIX, so a change in the middle is what the render
+    // drops; the two tails below differ only after the clip point.
+    // The default clip keeps the first 140 chars. Both variants share that
+    // prefix byte for byte and differ only AFTER it, so the render is identical
+    // and only the raw strings differ — exactly the case that must not move the
+    // fingerprint.
+    let clip_aware = |tail: &str| format!("{}{tail}", "z".repeat(200));
+    // One document holds the whole state: `harness_state.json` under the dir.
+    let write = |tail: &str| {
+        std::fs::write(
+            global_dir.join("harness_state.json"),
+            serde_json::json!({
+                "schema": 1,
+                "entries": {
+                    "memory": {
+                        "clip": {
+                            "id": "clip",
+                            "kind": "memory",
+                            "title": "clippable",
+                            "content": clip_aware(tail),
+                            "path": "general",
+                            "reference": {},
+                            "arguments": {},
+                            "metadata": {},
+                            "source": "agent",
+                            "created_at": "2026-01-01T00:00:00Z",
+                            "updated_at": "2026-01-01T00:00:00Z",
+                            "version": 1,
+                        }
+                    }
+                },
+                "refinements": [],
+            })
+            .to_string(),
+        )
+        .unwrap();
+    };
+    let context = HarnessDigestContext {
+        global_dir: global_dir.clone(),
+        local_dir: None,
+        include_ipython: true,
+        include_shell_examples: false,
+        include_refine: true,
+    };
+
+    write(&"H".repeat(50));
+    let before = render_digest_with_fingerprint(&context, HarnessQueryTerms::default());
+    // Same length, same visible prefix, different middle.
+    write(&"T".repeat(50));
+    let after = render_digest_with_fingerprint(&context, HarnessQueryTerms::default());
+
+    assert_eq!(
+        before.digest, after.digest,
+        "the fixture must change only clipped text, or it proves nothing"
+    );
+    assert_eq!(
+        before.state_fingerprint, after.state_fingerprint,
+        "an edit past the clip moved the fingerprint while the digest stayed identical"
+    );
+}
+
 #[test]
 fn query_terms_weight_goal_and_recency() {
     let terms = digest_query_terms(

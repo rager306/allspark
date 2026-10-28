@@ -9,7 +9,7 @@ use pa_agent::types::{AgentMessage, Message, UserContent, UserPart};
 use pa_types::session::{AgentMessage as SessionAgentMessage, FileEntry};
 
 use crate::refinement::ranking::{
-    format_harness_state_for_prompt, harness_digest_fingerprint, harness_query_terms,
+    format_harness_state_for_prompt, harness_digest_fingerprint_for_render, harness_query_terms,
     HarnessDigestRenderFlags, HarnessQueryTerms, HarnessStatePromptOptions,
 };
 use crate::refinement::{load_harness_state, merge_harness_states, HarnessScope};
@@ -93,17 +93,25 @@ fn render_digest_with_fingerprint(
         include_shell_examples: context.include_shell_examples,
         include_refine_examples: context.include_ipython && context.include_refine,
     };
-    let digest = format_harness_state_for_prompt(
+    let prompt_options = HarnessStatePromptOptions {
+        include_ipython_examples: Some(context.include_ipython),
+        include_shell_examples: context.include_shell_examples,
+        include_refine_examples: Some(render_flags.include_refine_examples),
+        query_terms: Some(query_terms),
+        ..Default::default()
+    };
+    let digest = format_harness_state_for_prompt(&merged, &prompt_options);
+    // The fingerprint is taken over the SAME clip the render applies. Hashing the
+    // raw strings moved it when a change landed past the clip, while every
+    // rendered byte stayed identical: the digest was rewritten and, with a
+    // prefix breakpoint, the stable half of the prompt re-billed for nothing.
+    let state_fingerprint = harness_digest_fingerprint_for_render(
         &merged,
-        &HarnessStatePromptOptions {
-            include_ipython_examples: Some(context.include_ipython),
-            include_shell_examples: context.include_shell_examples,
-            include_refine_examples: Some(render_flags.include_refine_examples),
-            query_terms: Some(query_terms),
-            ..Default::default()
-        },
+        render_flags,
+        prompt_options
+            .max_content_length
+            .unwrap_or(crate::refinement::DEFAULT_OVERVIEW_CONTENT_LIMIT),
     );
-    let state_fingerprint = harness_digest_fingerprint(&merged, render_flags);
     HarnessDigestRender {
         digest,
         state_fingerprint,
