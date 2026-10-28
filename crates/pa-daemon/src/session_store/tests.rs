@@ -881,6 +881,7 @@ fn durable_compaction_row_serializes_in_the_ts_key_order() {
                 &pa_core::session_engine::compaction_exec::CompactionDetails {
                     read_files: vec!["a.rs".to_string()],
                     modified_files: vec!["b.rs".to_string()],
+                    task: None,
                 },
             )
             .unwrap(),
