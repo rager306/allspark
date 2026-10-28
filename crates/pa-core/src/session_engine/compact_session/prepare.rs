@@ -3,8 +3,8 @@
 //! session-cut test seam.
 use super::recent_state_anchor::extract_recent_state_anchor;
 use super::{
-    context_tokens, find_cut_point, message_from_entry, AgentMessage, CutPointResult, FileEntry,
-    SessionManager,
+    context_tokens, find_cut_point, message_from_entry, orphans_a_tool_result, AgentMessage,
+    CutPointResult, FileEntry, SessionManager,
 };
 
 /// Why a compaction cannot prepare: `/compact` raises the message,
@@ -87,7 +87,28 @@ pub fn prepare_compaction(
         }
         None => (start, None),
     };
-    let cut = find_cut_point(entries, boundary_start, entries.len(), keep_recent_tokens);
+    let mut cut = find_cut_point(entries, boundary_start, entries.len(), keep_recent_tokens);
+    // A cut that strands a tool result advertises a split the provider will
+    // reject ("tool_call_id not found"), so the boundary moves back to the
+    // assistant message that carries the call. The walk back is bounded by
+    // `boundary_start`, which is always a legal keep point.
+    //
+    // Measured (2026-10-28): with the current `find_valid_cut_points` no reachable
+    // `keep_recent_tokens` strands a result, so this loop does not fire today.
+    // It is here because the predicate must gate the PUBLISHED cut, not a
+    // hypothetical one — the same reason the donor's `projectUnit` is shared by
+    // recommend, explain and apply instead of each caller deciding.
+    while cut.first_kept_entry_index > boundary_start
+        && orphans_a_tool_result(entries, cut.first_kept_entry_index)
+    {
+        cut.first_kept_entry_index -= 1;
+        // The moved boundary can turn a split turn into a whole-turn cut, and a
+        // `turn_start_index` past the new boundary would be incoherent.
+        if cut.turn_start_index.is_some_and(|t| t >= cut.first_kept_entry_index) {
+            cut.turn_start_index = None;
+            cut.is_split_turn = false;
+        }
+    }
     let history_end = if cut.is_split_turn {
         cut.turn_start_index.unwrap_or(cut.first_kept_entry_index)
     } else {

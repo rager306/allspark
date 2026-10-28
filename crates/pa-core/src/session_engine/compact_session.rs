@@ -4,7 +4,9 @@
 use pa_types::ai::{TextContent, UserContent, UserContentBlock};
 use pa_types::session::{AgentMessage, FileEntry};
 
-use super::compaction::{estimate_context_tokens, find_cut_point, CutPointResult};
+use super::compaction::{
+    estimate_context_tokens, find_cut_point, orphans_a_tool_result, CutPointResult,
+};
 use super::compaction_exec;
 use super::compaction_exec::{
     add_assistant_usage, build_summarization_request, build_turn_prefix_request,

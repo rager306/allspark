@@ -3,6 +3,7 @@
 //! details land with the provider integration slice.
 
 use crate::tools::render_utils::{get_image_dimensions_prefix, IMAGE_DIMENSIONS_PREFIX_BYTES};
+use pa_types::ai::AssistantContentBlock;
 use pa_types::session::{AgentMessage, FileEntry};
 use std::fmt::Write as _;
 
@@ -469,6 +470,45 @@ pub fn find_valid_cut_points(
     cut_points
 }
 
+/// Whether keeping `entries[keep_from..]` would strand a tool result: a result
+/// whose matching call sits on the DROPPED side.
+///
+/// This is the provider's own precondition, not a heuristic: a `toolResult`
+/// whose `toolCallId` does not appear in a preceding assistant message is
+/// rejected at request time, so a plan that produces one advertises a split it
+/// cannot apply. The donor's `projectUnit` exists for the same class of defect
+/// (recommend, explain and apply sharing ONE validity rule) and names the
+/// symptom: "Range would split N turn(s)".
+///
+/// The check spans the WHOLE kept range, so it also catches a result kept by a
+/// later cut while its call was dropped by an earlier one.
+#[must_use]
+pub fn orphans_a_tool_result(entries: &[FileEntry], keep_from: usize) -> bool {
+    let kept = entries.get(keep_from..).unwrap_or(&[]);
+    let mut calls: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for entry in kept {
+        let FileEntry::Message { message, .. } = entry else {
+            continue;
+        };
+        match message {
+            AgentMessage::Assistant(assistant) => {
+                for block in &assistant.content {
+                    if let AssistantContentBlock::ToolCall(call) = block {
+                        calls.insert(call.id.as_str());
+                    }
+                }
+            }
+            // A result whose call is not in the kept range: the provider would
+            // reject the request, so the cut is not applicable.
+            AgentMessage::ToolResult(result) if !calls.contains(result.tool_call_id.as_str()) => {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// The user/bashExecution message (or branch boundary) starting the turn
 /// containing `entry_index`; None when no turn start exists before it.
 fn find_turn_start_index(
@@ -636,6 +676,57 @@ mod tests {
                 rest: serde_json::Map::default(),
             }),
         )
+    }
+
+    fn tool_call_assistant(id: &str, tool: &str) -> AgentMessage {
+        AgentMessage::Assistant(pa_types::ai::AssistantMessage {
+            content: vec![pa_types::ai::AssistantContentBlock::ToolCall(
+                pa_types::ai::ToolCall {
+                    id: id.to_string(),
+                    name: tool.to_string(),
+                    arguments: serde_json::Map::default(),
+                    thought_signature: None,
+                    rest: serde_json::Map::default(),
+                },
+            )],
+            api: "openai-completions".to_string(),
+            provider: "p".to_string(),
+            model: "m".to_string(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: pa_types::ai::Usage {
+                input: 100,
+                output: 0,
+                cache_read: 0,
+                cache_write: 0,
+                total_tokens: 100,
+                cost: pa_types::ai::UsageCost::default(),
+            },
+            stop_reason: pa_types::ai::StopReason::ToolUse,
+            stop_reason_raw: None,
+            error_message: None,
+            timestamp: 0,
+            rest: serde_json::Map::default(),
+        })
+    }
+
+    fn tool_result_message(call_id: &str, text: &str) -> AgentMessage {
+        AgentMessage::ToolResult(pa_types::ai::ToolResultMessage {
+            tool_call_id: call_id.to_string(),
+            tool_name: "bash".to_string(),
+            content: vec![pa_types::ai::UserContentBlock::Text(
+                pa_types::ai::TextContent {
+                    text: text.to_string(),
+                    text_signature: None,
+                    rest: serde_json::Map::default(),
+                },
+            )],
+            details: None,
+            is_error: false,
+            timestamp: 0,
+            rest: serde_json::Map::default(),
+        })
     }
 
     fn assistant_entry(id: &str, parent: &str) -> FileEntry {
@@ -1235,5 +1326,50 @@ mod tests {
         ];
         let usage = get_last_assistant_usage(&entries).unwrap();
         assert_eq!(usage.total_tokens, 150);
+    }
+
+    /// S2 (the donor's `projectUnit` lesson): a cut must never separate a tool
+    /// RESULT from the ASSISTANT message that requested it.
+    ///
+    /// `find_valid_cut_points` refuses `ToolResult` entries as cut positions,
+    /// which covers the adjacent shape. The shape it cannot see is a result
+    /// whose matching call is on the CUT side: the provider then rejects the
+    /// request (`tool_call_id` not found), so the plan advertised a split it
+    /// could not apply — the donor's "Range would split N turn(s)" symptom.
+    #[test]
+    fn a_cut_never_separates_a_tool_result_from_its_call() {
+        let entries = vec![
+            user_entry("m1", "", "start"),
+            message_entry("m2", "m1", tool_call_assistant("call-1", "bash")),
+            message_entry("m3", "m2", tool_result_message("call-1", "done")),
+            user_entry("m4", "m3", "next"),
+            user_entry("m5", "m4", "last"),
+        ];
+        let cut = find_cut_point(&entries, 0, entries.len(), 0);
+        assert!(
+            !orphans_a_tool_result(&entries, cut.first_kept_entry_index),
+            "cut {} separated a result from its call",
+            cut.first_kept_entry_index
+        );
+
+        // The shape that CAN happen: the result survives while its call is cut.
+        let split = vec![
+            user_entry("m1", "", "start"),
+            message_entry("m2", "m1", tool_call_assistant("call-1", "bash")),
+            user_entry("m3", "m2", "interrupt"),
+            message_entry("m4", "m3", tool_result_message("call-1", "done")),
+        ];
+        assert!(
+            orphans_a_tool_result(&split, 2),
+            "the predicate must FIRE on the split shape, or it proves nothing"
+        );
+        assert!(
+            !orphans_a_tool_result(&split, 1),
+            "keeping the call with its result is legal"
+        );
+        assert!(
+            orphans_a_tool_result(&split, 3),
+            "a result with no call before it is orphaned wherever the cut lands"
+        );
     }
 }
