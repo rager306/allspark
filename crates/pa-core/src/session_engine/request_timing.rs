@@ -281,23 +281,25 @@ pub fn instrument_convert_to_llm(
             if !wiring.enabled() {
                 return convert(messages).await;
             }
-            // Priced BEFORE conversion, from the same messages the compaction trigger
-            // reads: this is the input half of the plan, and it is the only place a
-            // request's own prediction can be captured without a second plumbing pass.
-            // The fixed prefix is not here — the trigger adds it only when no provider
-            // anchor exists, and this seam never has one.
-            // The trigger reads SESSION messages; this seam holds loop messages. The
-            // same JSON round-trip `auto_compaction_due` uses keeps the two priced
-            // identically — a different conversion here would make the drift measure a
-            // difference that does not exist.
-            let planned_input_tokens: u64 = messages
+            // Priced by the SAME estimator the compaction trigger uses, over the same
+            // messages: this is the input half of the plan, and re-deriving it here
+            // (summing `estimate_tokens` per message) silently dropped the usage ANCHOR
+            // that `estimate_context_tokens` adds — so the drift compared two different
+            // quantities and read low by whatever the last provider reported.
+            //
+            // The fixed prefix is still not here: it belongs to the plan the trigger
+            // builds, and the drift below is the message projection's check. Adding it
+            // to this seam would need this seam to know the trigger's anchor rule.
+            let session_messages: Vec<pa_types::session::AgentMessage> = messages
                 .iter()
                 .filter_map(|message| serde_json::to_value(message).ok())
                 .filter_map(|value| {
                     serde_json::from_value::<pa_types::session::AgentMessage>(value).ok()
                 })
-                .map(|message| crate::session_engine::compaction::estimate_tokens(&message))
-                .sum();
+                .collect();
+            let planned_input_tokens =
+                crate::session_engine::compaction::estimate_context_tokens(&session_messages)
+                    .tokens;
             let output = convert(messages).await?;
             let started_at = wiring.take_dispatch().unwrap_or_else(Instant::now);
             let built = Instant::now();

@@ -421,6 +421,37 @@ impl ContextPlan {
         self.tool_schemas = tool_schemas;
         self
     }
+
+    /// The plan for one request, with the prefix priced only when it is NOT already
+    /// counted.
+    ///
+    /// This rule is the whole subtlety of pricing a request, and it lives here rather
+    /// than at each caller because two callers already got it wrong in opposite
+    /// directions: adding the prefix to an ANCHORED estimate double-counts it (the
+    /// provider's usage is the count for a request that carried the prompt), while
+    /// omitting it on an UNANCHORED one under-counts by the prompt's whole size —
+    /// measured here at 18 007 tokens, 14% of a 128k window.
+    ///
+    /// `anchored` is `estimate.last_usage_index.is_some()`; `prefix` is the prompt plus
+    /// the tool schemas.
+    #[must_use]
+    pub fn for_request(
+        estimate: ContextTokensEstimate,
+        anchored: bool,
+        prefix: (u64, u64),
+        output_reserve: u64,
+        context_window: u64,
+    ) -> Self {
+        Self {
+            messages: estimate.tokens,
+            // With an anchor the prefix is already inside `messages`; without one it
+            // must be added, or the trigger prices a request that carries no prompt.
+            system_prompt: if anchored { 0 } else { prefix.0 },
+            tool_schemas: if anchored { 0 } else { prefix.1 },
+            output_reserve,
+            context_window,
+        }
+    }
 }
 
 /// Estimate tokens for a text the same way the message estimator does
@@ -1772,5 +1803,42 @@ mod tests {
             cut.first_kept_entry_index > 0,
             "a 10k budget on a long history must cut"
         );
+    }
+
+    /// The prefix rule lives in ONE place, and both halves of it are load-bearing.
+    ///
+    /// History of getting this wrong, in both directions:
+    /// - adding the prefix to an ANCHORED estimate double-counted it (the provider's
+    ///   usage already covers the prompt and schemas), inflating the threshold enough to
+    ///   compact a turn early in seven daemon tests;
+    /// - adding `tool_schemas` unconditionally while gating only `system_prompt` left the
+    ///   schemas double-counted — the same bug at half the size, which is why the rule is
+    ///   a function instead of two inline `if`s.
+    #[test]
+    fn the_prefix_is_priced_exactly_once() {
+        let anchored = ContextTokensEstimate {
+            tokens: 20_000,
+            last_usage_index: Some(3),
+        };
+        let plan = ContextPlan::for_request(anchored, true, (14_197, 3_810), 4_000, 128_000);
+        assert_eq!(
+            plan.input(),
+            20_000,
+            "an anchored estimate already carries the prefix: {plan:?}"
+        );
+
+        let fresh = ContextTokensEstimate {
+            tokens: 500,
+            last_usage_index: None,
+        };
+        let plan = ContextPlan::for_request(fresh, false, (14_197, 3_810), 4_000, 128_000);
+        assert_eq!(
+            plan.input(),
+            500 + 14_197 + 3_810,
+            "without an anchor the prefix must be added, or the request is priced as if \
+             it carried no prompt: {plan:?}"
+        );
+        assert_eq!(plan.output_reserve, 4_000);
+        assert_eq!(plan.context_window, 128_000);
     }
 }

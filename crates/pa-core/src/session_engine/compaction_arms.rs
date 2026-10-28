@@ -58,38 +58,36 @@ impl AgentSession {
             model,
             provider_adapter::model_thinking_level(state.thinking_level),
         );
-        // Price the request, not just the history.
+        // Price the request, not just the history, through the ONE rule
+        // (`ContextPlan::for_request`).
         //
         // The subtlety that cost a wrong fix: an ANCHORED estimate already includes the
-        // prompt. `calculate_context_tokens(usage)` is the provider's own count for a
-        // request that carried the system prompt and tool schemas, so adding the prefix
-        // on top double-counts it — measured in the daemon fixtures, where the anchor
-        // read 18 722 for a first turn whose own prompt was 18 007, and the doubled
-        // threshold compacted a turn early in seven tests.
+        // prompt AND the tool schemas — `calculate_context_tokens(usage)` is the
+        // provider's own count for a request that carried both. Adding either on top
+        // double-counts: the daemon fixtures showed an anchor of 18 722 for a first turn
+        // whose own prompt was 18 007, and the inflated threshold compacted a turn early
+        // in seven tests.
         //
         // The prefix is therefore added only when there is NO anchor (a fresh or resumed
         // session, where nothing has been sent yet and message estimates are the only
-        // basis). That is the one case the old code under-counted, and it is the case
+        // basis). That is the case the old code under-counted, and the one
         // `the_turn_boundary_prices_the_system_prompt` exercises.
         let estimate = compaction::estimate_context_tokens(&messages);
-        let anchored = estimate.last_usage_index.is_some();
-        let plan = compaction::ContextPlan {
-            messages: estimate.tokens,
-            // The prompt is billed on every call; with an anchor it is already inside
-            // `messages`, without one it must be added.
-            system_prompt: if anchored {
-                0
-            } else {
-                compaction::estimate_text_tokens(&state.system_prompt)
-            },
-            tool_schemas: state
+        let prefix = (
+            compaction::estimate_text_tokens(&state.system_prompt),
+            state
                 .tools
                 .iter()
                 .map(|tool| compaction::estimate_tool_schema_tokens(tool.as_ref()))
                 .sum(),
+        );
+        let plan = compaction::ContextPlan::for_request(
+            estimate,
+            estimate.last_usage_index.is_some(),
+            prefix,
             output_reserve,
-            context_window: model.context_window,
-        };
+            model.context_window,
+        );
         // The plan trigger can only be MORE eager than the message-only one (it
         // counts strictly more input), so asking either is the same as asking the
         // plan; keeping both would let a stale call path silently skip the prefix.
