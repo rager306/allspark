@@ -33,6 +33,235 @@ use pa_graph::{
     SearchOptions, TraceOptions, TreeNode, Truncation,
 };
 
+/// One evidence pack: the bounded, explainable answer to "what do I need to know
+/// about X", assembled under a budget rather than by opening files.
+///
+/// Every element names where it came from and how sure it is, because a pack is
+/// evidence for a decision (an edit, a review, an answer), and evidence a reader
+/// cannot check is a claim. The `omitted` list is the honest half: what the budget
+/// kept out, so a thin pack is attributable to cost rather than read as "there is
+/// nothing there".
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvidencePack {
+    /// The question the pack answers.
+    pub query: String,
+    /// The symbols each stage selected, in pack order.
+    pub symbols: Vec<PackSymbol>,
+    /// Call edges between the pack's own symbols, with direction and confidence.
+    pub links: Vec<PackLink>,
+    /// Coverage of the graph itself, so a thin pack can be attributed to a thin
+    /// index rather than to absent code.
+    pub coverage: PackCoverage,
+    /// What the budget kept out.
+    pub omitted: PackOmissions,
+}
+
+/// One symbol in a pack, with both placements: current (on disk now) and last
+/// indexed.
+///
+/// The pair is the point. A pack is built from the INDEX, and an index can be
+/// behind the disk; a reader that edits from `startLine`/`endLine` alone can write
+/// into the wrong place. When the two disagree, `stale` says so.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackSymbol {
+    pub qualified_name: String,
+    pub name: String,
+    pub label: String,
+    pub file_path: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    /// `None` when the file could not be read (deleted, unreadable).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_lines: Option<(u32, u32)>,
+    /// The file's signature hash when indexed; a change past the signatures leaves
+    /// the body editable but tells the reader the graph row is body-stale.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surface_sha: Option<String>,
+    /// Whether the indexed placement disagrees with the file on disk.
+    pub stale: bool,
+    /// Why this symbol is in the pack.
+    pub reason: String,
+}
+
+/// A directed relation between two symbols that are BOTH in the pack.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackLink {
+    pub from: String,
+    pub to: String,
+    pub edge_type: String,
+    /// `None` when the edge recorded no confidence (imports, contains).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+}
+
+/// The graph's own honesty, embedded so a pack is self-describing.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackCoverage {
+    pub sites: usize,
+    pub resolved: usize,
+    pub unresolved: usize,
+}
+
+/// What the budget kept out, by kind.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackOmissions {
+    /// Symbols the search ranked below the cut.
+    pub symbols_below_cut: usize,
+    /// Links whose endpoint fell outside the symbol budget.
+    pub links_outside_pack: usize,
+    /// Files that could not be read to check freshness.
+    pub unreadable_files: usize,
+}
+
+/// Symbols a pack carries by default.
+pub(crate) const PACK_DEFAULT_SYMBOLS: usize = 12;
+/// Hard ceiling: a pack is a bounded answer, and a caller asking for a thousand
+/// symbols wants a search, not a pack.
+pub(crate) const PACK_MAX_SYMBOLS: usize = 64;
+
+/// Assemble an [`EvidencePack`] for `query`.
+///
+/// Pure over the store plus the files it reads, so the pack is reproducible for a
+/// given index and tree. Each stage records what it kept out, because a pack that
+/// silently truncates reads as a complete answer.
+pub(crate) fn build_evidence_pack(
+    store: &GraphStore,
+    project: &str,
+    root: &std::path::Path,
+    query: &str,
+    budget: usize,
+) -> anyhow::Result<EvidencePack> {
+    // Rank a generous candidate set, then cut: `search` already fuses channels, so
+    // the cut is the only place a symbol is lost, and the loss is counted.
+    let candidates = budget.saturating_mul(4);
+    let hits = store.search(
+        query,
+        &pa_graph::SearchOptions::new(project).with_limit(candidates),
+    )?;
+    let kept: Vec<&pa_graph::SearchHit> = hits.iter().take(budget).collect();
+    let omitted_symbols = hits.len().saturating_sub(kept.len());
+
+    let mut symbols = Vec::with_capacity(kept.len());
+    let mut unreadable = 0usize;
+    for (rank, hit) in kept.iter().enumerate() {
+        let placement = store.node_by_id(hit.id).ok().flatten();
+        let freshness = current_placement(root, &hit.file_path, &hit.name);
+        // Gone or unreadable: either way the pack cannot vouch for the placement.
+        let (current_lines, stale) = if let Ok(Some(current)) = freshness {
+            (
+                Some(current),
+                current.0 != hit.start_line || current.1 != hit.end_line,
+            )
+        } else {
+            unreadable += 1;
+            (None, true)
+        };
+        symbols.push(PackSymbol {
+            qualified_name: hit.qualified_name.clone(),
+            name: hit.name.clone(),
+            label: hit.label.as_str().to_string(),
+            file_path: hit.file_path.clone(),
+            start_line: hit.start_line,
+            end_line: hit.end_line,
+            current_lines,
+            surface_sha: placement.and_then(|node| {
+                node.props
+                    .get("surface_sha")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            }),
+            stale,
+            reason: if rank == 0 {
+                "top hit".to_string()
+            } else {
+                format!("hit #{}", rank + 1)
+            },
+        });
+    }
+
+    // Links between symbols that are BOTH in the pack: a relation to something the
+    // reader cannot see is noise, and counting it would inflate the pack's apparent
+    // richness.
+    let mut links = Vec::new();
+    let mut links_outside = 0usize;
+    let in_pack: std::collections::HashSet<&str> = symbols
+        .iter()
+        .map(|symbol| symbol.qualified_name.as_str())
+        .collect();
+    for symbol in &symbols {
+        let Ok(Some(node)) = store.node_by_qn(project, &symbol.qualified_name) else {
+            continue;
+        };
+        for edge in store.out_edges(node.id, None)? {
+            let Some(target) = store.node_by_id(edge.target)? else {
+                continue;
+            };
+            if in_pack.contains(target.qualified_name.as_str()) {
+                links.push(PackLink {
+                    from: symbol.qualified_name.clone(),
+                    to: target.qualified_name,
+                    edge_type: edge.edge_type.as_str().to_string(),
+                    confidence: edge
+                        .props
+                        .get("confidence")
+                        .and_then(serde_json::Value::as_f64)
+                        .map(|c| c as f32),
+                });
+            } else {
+                links_outside += 1;
+            }
+        }
+    }
+
+    let coverage = store.coverage(project)?;
+    Ok(EvidencePack {
+        query: query.to_string(),
+        symbols,
+        links,
+        coverage: PackCoverage {
+            sites: coverage.call_sites,
+            resolved: coverage.call_sites_resolved,
+            unresolved: coverage.call_sites_unresolved,
+        },
+        omitted: PackOmissions {
+            symbols_below_cut: omitted_symbols,
+            links_outside_pack: links_outside,
+            unreadable_files: unreadable,
+        },
+    })
+}
+
+/// Where `name` is defined in `rel_path` RIGHT NOW, by scanning the file.
+///
+/// A cheap scan rather than a parse: the pack needs "does the index still agree
+/// with the disk", and a line-number mismatch is enough to say no. `Ok(None)` when
+/// the file is gone; `Err` when it exists but cannot be read.
+fn current_placement(
+    root: &std::path::Path,
+    rel_path: &str,
+    name: &str,
+) -> Result<Option<(u32, u32)>, ()> {
+    let path = root.join(rel_path);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return if path.exists() { Err(()) } else { Ok(None) };
+    };
+    let needle = format!("fn {name}");
+    let mut start = None;
+    for (index, line) in text.lines().enumerate() {
+        if line.contains(&needle) || line.contains(&format!(" {name}(")) {
+            start = Some(index as u32 + 1);
+            break;
+        }
+    }
+    // No match: the symbol the index claims is not in the file any more.
+    Ok(start.map(|line| (line, line)))
+}
+
 /// Project name a store rooted at `root` indexes under when no collision is in
 /// play (its final path component, or `"project"` when the root has none).
 fn project_name(root: &std::path::Path) -> String {
@@ -576,6 +805,7 @@ const ACCEPTED_PARAMS: &[(&str, &[&str])] = &[
         ],
     ),
     ("architecture", &["path", "root", "view"]),
+    ("context", &["path", "root", "query", "limit"]),
     ("coverage", &["path", "root"]),
     // `refA`/`refB` are the camelCase spellings the schema never documented;
     // they stay accepted so an existing caller does not break.
@@ -997,6 +1227,7 @@ impl GraphTool {
             "status" => self.action_status(params),
             "verify" => self.action_verify(params),
             "adr" => self.action_adr(params),
+            "context" => self.action_context(params),
             other => anyhow::bail!(
                 "unknown graph action {other:?}: expected one of index, reindex, search, \
                  trace, architecture, coverage, changes, status, verify, adr"
@@ -1714,6 +1945,91 @@ impl GraphTool {
         })
     }
 
+    /// `context`: assemble an evidence pack for a question under a budget.
+    ///
+    /// The single answer to "give me what I need to know about X", replacing the
+    /// sequence a reader performs by hand: search, pick a few hits, trace them, open
+    /// the files, notice the index is behind. Each of those steps is here, and each
+    /// element says where it came from.
+    fn action_context(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
+        let query = params
+            .get("query")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|query| !query.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("context requires a non-empty `query`"))?;
+        let root = self.resolve_root(params);
+        let project = self.project_key(&root);
+        let indexed_now = self.ensure_indexed(&root, &project)?;
+        let budget = params
+            .get("limit")
+            .and_then(serde_json::Value::as_u64)
+            .map_or(PACK_DEFAULT_SYMBOLS, |limit| {
+                (limit as usize).clamp(1, PACK_MAX_SYMBOLS)
+            });
+
+        let pack = self.with_read(|store| {
+            build_evidence_pack(store, &project, &root, query, budget)
+                .map_err(|err| anyhow::anyhow!("context failed: {err}"))
+        })?;
+
+        let mut lines = Vec::new();
+        if let Some(report) = &indexed_now {
+            lines.push(report.clone());
+        }
+        lines.push(format!(
+            "Evidence pack for {:?}: {} symbol(s), {} link(s), {} omitted. Coverage: \
+             {}/{} call site(s) resolved.",
+            pack.query,
+            pack.symbols.len(),
+            pack.links.len(),
+            pack.omitted.symbols_below_cut,
+            pack.coverage.resolved,
+            pack.coverage.sites,
+        ));
+        for symbol in &pack.symbols {
+            let freshness = match symbol.current_lines {
+                None => " FILE UNREADABLE".to_string(),
+                Some(_) if symbol.stale => " STALE: the index disagrees with the file".to_string(),
+                Some(_) => String::new(),
+            };
+            lines.push(format!(
+                "- {} ({}:{}-{}) — {}{freshness}",
+                symbol.qualified_name,
+                symbol.file_path,
+                symbol.start_line,
+                symbol.end_line,
+                symbol.reason
+            ));
+        }
+        if pack.symbols.is_empty() {
+            lines.push(
+                "0 symbols is UNKNOWN, not \"nothing here\": the query may name behaviour the \
+                 index does not resolve, and `coverage` above says how much it resolves at all."
+                    .to_string(),
+            );
+        }
+        if !pack.links.is_empty() {
+            lines.push("Links between these symbols:".to_string());
+            for link in &pack.links {
+                let confidence = link
+                    .confidence
+                    .map(|value| format!(" confidence={value:.2}"))
+                    .unwrap_or_default();
+                lines.push(format!(
+                    "- {} -> {} ({}){confidence}",
+                    link.from, link.to, link.edge_type
+                ));
+            }
+        }
+        Ok(AgentToolResult {
+            content: vec![pa_agent::types::ToolResultContent::text(lines.join("\n"))],
+            details: serde_json::to_value(&pack).unwrap_or(serde_json::Value::Null),
+            terminate: None,
+            is_error: false,
+        })
+    }
+
     fn action_changes(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
         let root = self.resolve_root(params);
         let project = self.project_key(&root);
@@ -2166,9 +2482,9 @@ pub fn params_schema() -> serde_json::Value {
                 "enum": [
                     "index", "reindex", "search", "trace",
                     "architecture", "coverage", "changes", "status",
-                    "verify", "adr"
+                    "verify", "adr", "context"
                 ],
-                "description": "The graph operation to run."
+                "description": "The graph operation to run. `context` assembles a bounded evidence pack for a question: ranked symbols with their CURRENT line placement (flagged when the index disagrees with the file), the call links between symbols that are both in the pack, and the graph's own coverage. Prefer it over search+trace+open when you need several related facts at once."
             },
             "path": {
                 "type": "string",
@@ -2363,6 +2679,75 @@ mod tests {
     /// "0 step(s)" as "no callers" removes live code. The neutral rendering said
     /// nothing; the answer must say what a zero actually means and name the
     /// cross-check.
+    /// A pack is evidence for a decision, so each element must say whether it still
+    /// matches the disk: editing from an indexed line number after the file moved
+    /// writes into the wrong place.
+    ///
+    /// The freshness check is tested as its own unit rather than through
+    /// `action=context`, because that action auto-reindexes a stale tree — the
+    /// refresh is correct, and it makes the stale branch unreachable from the tool.
+    /// A unit test that went through the tool would pass for the wrong reason.
+    #[test]
+    fn the_freshness_check_separates_a_moved_symbol_from_an_unreadable_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "pub fn fresh_parser() -> u32 { 1 }\n\npub fn moved_parser() -> u32 { 2 }\n",
+        )
+        .unwrap();
+
+        // Where the index says the symbol is (line 3): the file still agrees.
+        assert_eq!(
+            current_placement(dir.path(), "lib.rs", "moved_parser"),
+            Ok(Some((3, 3)))
+        );
+
+        // Move it down WITHOUT touching the body: the index would still say 3.
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "pub fn fresh_parser() -> u32 { 1 }\n\n\n\n\npub fn moved_parser() -> u32 { 2 }\n",
+        )
+        .unwrap();
+        assert_eq!(
+            current_placement(dir.path(), "lib.rs", "moved_parser"),
+            Ok(Some((6, 6))),
+            "the check must see the new line, which is what makes `stale` possible"
+        );
+
+        // A file that is gone: `None`, not an error — the symbol may exist elsewhere.
+        assert_eq!(current_placement(dir.path(), "gone.rs", "x"), Ok(None));
+        // A symbol the file no longer defines: no placement.
+        assert_eq!(
+            current_placement(dir.path(), "lib.rs", "vanished"),
+            Ok(None)
+        );
+    }
+
+    /// A pack with nothing to show must say UNKNOWN, and must report the coverage
+    /// that explains why — a bare "0" reads as "no such code".
+    #[tokio::test]
+    async fn an_empty_pack_reports_coverage_not_an_absence_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("lib.rs"), "pub fn only() -> u32 { 1 }\n").unwrap();
+        let tool = tool(dir.path());
+        tool.dispatch(&serde_json::json!({ "action": "index" }))
+            .unwrap();
+        let pack = tool
+            .dispatch(&serde_json::json!({
+                "action": "context",
+                "query": "zzz_matches_nothing",
+            }))
+            .unwrap();
+        let text = text_of(&pack);
+        assert!(text.contains("UNKNOWN"), "{text}");
+        assert!(
+            text.contains("Coverage:"),
+            "the pack states its own coverage: {text}"
+        );
+        let details = pack.details;
+        assert!(details["coverage"]["sites"].is_number(), "{details}");
+    }
+
     /// A short trace must say whether it stopped on the answer cap or on COST.
     /// The two call for different next moves — a bigger `limit` versus a
     /// narrower query — so "truncated" alone is not enough.
