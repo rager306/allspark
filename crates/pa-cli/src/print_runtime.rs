@@ -1751,6 +1751,20 @@ async fn run_prompts_and_emit(
     // terminal selection — only the autonomous gates exit non-zero; text mode prints
     // the primary message (error to stderr with exit 1, settled answer to stdout).
     let mut exit_code = 0;
+    if json_mode {
+        let failure = result
+            .primary
+            .as_ref()
+            .and_then(pa_core::session_engine::headless::HeadlessPrimary::failure_reason);
+        let outcome = match failure {
+            Some(reason) => serde_json::json!({ "ok": false, "reason": reason }),
+            None => serde_json::json!({ "ok": true }),
+        };
+        println!(
+            "{}",
+            serde_json::json!({ "type": "outcome", "outcome": outcome })
+        );
+    }
     if !json_mode {
         let goal = engine.goal_state().await;
         let cap_reason = pa_core::session_engine::goal_driver::CONTINUATION_NO_PROGRESS_CAP_REASON;

@@ -45,6 +45,37 @@ impl HeadlessPrimary {
         }
     }
 
+    /// The run's outcome, as data rather than as an exit code.
+    ///
+    /// json mode deliberately does NOT derive its exit code from this — the stream is
+    /// the contract there, and a non-zero exit would change behaviour for every caller
+    /// that relies on it. But a consumer of the stream still needs to know whether the
+    /// answer is an answer or a failure, and parsing provider prose to find out is the
+    /// state this replaces. `None` means "no complaint", mirroring `stderr_text`'s
+    /// contract exactly: ONE decision, read by the exit code in text mode and by this
+    /// field in json mode, so the two can never disagree.
+    #[must_use]
+    pub fn failure_reason(&self) -> Option<String> {
+        match self {
+            HeadlessPrimary::Assistant(message) => match message.stop_reason {
+                pa_types::ai::StopReason::Error | pa_types::ai::StopReason::Aborted => Some(
+                    message
+                        .error_message
+                        .clone()
+                        .filter(|text| !text.is_empty())
+                        .unwrap_or_else(|| {
+                            format!("Request {}", stop_reason_name(message.stop_reason))
+                        }),
+                ),
+                _ => None,
+            },
+            HeadlessPrimary::SlashCommandResult {
+                success, severity, ..
+            } => (!success || severity.as_deref() == Some("error"))
+                .then(|| "the command reported an error".to_string()),
+        }
+    }
+
     /// Stderr content when the run should exit non-zero.
     pub fn stderr_text(&self, exit_code: &mut i32) -> Option<String> {
         match self {
@@ -181,11 +212,67 @@ pub fn select_from_entries(entries: &[FileEntry]) -> HeadlessTerminalResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// json mode must be able to say "this answer is a failure" WITHOUT an exit code,
+    /// and it must read the SAME decision the text-mode exit code reads — one source of
+    /// truth, so the modes cannot disagree.
+    #[test]
+    fn the_failure_reason_is_the_one_decision_both_output_modes_read() {
+        // A settled answer: no failure, so json says ok and text exits 0.
+        let ok = HeadlessPrimary::Assistant(assistant_of(text_assistant("done", StopReason::Stop)));
+        assert_eq!(ok.failure_reason(), None);
+        let mut code = 0;
+        assert_eq!(ok.stderr_text(&mut code), None);
+        assert_eq!(code, 0, "the two readings agree on success");
+
+        // A provider error: json carries the reason, text sets the exit code.
+        let failed = HeadlessPrimary::Assistant(assistant_of(text_assistant_with_error(
+            "partial",
+            StopReason::Error,
+            "429 too many requests",
+        )));
+        assert_eq!(
+            failed.failure_reason().as_deref(),
+            Some("429 too many requests"),
+            "the reason is the provider's own text, not a summarised form"
+        );
+        let mut code = 0;
+        assert_eq!(
+            failed.stderr_text(&mut code).as_deref(),
+            Some("429 too many requests")
+        );
+        assert_eq!(code, 1, "the two readings agree on failure");
+
+        // An error with no message: both fall back to the same formatted reason, so a
+        // consumer cannot tell which mode produced it.
+        let bare = HeadlessPrimary::Assistant(assistant_of(text_assistant("", StopReason::Error)));
+        assert_eq!(bare.failure_reason().as_deref(), Some("Request error"));
+        let mut code = 0;
+        assert_eq!(
+            bare.stderr_text(&mut code).as_deref(),
+            Some("Request error")
+        );
+    }
+
     use crate::autonomous::{AgentAutonomousStatus, AutonomousLimitReason};
     use pa_types::ai::{
         AssistantContentBlock, AssistantMessage, StopReason, TextContent, UserContent, UserMessage,
     };
     use pa_types::session::{CompactionSummaryMessage, CustomMessage};
+
+    fn text_assistant_with_error(text: &str, stop_reason: StopReason, error: &str) -> AgentMessage {
+        let mut message = text_assistant(text, stop_reason);
+        if let AgentMessage::Assistant(assistant) = &mut message {
+            assistant.error_message = Some(error.to_string());
+        }
+        message
+    }
+
+    fn assistant_of(message: AgentMessage) -> AssistantMessage {
+        match message {
+            AgentMessage::Assistant(assistant) => assistant,
+            other => panic!("expected an assistant message, got {other:?}"),
+        }
+    }
 
     fn text_assistant(text: &str, stop_reason: StopReason) -> AgentMessage {
         AgentMessage::Assistant(AssistantMessage {
