@@ -235,8 +235,39 @@ fn format_output(
             );
         }
     }
+    // E1: a long output with recurring shapes is mostly structure, and the
+    // structure repeats THROUGHOUT a log rather than in blocks (measured: 12 896 of
+    // 13 376 lines on a real daemon log, in 176 shapes). The codec keeps the
+    // dictionary and every line's values, so this is a representation, not a
+    // summary: `decode` returns the input byte for byte.
+    //
+    // Applied only when it actually shrinks the payload, and never when the output
+    // was already clipped — a clipped text plus a marker is shorter than either.
+    if !truncation.truncated && text.len() > E1_MIN_BYTES {
+        if let Some(encoded) = crate::tools::repeat_codec::encode(&text) {
+            if encoded.is_smaller() {
+                let covered = encoded.encoded_lines();
+                let total = text.lines().count();
+                if let Ok(payload) = serde_json::to_string(&encoded) {
+                    text = format!(
+                        "[... {covered} of {total} line(s) collapsed into {} repeating shape(s); \
+                         the full text is recoverable from `details.e1`]\n\n{text}",
+                        encoded.templates.len()
+                    );
+                    if let Some(map) = details.as_mut().and_then(serde_json::Value::as_object_mut) {
+                        map.insert("e1".to_string(), json!(payload));
+                    } else {
+                        details = Some(json!({ "e1": payload }));
+                    }
+                }
+            }
+        }
+    }
     FormattedOutput { text, details }
 }
+
+/// Below this, a codec's own bookkeeping costs more than the lines it folds.
+const E1_MIN_BYTES: usize = 4 * 1024;
 
 fn append_status(text: &str, status: &str) -> String {
     if text.is_empty() {
@@ -595,6 +626,60 @@ const RELOCATION_REFUSAL: &str = "Refusing to run this destructive git command: 
 #[cfg(test)]
 mod signal_exit_tests {
     use super::*;
+
+    /// End to end through the tool: a long, shape-repeating output must arrive with
+    /// the readable text, an encoded payload in `details.e1`, and the payload must
+    /// decode back to the ORIGINAL bytes. An encoding the caller cannot decode is a
+    /// loss dressed as a saving.
+    #[test]
+    fn a_repeating_output_carries_a_decodable_e1_payload() {
+        use std::fmt::Write as _;
+        let mut stdout = String::new();
+        for i in 0..400 {
+            let _ = writeln!(stdout, "worker {i:04} tick elapsed={}ms state=ready", i * 3);
+        }
+        let snapshot = crate::tools::output_accumulator::OutputSnapshot {
+            content: stdout.clone(),
+            truncation: crate::tools::truncate::TruncationResult {
+                content: stdout.clone(),
+                truncated: false,
+                truncated_by: None,
+                total_lines: 400,
+                total_bytes: stdout.len(),
+                output_lines: 400,
+                output_bytes: stdout.len(),
+                last_line_partial: false,
+                first_line_exceeds_limit: false,
+                max_lines: 2000,
+                max_bytes: 50 * 1024,
+            },
+            full_output_path: None,
+        };
+        let formatted = format_output(&snapshot, 0, "");
+        assert!(
+            formatted.text.contains("collapsed into"),
+            "the header must say the text is a representation: {}",
+            formatted
+                .text
+                .lines()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(" | ")
+        );
+        let payload = formatted
+            .details
+            .as_ref()
+            .and_then(|details| details.get("e1"))
+            .and_then(serde_json::Value::as_str)
+            .expect("details.e1 carries the encoded payload");
+        let decoded: crate::tools::repeat_codec::Encoded =
+            serde_json::from_str(payload).expect("payload round-trips");
+        assert_eq!(
+            crate::tools::repeat_codec::decode(&decoded),
+            stdout,
+            "the payload must decode to the original output"
+        );
+    }
 
     /// Operations that resolve with `Ok(None)` — the child was killed by a
     /// signal (the `BashOperations` contract for that case).

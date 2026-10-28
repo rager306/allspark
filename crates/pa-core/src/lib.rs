@@ -41,6 +41,11 @@ pub use tools::tool_definition::{
     ToolContentBlock, ToolDefinition, ToolExecutionResult, ToolUpdate, WrappedTool,
 };
 
+// E1 codec: the reversible representation a clipped bash output carries in
+// `details.e1`. Exported because recovery is the caller's job — an encoded payload
+// the agent cannot decode is a loss dressed as a saving.
+pub use tools::repeat_codec::{decode as decode_repeated_output, encode as encode_repeated_output};
+
 // Path-resolution helper the CLI's `@file` expansion shares with the
 // tools (cwd-relative resolve with the macOS filename variants).
 pub use tools::path_utils::resolve_read_path;

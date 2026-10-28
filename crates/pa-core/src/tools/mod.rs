@@ -20,6 +20,7 @@ pub(crate) mod output_accumulator;
 #[allow(dead_code)] // util module; every fn exercised by unit + golden tests
 pub(crate) mod path_utils;
 pub(crate) mod render_utils;
+pub(crate) mod repeat_codec;
 #[allow(dead_code)] // util module; fully exercised by unit + golden tests
 pub(crate) mod shell_utils;
 pub(crate) mod tool_definition;
