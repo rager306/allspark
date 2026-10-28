@@ -424,15 +424,17 @@ fn native_tools_section(tools: &[&str]) -> String {
     let mut routes: Vec<&str> = Vec::new();
     if has_graph && has_lsp {
         routes.push(
-            "- **Where is this and what will break if I change it** → `graph` `search` for \
-             candidates, `graph` `trace` for the call chain, then `lsp` `references` on the exact \
-             symbol before editing. The graph is cheaper for the neighbourhood; LSP is authoritative \
-             on one symbol.",
+            "- **Where is this and what will break if I change it** → `graph` `context` when you \
+             need several related facts at once: it returns ranked symbols with their CURRENT line \
+             numbers (flagged when the index disagrees with the file), the call links between them, \
+             and the graph's own coverage. Then `lsp` `references` on the exact symbol before \
+             editing. For a single narrow question, `graph` `search` or `trace` is cheaper.",
         );
     } else if has_graph {
         routes.push(
-            "- **Where is this and what will break if I change it** → `graph` `search` for \
-             candidates, then `graph` `trace` for the call chain.",
+            "- **Where is this and what will break if I change it** → `graph` `context` for \
+             ranked symbols with their current line numbers and the links between them, or \
+             `graph` `search` for one narrow lookup.",
         );
     } else if has_lsp {
         routes.push(
@@ -837,6 +839,12 @@ mod tests {
         let full = native_tools_section(&["bash", "edit", "graph", "jev", "lsp"]);
         assert!(full.contains("## Which tool for which situation"));
         assert!(full.contains("`graph` `architecture`"));
+        // The route a session reaches first must name the pack action, or the
+        // mechanism ships with no consumer (S9's stated gap).
+        assert!(
+            full.contains("`graph` `context`"),
+            "the exploration route must name `context`: {full}"
+        );
         assert!(full.contains("`jev`"));
 
         let no_graph = native_tools_section(&["bash", "edit", "lsp"]);
