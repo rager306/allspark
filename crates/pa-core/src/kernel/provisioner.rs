@@ -121,6 +121,12 @@ pub struct IpythonKernelProvisionerOptions {
     /// Artifact directory of a persistent session; the revivable snapshot and
     /// the stderr log live there. `None` for ephemeral sessions.
     pub snapshot_dir: Option<PathBuf>,
+    /// Where a clipped stdout/stderr keeps its ORIGINAL stream.
+    ///
+    /// Same directory as `snapshot_dir` in practice; a separate field so the
+    /// two can diverge without one silently disabling the other. `None` keeps
+    /// the historical behaviour, where the clip is the only record.
+    pub evidence_dir: Option<PathBuf>,
     /// Await (e.g. a previous provisioner's dispose) before reading the snapshot.
     pub ready_gate: Option<Arc<dyn Fn() -> futures::future::BoxFuture<'static, ()> + Send + Sync>>,
     /// Publishes the restore outcome once the kernel is usable.
@@ -288,6 +294,12 @@ impl IpythonKernelProvisioner {
     #[must_use]
     pub fn cell_timeout_ms(&self) -> Option<u64> {
         self.inner.options.cell_timeout_ms
+    }
+
+    /// Where a clipped stdout/stderr keeps its original stream.
+    #[must_use]
+    pub fn evidence_dir(&self) -> Option<PathBuf> {
+        self.inner.options.evidence_dir.clone()
     }
 
     /// The Python skills pre-imported at kernel bootstrap.

@@ -314,10 +314,11 @@ pub fn kernel_provisioner(
             python_skills,
             // Only persistent sessions (which have an artifact dir) get
             // a revivable snapshot (TS `snapshotDir`).
-            snapshot_dir: session_artifact_dir,
+            snapshot_dir: session_artifact_dir.clone(),
             // The engine-resolved watchdog budget (`None`: daemonless or
             // disabled; the runtime bootstrap and state ops never arm it).
             cell_timeout_ms,
+            evidence_dir: session_artifact_dir,
             ready_gate: None,
             on_restore,
             on_background_work_settled,
@@ -368,9 +369,11 @@ impl IpythonKernelProvisioner for KernelProvisioner {
             let signal = signal.map(crate::kernel::cancellation::AbortSignal::from_token);
             let manager = this.ensure(on_progress, signal).await?;
             let cell_timeout_ms = this.cell_timeout_ms();
+            let evidence_dir = this.evidence_dir();
             Ok(Box::new(KernelManagerExecutor {
                 manager,
                 cell_timeout_ms,
+                evidence_dir,
             }) as Box<dyn KernelExecutor>)
         })
     }
@@ -388,6 +391,9 @@ struct KernelManagerExecutor {
     manager: crate::kernel::manager::ReplKernelManager,
     /// The provisioner-resolved per-cell watchdog budget (`None`: never armed).
     cell_timeout_ms: Option<u64>,
+    /// Where a clipped stdout/stderr keeps its original stream (`None` for an
+    /// ephemeral session: the clip is then the only record).
+    evidence_dir: Option<std::path::PathBuf>,
 }
 
 impl KernelExecutor for KernelManagerExecutor {
@@ -406,6 +412,11 @@ impl KernelExecutor for KernelManagerExecutor {
         let signal = options.signal;
         let on_late_sent_agent_message = options.on_late_sent_agent_message;
         let cell_timeout_ms = self.cell_timeout_ms;
+        // The session's artifact dir, resolved once when the executor is built.
+        // It is already exported to the kernel as `RLM_SESSION_DIR`: a clipped
+        // stream's original belongs beside the session's other artifacts, not in
+        // $TMPDIR.
+        let evidence_dir = self.evidence_dir.clone();
         Box::pin(async move {
             let result = manager
                 .execute(
@@ -414,6 +425,7 @@ impl KernelExecutor for KernelManagerExecutor {
                         signal: signal.map(crate::kernel::cancellation::AbortSignal::from_token),
                         on_late_sent_agent_message,
                         cell_timeout_ms,
+                        evidence_dir,
                         ..Default::default()
                     },
                 )

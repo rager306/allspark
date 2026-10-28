@@ -367,17 +367,21 @@ impl ReplKernelManager {
 
         let (result_tx, mut result_rx) =
             oneshot::channel::<anyhow::Result<InternalExecuteResult>>();
+        // The caller names the directory (the session's artifact dir, via the
+        // host bridge). `None` keeps the historical behaviour: the clip is the
+        // only record and the marker says so.
+        let evidence_dir = opts.evidence_dir.clone();
         let mut buffers = ExecBuffers {
             status: ExecuteStatus::Ok,
             // One file per stream per execution: a shared file would interleave
             // stdout and stderr and make the recovered text unreadable.
-            stdout: match &opts.evidence_dir {
+            stdout: match &evidence_dir {
                 Some(dir) => HeadTailBuffer::with_spill_dir(
                     dir.join(format!("kernel-stdout-{request_id}.log")),
                 ),
                 None => HeadTailBuffer::default(),
             },
-            stderr: match &opts.evidence_dir {
+            stderr: match &evidence_dir {
                 Some(dir) => HeadTailBuffer::with_spill_dir(
                     dir.join(format!("kernel-stderr-{request_id}.log")),
                 ),
