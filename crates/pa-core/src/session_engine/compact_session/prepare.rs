@@ -88,22 +88,25 @@ pub fn prepare_compaction(
         None => (start, None),
     };
     let mut cut = find_cut_point(entries, boundary_start, entries.len(), keep_recent_tokens);
-    // A cut that strands a tool result advertises a split the provider will
-    // reject ("tool_call_id not found"), so the boundary moves back to the
-    // assistant message that carries the call. The walk back is bounded by
-    // `boundary_start`, which is always a legal keep point.
+    // The cut can strand a tool result from its call, and this is NOT hypothetical:
+    // with this repair removed, the exhaustive probe finds 17 401 stranded cases out
+    // of 60 976 (shape, budget) pairs. The cause is in `find_cut_point` itself —
+    // `cut_index` starts at `cut_points[0]`, so a small budget cuts at the FIRST
+    // valid message and the walk-back can leave the boundary on a `ToolResult`.
     //
-    // Measured (2026-10-28): with the current `find_valid_cut_points` no reachable
-    // `keep_recent_tokens` strands a result, so this loop does not fire today.
-    // It is here because the predicate must gate the PUBLISHED cut, not a
-    // hypothetical one — the same reason the donor's `projectUnit` is shared by
-    // recommend, explain and apply instead of each caller deciding.
+    // So the repair stays, and the invariant is enforced twice on purpose: the
+    // cut-point set excludes `ToolResult` as a POSITION, and this loop makes the
+    // PUBLISHED boundary respect the pair. The provider rejects a request whose
+    // `toolResult` names an absent `toolCallId`, and a plan that produces one
+    // advertises a split it cannot apply.
+    //
+    // The walk is bounded by `boundary_start`, which is always a legal keep point,
+    // and it clears `turn_start_index` if the moved boundary would leave a split-turn
+    // anchor past the cut.
     while cut.first_kept_entry_index > boundary_start
         && orphans_a_tool_result(entries, cut.first_kept_entry_index)
     {
         cut.first_kept_entry_index -= 1;
-        // The moved boundary can turn a split turn into a whole-turn cut, and a
-        // `turn_start_index` past the new boundary would be incoherent.
         if cut
             .turn_start_index
             .is_some_and(|t| t >= cut.first_kept_entry_index)

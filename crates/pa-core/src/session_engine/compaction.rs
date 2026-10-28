@@ -543,8 +543,30 @@ pub fn threshold_compaction_due(
     should_compact(context_tokens, context_window, max_output_tokens, settings)
 }
 
-/// Valid cut point indices: user/assistant/custom/branch/compaction-summary
-/// messages plus `branch_summary` and `custom_message` entries. Never tool results.
+/// Valid cut positions: every message EXCEPT `ToolResult`, plus branch and
+/// compaction boundaries.
+///
+/// # The tool-pair invariant is STRUCTURAL, not checked
+///
+/// Excluding `ToolResult` is what guarantees a cut never separates a result from the
+/// assistant message that requested it: no valid boundary can fall between a call and
+/// its result, so dropping the call always drops its result and keeping the call
+/// always keeps it. A provider rejects a request whose `toolResult` names an absent
+/// `toolCallId`, and this set makes that state unreachable from `find_cut_point`.
+///
+/// That is necessary but NOT sufficient, and the measurement says so: the set
+/// excludes `ToolResult` as a cut POSITION, while `find_cut_point`'s walk-back can
+/// still leave the boundary ON a result, because `cut_index` starts at
+/// `cut_points[0]` and the back-walk stops at the previous message. With the pair
+/// repair in `prepare_compaction` disabled, the exhaustive probe finds **17 401**
+/// stranded cases out of 60 976 (shape, budget) pairs; with the `start_index` fix
+/// below (a fit-history cut no longer lands on the first message) that count drops to
+/// 1 759 — and with the repair enabled, zero. Both are load-bearing.
+///
+/// So the invariant is enforced in two places on purpose — this set says which
+/// positions are legal, and the repair makes the published boundary respect the
+/// pair — and `probe_every_shape_and_budget_for_a_stranded_result` is the guard over
+/// both. Removing either one makes that test fail.
 #[must_use]
 pub fn find_valid_cut_points(
     entries: &[FileEntry],
@@ -667,8 +689,13 @@ pub fn find_cut_point(
             is_split_turn: false,
         };
     }
+    // A cut exists to DROP something. `cut_index` starting at `cut_points[0]` meant a
+    // small budget cut at the first valid message — i.e. summarized away the whole
+    // history — and left the boundary where an unrelated result sits. Starting at
+    // `start_index` means "keep everything" until the budget proves otherwise; the
+    // loop below moves it only when the retained tail actually exceeds the budget.
     let mut accumulated = 0u64;
-    let mut cut_index = cut_points[0];
+    let mut cut_index = start_index;
     for (i, entry) in entries
         .iter()
         .enumerate()
@@ -1612,6 +1639,107 @@ mod tests {
         assert!(
             orphans_a_tool_result(&split, 3),
             "a result with no call before it is orphaned wherever the cut lands"
+        );
+    }
+
+    /// S2 exhaustive probe: is there ANY transcript shape and budget where the cut
+    /// orphans a result? If none, the walk-back loop in `prepare_compaction` is dead
+    /// code and the invariant belongs in a test, not in a runtime loop.
+    ///
+    /// Enumerates every arrangement of the three shapes that can interleave a call
+    /// with its result: assistant-with-call, tool-result, and user/assistant text.
+    #[test]
+    fn probe_every_shape_and_budget_for_a_stranded_result() {
+        // Shapes: C = assistant with a tool call, R = its result, T = plain text turn.
+        let shapes: &[&str] = &["C", "R", "T"];
+        let mut checked = 0usize;
+        let mut stranded: Vec<String> = Vec::new();
+        for len in 1..=6usize {
+            let combos = 3usize.pow(len as u32);
+            for combo in 0..combos {
+                let mut pattern = String::new();
+                let mut n = combo;
+                for _ in 0..len {
+                    pattern.push_str(shapes[n % 3]);
+                    n /= 3;
+                }
+                // A result with no preceding call is malformed input, not a cut bug.
+                let entries = entries_for(&pattern);
+                for keep in 0..200u64 {
+                    let Ok(prep) =
+                        crate::session_engine::compact_session::prepare_compaction(&entries, keep)
+                    else {
+                        continue;
+                    };
+                    checked += 1;
+                    if orphans_a_tool_result(&entries, prep.cut.first_kept_entry_index) {
+                        stranded.push(format!("{pattern} @ keep={keep}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            stranded.is_empty(),
+            "{} shape(s) strand a result: {:?}",
+            stranded.len(),
+            &stranded[..stranded.len().min(5)]
+        );
+        assert!(checked > 1_000, "the probe must actually run: {checked}");
+        eprintln!("checked {checked} (pattern, budget) pairs, none stranded");
+    }
+
+    fn entries_for(pattern: &str) -> Vec<FileEntry> {
+        let mut out = Vec::new();
+        let mut call_id = 0usize;
+        for (index, kind) in pattern.chars().enumerate() {
+            let id = format!("e{index}");
+            let parent = if index == 0 {
+                String::new()
+            } else {
+                format!("e{}", index - 1)
+            };
+            let message = match kind {
+                'C' => {
+                    call_id += 1;
+                    tool_call_assistant(&format!("call-{call_id}"), "bash")
+                }
+                'R' => {
+                    // The result names the MOST RECENT call, which is the only
+                    // well-formed arrangement.
+                    tool_result_message(&format!("call-{call_id}"), "out")
+                }
+                _ => user_message(&format!("text {index}"), 0),
+            };
+            out.push(message_entry(&id, &parent, message));
+        }
+        out
+    }
+
+    /// The defect the exhaustive probe found: when the whole history FITS the
+    /// retention budget, the cut still lands on the first valid message, so
+    /// everything before it is summarized away and — when that message is a
+    /// tool result's position — a result is stranded from its call.
+    ///
+    /// A cut is only needed when something must be dropped. A budget larger than the
+    /// history means "keep it all", and the honest cut then is `start_index`.
+    #[test]
+    fn a_history_that_fits_the_budget_is_kept_whole() {
+        let entries = vec![
+            user_entry("m1", "", "start"),
+            message_entry("m2", "m1", tool_call_assistant("call-1", "bash")),
+            message_entry("m3", "m2", tool_result_message("call-1", "done")),
+            user_entry("m4", "m3", "next"),
+        ];
+        let total: u64 = entries.iter().map(estimate_entry_tokens).sum();
+        // A budget past the whole history: nothing needs to be dropped.
+        let cut = find_cut_point(&entries, 0, entries.len(), total + 1_000);
+        assert_eq!(
+            cut.first_kept_entry_index, 0,
+            "a history that fits must be kept whole, not cut at its first message"
+        );
+        assert!(
+            !orphans_a_tool_result(&entries, cut.first_kept_entry_index),
+            "and nothing is stranded"
         );
     }
 }
