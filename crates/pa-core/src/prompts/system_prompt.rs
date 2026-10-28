@@ -417,6 +417,66 @@ fn native_tools_section(tools: &[&str]) -> String {
                 .to_string(),
         );
     }
+    // The donor's study found most of the reduction came from the INSTRUCTIONS
+    // variant, with compression not running at all: agents did not use what they
+    // had. A route table is the cheapest fix for that, and it is built from the
+    // roster, so a profile that omits a tool never advertises its route.
+    let mut routes: Vec<&str> = Vec::new();
+    if has_graph && has_lsp {
+        routes.push(
+            "- **Where is this and what will break if I change it** → `graph` `search` for \
+             candidates, `graph` `trace` for the call chain, then `lsp` `references` on the exact \
+             symbol before editing. The graph is cheaper for the neighbourhood; LSP is authoritative \
+             on one symbol.",
+        );
+    } else if has_graph {
+        routes.push(
+            "- **Where is this and what will break if I change it** → `graph` `search` for \
+             candidates, then `graph` `trace` for the call chain.",
+        );
+    } else if has_lsp {
+        routes.push(
+            "- **Where is this and what will break if I change it** → `lsp` `symbols` to find it, \
+             then `lsp` `references` before editing.",
+        );
+    }
+    if has_graph {
+        routes.push(
+            "- **How is this code organised** → `graph` `architecture`; `coverage` says how much of \
+             the tree the graph actually resolved, so a thin answer is attributable.",
+        );
+        routes.push(
+            "- **Did my change reach everything it should** → `graph` `changes` maps a git diff to \
+             affected symbols; `trace` direction `in` from a affected symbol lists callers.",
+        );
+    }
+    if has_jev {
+        routes.push(
+            "- **A judgment call with no test to settle it** (which of these is the right file, is \
+             this risky, how severe) → `jev`. Not for anything a command or a lookup answers.",
+        );
+    }
+    if has_edit && has_lsp {
+        routes.push(
+            "- **Changing code you have not read in this turn** → re-read it first: `edit` requires \
+             a prior read, and a summary of a file is not the file.",
+        );
+    }
+    // Emitted only when there IS a route: a heading with nothing under it
+    // promises guidance the profile cannot give.
+    if !routes.is_empty() {
+        lines.push(String::new());
+        lines.push("## Which tool for which situation".to_string());
+        lines.push(String::new());
+        lines.push(
+            "Pick the route by the question, not by habit. Each row names the tool that answers \
+             it best; the tools above say how to call them."
+                .to_string(),
+        );
+        for line in routes {
+            lines.push(line.to_string());
+        }
+    }
     lines.push(String::new());
     lines.push("## Working with these tools".to_string());
     lines.push(String::new());
@@ -767,6 +827,39 @@ mod tests {
     /// instructions and oh-my-pi's "specialized tool over shell equivalent"
     /// policy. Each block must name the tool it belongs to and carry its
     /// directive; the section must never advertise a tool the roster lacks.
+    /// A route table is only honest if it is built from the roster: a profile
+    /// without `graph` must not tell the model to reach for it.
+    ///
+    /// This is the "profile without expand must not promise recovery" rule one
+    /// layer up — the cheat-sheet cannot outlive the tool it names.
+    #[test]
+    fn the_route_table_never_names_an_absent_tool() {
+        let full = native_tools_section(&["bash", "edit", "graph", "jev", "lsp"]);
+        assert!(full.contains("## Which tool for which situation"));
+        assert!(full.contains("`graph` `architecture`"));
+        assert!(full.contains("`jev`"));
+
+        let no_graph = native_tools_section(&["bash", "edit", "lsp"]);
+        assert!(no_graph.contains("## Which tool for which situation"));
+        assert!(
+            !no_graph.contains("`graph`"),
+            "a roster without graph must not mention it anywhere: {no_graph}"
+        );
+        assert!(
+            !no_graph.contains("`jev`"),
+            "nor a tool that is absent: {no_graph}"
+        );
+        assert!(no_graph.contains("`lsp` `symbols`"), "the present route stays");
+
+        // Neither graph nor lsp: no exploration route at all, and no heading
+        // promising one.
+        let neither = native_tools_section(&["bash", "edit"]);
+        assert!(
+            !neither.contains("## Which tool for which situation"),
+            "no route to offer means no section: {neither}"
+        );
+    }
+
     #[test]
     fn native_tools_section_documents_each_active_tool_and_no_other() {
         let all = native_tools_section(&["bash", "edit", "graph", "jev", "lsp"]);
