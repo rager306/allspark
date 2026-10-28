@@ -256,20 +256,3 @@ impl LeakNudgeBudget {
         self.used >= self.cap
     }
 }
-
-/// The nudge prompt sent when a leak is recovered.
-#[must_use]
-pub fn nudge_prompt(kind: LeakKind, calls: &[RecoveredCall]) -> String {
-    let names = calls
-        .iter()
-        .map(|c| c.name.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(
-        "Your previous turn leaked {} tool-call markup as plain text ({}). \
-         Re-issue {} as a structured tool call, not as text.",
-        kind.name(),
-        names,
-        if calls.len() == 1 { "it" } else { "them" }
-    )
-}

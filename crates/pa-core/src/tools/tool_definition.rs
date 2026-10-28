@@ -104,15 +104,6 @@ pub struct ToolDefinition {
 }
 
 impl ToolDefinition {
-    /// Built-in tool name used for replay in recorded sessions.
-    #[must_use]
-    pub fn replay_built_in_tool_name(&self) -> Option<&str> {
-        match self.name.as_str() {
-            "bash" | "edit" | pa_types::ai::PYTHON_TOOL_NAME => Some(self.name.as_str()),
-            _ => None,
-        }
-    }
-
     /// The wire `Tool` sent to providers (name, description, parameters).
     #[must_use]
     pub fn to_tool(&self) -> Tool {

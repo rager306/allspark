@@ -4,15 +4,6 @@ use std::collections::HashMap;
 
 use pa_types::session::FileEntry;
 
-/// Label assignment from `label` entries, keyed by target entry id.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionTreeFlatNode {
-    pub entry: usize,
-    pub label: Option<String>,
-    pub label_timestamp: Option<String>,
-}
-
 /// The session as a tree: children by parent id, roots are parentless.
 #[derive(Debug, Default)]
 pub struct SessionTree {

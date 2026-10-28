@@ -138,21 +138,6 @@ impl SessionManager {
         Ok(id)
     }
 
-    /// `getFlatTree`: every entry in file order with its active label and
-    /// label timestamp (the `get_session_tree` wire shape's source).
-    #[must_use]
-    pub fn get_flat_tree(&self) -> Vec<(FileEntry, Option<String>, Option<String>)> {
-        self.get_entries()
-            .into_iter()
-            .map(|entry| {
-                let id = entry.id().map(str::to_string);
-                let label = id.as_deref().and_then(|id| self.get_label(id));
-                let timestamp = id.as_deref().and_then(|id| self.get_label_timestamp(id));
-                (entry, label, timestamp)
-            })
-            .collect()
-    }
-
     /// `getUserMessagesForForking`: user messages with their text, in file
     /// order (TS `AgentSession.getUserMessagesForForking`).
     #[must_use]

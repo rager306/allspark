@@ -1,7 +1,7 @@
 //! The queries concern: derived state + accessors - the active context and
 //! history snapshot, the branch scans, the window-backed reads, and the getters.
 
-use super::{FileEntry, Path, RefineTranscriptParts, SessionHeader, SessionManager, SessionTree};
+use super::{FileEntry, Path, RefineTranscriptParts, SessionHeader, SessionManager};
 
 impl SessionManager {
     /// The active compacted context without hydrating old message bodies: an
@@ -486,15 +486,6 @@ impl SessionManager {
     ///
     /// # Panics
     ///
-    /// Asserts that the manager holds no windowed store: hydrate the full session history first.
-    #[must_use]
-    pub fn get_tree(&self) -> SessionTree {
-        assert!(
-            self.window.is_none(),
-            "hydrate full session history before this operation"
-        );
-        SessionTree::build(&self.file_entries)
-    }
     /// Look up an entry by id (file position index).
     ///
     /// # Panics

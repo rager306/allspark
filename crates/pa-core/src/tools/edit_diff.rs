@@ -6,7 +6,6 @@ use std::path::Path;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::tools::jsdiff::diff_lines;
-use crate::tools::path_utils::resolve_to_cwd;
 
 // Line endings / normalization
 
@@ -493,25 +492,6 @@ pub struct EditDiffResult {
 pub enum EditDiffOutcome {
     Ok(EditDiffResult),
     Err(String),
-}
-
-/// Compute the diff for one or more edit operations without applying them.
-/// Used for preview rendering in the TUI before the tool executes.
-#[allow(dead_code)]
-pub fn compute_edits_diff(path: &str, edits: &[Edit], cwd: &str) -> EditDiffOutcome {
-    let absolute_path = resolve_to_cwd(path, cwd);
-
-    // access(R_OK) probe with Node-style error codes.
-    if let Err(code) = access_readable(&absolute_path) {
-        return EditDiffOutcome::Err(format!("Could not edit file: {path}. Error code: {code}."));
-    }
-
-    let raw_content = match std::fs::read(&absolute_path) {
-        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-        Err(err) => return EditDiffOutcome::Err(format!("Could not edit file: {path}. {err}.")),
-    };
-    apply_edits_with_diff(&raw_content, edits, path)
-        .map_or_else(EditDiffOutcome::Err, EditDiffOutcome::Ok)
 }
 
 /// Strip the BOM, normalize endings, apply the edits, and generate the diff.
