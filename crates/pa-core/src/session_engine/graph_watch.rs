@@ -17,10 +17,15 @@
 //!   drains until quiet, then runs one `reindex_incremental` for the batch.
 //! * The reindex takes the writer lease with a ZERO wait
 //!   (`IndexOptions::with_lease_wait(ZERO)`). A watcher is a background
-//!   convenience, and a session that queues behind another process's build for
-//!   seconds is the defect the read path already avoids; when the lease is held
-//!   the batch is DROPPED, not queued — the next event, or any query, re-derives
-//!   staleness from the file hashes and repairs it then.
+//!   convenience, and a session that blocks behind another process's build for
+//!   seconds is the defect the read path already avoids.
+//! * A busy lease is RETRIED, not dropped. The batch stays outstanding and the
+//!   loop backs off (500 ms doubling to 30 s) until the lease frees. Dropping it
+//!   was wrong for the one case that matters: a session that edits, loses the
+//!   race, and then stops editing leaves the graph stale until some query
+//!   happens to notice — with no further event to trigger a repair. Only a
+//!   genuine failure (a parse error, a missing database) ends a batch early,
+//!   because those do not fix themselves.
 //! * Shutdown is a `CancelToken`: the session's teardown cancels it, the loop
 //!   returns, and the `NativeWatcher` is dropped (which unwatches).
 //!
@@ -158,16 +163,70 @@ async fn run(
             }
             changed += more.iter().filter(|event| is_source(&event.path)).count();
         }
-        reindex(root, db_path, project, changed, cancel).await;
+        // The batch stays OUTSTANDING until it is applied. A busy lease used to
+        // end the story here; instead the same batch is retried with backoff,
+        // and only a real outcome (applied, or a failure a retry cannot fix)
+        // clears it. A new event arriving during the wait is absorbed by the
+        // next drain, which is correct: the reindex re-derives changes from file
+        // hashes, so a superset batch subsumes the events it missed.
+        let mut backoff = RETRY_MIN;
+        loop {
+            match reindex(root, db_path, project, changed, cancel).await {
+                ReindexOutcome::Done => break,
+                ReindexOutcome::LeaseBusy => {
+                    tokio::time::sleep(backoff).await;
+                    if cancel.is_cancelled() {
+                        return;
+                    }
+                    backoff = (backoff * 2).min(RETRY_MAX);
+                }
+            }
+        }
     }
 }
+
+/// What one reindex attempt did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReindexOutcome {
+    /// The batch was applied, or failed for a reason a retry cannot fix.
+    Done,
+    /// Another writer held the lease: the batch is STILL OUTSTANDING.
+    LeaseBusy,
+}
+
+/// Whether an index error is the "someone else is writing" case.
+///
+/// Only a lease TIMEOUT counts. A parse error, a missing database or an I/O
+/// failure must not be retried on a timer: those fail the same way every time
+/// and would spin forever. A CANCELLED lease wait is not retried either — that
+/// is this session's own token firing during shutdown, which the loop already
+/// handles by returning.
+fn is_lease_busy(err: &str) -> bool {
+    err.contains("index writer lease") && err.contains("timed out")
+}
+
+/// How long the watch loop waits before retrying a batch whose lease was busy.
+///
+/// The lease is held for the duration of one index pass, which is seconds on a
+/// large tree, so this starts small and doubles: a short hold is retried almost
+/// immediately, and a build that keeps the lease for a minute is not hammered.
+const RETRY_MIN: Duration = Duration::from_millis(500);
+/// Ceiling for the retry backoff. Past this the lease is held by something long
+/// enough that polling faster buys nothing.
+const RETRY_MAX: Duration = Duration::from_secs(30);
 
 /// One incremental pass over the batch's tree.
 ///
 /// The pass re-discovers the tree (the hashes decide what actually changed), so
 /// a created or deleted file needs no special case here: `reindex_incremental`
 /// classifies added/removed/changed from the store's own records.
-async fn reindex(root: &Path, db_path: &Path, project: &str, events: usize, cancel: &CancelToken) {
+async fn reindex(
+    root: &Path,
+    db_path: &Path,
+    project: &str,
+    events: usize,
+    cancel: &CancelToken,
+) -> ReindexOutcome {
     let root = root.to_path_buf();
     let db_path = db_path.to_path_buf();
     let project = project.to_string();
@@ -187,16 +246,31 @@ async fn reindex(root: &Path, db_path: &Path, project: &str, events: usize, canc
     })
     .await;
     match result {
-        Ok(Ok(report)) => tracing::debug!(
-            "graph watch: {events} event(s) -> {} file(s) re-parsed, {} dependent(s), {} removed",
-            report.files_reindexed,
-            report.closure_files,
-            report.removed
-        ),
-        // A lease held elsewhere (or by an in-flight query refresh) is the
-        // normal busy case: drop the batch, the next event tries again.
-        Ok(Err(err)) => tracing::debug!("graph watch: batch dropped ({err})"),
-        Err(err) => tracing::warn!("graph watch: reindex task failed ({err})"),
+        Ok(Ok(report)) => {
+            tracing::debug!(
+                "graph watch: {events} event(s) -> {} file(s) re-parsed, {} dependent(s), {} removed",
+                report.files_reindexed,
+                report.closure_files,
+                report.removed
+            );
+            ReindexOutcome::Done
+        }
+        // The lease is BUSY, not failed: another process is indexing right now.
+        // The batch is still outstanding — this loop used to drop it and wait
+        // for the next filesystem event, which for a session that then stops
+        // editing means the graph stays stale until a query happens to notice.
+        Ok(Err(err)) if is_lease_busy(&err) => {
+            tracing::debug!("graph watch: writer lease busy, retrying the batch ({err})");
+            ReindexOutcome::LeaseBusy
+        }
+        Ok(Err(err)) => {
+            tracing::warn!("graph watch: batch dropped ({err})");
+            ReindexOutcome::Done
+        }
+        Err(err) => {
+            tracing::warn!("graph watch: reindex task failed ({err})");
+            ReindexOutcome::Done
+        }
     }
 }
 
@@ -230,6 +304,72 @@ mod tests {
         // The fallback is the plain basename (the engine resolves the store-
         // backed key before starting the watcher; this helper is its fallback).
         assert_eq!(project_name(Path::new("/a/service")), "service");
+    }
+
+    /// The end-to-end shape of the retry: with the writer lease held by someone
+    /// else, the watcher's pass reports `LeaseBusy` (so the loop retries) and
+    /// NOT success, and once the lease is released the same pass applies.
+    ///
+    /// This is the assertion the old code could not make: it mapped every error
+    /// to "batch dropped", so the state "still outstanding" did not exist.
+    #[tokio::test]
+    async fn a_held_lease_reports_the_batch_as_still_outstanding() {
+        use pa_graph::lease::{CancelToken, IndexLease};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        std::fs::write(root.join("a.rs"), "pub fn one() {}\n").expect("a.rs");
+        let db_path = root.join("graph.db");
+        let cancel = CancelToken::new();
+
+        // Hold the lease as another writer would.
+        let held = IndexLease::acquire(&db_path, Duration::ZERO, &cancel).expect("first lease");
+        let busy = reindex(&root, &db_path, "watchtest", 1, &cancel).await;
+        assert_eq!(
+            busy,
+            ReindexOutcome::LeaseBusy,
+            "a held lease must leave the batch outstanding, not drop it"
+        );
+
+        // Release it: the SAME pass now applies, which is what the retry loop
+        // depends on.
+        drop(held);
+        let applied = reindex(&root, &db_path, "watchtest", 1, &cancel).await;
+        assert_eq!(
+            applied,
+            ReindexOutcome::Done,
+            "after the lease frees, the batch must apply"
+        );
+        let store = pa_graph::GraphStore::open(&db_path).expect("open");
+        assert!(
+            store.node_count("watchtest").expect("count") > 0,
+            "the retried pass must have indexed the file"
+        );
+    }
+
+    /// A busy lease must not end a batch. The old loop dropped it and waited for
+    /// another filesystem event; a session that edits and then stops leaves the
+    /// graph stale with no event coming.
+    ///
+    /// `is_lease_busy` is the decision point, so it is what the test pins: a
+    /// lease timeout retries, and every other failure does not (retrying a parse
+    /// error on a timer would spin forever).
+    #[test]
+    fn only_a_busy_lease_is_retried() {
+        // The lease error renders as `timed out after {waited:?} waiting for the
+        // index writer lease at {lock_path} ({holder})` (pa-graph's LeaseError).
+        assert!(is_lease_busy(
+            "reindex: timed out after 0ns waiting for the index writer lease \
+             at /tmp/g.db.index.lock (pid 42 on host A)"
+        ));
+        // Cancelled means THIS session's token fired: it is shutting down, and
+        // the retry loop already returns on `cancel.is_cancelled()`.
+        assert!(!is_lease_busy("cancelled after 1s waiting for the index writer lease"));
+        // Failures a retry cannot fix must not spin.
+        assert!(!is_lease_busy("reindex: failed to read src/a.rs: no such file"));
+        assert!(!is_lease_busy("reindex: malformed store"));
+        assert!(!is_lease_busy("open /tmp/g.db: unable to open database file"));
+        // A generic I/O error that merely mentions a lease is not a hold.
+        assert!(!is_lease_busy("lock file for the index writer lease is unreadable"));
     }
 
     #[test]
