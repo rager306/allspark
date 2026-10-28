@@ -478,7 +478,7 @@ mod tests {
         session.note_settled_turn_since_auto_refine_review();
         session.mark_compact_auto_refine_pending();
         let review = r#"{"shouldRefine": true, "rationale": "the turn shows a reusable tactic"}"#;
-        let plan = r#"{"summary":"note the tactic","rationale":"repeated","expectedOutcome":"recall","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A"}]}"#;
+        let plan = r#"{"summary":"note the tactic","rationale":"repeated","expectedOutcome":"recall","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A","metadata":{"sources":["test fixture"]}}]}"#;
         let model = faux_model(&[
             serde_json::json!({"text": review}),
             serde_json::json!({"text": plan}),

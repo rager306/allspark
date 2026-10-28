@@ -311,7 +311,7 @@ fn refine_plan_call(plan: &'static str) -> crate::refinement::executor::RefinerF
     })
 }
 
-const APPLIED_PLAN: &str = r#"{"summary":"note it","rationale":"repeated","expectedOutcome":"recall","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A"}]}"#;
+const APPLIED_PLAN: &str = r#"{"summary":"note it","rationale":"repeated","expectedOutcome":"recall","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A","metadata":{"sources":["test fixture"]}}]}"#;
 const EMPTY_PLAN: &str = r#"{"summary":"bench","edits":[]}"#;
 
 /// A persisted session over two seeded rows, with the live loop context
@@ -454,8 +454,8 @@ async fn sequential_refines_push_exactly_their_own_rows() {
     // the first run's.
     let (session, tmp) = refine_test_session().await;
     let global_dir = tmp.path().join("harness");
-    let first = r#"{"summary":"one","edits":[{"action":"create","kind":"memory","id":"m1","title":"A","content":"a"}]}"#;
-    let second = r#"{"summary":"two","edits":[{"action":"create","kind":"memory","id":"m2","title":"B","content":"b"}]}"#;
+    let first = r#"{"summary":"one","edits":[{"action":"create","kind":"memory","id":"m1","title":"A","content":"a","metadata":{"sources":["test fixture"]}}]}"#;
+    let second = r#"{"summary":"two","edits":[{"action":"create","kind":"memory","id":"m2","title":"B","content":"b","metadata":{"sources":["test fixture"]}}]}"#;
     session
         .refine_with_refiner(
             &refine::RefineOptions::default(),

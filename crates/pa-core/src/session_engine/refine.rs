@@ -806,7 +806,7 @@ mod tests {
             &mut session, RefinementTranscript { messages: &[user_message("remember this")], refinement_history: &[] },
             &global_dir, &test_model(), &RefineOptions::default(), RefinementSource::SelfRefine,
             flip_seam(&settings, r#"{"harnessRefinements":false}"#,
-                r#"{"summary":"memory","edits":[{"action":"create","kind":"memory","id":"note","title":"Note","content":"Remember this"}]}"#),
+                r#"{"summary":"memory","edits":[{"action":"create","kind":"memory","id":"note","title":"Note","content":"Remember this","metadata":{"sources":["test fixture"]}}]}"#),
             Some(&agent_dir),
         ).await.unwrap_err();
         assert!(error.to_string().contains("discarded"));
@@ -1030,7 +1030,7 @@ Reviewer instructions: record it"
             .append_message(user_message("do a thing twice"))
             .unwrap();
         let global_dir = dir.path().join("harness");
-        let reply = r#"{"summary":"note it","rationale":"repeated","expectedOutcome":"recall","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A"}]}"#;
+        let reply = r#"{"summary":"note it","rationale":"repeated","expectedOutcome":"recall","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A","metadata":{"sources":["test fixture"]}}]}"#;
         let result = execute_refinement(
             &mut session,
             RefinementTranscript {
@@ -1079,7 +1079,7 @@ Reviewer instructions: record it"
             .append_message(AgentMessage::Assistant(text_assistant("seed")))
             .unwrap();
         let global_dir = dir.path().join("harness");
-        let reply = r#"{"summary":"lesson","edits":[{"action":"create","kind":"memory","id":"m9","title":"Lesson","content":"durable"}]}"#;
+        let reply = r#"{"summary":"lesson","edits":[{"action":"create","kind":"memory","id":"m9","title":"Lesson","content":"durable","metadata":{"sources":["test fixture"]}}]}"#;
         // Fail every session-file write: the path becomes a directory (the
         // harness stores live under a sibling dir and stay writable).
         let file = session.get_session_file().unwrap().to_path_buf();
@@ -1258,7 +1258,7 @@ Reviewer instructions: record it"
         let dir = TempDir::new().unwrap();
         let mut session = persisted_session(&dir);
         let global_dir = dir.path().join("harness");
-        let reply = r#"{"summary":"global lesson","edits":[{"action":"create","kind":"memory","id":"g1","title":"Lesson","content":"durable"}]}"#;
+        let reply = r#"{"summary":"global lesson","edits":[{"action":"create","kind":"memory","id":"g1","title":"Lesson","content":"durable","metadata":{"sources":["test fixture"]}}]}"#;
         let result = execute_refinement(
             &mut session,
             RefinementTranscript {

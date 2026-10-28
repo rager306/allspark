@@ -7,7 +7,7 @@ use super::{
     RefinementAction, RefinementKind,
 };
 
-pub const REFINEMENT_SYSTEM_PROMPT: &str = "You are Prime Agent's /refine continual harness subsystem.\n\nYour job is to improve the editable continual harness state from the current trajectory.\nThis is similar in spirit to context compaction, but instead of summarizing the\nconversation you emit precise Create, Update, or Delete edits to reusable state.\nThe continual harness is the persistent, editable set of prompt notes, memories,\nskills, and subagent specs that lets Prime Agent improve reusable behavior\noutside the token history.\nUse \"continual harness\" for that persistent artifact layer; keep \"RLM\" for the\nruntime, Python REPL kernel, and native call interface that executes those artifacts.\n\nContinual harness components:\n- prompt: supplemental prompt notes only. The base system prompt is immutable and MUST NOT be rewritten.\n- memory: durable facts, decisions, failures, preferences, and outcomes.\n- skill: installed Python REPL skill. Skill create/update edits MUST include a `reference` object with `{\"type\":\"python\"}`, a Python import, and a callable or call pattern; they also MUST include an `arguments` object describing accepted inputs, required fields, defaults, and constraints. Use `{}` for `arguments` only when the Python callable truly needs no external inputs. Include the RLM-native call form `await <skill_import>(...)`.\n- subagent: reusable delegation specs, including purpose, instructions, and when to invoke. Include the RLM-native call form: compose a concise task prompt and spawn with `handle = await rlm.spawn(\"sub-task\", name=\"worker\")`; admission returns immediately with `rlm_child_id`, `name`, `session_dir`, and `model`, never the child's answer. Results arrive only through explicit `agent_message` replies or files; children reply with `await agent_message.send(message, receiver_role=\"parent\")`. Use `await rlm.list_subagents()` to recover direct child handles and `await agent_message.send(..., receiver_role=\"child\", receiver_name=handle.name)` for follow-ups. Do not invent wrappers like `run_subagent(...)`.\n- factory: declarative state-machine workflow specs of subagent states. The spec lives in `arguments.machine` (the original DAG sugar in `arguments.dag` compiles to machine form; pass exactly one form). The kernel validator (`rlm.factory`) enforces the full machine semantics at write time: run a stored factory with `await rlm.factory.run('<id>')`, watch with `await rlm.factory.status(run_id)`, stop with `await rlm.factory.stop(run_id)`, and resume an escalate-paused run with `await rlm.factory.resume(run_id)`.\n\nScope and persistence policy:\n- The default editable continual harness store is local to the current Prime Agent session. Use it for session-specific progress, active task state, current-run coordination notes, temporary blockers, and project facts that should not affect other sessions.\n- A caller may explicitly request global refinement. Global edits must be stable cross-session lessons, durable user preferences, reusable skills/subagents, or tool/environment facts that should affect future sessions.\n- Entry ids in the harness overview may carry a display-only `local:` or `global:` prefix. Always use the bare id (no prefix) in edits.\n- All edits in one refinement apply only to the requested scope's store. During a local refinement, global entries are read-only context: never propose update or delete edits for them; create a local entry instead when a session-specific override is genuinely needed.\n- Project/workspace-specific lessons may be persisted globally only when the title, path, or content explicitly names the project/workspace and the lesson is likely to be reused in future sessions for that project. Prefer local edits when the lesson only belongs in the current conversation.\n- Use memory for declarative facts and preferences, skill for repeatable procedures exposed as Python calls, prompt for narrow behavioral policy addendums, and subagent for reusable delegation roles.\n- Create or update the smallest relevant component: repeated delegation roles should become subagent specs, repeated procedures should become skills, durable facts/preferences should become memories, and narrow behavioral policies should become prompt addendums.\n- When an edit is persisted, include metadata such as `{\"scope\":\"local\"}` or `{\"scope\":\"global\"}` when that helps future review understand the intended blast radius.\n\nUse the trajectory, current continual harness state, and prior refinement history. Prefer\nsmall evidence-backed edits. If prior refinements caused issues, rollback or\nreplace the faulty editable entries. Never edit source files directly. Output\nJSON only with this exact shape:\n\n{\n  \"summary\": \"one sentence\",\n  \"rationale\": \"why these edits are justified by trajectory evidence\",\n  \"expectedOutcome\": \"what should improve and how to validate it\",\n  \"edits\": [\n    {\n      \"action\": \"create|update|delete\",\n      \"kind\": \"prompt|memory|skill|subagent|factory\",\n      \"id\": \"stable id for update/delete, optional for create\",\n      \"title\": \"required for create/update except delete\",\n      \"content\": \"required for create/update except delete\",\n      \"path\": \"optional grouping path\",\n      \"reference\": {\"type\": \"python\", \"import\": \"package.module\", \"callable\": \"function_name\", \"call_pattern\": \"await function_name(...)\"},\n      \"arguments\": {\"name\": {\"type\": \"string\", \"required\": true, \"description\": \"accepted input\"}},\n      \"metadata\": {},\n      \"reason\": \"why this edit is useful\"\n    }\n  ]\n}";
+pub const REFINEMENT_SYSTEM_PROMPT: &str = "You are Prime Agent's /refine continual harness subsystem.\n\nYour job is to improve the editable continual harness state from the current trajectory.\nThis is similar in spirit to context compaction, but instead of summarizing the\nconversation you emit precise Create, Update, or Delete edits to reusable state.\nThe continual harness is the persistent, editable set of prompt notes, memories,\nskills, and subagent specs that lets Prime Agent improve reusable behavior\noutside the token history.\nUse \"continual harness\" for that persistent artifact layer; keep \"RLM\" for the\nruntime, Python REPL kernel, and native call interface that executes those artifacts.\n\nContinual harness components:\n- prompt: supplemental prompt notes only. The base system prompt is immutable and MUST NOT be rewritten.\n- memory: durable facts, decisions, failures, preferences, and outcomes.\n- skill: installed Python REPL skill. Skill create/update edits MUST include a `reference` object with `{\"type\":\"python\"}`, a Python import, and a callable or call pattern; they also MUST include an `arguments` object describing accepted inputs, required fields, defaults, and constraints. Use `{}` for `arguments` only when the Python callable truly needs no external inputs. Include the RLM-native call form `await <skill_import>(...)`.\n- subagent: reusable delegation specs, including purpose, instructions, and when to invoke. Include the RLM-native call form: compose a concise task prompt and spawn with `handle = await rlm.spawn(\"sub-task\", name=\"worker\")`; admission returns immediately with `rlm_child_id`, `name`, `session_dir`, and `model`, never the child's answer. Results arrive only through explicit `agent_message` replies or files; children reply with `await agent_message.send(message, receiver_role=\"parent\")`. Use `await rlm.list_subagents()` to recover direct child handles and `await agent_message.send(..., receiver_role=\"child\", receiver_name=handle.name)` for follow-ups. Do not invent wrappers like `run_subagent(...)`.\n- factory: declarative state-machine workflow specs of subagent states. The spec lives in `arguments.machine` (the original DAG sugar in `arguments.dag` compiles to machine form; pass exactly one form). The kernel validator (`rlm.factory`) enforces the full machine semantics at write time: run a stored factory with `await rlm.factory.run('<id>')`, watch with `await rlm.factory.status(run_id)`, stop with `await rlm.factory.stop(run_id)`, and resume an escalate-paused run with `await rlm.factory.resume(run_id)`.\n\nScope and persistence policy:\n- The default editable continual harness store is local to the current Prime Agent session. Use it for session-specific progress, active task state, current-run coordination notes, temporary blockers, and project facts that should not affect other sessions.\n- A caller may explicitly request global refinement. Global edits must be stable cross-session lessons, durable user preferences, reusable skills/subagents, or tool/environment facts that should affect future sessions.\n- Entry ids in the harness overview may carry a display-only `local:` or `global:` prefix. Always use the bare id (no prefix) in edits.\n- All edits in one refinement apply only to the requested scope's store. During a local refinement, global entries are read-only context: never propose update or delete edits for them; create a local entry instead when a session-specific override is genuinely needed.\n- Project/workspace-specific lessons may be persisted globally only when the title, path, or content explicitly names the project/workspace and the lesson is likely to be reused in future sessions for that project. Prefer local edits when the lesson only belongs in the current conversation.\n- Use memory for declarative facts and preferences, skill for repeatable procedures exposed as Python calls, prompt for narrow behavioral policy addendums, and subagent for reusable delegation roles.\n- Create or update the smallest relevant component: repeated delegation roles should become subagent specs, repeated procedures should become skills, durable facts/preferences should become memories, and narrow behavioral policies should become prompt addendums.\n- When an edit is persisted, include metadata such as `{\"scope\":\"local\"}` or `{\"scope\":\"global\"}` when that helps future review understand the intended blast radius.\n- A `memory` edit MUST carry `metadata.sources`: a non-empty array naming the evidence it came from (a file and line, a command and its exit status, an entry id, a test name). A memory with no sources is refused, because nothing lets a later session check it. Record `metadata.validity` when the fact depends on conditions (a version, a setting, a platform); that is what makes a negative lesson revisable instead of permanent.\n\nUse the trajectory, current continual harness state, and prior refinement history. Prefer\nsmall evidence-backed edits. If prior refinements caused issues, rollback or\nreplace the faulty editable entries. Never edit source files directly. Output\nJSON only with this exact shape:\n\n{\n  \"summary\": \"one sentence\",\n  \"rationale\": \"why these edits are justified by trajectory evidence\",\n  \"expectedOutcome\": \"what should improve and how to validate it\",\n  \"edits\": [\n    {\n      \"action\": \"create|update|delete\",\n      \"kind\": \"prompt|memory|skill|subagent|factory\",\n      \"id\": \"stable id for update/delete, optional for create\",\n      \"title\": \"required for create/update except delete\",\n      \"content\": \"required for create/update except delete\",\n      \"path\": \"optional grouping path\",\n      \"reference\": {\"type\": \"python\", \"import\": \"package.module\", \"callable\": \"function_name\", \"call_pattern\": \"await function_name(...)\"},\n      \"arguments\": {\"name\": {\"type\": \"string\", \"required\": true, \"description\": \"accepted input\"}},\n      \"metadata\": {},\n      \"reason\": \"why this edit is useful\"\n    }\n  ]\n}";
 
 pub const AUTO_REFINE_REVIEW_SYSTEM_PROMPT: &str = "You are Prime Agent's automatic /refine review gate.\n\nDecide whether this checkpoint should run /refine. Auto /refine writes local continual harness state by default, so approve when the trajectory contains evidence useful to this session's future turns.\nReject one-off noise, unsupported hypotheses, and transient tool outputs. Ask for global refinement only for durable cross-session lessons or explicitly project-qualified lessons likely to be reused in future sessions.\n\nReturn JSON only:\n{\n  \"shouldRefine\": true|false,\n  \"rationale\": \"short reason\",\n  \"instructions\": \"optional concise instructions for /refine if shouldRefine is true\"\n}";
 
@@ -218,6 +218,34 @@ fn validate_edit(edit: &RefinementEdit, computed_id: Option<&str>) -> Option<Str
     }
     if action != RefinementAction::Delete && (edit.title.is_none() || edit.content.is_none()) {
         return Some(format!("{action:?} requires title and content").to_lowercase());
+    }
+    // S10: a durable memory must name its evidence.
+    //
+    // The chain this closes is evidence -> observation -> candidate -> memory. A
+    // memory with no sources is an assertion: nothing lets a later session check
+    // it, and nothing lets a reader decide whether it still applies. The require-
+    // ment is metadata, not prose — `sources` is a list, so a consumer can test
+    // it, and `validity` records the conditions the note was true under
+    // ("before 0.11", "with graph.auto=watch"), which is what makes a negative
+    // lesson revisable instead of permanent.
+    //
+    // Prompt notes, skills and subagent specs are PROCEDURES, not observations:
+    // their evidence is that they were applied, which the refinement history
+    // already records, so they are not gated here.
+    if action != RefinementAction::Delete && kind == RefinementKind::Memory {
+        let sources_empty = edit
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("sources"))
+            .and_then(serde_json::Value::as_array)
+            .is_none_or(Vec::is_empty);
+        if sources_empty {
+            return Some(
+                "memory requires metadata.sources: a durable fact must name the evidence it \
+                 came from, or nothing can check it later"
+                    .to_string(),
+            );
+        }
     }
     if action != RefinementAction::Delete && kind == RefinementKind::Skill {
         if edit.arguments.is_none() {
@@ -643,13 +671,118 @@ mod tests {
     use super::*;
 
     fn create_memory_edit(id: &str, title: &str, content: &str) -> RefinementEdit {
+        // Every memory must name its evidence; the fixture does too, so a test that
+        // passes here is a memory the real gate would accept.
+        let mut metadata = serde_json::Map::new();
+        metadata.insert(
+            "sources".to_string(),
+            serde_json::json!(["crates/pa-core/src/refinement/planner.rs:1"]),
+        );
         RefinementEdit {
             action: Some(RefinementAction::Create),
             kind: Some(RefinementKind::Memory),
             id: Some(id.to_string()),
             title: Some(title.to_string()),
             content: Some(content.to_string()),
+            metadata: Some(metadata),
             ..Default::default()
+        }
+    }
+
+    /// S10: the evidence -> memory chain is enforced, not suggested. A memory with
+    /// no `metadata.sources` is an assertion nothing can check later, so the gate
+    /// refuses it — and the refusal names the fix rather than the field.
+    #[test]
+    fn a_memory_without_sources_is_refused_and_one_with_sources_is_not() {
+        let mut state = empty_harness_state();
+        let mut bare = create_memory_edit("m1", "Fact", "builds are green");
+        bare.metadata = None;
+        let result = apply_refinement_proposal(
+            &mut state,
+            &RefinementProposal {
+                summary: "s".to_string(),
+                rationale: "r".to_string(),
+                expected_outcome: "e".to_string(),
+                edits: vec![bare],
+            },
+            ApplyOptions {
+                id: "r1".to_string(),
+                rollback_of: None,
+                scope: Some(HarnessScope::Local),
+                baseline_state: None,
+                factory_enabled: false,
+            },
+        );
+        assert!(
+            !result.applied_edits[0].applied,
+            "a bare memory must be refused"
+        );
+        let error = result.applied_edits[0].error.as_deref().unwrap_or_default();
+        assert!(
+            error.contains("sources"),
+            "the refusal must name what is missing: {error}"
+        );
+        assert!(
+            !state.entries[&RefinementKind::Memory].contains_key("m1"),
+            "and must not leave a half-written entry"
+        );
+
+        // With sources it applies, and `validity` rides along untouched: the gate
+        // requires evidence, it does not dictate the shape of the conditions.
+        let mut sourced = create_memory_edit("m2", "Fact", "builds are green");
+        let mut metadata = sourced.metadata.clone().unwrap_or_default();
+        metadata.insert(
+            "validity".to_string(),
+            serde_json::json!("before 0.11 with graph.auto=watch"),
+        );
+        sourced.metadata = Some(metadata);
+        let result = apply_refinement_proposal(
+            &mut state,
+            &RefinementProposal {
+                summary: "s".to_string(),
+                rationale: "r".to_string(),
+                expected_outcome: "e".to_string(),
+                edits: vec![sourced],
+            },
+            ApplyOptions {
+                id: "r2".to_string(),
+                rollback_of: None,
+                scope: Some(HarnessScope::Local),
+                baseline_state: None,
+                factory_enabled: false,
+            },
+        );
+        assert!(
+            result.applied_edits[0].applied,
+            "{:?}",
+            result.applied_edits[0].error
+        );
+        assert_eq!(
+            state.entries[&RefinementKind::Memory]["m2"].metadata["validity"],
+            serde_json::json!("before 0.11 with graph.auto=watch")
+        );
+    }
+
+    /// A prompt note, a skill and a subagent spec are PROCEDURES: their evidence is
+    /// that they were applied, which the refinement history records, so the memory
+    /// rule must not leak onto them.
+    #[test]
+    fn the_sources_requirement_applies_to_memories_only() {
+        for kind in [
+            RefinementKind::Prompt,
+            RefinementKind::Skill,
+            RefinementKind::Subagent,
+        ] {
+            let mut edit = create_memory_edit("x", "T", "C");
+            edit.kind = Some(kind);
+            edit.metadata = None;
+            // Each kind has its OWN requirements (a skill needs `arguments`); this
+            // asserts only that the SOURCES rule did not leak onto them.
+            let error = validate_edit(&edit, Some("x")).unwrap_or_default();
+            assert!(
+                !error.contains("sources"),
+                "{kind:?} must not require sources: {error}"
+            );
         }
     }
 
