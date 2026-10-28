@@ -137,6 +137,8 @@ pub enum CallSiteVerdict {
     Dependency,
     /// Could not be resolved; `reason` is the resolver's own explanation.
     Unresolved { reason: String },
+    /// The callee is the caller itself: a direct recursive call, target known.
+    Recursive,
 }
 
 impl CallSiteVerdict {
@@ -147,6 +149,7 @@ impl CallSiteVerdict {
             Self::Resolved => "resolved",
             Self::Dependency => "dependency",
             Self::Unresolved { .. } => "unresolved",
+            Self::Recursive => "recursive",
         }
     }
 
@@ -154,7 +157,7 @@ impl CallSiteVerdict {
     #[must_use]
     pub fn reason(&self) -> &str {
         match self {
-            Self::Resolved | Self::Dependency => "",
+            Self::Resolved | Self::Dependency | Self::Recursive => "",
             Self::Unresolved { reason } => reason,
         }
     }
@@ -273,6 +276,13 @@ pub enum CallStrategy {
     /// method, or a call rooted at a dependency crate. The edge points at the
     /// caller, so a reader can tell "known external" from "no idea".
     Dependency,
+    /// The callee is the caller itself: a direct recursive call.
+    ///
+    /// Its target is fully KNOWN, so it is neither a guess nor a miss. The edge
+    /// stays a self-loop (that is what the target is), but the strategy says why,
+    /// so a reader can tell "recursion" from `Dependency`'s "outside the tree"
+    /// and from the unresolved marker's "no idea".
+    Recursive,
 }
 
 impl CallStrategy {
@@ -285,6 +295,7 @@ impl CallStrategy {
             Self::UniqueName => "unique",
             Self::Suffix => "suffix",
             Self::Dependency => "dependency",
+            Self::Recursive => "recursive",
         }
     }
 
@@ -300,6 +311,8 @@ impl CallStrategy {
             // Above `Suffix`: the name is known to be external, rather than
             // guessed among same-name definitions.
             Self::Dependency => 0.80,
+            // The target is the caller: nothing was guessed.
+            Self::Recursive => 1.0,
         }
     }
 }

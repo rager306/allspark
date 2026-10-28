@@ -451,7 +451,16 @@ impl GraphStore {
         call: &CallSite,
     ) -> Result<()> {
         if let Some((source, target, props)) = resolver.resolve_call(caller_qn, call) {
-            self.record_call_site(project, rel_path, caller_qn, call, &CallSiteVerdict::Resolved, &props)?;
+            // A self-call resolves to the caller: the target is known, but the
+            // verdict says WHY the edge is a self-loop.
+            let verdict = if props.get("strategy").and_then(serde_json::Value::as_str)
+                == Some(CallStrategy::Recursive.as_str())
+            {
+                CallSiteVerdict::Recursive
+            } else {
+                CallSiteVerdict::Resolved
+            };
+            self.record_call_site(project, rel_path, caller_qn, call, &verdict, &props)?;
             return self.insert_edge(project, source, target, EdgeType::Calls, &props);
         }
         // A path rooted at a workspace dependency names a definition that exists
@@ -840,11 +849,13 @@ impl Resolver {
     /// apply, and only for a miss — a resolved name never reaches here, so the
     /// corpus cannot relabel a real CALLS edge.
     pub(crate) fn miss_reason(&self, call: &CallSite) -> &'static str {
-        if self.by_name.contains_key(&call.callee) {
-            // The name exists; the resolution failed for a structural reason we do
-            // not model yet (a path prefix, a trait method, an operator).
-            return MissReason::ShapeNotModelled.as_str();
-        }
+        // No "the name exists but we refused the shape" arm here: `resolve_call`
+        // returns `Some` for every callee that has a candidate — including a
+        // recursive one, which now resolves to `Recursive` instead of falling
+        // through to a miss — so a known name never reaches this function. The
+        // arm that used to sit here was reachable only through that recursion
+        // defect, and `ShapeNotModelled` is still produced below for a callee this
+        // resolver cannot name at all.
         if crate::misses::is_external_or_std(call)
             || crate::misses::dependency_root(call, &self.deps).is_some()
         {
@@ -874,10 +885,27 @@ impl Resolver {
             }
         };
         let target = *self.by_qn.get(&target_qn)?;
-        if target == source {
-            return None;
-        }
-        let confidence = CallStrategy::base_confidence(strategy);
+        // A self-call has a fully known target: it is the caller. Returning
+        // `None` here sent every direct recursion down the MISS path, where it
+        // was recorded as `unresolved / shape_not_modelled` — indistinguishable
+        // from a name the resolver could not handle. The edge is still a
+        // self-loop (that is what a recursive target is); only the strategy and
+        // the confidence change, so a reader can tell the three cases apart:
+        // `recursive` (known, here), `dependency` (known, outside the tree),
+        // unresolved (no idea).
+        // A self-call has a fully known target: it is the caller. Returning
+        // `None` here sent every direct recursion down the MISS path, where it
+        // was recorded as `unresolved / shape_not_modelled` — indistinguishable
+        // from a name the resolver could not handle. The edge is still a
+        // self-loop (that is what a recursive target is); only the strategy and
+        // the confidence change, so a reader can tell the three cases apart:
+        // `recursive` (known, here), `dependency` (known, outside the tree),
+        // unresolved (no idea).
+        let (strategy, confidence) = if target == source {
+            (CallStrategy::Recursive, CallStrategy::Recursive.base_confidence())
+        } else {
+            (strategy, CallStrategy::base_confidence(strategy))
+        };
         let props = json!({
             "callee": call.callee,
             "confidence": confidence,
@@ -1547,13 +1575,22 @@ mod tests {
     /// `shape_not_modelled` — the one bucket that points back at our resolver
     /// rather than at the code or at the standard library.
     ///
-    /// The fixture uses self-recursion because that is the miss `resolve_call`
-    /// creates on purpose: an edge from a node to itself is not a call-graph
-    /// edge, so the miss is recorded instead.
+    /// A callee this resolver cannot name AND cannot classify stays in the one
+    /// bucket that points back at our resolver rather than at the code or at the
+    /// standard library: a capitalised name with no definition in the tree is
+    /// read as a constructor/type-call shape we do not model.
+    ///
+    /// The fixture used self-recursion until the recursion verdict existed: that
+    /// WAS the miss `resolve_call` created on purpose, and this test pinned the
+    /// defect as the specification. A recursive call has a fully known target
+    /// (the caller), so recording it as "we could not resolve this name" made
+    /// recursion indistinguishable from a name the resolver never handled — and
+    /// it was the only route into this bucket for a KNOWN name, which is why
+    /// `miss_reason` no longer has that arm.
     #[test]
     fn a_known_name_with_an_unmodelled_shape_stays_a_shape_problem() {
         let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("a.rs"), "pub fn caller() { caller(); }\n").expect("a.rs");
+        std::fs::write(dir.path().join("a.rs"), "pub fn caller() { Foo(); }\n").expect("a.rs");
         let mut store = GraphStore::open_in_memory().expect("store");
         store
             .index_project(dir.path(), &IndexOptions::new("p"))

@@ -473,6 +473,39 @@ mod tests {
         );
     }
 
+    /// A recursive call has a KNOWN target — the caller itself — so it must not
+    /// be recorded as unresolved. `resolve_call` returns `None` when
+    /// `target == source`, which sent every self-call down the miss path and made
+    /// recursion indistinguishable from "we could not resolve this name".
+    #[test]
+    fn a_recursive_call_resolves_to_itself_rather_than_going_unresolved() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(
+            dir.path(),
+            "a.rs",
+            "pub fn walk(n: u32) -> u32 { if n == 0 { 0 } else { walk(n - 1) } }\n",
+        );
+        let mut store = GraphStore::open_in_memory().expect("store");
+        index(&mut store, dir.path());
+
+        let sites: Vec<crate::types::CallSiteRow> = store
+            .call_sites("p")
+            .expect("call sites")
+            .into_iter()
+            .filter(|s| s.callee == "walk")
+            .collect();
+        assert_eq!(sites.len(), 1, "one recursive call: {sites:?}");
+        assert_eq!(
+            sites[0].resolution, "recursive",
+            "a self-call is resolved, not a miss: {:?}",
+            sites[0]
+        );
+        assert_ne!(
+            sites[0].resolution, "unresolved",
+            "recursion must not read as an unresolvable name"
+        );
+    }
+
     /// The lightweight-graph review §3.1, second half: "уникальность edge не
     /// включает callsite". An unresolved call is a self-loop USES row with no
     /// `local_name`, so `local_name_gen` is `''` for every miss and
