@@ -23,6 +23,27 @@ impl AgentSession {
     /// Whether an automatic threshold compaction is due at a turn boundary:
     /// the live loop context over the model's context window against the
     /// effective threshold; usage before the latest compaction never re-triggers.
+    /// The priced plan the turn-boundary trigger decides on.
+    ///
+    /// Public because a fixture that calibrates a threshold must price the SAME
+    /// quantities: a test computing its reserve from message tokens alone sits the
+    /// prefix's worth below the threshold it believes it computed, which is exactly how
+    /// seven daemon tests started compacting a turn early once the prefix was counted.
+    pub async fn auto_compaction_plan(&self) -> compaction::ContextPlan {
+        let state = self.agent.state().await;
+        compaction::ContextPlan {
+            messages: 0,
+            system_prompt: compaction::estimate_text_tokens(&state.system_prompt),
+            tool_schemas: state
+                .tools
+                .iter()
+                .map(|tool| compaction::estimate_tool_schema_tokens(tool.as_ref()))
+                .sum(),
+            output_reserve: 0,
+            context_window: 0,
+        }
+    }
+
     pub async fn auto_compaction_due(&self, model: &pa_types::ai::Model) -> bool {
         let state = self.agent.state().await;
         // The live loop context is the agent's message list (the same
@@ -37,16 +58,30 @@ impl AgentSession {
             model,
             provider_adapter::model_thinking_level(state.thinking_level),
         );
-        // Price the request, not just the history: the system prompt and the
-        // tool schemas are billed on every call and were in NO estimate, so a
-        // session could reach the provider's limit while the message-only
-        // trigger still said "not due".
+        // Price the request, not just the history.
+        //
+        // The subtlety that cost a wrong fix: an ANCHORED estimate already includes the
+        // prompt. `calculate_context_tokens(usage)` is the provider's own count for a
+        // request that carried the system prompt and tool schemas, so adding the prefix
+        // on top double-counts it — measured in the daemon fixtures, where the anchor
+        // read 18 722 for a first turn whose own prompt was 18 007, and the doubled
+        // threshold compacted a turn early in seven tests.
+        //
+        // The prefix is therefore added only when there is NO anchor (a fresh or resumed
+        // session, where nothing has been sent yet and message estimates are the only
+        // basis). That is the one case the old code under-counted, and it is the case
+        // `the_turn_boundary_prices_the_system_prompt` exercises.
+        let estimate = compaction::estimate_context_tokens(&messages);
+        let anchored = estimate.last_usage_index.is_some();
         let plan = compaction::ContextPlan {
-            messages: compaction::estimate_context_tokens(&messages).tokens,
-            // The prompt is billed on every call and was in NO estimate before
-            // `ContextPlan`: this line is what makes the trigger see it, and
-            // `the_turn_boundary_prices_the_system_prompt` fails without it.
-            system_prompt: compaction::estimate_text_tokens(&state.system_prompt),
+            messages: estimate.tokens,
+            // The prompt is billed on every call; with an anchor it is already inside
+            // `messages`, without one it must be added.
+            system_prompt: if anchored {
+                0
+            } else {
+                compaction::estimate_text_tokens(&state.system_prompt)
+            },
             tool_schemas: state
                 .tools
                 .iter()

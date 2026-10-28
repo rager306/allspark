@@ -39,6 +39,18 @@ impl Supervisor {
             return Arc::clone(registry);
         }
         let registry = ProviderAdmission::new(self.provider_concurrency_cap());
+        // A lease's holder is a worker authentication token; the registry can answer
+        // whether that worker still exists. Without this the pool could only wait out
+        // `ACQUIRE_BUDGET` for a slot whose owner was already gone.
+        {
+            // The registry owns worker lifetime, so it answers; the admission registry
+            // only awaits the answer (it must not hold its own lock across it).
+            let residents = Arc::clone(&self.registry);
+            registry.set_holder_liveness(Arc::new(move |holder: String| {
+                let residents = Arc::clone(&residents);
+                tokio::spawn(async move { residents.holder_is_live(&holder).await })
+            }));
+        }
         // The adoption-telemetry seam: when the daemon's telemetry client
         // is resolved, the registry reports breaker transitions and AIMD
         // steps (fire-and-forget; None = the seam stays silent).

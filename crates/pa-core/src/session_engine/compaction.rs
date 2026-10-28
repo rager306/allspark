@@ -689,13 +689,19 @@ pub fn find_cut_point(
             is_split_turn: false,
         };
     }
-    // A cut exists to DROP something. `cut_index` starting at `cut_points[0]` meant a
-    // small budget cut at the first valid message — i.e. summarized away the whole
-    // history — and left the boundary where an unrelated result sits. Starting at
-    // `start_index` means "keep everything" until the budget proves otherwise; the
-    // loop below moves it only when the retained tail actually exceeds the budget.
+    // Where the cut starts depends on what the budget MEANS:
+    //
+    // - `0` is "retain nothing": the whole history is summarized, so the cut is the
+    //   first legal position. Carrying a large budget instead must not summarize
+    //   everything — that was the inverted case this comment replaced, where a budget
+    //   larger than the history still cut at `cut_points[0]` and dropped it all.
+    // - anything else is "retain up to N": start by keeping everything and let the
+    //   loop below move the boundary only when the retained tail actually exceeds it.
+    //
+    // Both are needed: the daemon's low-percentage compaction relies on `0` meaning
+    // "all" (it compacts real history), and a generous budget must mean "keep".
     let mut accumulated = 0u64;
-    let mut cut_index = start_index;
+    let mut cut_index = cut_points[0];
     for (i, entry) in entries
         .iter()
         .enumerate()
@@ -1740,6 +1746,31 @@ mod tests {
         assert!(
             !orphans_a_tool_result(&entries, cut.first_kept_entry_index),
             "and nothing is stranded"
+        );
+    }
+
+    /// Diagnostic: with a real budget, does the cut still advance?
+    #[test]
+    fn probe_cut_with_a_real_budget() {
+        let mut entries = vec![user_entry("m0", "", "start")];
+        for i in 0..30 {
+            entries.push(message_entry(
+                &format!("a{i}"),
+                "m0",
+                assistant_message(100, 0),
+            ));
+            entries.push(user_entry(&format!("u{i}"), "m0", &"x".repeat(12_000)));
+        }
+        let cut = find_cut_point(&entries, 0, entries.len(), 10_000);
+        eprintln!(
+            "entries={} cut={} split={}",
+            entries.len(),
+            cut.first_kept_entry_index,
+            cut.is_split_turn
+        );
+        assert!(
+            cut.first_kept_entry_index > 0,
+            "a 10k budget on a long history must cut"
         );
     }
 }

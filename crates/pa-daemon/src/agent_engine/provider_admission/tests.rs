@@ -1312,3 +1312,80 @@ async fn provider_rows_emit_the_snapshot_rollup() {
     parked.abort();
     client.shutdown().await.expect("shutdown telemetry");
 }
+
+/// §3.1: a slot held by a DEAD worker must be reclaimed at admission, not waited out.
+///
+/// The old recovery was the worker-exit reap — correct, and useless while the worker
+/// is alive holding a slot nobody uses, or while a killed worker's slot is charged to
+/// a token the reap already forgot. The next acquirer then waited `ACQUIRE_BUDGET`
+/// (600 s) for a lease that would never be released.
+#[tokio::test]
+async fn a_dead_holders_slot_is_reclaimed_instead_of_waited_out() {
+    let registry = ProviderAdmission::with_parts(
+        1,
+        Arc::new(RecordingStagger::default()),
+        Arc::new(SystemClock),
+    );
+    // The pool's ceiling is 1, so the second acquire can only succeed by reclaiming.
+    let live: Arc<Mutex<std::collections::HashSet<String>>> = Arc::new(Mutex::new(
+        ["worker-alive".to_string()].into_iter().collect(),
+    ));
+    {
+        let live = Arc::clone(&live);
+        registry.set_holder_liveness(Arc::new(move |holder: String| {
+            let live = Arc::clone(&live);
+            tokio::spawn(async move { live.lock().expect("live set").contains(&holder) })
+        }));
+    }
+
+    let held = admitted(&registry, &key(), "worker-dead").await;
+    assert_ne!(held, 0, "the dead worker's lease is charged first");
+
+    // `worker-dead` is NOT in the live set: the next acquire must reclaim its slot
+    // rather than park for the wait budget.
+    let reclaimed = registry
+        .acquire_stream_within(&key(), "worker-alive", Duration::from_millis(50))
+        .await;
+    assert!(
+        matches!(reclaimed, StreamAdmission::Admitted(_)),
+        "a dead holder's slot must be reclaimed immediately, got {reclaimed:?}"
+    );
+}
+
+/// The mirror: a LIVE holder's slot is never taken. Reclaiming those would let a
+/// second waiter exceed the provider's concurrency, which is the incident the pool
+/// exists to prevent.
+#[tokio::test]
+async fn a_live_holders_slot_is_never_reclaimed() {
+    let registry = ProviderAdmission::with_parts(
+        1,
+        Arc::new(RecordingStagger::default()),
+        Arc::new(SystemClock),
+    );
+    registry.set_holder_liveness(Arc::new(|_holder: String| tokio::spawn(async { true })));
+
+    let _held = admitted(&registry, &key(), "worker-alive").await;
+    let second = registry
+        .acquire_stream_within(&key(), "worker-other", Duration::from_millis(50))
+        .await;
+    assert!(
+        matches!(second, StreamAdmission::Unadmitted),
+        "a live holder keeps its slot: {second:?}"
+    );
+}
+
+/// No liveness source (a test registry, the daemonless path) keeps the old
+/// behaviour exactly: the wait budget decides, and nothing is reclaimed on a guess.
+#[tokio::test]
+async fn without_a_liveness_source_nothing_is_reclaimed() {
+    let registry = ProviderAdmission::with_parts(
+        1,
+        Arc::new(RecordingStagger::default()),
+        Arc::new(SystemClock),
+    );
+    let _held = admitted(&registry, &key(), "worker-a").await;
+    let second = registry
+        .acquire_stream_within(&key(), "worker-b", Duration::from_millis(50))
+        .await;
+    assert!(matches!(second, StreamAdmission::Unadmitted), "{second:?}");
+}

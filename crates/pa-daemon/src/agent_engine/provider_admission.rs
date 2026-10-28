@@ -471,12 +471,32 @@ struct RegistryState {
 /// provider and a child's first stream cannot be starved by the spawn that
 /// created it: the spawn's reservation is released at child admission,
 /// before the child streams.
+/// Answers "is this lease holder still alive", asynchronously.
+///
+/// A named type because the registry stores one behind a mutex and the inline
+/// `Arc<dyn Fn(..) -> JoinHandle<_>>` spelling is unreadable at a call site.
+pub type HolderLiveness = Arc<dyn Fn(String) -> tokio::task::JoinHandle<bool> + Send + Sync>;
+
 pub struct ProviderAdmission {
     cap: usize,
     start: usize,
     floor: usize,
     stagger: Arc<dyn StaggerSource>,
     clock: Arc<dyn ClockSource>,
+    /// Whether a lease's holder is still alive, when the owner can answer.
+    ///
+    /// A slot is normally freed by its own `Drop` (`release_detached`), but a drop
+    /// that lands outside a tokio runtime cannot spawn the release, and a worker
+    /// killed mid-stream never drops at all. The old recovery was the worker-exit
+    /// reap — correct, and useless while the worker is alive holding a slot nobody
+    /// is using: the next acquirer then waits the full `ACQUIRE_BUDGET` (600 s) for a
+    /// slot that will never come back.
+    ///
+    /// With this predicate the decision is made on EVIDENCE at admission time
+    /// instead of on a timer: when no slot is free, leases of dead holders are
+    /// reclaimed first. `None` keeps the old behaviour for owners that cannot answer
+    /// (tests, the daemonless path).
+    liveness: Mutex<Option<HolderLiveness>>,
     state: Mutex<RegistryState>,
     /// The adoption-telemetry seam (None until the owner attaches the
     /// daemon's client): counters-only events, fire-and-forget.
@@ -513,6 +533,7 @@ impl ProviderAdmission {
             floor: FLOOR_LIMIT.min(cap),
             stagger,
             clock,
+            liveness: Mutex::new(None),
             state: Mutex::new(RegistryState {
                 providers: HashMap::new(),
                 breakers: HashMap::new(),
@@ -610,8 +631,25 @@ impl ProviderAdmission {
 
     /// Take a slot for `key` right now if the limit allows it; `None` means
     /// the caller must queue.
-    fn admit_now(&self, state: &mut RegistryState, key: &ProviderKey, holder: &str) -> Option<u64> {
+    fn admit_now(
+        &self,
+        state: &mut RegistryState,
+        key: &ProviderKey,
+        holder: &str,
+        dead: &[u64],
+    ) -> Option<u64> {
         let start = self.start;
+        // Dead slots are reclaimed only when the caller found them AND the key is
+        // full: a free slot needs no explanation, and the liveness lookup is an await
+        // that cannot run here.
+        if !dead.is_empty()
+            && state
+                .providers
+                .get(key)
+                .is_some_and(|entry| entry.in_flight >= entry.limit)
+        {
+            Self::reclaim_holders(state, key, dead);
+        }
         let admitted = {
             let entry = state
                 .providers
@@ -699,6 +737,92 @@ impl ProviderAdmission {
         (rx, waiter)
     }
 
+    /// The leases on `key` whose holder is provably gone.
+    ///
+    /// Returns empty when the key is not full (nothing to reclaim) or when no
+    /// liveness source is installed. The lookup itself is the cost this pays to
+    /// avoid: without it, a slot held by a killed worker can only be recovered by
+    /// waiting out `ACQUIRE_BUDGET`.
+    async fn dead_leases_for(&self, key: &ProviderKey) -> Vec<u64> {
+        let (full, candidates) = {
+            let state = self.lock();
+            let full = state
+                .providers
+                .get(key)
+                .is_some_and(|entry| entry.in_flight >= entry.limit);
+            let candidates: Vec<(u64, String)> = state
+                .leases
+                .iter()
+                .filter(|(_, record)| record.key == *key)
+                .map(|(id, record)| (*id, record.holder.clone()))
+                .collect();
+            (full, candidates)
+        };
+        if !full || candidates.is_empty() {
+            return Vec::new();
+        }
+        let alive = {
+            let guard = self
+                .liveness
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.as_ref().map(Arc::clone)
+        };
+        let Some(alive) = alive else {
+            return Vec::new();
+        };
+        let mut dead = Vec::new();
+        for (lease, holder) in candidates {
+            let probe = alive(holder);
+            match probe.await {
+                Ok(true) => {}
+                // A live answer of `false` means the worker is gone; an errored probe
+                // (a panicked join) is treated the same: the slot is not worth a
+                // 600-second wait on a source that cannot answer.
+                Ok(false) | Err(_) => dead.push(lease),
+            }
+        }
+        dead
+    }
+
+    /// Teach the registry how to tell a live lease holder from a dead one.
+    ///
+    /// The supervisor owns worker lifetime, so the supervisor supplies this; a
+    /// registry used without a supervisor keeps `None` and the old behaviour.
+    pub fn set_holder_liveness(&self, alive: HolderLiveness) {
+        *self
+            .liveness
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(alive);
+    }
+
+    /// Reclaim slots whose holder is provably dead, returning how many were freed.
+    ///
+    /// `dead` is decided by the caller BEFORE this takes the lock: asking the worker
+    /// registry is an await, and holding the admission mutex across it would put a
+    /// file-system-ish lookup on every other acquirer's critical path.
+    fn reclaim_holders(state: &mut RegistryState, key: &ProviderKey, dead: &[u64]) -> usize {
+        let _ = key;
+        let dead: Vec<u64> = dead.to_vec();
+        if dead.is_empty() {
+            return 0;
+        }
+        for lease in &dead {
+            if let Some(record) = state.leases.remove(lease) {
+                if let Some(entry) = state.providers.get_mut(&record.key) {
+                    entry.in_flight = entry.in_flight.saturating_sub(1);
+                }
+            }
+        }
+        tracing::info!(
+            provider = %key.provider,
+            model = %key.model,
+            reclaimed = dead.len(),
+            "provider admission: reclaimed slot(s) of dead lease holders"
+        );
+        dead.len()
+    }
+
     /// Take a stream slot for `key`, parking in the key's FIFO queue when
     /// the limit is reached. [`StreamAdmission::Unadmitted`] means the
     /// wait budget expired: the caller proceeds unadmitted (fail-open);
@@ -716,6 +840,10 @@ impl ProviderAdmission {
         holder: &str,
         budget: Duration,
     ) -> StreamAdmission {
+        // Resolve liveness BEFORE taking the registry lock: asking the worker registry
+        // is an await, and holding the admission mutex across it would put a lookup on
+        // every other acquirer's critical path. Only a full key needs the answer.
+        let dead = self.dead_leases_for(key).await;
         let (pending, is_probe) = {
             // The instrumented form wraps the whole locked decision (wait
             // for the registry lock plus the admit/queue verdict) under one
@@ -732,7 +860,7 @@ impl ProviderAdmission {
             // This acquirer is the half-open probe when the gate said so:
             // if it never reaches a lease, the probe must un-wedge (below).
             let is_probe = matches!(gate, BreakerGate::Probe);
-            match self.admit_now(&mut state, key, holder) {
+            match self.admit_now(&mut state, key, holder, &dead) {
                 Some(lease) => {
                     if is_probe {
                         Self::note_probe(&mut state, &key.provider, lease);
@@ -849,9 +977,12 @@ impl ProviderAdmission {
         spawn_id: &str,
         budget: Duration,
     ) -> Option<(u64, Duration)> {
+        // A spawn reservation can also be held by a dead worker; the same evidence
+        // applies (the spawn gate draws from the same pool).
+        let dead = self.dead_leases_for(key).await;
         let pending = {
             let mut state = self.lock();
-            match self.admit_now(&mut state, key, spawn_id) {
+            match self.admit_now(&mut state, key, spawn_id, &dead) {
                 Some(lease) => {
                     let stagger_ms = self.stagger.next_delay_ms();
                     tracing::info!(

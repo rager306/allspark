@@ -445,6 +445,30 @@ impl SessionRegistry {
         self.workers.lock().await.get(worker_id).cloned()
     }
 
+    /// Whether the worker whose AUTHENTICATION TOKEN is `token` is still resident.
+    ///
+    /// The admission pool charges a lease to a worker's authentication token, and a
+    /// worker killed mid-stream never drops it. This is the evidence that lets the
+    /// pool reclaim such a slot instead of making the next acquirer wait out
+    /// `ACQUIRE_BUDGET` for a lease nobody will release.
+    ///
+    /// An unknown token is NOT alive: a worker that registered, died and was
+    /// forgotten releases nothing through its own drop, so its slot must be
+    /// reclaimable. The empty token is excluded — it is what an unauthenticated
+    /// holder carries, and treating it as dead would reclaim live local leases.
+    pub(crate) async fn holder_is_live(&self, token: &str) -> bool {
+        if token.is_empty() {
+            return true;
+        }
+        let workers = self.workers.lock().await;
+        for resident in workers.values() {
+            if resident.descriptor.lock().await.authentication_token == token {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Snapshot of all residents, insertion order unspecified.
     pub(crate) async fn list(&self) -> Vec<Arc<ResidentWorker>> {
         self.workers.lock().await.values().cloned().collect()

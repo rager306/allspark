@@ -147,7 +147,7 @@ pub struct Supervisor {
     /// restarts, overloads, saved-session listings), counted and sent as
     /// one `daemon event` summary per window instead of one event each.
     daemon_event_counts: std::sync::Mutex<notes::DaemonEventCounts>,
-    pub(crate) registry: SessionRegistry,
+    pub(crate) registry: std::sync::Arc<SessionRegistry>,
     /// Worker outbound frames, with their client routing. The payload is shared (`Arc`):
     /// a per-receiver deep `Value` clone would multiply the heap by the connection
     /// count on every event.
@@ -268,7 +268,7 @@ impl Supervisor {
             opening_files: std::sync::Mutex::new(std::collections::HashMap::new()),
             telemetry: std::sync::Mutex::new(None),
             daemon_event_counts: std::sync::Mutex::default(),
-            registry: SessionRegistry::new(),
+            registry: std::sync::Arc::new(SessionRegistry::new()),
             events,
             session_subscribers: subscribers::SessionSubscribers::new(),
             client_connections: std::sync::Mutex::new(std::collections::HashMap::new()),

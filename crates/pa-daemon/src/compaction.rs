@@ -306,8 +306,20 @@ pub(crate) fn compaction_result_value(
         "firstKeptEntryId": result.first_kept_entry_id,
         "tokensBefore": result.tokens_before,
     });
-    if let Some(details) = &entry.details {
-        value["details"] = details.clone();
+    // The wire keeps the TS `CompactionDetails` shape: `readFiles` and
+    // `modifiedFiles` only. The derived `task` state rides the DURABLE entry (it is
+    // what a resuming reader needs) but not this echo — TS parity on the wire is
+    // binding, and a consumer of the TS shape must not receive a key it never
+    // declared. The golden `compaction-live-ts.json` is what pins this.
+    if let Some(details) = entry.details.as_ref().and_then(Value::as_object) {
+        let mut wire = serde_json::Map::new();
+        if let Some(read) = details.get("readFiles") {
+            wire.insert("readFiles".to_string(), read.clone());
+        }
+        if let Some(modified) = details.get("modifiedFiles") {
+            wire.insert("modifiedFiles".to_string(), modified.clone());
+        }
+        value["details"] = Value::Object(wire);
     }
     value
 }
