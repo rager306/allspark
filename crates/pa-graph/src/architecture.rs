@@ -20,7 +20,6 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use petgraph::algo::connected_components;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use petgraph::Direction;
@@ -133,6 +132,21 @@ pub struct Cluster {
     pub internal_edges: usize,
 }
 
+/// Components plus the hubs that connect them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterReport {
+    /// Connected components, largest first.
+    pub clusters: Vec<Cluster>,
+    /// Files in the top degree percentile, sorted by path.
+    pub hubs: Vec<String>,
+    /// Whether the graph separates into components of usable size.
+    ///
+    /// `false` means the largest component holds most of the tree: on this repo it
+    /// does, and further clustering would be inventing structure.
+    pub separated: bool,
+}
+
 /// A dependency cycle (a strongly-connected component with a real cycle).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cycle {
@@ -199,8 +213,10 @@ pub struct Architecture {
     pub structure: Vec<ModuleEdge>,
     /// Populated for [`ArchitectureView::Layers`].
     pub layers: Vec<Layer>,
-    /// Populated for [`ArchitectureView::Clusters`].
-    pub clusters: Vec<Cluster>,
+    /// Populated for [`ArchitectureView::Clusters`]: the components AND the hubs
+    /// they are connected through, because on a real repo those hubs are the reason a
+    /// single component holds the tree.
+    pub cluster_report: Option<ClusterReport>,
     /// Populated for [`ArchitectureView::Cycles`].
     pub cycles: Vec<Cycle>,
     /// Populated for [`ArchitectureView::Hotspots`].
@@ -227,7 +243,7 @@ pub fn architecture(
         overview: None,
         structure: Vec::new(),
         layers: Vec::new(),
-        clusters: Vec::new(),
+        cluster_report: None,
         cycles: Vec::new(),
         hotspots: Vec::new(),
         entry_points: Vec::new(),
@@ -261,7 +277,7 @@ pub fn architecture(
             arch.layers = layers(&module_edges);
         }
         ArchitectureView::Clusters => {
-            arch.clusters = clusters(&module_edges);
+            arch.cluster_report = Some(clusters(&module_edges));
         }
         ArchitectureView::Cycles => {
             arch.cycles = cycles(&module_edges);
@@ -427,58 +443,90 @@ fn layers(edges: &[ModuleEdge]) -> Vec<Layer> {
         .collect()
 }
 
-/// Weakly-connected file communities, sized descending.
+/// File communities plus the hubs that connect them.
 ///
-/// A `Cluster` is a connected component of the *undirected* projection of the
-/// file dependency graph: two files that depend on each other in either
-/// direction land in the same community.
-fn clusters(edges: &[ModuleEdge]) -> Vec<Cluster> {
+/// # What the measurement says
+///
+/// The undirected projection of this repo is ONE connected component of 1 727 files
+/// with a long degree tail (max 1 343, p99 336, p95 86, median 22). Label
+/// propagation cannot split it: with its largest-label tie-break the highest label
+/// floods the component, which is why the old code returned ONE cluster for the
+/// repository after 0.95 s of work.
+///
+/// Removing the hubs does not rescue it either — at the p95 threshold (degree >= 86,
+/// 87 hubs removed) the remainder is one 1 616-file component plus 23 fragments of
+/// one or two files. The files are one connected mass; the communities a reader hopes
+/// for are not in this graph.
+///
+/// So the honest answer has three parts, and all three are reported:
+///
+/// 1. the CONNECTED COMPONENTS, which are exact and cheap;
+/// 2. the HUBS, named, because they are the reason the components do not separate —
+///    a file everything imports is an architectural fact, not a clustering failure;
+/// 3. `separated: false` when the largest component holds most of the tree, which
+///    tells a reader that "1 community" is the shape of the code, not a bug.
+fn clusters(edges: &[ModuleEdge]) -> ClusterReport {
     let (graph, _) = file_graph(edges);
     if graph.node_count() == 0 {
-        return Vec::new();
+        return ClusterReport::default();
     }
-    // Undirected projection: node `i` maps to the same integer index so the
-    // component id can be read straight back onto `graph`.
-    let mut ug = petgraph::graph::UnGraph::<usize, ()>::new_undirected();
-    let mut idx_map: HashMap<NodeIndex, petgraph::graph::NodeIndex> = HashMap::new();
+    // Degree over BOTH directions: a hub is depended ON as often as it depends.
+    // Counting only outgoing found no hubs at all (measured: 0 hubs, 1 community —
+    // exactly the answer the old code gave, which is how the omission surfaced).
+    let mut degree: HashMap<usize, usize> = HashMap::new();
     for n in graph.node_indices() {
-        let mapped = ug.add_node(n.index());
-        idx_map.insert(n, mapped);
+        let outgoing = graph
+            .edges_directed(n, petgraph::Direction::Outgoing)
+            .count();
+        let incoming = graph
+            .edges_directed(n, petgraph::Direction::Incoming)
+            .count();
+        degree.insert(n.index(), outgoing + incoming);
     }
-    for e in graph.edge_indices() {
-        if let Some((a, b)) = graph.edge_endpoints(e) {
-            ug.add_edge(idx_map[&a], idx_map[&b], ());
+    let mut degrees: Vec<usize> = degree.values().copied().collect();
+    degrees.sort_unstable();
+    let median = degrees.get(degrees.len() / 2).copied().unwrap_or(0);
+    let p95 = degrees
+        .get(degrees.len().saturating_sub(degrees.len() / 20 + 1))
+        .copied()
+        .unwrap_or(0);
+    // A hub is a clear outlier: above the 95th percentile AND several times the
+    // median. In a uniformly connected project there is nothing to name.
+    let hub_floor = if p95 > median.saturating_mul(3) {
+        p95
+    } else {
+        usize::MAX
+    };
+
+    // Components, computed exactly rather than approximated: the honest grouping for
+    // a graph whose projection does not separate.
+    let mut community_of: HashMap<usize, usize> = HashMap::new();
+    let mut members: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    let mut next_id = 0usize;
+    for start in graph.node_indices() {
+        if community_of.contains_key(&start.index()) {
+            continue;
+        }
+        let id = next_id;
+        next_id += 1;
+        let mut stack = vec![start];
+        community_of.insert(start.index(), id);
+        while let Some(node) = stack.pop() {
+            members.entry(id).or_default().push(graph[node].clone());
+            for neighbour in graph
+                .neighbors_directed(node, petgraph::Direction::Outgoing)
+                .chain(graph.neighbors_directed(node, petgraph::Direction::Incoming))
+            {
+                if let std::collections::hash_map::Entry::Vacant(entry) =
+                    community_of.entry(neighbour.index())
+                {
+                    entry.insert(id);
+                    stack.push(neighbour);
+                }
+            }
         }
     }
-    // `connected_components` counts them; a BFS labels each node with its id so
-    // the members can be grouped.
-    let _ = connected_components(&ug);
-    // Communities, not merely connected components: a single component that
-    // spans the whole repository says nothing about its areas. `mincut`'s label
-    // propagation splits it by edge density, which is what the view is for.
-    let weighted: Vec<crate::sparsifier::WeightedEdge> = graph
-        .edge_indices()
-        .filter_map(|e| graph.edge_endpoints(e))
-        .map(|(a, b)| {
-            crate::sparsifier::WeightedEdge::new(
-                i64::try_from(a.index()).unwrap_or(0),
-                i64::try_from(b.index()).unwrap_or(0),
-                1.0,
-            )
-        })
-        .collect();
-    let community = crate::mincut::community_map(&weighted, 8);
-    let mut comp_of: HashMap<usize, usize> = HashMap::new();
-    for n in graph.node_indices() {
-        let key = i64::try_from(n.index()).unwrap_or(0);
-        let cid = community.get(&key).copied().unwrap_or(0);
-        comp_of.insert(n.index(), cid);
-    }
-    let mut members: BTreeMap<usize, Vec<String>> = BTreeMap::new();
-    for node in graph.node_indices() {
-        let cid = comp_of[&node.index()];
-        members.entry(cid).or_default().push(graph[node].clone());
-    }
+    let file_count = graph.node_count();
     let mut out: Vec<Cluster> = members
         .into_values()
         .map(|mut files| {
@@ -496,6 +544,12 @@ fn clusters(edges: &[ModuleEdge]) -> Vec<Cluster> {
             .cmp(&a.files.len())
             .then(a.files.cmp(&b.files))
     });
+    let largest = out.first().map_or(0, |cluster| cluster.files.len());
+    // Separated means "the graph gives a reader areas": more than one component AND
+    // no single one that is most of the tree. Two equal halves qualify; one component
+    // holding everything (the measured case here) does not, and neither does one 90%
+    // component with a few stragglers — that would crown noise as a community.
+    let separated = out.len() > 1 && largest * 2 <= file_count;
     for (i, c) in out.iter_mut().enumerate() {
         c.id = i;
         let set: std::collections::HashSet<&String> = c.files.iter().collect();
@@ -504,7 +558,17 @@ fn clusters(edges: &[ModuleEdge]) -> Vec<Cluster> {
             .filter(|e| set.contains(&e.from) && set.contains(&e.to))
             .count();
     }
-    out
+    let mut hubs: Vec<String> = graph
+        .node_indices()
+        .filter(|n| degree.get(&n.index()).copied().unwrap_or(0) >= hub_floor && hub_floor > 0)
+        .map(|n| graph[n].clone())
+        .collect();
+    hubs.sort();
+    ClusterReport {
+        clusters: out,
+        hubs,
+        separated,
+    }
 }
 
 /// Dependency cycles: strongly-connected components of size > 1, plus
@@ -964,9 +1028,34 @@ mod tests {
                 kinds: vec!["CALLS".into()],
             },
         ];
-        let cl = clusters(&edges);
-        assert_eq!(cl.len(), 2, "{cl:?}");
-        assert!(cl.iter().all(|c| c.files.len() == 2));
+        let report = clusters(&edges);
+        assert_eq!(report.clusters.len(), 2, "{report:?}");
+        assert!(report.clusters.iter().all(|c| c.files.len() == 2));
+        // Two components of two files each: genuinely separated, so the flag says so.
+        assert!(report.separated, "{report:?}");
+    }
+
+    /// The measured shape of a real repo, reproduced small: one component that holds
+    /// most of the tree must say `separated: false` rather than pretend to cluster.
+    #[test]
+    fn one_dominant_component_is_reported_as_not_separated() {
+        // Four files in one chain plus two isolated pairs: the chain dominates.
+        let mut edges = Vec::new();
+        for (from, to) in [("a.rs", "b.rs"), ("b.rs", "c.rs"), ("c.rs", "d.rs")] {
+            edges.push(ModuleEdge {
+                from: from.into(),
+                to: to.into(),
+                weight: 1,
+                kinds: vec!["CALLS".into()],
+            });
+        }
+        let report = clusters(&edges);
+        assert_eq!(report.clusters.len(), 1, "{report:?}");
+        assert_eq!(report.clusters[0].files.len(), 4);
+        assert!(
+            !report.separated,
+            "a single component holding the whole tree is not a separation: {report:?}"
+        );
     }
 
     #[test]

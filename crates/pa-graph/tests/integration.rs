@@ -504,8 +504,12 @@ fn architecture_layers_and_clusters_and_hotspots() {
     let clusters = store
         .architecture("p", ArchitectureView::Clusters)
         .expect("clusters");
-    assert_eq!(clusters.clusters.len(), 1, "one connected community");
-    assert_eq!(clusters.clusters[0].files.len(), 3);
+    let report = clusters.cluster_report.expect("clusters");
+    assert_eq!(report.clusters.len(), 1, "one connected community");
+    assert_eq!(report.clusters[0].files.len(), 3);
+    // The whole fixture is one component, so the report must say it is not separated
+    // rather than passing off one component as a community structure.
+    assert!(!report.separated, "{report:?}");
 
     let hot = store
         .architecture("p", ArchitectureView::Hotspots)

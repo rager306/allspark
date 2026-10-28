@@ -1841,14 +1841,32 @@ impl GraphTool {
                 lines.push(format!("layer {}: {}", layer.level, layer.files.join(", ")));
             }
         }
-        if !arch.clusters.is_empty() {
-            lines.push(format!("{} cluster(s):", arch.clusters.len()));
-            for cluster in &arch.clusters {
+        if let Some(report) = &arch.cluster_report {
+            // The honest header: "1 cluster" without this reads as a bug, and with it
+            // reads as the shape of the code — which is what it is.
+            if report.separated {
+                lines.push(format!("{} component(s):", report.clusters.len()));
+            } else {
+                lines.push(
+                    "Not separated into communities: one component holds most of the tree, \
+                     so any grouping here would be invented. The hubs below are why."
+                        .to_string(),
+                );
+            }
+            for cluster in &report.clusters {
                 lines.push(format!(
-                    "cluster {} ({} internal edge(s)): {}",
+                    "component {} ({} file(s), {} internal edge(s)): {}",
                     cluster.id,
+                    cluster.files.len(),
                     cluster.internal_edges,
                     cluster.files.join(", "),
+                ));
+            }
+            if !report.hubs.is_empty() {
+                lines.push(format!(
+                    "{} hub file(s), in the top degree percentile: {}",
+                    report.hubs.len(),
+                    report.hubs.join(", ")
                 ));
             }
         }
