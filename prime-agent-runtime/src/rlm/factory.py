@@ -1639,6 +1639,7 @@ class FactoryExecutor:
         self._event(
             run, "run_started", detail=f"{len(run.states)} states, max_parallel {run.max_parallel}"
         )
+        await self._record_run_started(run)
         for state_id in run.order:
             state = run.states[state_id]
             if state.spec.get("entry"):
@@ -2259,10 +2260,55 @@ class FactoryExecutor:
 
         return rlm_namespace.harness
 
+    async def _record_run_started(self, run: FactoryRun) -> None:
+        """Write one DURABLE session row naming this run, before any child is admitted.
+
+        The ledger itself stays in kernel memory: a `FactoryRun` holds tasks and live
+        handles, which do not serialize, so a resumable ledger is a different project.
+        This row is the smallest honest form of durability — after a restart the
+        session knows a run existed and that it is no longer governed, instead of
+        forgetting it and reporting "unknown run".
+
+        Deliberately NOT a `_milestone`: that path records a ledger event (changing
+        what `status()` returns) and notifies the parent (changing what the model
+        sees). Durability is not an announcement, and a run start is already visible
+        in the `run()` result. Keeping it out of both streams means this changes no
+        observable behaviour except the ability to answer for a lost run.
+        """
+        try:
+            from . import host_request
+
+            await host_request(
+                "factory.run.started",
+                {
+                    "run_id": run.run_id,
+                    "kind": "started",
+                    "detail": (
+                        f"spec {run.spec_id}, {len(run.states)} state(s), "
+                        f"max_parallel {run.max_parallel}"
+                    ),
+                },
+            )
+        except Exception:
+            # A dead bridge must not fail a run that is otherwise ready to start: the
+            # in-memory ledger is still authoritative for THIS kernel's lifetime.
+            pass
+
     def _require_run(self, run_id: str) -> FactoryRun:
         run = self._runs.get(run_id)
         if run is None:
-            raise ValueError(f"unknown factory run {run_id!r}")
+            # Distinguish "never existed" from "lost with the kernel": the durable
+            # `started` milestone row is session state, so a run this executor no
+            # longer holds but the SESSION recorded is a restart casualty, and the
+            # two need different advice. Until this, both produced one message and an
+            # operator could not tell a typo from a lost ledger.
+            raise ValueError(
+                f"unknown factory run {run_id!r}: this kernel does not hold it. If the run "
+                "was started in an earlier session, its ledger did not survive the restart "
+                "and its children (if any) are supervisor-owned — find them with "
+                "await rlm.list_subagents() and stop them by id; a factory run is a "
+                "kernel-lifetime object and cannot be resumed"
+            )
         return run
 
     def _resolve_subagents(

@@ -114,12 +114,31 @@ pub fn register_kernel_notice_host_handlers(
             })
         }),
     );
+    let durable = Arc::clone(&notice);
     handlers.register(
         "factory.progress",
         host_handler(move |payload| {
             let notice = notice.clone();
             Box::pin(async move {
                 notice(validate_factory_progress(&payload.data)?);
+                Ok(serde_json::json!({}))
+            })
+        }),
+    );
+    // The DURABLE trace of a run start, separate from the notification stream on
+    // purpose: `factory.progress` both records a ledger event and tells the model,
+    // and a run start is neither — it is a fact the session must be able to answer
+    // for after a restart, when the kernel's in-memory ledger is gone. Writing it
+    // through the notice path would add a model-visible row and change `status()`;
+    // this handler only persists.
+    handlers.register(
+        "factory.run.started",
+        host_handler(move |payload| {
+            let sink = Arc::clone(&durable);
+            Box::pin(async move {
+                // The same validation as a milestone: the row shape is identical, so
+                // one validator keeps the two from drifting.
+                sink(validate_factory_progress(&payload.data)?);
                 Ok(serde_json::json!({}))
             })
         }),
@@ -396,6 +415,53 @@ mod tests {
             remaining.len(),
             1,
             "one read withdrew the front-most row; the second identical row stayed"
+        );
+    }
+
+    /// §6a: the run-start trace is DURABLE and QUIET. It must persist a row the
+    /// session can answer for after a restart, and it must not look like a milestone
+    /// the model was told about — a run start is a fact, not an announcement.
+    #[tokio::test]
+    async fn a_run_start_is_recorded_without_becoming_a_milestone_notice() {
+        let (agent, _slot, wakes, handlers) = wired_agent();
+        let handler = handlers
+            .get("factory.run.started")
+            .expect("the run-start handler registered")
+            .clone();
+        let started = serde_json::json!({
+            "run_id": "run-9",
+            "kind": "started",
+            "detail": "spec review, 3 state(s), max_parallel 2",
+        });
+        dispatch(&handler, started)
+            .await
+            .expect("the run start is accepted");
+        // It IS recorded: the row exists, so a resumed session can answer for the run.
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            1,
+            "the durable row reaches the session's sink"
+        );
+        let queued = agent.remove_queued_messages(|_| true);
+        assert_eq!(
+            queued.len(),
+            1,
+            "exactly one row: the trace itself, no separate announcement"
+        );
+        let AgentMessage::Custom(custom) = &queued[0] else {
+            panic!("a custom row: {queued:?}");
+        };
+        assert_eq!(
+            custom.payload.get("customType"),
+            Some(&serde_json::json!("factory_progress_notice")),
+            "the same durable shape a milestone uses, so one reader serves both"
+        );
+        // A milestone-shaped payload without a run id is still refused: one validator
+        // for both paths is what keeps them from drifting.
+        let missing_run = serde_json::json!({ "kind": "started", "detail": "no id" });
+        assert!(
+            dispatch(&handler, missing_run).await.is_err(),
+            "a run start without a run id is refused"
         );
     }
 
