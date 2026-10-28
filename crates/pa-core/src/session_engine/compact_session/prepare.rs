@@ -104,7 +104,10 @@ pub fn prepare_compaction(
         cut.first_kept_entry_index -= 1;
         // The moved boundary can turn a split turn into a whole-turn cut, and a
         // `turn_start_index` past the new boundary would be incoherent.
-        if cut.turn_start_index.is_some_and(|t| t >= cut.first_kept_entry_index) {
+        if cut
+            .turn_start_index
+            .is_some_and(|t| t >= cut.first_kept_entry_index)
+        {
             cut.turn_start_index = None;
             cut.is_split_turn = false;
         }

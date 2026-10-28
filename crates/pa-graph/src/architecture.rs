@@ -715,10 +715,10 @@ mod tests {
         ];
         let tree = file_tree(&nodes);
         let count = |name: &str| {
-            tree.children
-                .iter()
-                .find(|c| c.name == name)
-                .map_or_else(|| panic!("missing {name}: {:?}", tree.children), |c| c.symbol_count)
+            tree.children.iter().find(|c| c.name == name).map_or_else(
+                || panic!("missing {name}: {:?}", tree.children),
+                |c| c.symbol_count,
+            )
         };
         assert_eq!(count("a"), 1, "a/lib.rs holds one symbol");
         assert_eq!(count("b"), 2, "b/lib.rs holds two");
@@ -770,7 +770,13 @@ mod tests {
         let a = mk("a");
         let b = mk("b");
         store
-            .insert_edge("p", a, b, crate::types::EdgeType::Calls, &serde_json::json!({}))
+            .insert_edge(
+                "p",
+                a,
+                b,
+                crate::types::EdgeType::Calls,
+                &serde_json::json!({}),
+            )
             .expect("edge");
 
         let mut store = store;
@@ -783,10 +789,9 @@ mod tests {
             .architecture("p", crate::architecture::ArchitectureView::FileTree)
             .expect("architecture");
         let counted = EDGE_READS.swap(0, Ordering::Relaxed);
-        store.connection_mut().trace_v2(
-            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
-            None,
-        );
+        store
+            .connection_mut()
+            .trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT, None);
 
         assert!(tree.file_tree.is_some(), "the view still answers");
         assert_eq!(
@@ -804,17 +809,14 @@ mod tests {
             .architecture("p", crate::architecture::ArchitectureView::Structure)
             .expect("architecture");
         let structure_reads = EDGE_READS.swap(0, Ordering::Relaxed);
-        store.connection_mut().trace_v2(
-            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
-            None,
-        );
+        store
+            .connection_mut()
+            .trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT, None);
         assert!(
             structure_reads > 0,
             "the structure view needs the edges; 0 reads means the hook did not observe"
         );
     }
-
-
 
     fn node(id: i64, qn: &str, file: &str, label: Label) -> Node {
         Node {

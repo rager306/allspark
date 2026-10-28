@@ -462,8 +462,6 @@ mod tests {
         assert_eq!(report.resolution_ratio(), 1.0);
     }
 
-
-
     const BROKEN: &str = "fn main() {\n    let x = ;\n    let y = );\n    ((((((\n}\n";
 
     #[test]

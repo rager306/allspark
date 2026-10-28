@@ -30,7 +30,7 @@ use pa_agent::abort::AbortSignal;
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
 use pa_graph::{
     ArchitectureView, Direction, EdgeType, GraphStore, IndexOptions, IndexReport, Label,
-    SearchOptions, TraceOptions, Truncation, TreeNode,
+    SearchOptions, TraceOptions, TreeNode, Truncation,
 };
 
 /// Project name a store rooted at `root` indexes under when no collision is in
@@ -1414,7 +1414,10 @@ impl GraphTool {
         // The work budget is the other half of a cap: `limit` bounds the answer,
         // this bounds the walk. `work_budget: 0` lifts the ceiling for a caller
         // that wants an exhaustive walk and accepts the cost.
-        if let Some(budget) = params.get("work_budget").and_then(serde_json::Value::as_u64) {
+        if let Some(budget) = params
+            .get("work_budget")
+            .and_then(serde_json::Value::as_u64)
+        {
             opts = opts.with_work_budget((budget > 0).then_some(budget as usize));
         }
         let edge_types =

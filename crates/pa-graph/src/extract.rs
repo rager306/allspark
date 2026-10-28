@@ -528,19 +528,35 @@ mod tests {
     /// miss. Measured 2026-10-28 on the shipped extractor.
     #[test]
     fn a_c_function_is_named_after_its_declarator_not_its_return_type() {
-        let f = extract("int add(int a, int b) { return a + b; }\n", SupportLang::C, "m");
+        let f = extract(
+            "int add(int a, int b) { return a + b; }\n",
+            SupportLang::C,
+            "m",
+        );
         let names: Vec<&str> = f.symbols.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["add"], "got {names:?}");
         assert_eq!(f.symbols[0].qualified_name, "m::add");
 
         // The declarator chain nests one level per piece of punctuation.
-        let ptr = extract("static void *fp(int x) { return 0; }\n", SupportLang::C, "m");
+        let ptr = extract(
+            "static void *fp(int x) { return 0; }\n",
+            SupportLang::C,
+            "m",
+        );
         let names: Vec<&str> = ptr.symbols.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["fp"], "pointer declarator: {names:?}");
 
-        let cpp = extract("int sub(int a, int b) { return a - b; }\n", SupportLang::Cpp, "m");
+        let cpp = extract(
+            "int sub(int a, int b) { return a - b; }\n",
+            SupportLang::Cpp,
+            "m",
+        );
         let names: Vec<&str> = cpp.symbols.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["sub"], "C++ shares the grammar shape: {names:?}");
+        assert_eq!(
+            names,
+            vec!["sub"],
+            "C++ shares the grammar shape: {names:?}"
+        );
     }
 
     #[test]

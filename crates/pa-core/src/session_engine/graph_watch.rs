@@ -363,13 +363,21 @@ mod tests {
         ));
         // Cancelled means THIS session's token fired: it is shutting down, and
         // the retry loop already returns on `cancel.is_cancelled()`.
-        assert!(!is_lease_busy("cancelled after 1s waiting for the index writer lease"));
+        assert!(!is_lease_busy(
+            "cancelled after 1s waiting for the index writer lease"
+        ));
         // Failures a retry cannot fix must not spin.
-        assert!(!is_lease_busy("reindex: failed to read src/a.rs: no such file"));
+        assert!(!is_lease_busy(
+            "reindex: failed to read src/a.rs: no such file"
+        ));
         assert!(!is_lease_busy("reindex: malformed store"));
-        assert!(!is_lease_busy("open /tmp/g.db: unable to open database file"));
+        assert!(!is_lease_busy(
+            "open /tmp/g.db: unable to open database file"
+        ));
         // A generic I/O error that merely mentions a lease is not a hold.
-        assert!(!is_lease_busy("lock file for the index writer lease is unreadable"));
+        assert!(!is_lease_busy(
+            "lock file for the index writer lease is unreadable"
+        ));
     }
 
     #[test]

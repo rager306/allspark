@@ -313,7 +313,10 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
         // The work budget is checked before expanding, and again per edge: one
         // node with hundreds of outgoing edges must not overshoot it the way it
         // used to overshoot `limit`.
-        if opts.work_budget.is_some_and(|budget| edges_examined >= budget) {
+        if opts
+            .work_budget
+            .is_some_and(|budget| edges_examined >= budget)
+        {
             stopped_by = Some(Truncation::WorkBudget);
             break;
         }
@@ -326,7 +329,10 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
                 break;
             }
             edges_examined += 1;
-            if opts.work_budget.is_some_and(|budget| edges_examined >= budget) {
+            if opts
+                .work_budget
+                .is_some_and(|budget| edges_examined >= budget)
+            {
                 stopped_by = Some(Truncation::WorkBudget);
                 break;
             }
@@ -671,13 +677,23 @@ mod tests {
         for i in 0..40 {
             let hub = mk(&format!("hub{i}"));
             store
-                .insert_edge("p", main, hub, EdgeType::Calls,
-                    &json!({"confidence":0.1,"strategy":"suffix"}))
+                .insert_edge(
+                    "p",
+                    main,
+                    hub,
+                    EdgeType::Calls,
+                    &json!({"confidence":0.1,"strategy":"suffix"}),
+                )
                 .expect("edge");
             let leaf = mk(&format!("leaf{i}"));
             store
-                .insert_edge("p", hub, leaf, EdgeType::Calls,
-                    &json!({"confidence":0.1,"strategy":"suffix"}))
+                .insert_edge(
+                    "p",
+                    hub,
+                    leaf,
+                    EdgeType::Calls,
+                    &json!({"confidence":0.1,"strategy":"suffix"}),
+                )
                 .expect("edge");
             hubs.push(hub);
         }
@@ -691,7 +707,10 @@ mod tests {
         )
         .expect("trace");
         assert_eq!(unbounded.steps.len(), 0, "every step is below the floor");
-        assert_eq!(unbounded.edges_examined, 80, "but the walk still spent 80 edges");
+        assert_eq!(
+            unbounded.edges_examined, 80,
+            "but the walk still spent 80 edges"
+        );
         assert_eq!(unbounded.stopped_by, None, "no ceiling was set");
 
         let bounded = trace(

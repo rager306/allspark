@@ -565,7 +565,11 @@ mod tests {
         );
         let mut store = GraphStore::open_in_memory().expect("store");
         index(&mut store, dir.path());
-        write(dir.path(), "a.rs", "pub fn caller() {\n    missing_two();\n}\n");
+        write(
+            dir.path(),
+            "a.rs",
+            "pub fn caller() {\n    missing_two();\n}\n",
+        );
         store
             .reindex_incremental(dir.path(), &IndexOptions::new("p"))
             .expect("reindex");

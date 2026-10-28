@@ -849,7 +849,10 @@ mod tests {
             !no_graph.contains("`jev`"),
             "nor a tool that is absent: {no_graph}"
         );
-        assert!(no_graph.contains("`lsp` `symbols`"), "the present route stays");
+        assert!(
+            no_graph.contains("`lsp` `symbols`"),
+            "the present route stays"
+        );
 
         // Neither graph nor lsp: no exploration route at all, and no heading
         // promising one.

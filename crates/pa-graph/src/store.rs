@@ -6,11 +6,11 @@ use std::path::{Path, PathBuf};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::Result;
+use crate::extract::CallSite;
 use crate::hash::FileHash;
 use crate::proof_gate::{GateDecision, ProofGate};
 use crate::quality::{QualityEnvelope, QualityPolicy};
 use crate::schema;
-use crate::extract::CallSite;
 use crate::types::{CallSiteRow, CallSiteVerdict, Edge, EdgeType, FileChange, Label, Node};
 use crate::witness::WitnessReceipt;
 

@@ -250,13 +250,23 @@ mod tests {
         let params = build_params(&anthropic_model(), &context, false, None, Some(&cache));
         let system = params["system"].as_array().expect("system is an array");
 
-        assert_eq!(system.len(), 2, "one block per side of the boundary: {system:?}");
+        assert_eq!(
+            system.len(),
+            2,
+            "one block per side of the boundary: {system:?}"
+        );
         assert_eq!(system[0]["text"], stable, "the split is byte-exact");
         assert_eq!(system[1]["text"], volatile);
         // Both carry a breakpoint: the stable one is the reusable prefix, the
         // tail one keeps the tail itself cached between turns that do not touch it.
-        assert!(system[0].get("cache_control").is_some(), "prefix needs a breakpoint");
-        assert!(system[1].get("cache_control").is_some(), "tail needs a breakpoint");
+        assert!(
+            system[0].get("cache_control").is_some(),
+            "prefix needs a breakpoint"
+        );
+        assert!(
+            system[1].get("cache_control").is_some(),
+            "tail needs a breakpoint"
+        );
 
         // Nothing was lost or duplicated by the split.
         let rejoined: String = system
@@ -294,7 +304,13 @@ mod tests {
         let cache = crate::providers::anthropic::CacheControl { ttl: None };
         // 2 lands INSIDE the two-byte `é`, so it is not a char boundary;
         // 1 is a real boundary and must split.
-        for prefix in [None, Some(0), Some(2), Some(prompt.len()), Some(prompt.len() + 10)] {
+        for prefix in [
+            None,
+            Some(0),
+            Some(2),
+            Some(prompt.len()),
+            Some(prompt.len() + 10),
+        ] {
             let params = build_params(
                 &anthropic_model(),
                 &context_with(prompt, prefix),

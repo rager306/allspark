@@ -489,7 +489,14 @@ impl GraphStore {
                 "confidence": CallStrategy::Dependency.base_confidence(),
                 "strategy": CallStrategy::Dependency.as_str(),
             });
-            self.record_call_site(project, rel_path, caller_qn, call, &CallSiteVerdict::Dependency, &props)?;
+            self.record_call_site(
+                project,
+                rel_path,
+                caller_qn,
+                call,
+                &CallSiteVerdict::Dependency,
+                &props,
+            )?;
             return self.insert_edge(project, source, source, EdgeType::Calls, &props);
         }
         let Some(source) = resolver.caller_id(caller_qn) else {
@@ -513,8 +520,6 @@ impl GraphStore {
         )?;
         self.insert_edge(project, source, source, EdgeType::Uses, &props)
     }
-
-
 
     /// Write a file's definitions and CONTAINS edges, resolving nothing.
     ///
@@ -912,7 +917,10 @@ impl Resolver {
         // `recursive` (known, here), `dependency` (known, outside the tree),
         // unresolved (no idea).
         let (strategy, confidence) = if target == source {
-            (CallStrategy::Recursive, CallStrategy::Recursive.base_confidence())
+            (
+                CallStrategy::Recursive,
+                CallStrategy::Recursive.base_confidence(),
+            )
         } else {
             (strategy, CallStrategy::base_confidence(strategy))
         };

@@ -227,8 +227,7 @@ pub use trace::{CrossServiceEdge, Direction, TraceOptions, TraceResult, TraceSte
 pub use tri_modal::{tri_modal, tri_modal_search, TriModalHit, TriModalOptions};
 pub use types::{
     CallArg, CallCandidate, CallSiteRow, CallSiteVerdict, CallStrategy, Edge, EdgeType, FileChange,
-    IndexReport,
-    Label, Node,
+    IndexReport, Label, Node,
 };
 
 // ── Phase 6-A re-exports ────────────────────────────────────────────────
