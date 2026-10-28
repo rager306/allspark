@@ -10,6 +10,22 @@ use crate::providers::anthropic::{
 use crate::types::{Context, Model};
 use crate::utils_inner::sanitize_unicode::sanitize_surrogates;
 
+/// Split `system_prompt` into `(stable_prefix, volatile_tail)` at a byte offset
+/// that the current prefix already ends on.
+///
+/// The offset comes from the prompt assembler (`cached_prefix_len`), which ends
+/// on a layer boundary. It is still validated here: a caller can hand an offset
+/// from a different assembly, and slicing a UTF-8 string mid-character panics.
+/// An unusable offset falls back to the single-block shape rather than guessing —
+/// a wrong boundary would put the breakpoint inside a volatile segment, which is
+/// worse than having no second breakpoint at all.
+fn split_system_prompt(system_prompt: &str, prefix: usize) -> Option<(&str, &str)> {
+    if prefix == 0 || prefix >= system_prompt.len() || !system_prompt.is_char_boundary(prefix) {
+        return None;
+    }
+    Some(system_prompt.split_at(prefix))
+}
+
 // Long by design: mirrors the provider's stream shape.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn build_params(
@@ -66,17 +82,48 @@ pub(crate) fn build_params(
         }
         params.insert("system".into(), json!(system));
     } else if let Some(system_prompt) = &context.system_prompt {
-        let mut entry = json!({
-            "type": "text",
-            "text": sanitize_surrogates(system_prompt),
-        });
-        if let Some(cache_control) = cache_control {
-            entry
-                .as_object_mut()
-                .expect("system entry is an object")
-                .insert("cache_control".into(), cache_control.to_json());
-        }
-        params.insert("system".into(), json!([entry]));
+        // Two blocks, two breakpoints, when the assembler says where the stable
+        // part ends. Providers match a prompt cache by the longest common PREFIX
+        // of the serialized request, so one block with a single breakpoint at its
+        // end re-bills every stable token as soon as any volatile byte changes
+        // (the date, the cwd, a context-file list). Splitting keeps the stable
+        // block byte-identical across turns and pays only for the tail.
+        let split = context
+            .system_prompt_cache_prefix
+            .and_then(|prefix| split_system_prompt(system_prompt, prefix));
+        let blocks = match split {
+            Some((stable, volatile)) => vec![
+                (
+                    sanitize_surrogates(stable),
+                    cache_control.map(CacheControl::to_json),
+                ),
+                (
+                    sanitize_surrogates(volatile),
+                    cache_control.map(CacheControl::to_json),
+                ),
+            ],
+            // No usable boundary: the historical single block, with its single
+            // breakpoint at the end. Unchanged on purpose — a provider that does
+            // not support prefixes keeps working exactly as before.
+            None => vec![(
+                sanitize_surrogates(system_prompt),
+                cache_control.map(CacheControl::to_json),
+            )],
+        };
+        let system: Vec<Value> = blocks
+            .into_iter()
+            .map(|(text, cache)| {
+                let mut entry = json!({"type": "text", "text": text});
+                if let Some(cache) = cache {
+                    entry
+                        .as_object_mut()
+                        .expect("system entry is an object")
+                        .insert("cache_control".into(), cache);
+                }
+                entry
+            })
+            .collect();
+        params.insert("system".into(), json!(system));
     }
 
     // Temperature is incompatible with extended thinking (adaptive or budget-based), and always-on
@@ -155,6 +202,115 @@ mod tests {
         zero_model_cost, Context, Message, Model, ModelInput, UserMessage, UserMessageContent,
     };
     use serde_json::{json, Map};
+
+    fn anthropic_model() -> Model {
+        Model {
+            id: "claude-sonnet-4-5".into(),
+            name: "claude".into(),
+            api: "anthropic-messages".into(),
+            provider: "anthropic".into(),
+            base_url: "https://api.anthropic.com".into(),
+            reasoning: false,
+            thinking_level_map: None,
+            input: vec![ModelInput::Text],
+            cost: zero_model_cost(),
+            context_window: 200_000,
+            max_tokens: 64_000,
+            max_tokens_explicit: false,
+            featured: None,
+            headers: None,
+            compat: None,
+        }
+    }
+
+    fn context_with(prompt: &str, prefix: Option<usize>) -> Context {
+        let mut context = Context {
+            system_prompt: Some(prompt.to_string()),
+            messages: vec![Message::User(UserMessage {
+                content: UserMessageContent::Text("hi".into()),
+                timestamp: 0,
+                rest: Map::new(),
+            })],
+            ..Context::default()
+        };
+        context.system_prompt_cache_prefix = prefix;
+        context
+    }
+
+    /// The breakpoint must land on the REAL boundary, not at the end of one
+    /// monolithic block: a single block re-bills every stable token whenever one
+    /// volatile byte changes (the date, the cwd, a file list).
+    #[test]
+    fn a_prefix_offset_splits_the_system_prompt_into_two_cache_breakpoints() {
+        let stable = "# Prime Agent\n\nYou are a coding agent.\n";
+        let volatile = "## Environment\n\ncwd: /tmp/somewhere\n";
+        let prompt = format!("{stable}{volatile}");
+        let context = context_with(&prompt, Some(stable.len()));
+        let cache = crate::providers::anthropic::CacheControl { ttl: None };
+        let params = build_params(&anthropic_model(), &context, false, None, Some(&cache));
+        let system = params["system"].as_array().expect("system is an array");
+
+        assert_eq!(system.len(), 2, "one block per side of the boundary: {system:?}");
+        assert_eq!(system[0]["text"], stable, "the split is byte-exact");
+        assert_eq!(system[1]["text"], volatile);
+        // Both carry a breakpoint: the stable one is the reusable prefix, the
+        // tail one keeps the tail itself cached between turns that do not touch it.
+        assert!(system[0].get("cache_control").is_some(), "prefix needs a breakpoint");
+        assert!(system[1].get("cache_control").is_some(), "tail needs a breakpoint");
+
+        // Nothing was lost or duplicated by the split.
+        let rejoined: String = system
+            .iter()
+            .map(|block| block["text"].as_str().unwrap_or_default())
+            .collect();
+        assert!(
+            prompt.contains(rejoined.trim()),
+            "the split must cover the prompt: {rejoined:?}"
+        );
+
+        // A volatile change must not touch the stable block's bytes: that is the
+        // whole point of the breakpoint.
+        let moved = format!("{stable}## Environment\n\ncwd: /elsewhere\n");
+        let moved_params = build_params(
+            &anthropic_model(),
+            &context_with(&moved, Some(stable.len())),
+            false,
+            None,
+            Some(&cache),
+        );
+        assert_eq!(
+            moved_params["system"][0], system[0],
+            "the stable block must be byte-identical when only the tail changes"
+        );
+        assert_ne!(moved_params["system"][1], system[1], "the tail did change");
+    }
+
+    /// No offset keeps the historical shape, and an offset that cannot be used
+    /// must not be guessed at: a breakpoint inside a volatile segment is worse
+    /// than having no second one.
+    #[test]
+    fn an_absent_or_unusable_offset_keeps_the_single_block() {
+        let prompt = "héllo wörld"; // multi-byte: offsets 1..3 are NOT boundaries
+        let cache = crate::providers::anthropic::CacheControl { ttl: None };
+        // 2 lands INSIDE the two-byte `é`, so it is not a char boundary;
+        // 1 is a real boundary and must split.
+        for prefix in [None, Some(0), Some(2), Some(prompt.len()), Some(prompt.len() + 10)] {
+            let params = build_params(
+                &anthropic_model(),
+                &context_with(prompt, prefix),
+                false,
+                None,
+                Some(&cache),
+            );
+            let system = params["system"].as_array().expect("array");
+            assert_eq!(
+                system.len(),
+                1,
+                "prefix {prefix:?} must fall back to one block, got {system:?}"
+            );
+            assert_eq!(system[0]["text"], prompt);
+        }
+    }
 
     fn thinking_params(model_id: &str) -> (serde_json::Value, serde_json::Value) {
         let model = Model {
