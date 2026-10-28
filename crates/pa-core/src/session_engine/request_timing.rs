@@ -146,6 +146,13 @@ struct PromptBuildTiming {
     context_entries: usize,
     /// Per-request sequence number, shared by every entry of one request.
     request_seq: u64,
+    /// The input tokens this request's own projection priced, when it was priced.
+    ///
+    /// Carried to the payload hook so the drift is computable there: the projection is
+    /// a PREDICTION, the body is a MEASUREMENT, and comparing them is the only check
+    /// that the trigger prices the request that actually goes out. Zero means "not
+    /// priced" (a path that builds no context plan), and no ratio is logged for it.
+    planned_input_tokens: u64,
 }
 
 /// Per-session timing state (the Rust seams share one wiring).
@@ -274,6 +281,23 @@ pub fn instrument_convert_to_llm(
             if !wiring.enabled() {
                 return convert(messages).await;
             }
+            // Priced BEFORE conversion, from the same messages the compaction trigger
+            // reads: this is the input half of the plan, and it is the only place a
+            // request's own prediction can be captured without a second plumbing pass.
+            // The fixed prefix is not here — the trigger adds it only when no provider
+            // anchor exists, and this seam never has one.
+            // The trigger reads SESSION messages; this seam holds loop messages. The
+            // same JSON round-trip `auto_compaction_due` uses keeps the two priced
+            // identically — a different conversion here would make the drift measure a
+            // difference that does not exist.
+            let planned_input_tokens: u64 = messages
+                .iter()
+                .filter_map(|message| serde_json::to_value(message).ok())
+                .filter_map(|value| {
+                    serde_json::from_value::<pa_types::session::AgentMessage>(value).ok()
+                })
+                .map(|message| crate::session_engine::compaction::estimate_tokens(&message))
+                .sum();
             let output = convert(messages).await?;
             let started_at = wiring.take_dispatch().unwrap_or_else(Instant::now);
             let built = Instant::now();
@@ -284,6 +308,7 @@ pub fn instrument_convert_to_llm(
                 prompt_built_at: built,
                 context_entries: output.len(),
                 request_seq: wiring.next_request_seq(),
+                planned_input_tokens,
             };
             wiring.set_prompt_build(timing);
             // Fires before the request has model or session fields;
@@ -457,6 +482,9 @@ pub fn instrument_stream_fn(wiring: Arc<RequestTimingWiring>, stream_fn: StreamF
                 return stream_fn(model, context, options).await;
             }
             let prompt_build = wiring.take_prompt_build(context.messages.as_ptr() as usize);
+            // Kept past the move below so the payload hook can compare this request's
+            // own prediction against the body it actually sends.
+            let planned_input_tokens = prompt_build.map_or(0, |timing| timing.planned_input_tokens);
             let request_seq = match prompt_build {
                 Some(timing) => timing.request_seq,
                 None => wiring.next_request_seq(),
@@ -482,11 +510,27 @@ pub fn instrument_stream_fn(wiring: Arc<RequestTimingWiring>, stream_fn: StreamF
                     .and_then(|hook| hook(payload.clone(), model))
                     .unwrap_or(payload);
                 timing_for_payload.record_request_bytes(measure_request_bytes(&next));
-                timing_for_payload.record_request_snapshot(RequestSnapshot::of(&next));
-                timing_for_payload.mark_request_sent();
+                let snapshot = RequestSnapshot::of(&next);
+                timing_for_payload.record_request_snapshot(snapshot);
+                // The plan's own prediction against this body: the only measurement
+                // that can say whether the trigger is calibrated. It rides the summary
+                // (not a debug line) because calibration is a property of the SESSION, not
+                // of one log level: a reader comparing plans to wires needs the numbers
+                // where the rest of the request's facts already are.
+                if planned_input_tokens > 0 {
+                    let plan = crate::session_engine::compaction::ContextPlan {
+                        messages: planned_input_tokens,
+                        context_window: 0,
+                        ..crate::session_engine::compaction::ContextPlan::default()
+                    };
+                    if let Some(drift) = PlanDrift::between(&plan, &snapshot) {
+                        timing_for_payload.record_plan_drift(drift);
+                    }
+                }
                 if let Some(capture) = capture_for_payload.as_ref() {
                     capture.record(&next, model, session_id.as_deref(), request_seq);
                 }
+                timing_for_payload.mark_request_sent();
                 Some(next)
             }));
             let inner_response: Option<OnResponseHook> = options.on_response.take();

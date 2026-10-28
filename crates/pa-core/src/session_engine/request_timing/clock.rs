@@ -104,6 +104,8 @@ struct RequestTimingInner {
     request_sent_at: Option<Instant>,
     request_bytes: Option<u64>,
     request_snapshot: Option<crate::session_engine::request_timing::RequestSnapshot>,
+    /// The plan's prediction against the sent body, when both were available.
+    plan_drift: Option<crate::session_engine::request_timing::PlanDrift>,
     first_byte_at: Option<Instant>,
     first_token_at: Option<Instant>,
     stream_done_at: Option<Instant>,
@@ -182,6 +184,17 @@ impl RequestTiming {
     /// Recorded at the same moment as the byte total (the payload hook, before
     /// the request is sent), so the breakdown describes the body that was
     /// actually sent rather than a later reconstruction.
+    /// The plan-versus-wire comparison for this request.
+    pub(super) fn record_plan_drift(
+        &self,
+        drift: crate::session_engine::request_timing::PlanDrift,
+    ) {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .plan_drift = Some(drift);
+    }
+
     pub(super) fn record_request_snapshot(
         &self,
         snapshot: crate::session_engine::request_timing::RequestSnapshot,
@@ -350,6 +363,12 @@ impl RequestTiming {
             // sent instead of trusted: a total cannot confirm three parts.
             if let Some(snapshot) = inner.request_snapshot {
                 fields.insert("requestSnapshot".to_string(), json!(snapshot));
+            }
+            // The calibration number: bytes per planned token, where the estimator's own
+            // rate is 4.0. Logged beside the request's other facts so a reader comparing
+            // plans to wires does not need a second query.
+            if let Some(drift) = inner.plan_drift {
+                fields.insert("planDrift".to_string(), json!(drift));
             }
             fields.insert("phases".to_string(), Value::Object(phases));
             let total_ms = self

@@ -286,6 +286,30 @@ async fn emits_the_full_timeline(with_response_hook: bool) {
         get("requestBytes"),
         json!(serde_json::to_vec(&payload()).unwrap().len() as u64)
     );
+    // The calibration number: the plan's prediction against this exact body. It must be
+    // present whenever both exist, because a missing drift reads as "no plan" and hides
+    // a plan that prices the wrong request.
+    let snapshot = get("requestSnapshot");
+    assert!(
+        snapshot.is_object(),
+        "the snapshot rides the summary: {summary:?}"
+    );
+    let drift = get("planDrift");
+    assert!(
+        drift.is_object(),
+        "the drift rides the summary: {summary:?}"
+    );
+    assert_eq!(
+        drift["plannedInputTokens"],
+        json!(drift["plannedInputTokens"]
+            .as_u64()
+            .expect("planned tokens")),
+        "the plan claims input"
+    );
+    assert!(
+        drift["bytesPerPlannedToken"].as_f64().unwrap_or_default() > 0.0,
+        "and the ratio is measured, not zero: {drift:?}"
+    );
     assert_eq!(
         get("usage"),
         json!({"input": 800_000, "output": 12, "cacheRead": 790_000, "cacheWrite": 0}),
