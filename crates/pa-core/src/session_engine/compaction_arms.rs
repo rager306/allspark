@@ -33,17 +33,29 @@ impl AgentSession {
             .filter_map(|message| serde_json::to_value(message).ok())
             .filter_map(|value| serde_json::from_value(value).ok())
             .collect();
-        compaction::threshold_compaction_due(
-            &messages,
-            model.context_window,
-            // The live thinking level decides whether the request folds a
-            // thinking budget on top of the base output budget.
-            compaction::request_output_budget(
-                model,
-                provider_adapter::model_thinking_level(state.thinking_level),
-            ),
-            &self.compaction_settings(),
-        )
+        let output_reserve = compaction::request_output_budget(
+            model,
+            provider_adapter::model_thinking_level(state.thinking_level),
+        );
+        // Price the request, not just the history: the system prompt and the
+        // tool schemas are billed on every call and were in NO estimate, so a
+        // session could reach the provider's limit while the message-only
+        // trigger still said "not due".
+        let plan = compaction::ContextPlan {
+            messages: compaction::estimate_context_tokens(&messages).tokens,
+            system_prompt: compaction::estimate_text_tokens(&state.system_prompt),
+            tool_schemas: state
+                .tools
+                .iter()
+                .map(|tool| compaction::estimate_tool_schema_tokens(tool.as_ref()))
+                .sum(),
+            output_reserve,
+            context_window: model.context_window,
+        };
+        // The plan trigger can only be MORE eager than the message-only one (it
+        // counts strictly more input), so asking either is the same as asking the
+        // plan; keeping both would let a stale call path silently skip the prefix.
+        compaction::plan_compaction_due(&plan, &self.compaction_settings())
     }
 
     /// Remove the trailing assistant message from the loop context, so a

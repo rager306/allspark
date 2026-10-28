@@ -304,6 +304,25 @@ pub fn compaction_threshold(
     percentage.min(combined)
 }
 
+/// The trigger priced from a [`ContextPlan`]: the same threshold, against the
+/// tokens the next request will actually claim.
+///
+/// The message-only entry point below answers "how full is the HISTORY"; this one
+/// answers "will the REQUEST fit", which is the question a threshold exists for.
+/// They differ by the fixed prefix (system prompt plus tool schemas), measured at
+/// ~6 300 tokens for the static layer alone — enough to cross a threshold a
+/// message-only estimate says is far away.
+#[must_use]
+pub fn plan_compaction_due(plan: &ContextPlan, settings: &CompactionSettings) -> bool {
+    if !settings.enabled || plan.context_window == 0 {
+        return false;
+    }
+    // The threshold already reserves the output budget; the plan's input is what
+    // competes with it.
+    let threshold = compaction_threshold(plan.context_window, plan.output_reserve, settings);
+    threshold > 0 && plan.input() > threshold
+}
+
 #[must_use]
 pub fn should_compact(
     context_tokens: u64,
@@ -336,6 +355,94 @@ pub fn request_output_budget(
     thinking: pa_types::ai::ModelThinkingLevel,
 ) -> u64 {
     pa_ai::effective_request_max_tokens(model, thinking)
+}
+
+/// The one priced projection of the NEXT request.
+///
+/// Every input the provider will charge for belongs here, because the three
+/// numbers this module used to compute disagreed by construction:
+///
+/// - `estimate_context_tokens` counts the MESSAGES (anchored on the last
+///   provider usage),
+/// - `find_cut_point` counts retained ENTRIES,
+/// - the wire carries messages PLUS the system prompt PLUS the tool schemas.
+///
+/// Measured 2026-10-28: the static prompt layer alone is ~6 300 tokens
+/// (25 174 chars over `prompts/layers/*.md`) and every tool schema adds its own;
+/// neither appeared in any estimate, so a session could reach the provider's
+/// limit while the trigger still said "not due".
+///
+/// This is the donor's `projectUnit` lesson applied one layer up: recommend,
+/// explain and apply must share ONE validity rule, or the system offers work it
+/// then refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ContextPlan {
+    /// Tokens the retained messages are expected to cost.
+    pub messages: u64,
+    /// Tokens of the system prompt, static layers plus the dynamic tail.
+    pub system_prompt: u64,
+    /// Tokens of the tool schemas the request advertises.
+    pub tool_schemas: u64,
+    /// Budget the request claims for its own output.
+    pub output_reserve: u64,
+    /// The model's window.
+    pub context_window: u64,
+}
+
+impl ContextPlan {
+    /// Input tokens the request will be billed for and must fit.
+    #[must_use]
+    pub fn input(&self) -> u64 {
+        self.messages
+            .saturating_add(self.system_prompt)
+            .saturating_add(self.tool_schemas)
+    }
+
+    /// Input plus the reserved output: what the window must hold.
+    #[must_use]
+    pub fn total(&self) -> u64 {
+        self.input().saturating_add(self.output_reserve)
+    }
+
+    /// Whether this plan cannot fit the window at all.
+    ///
+    /// Separate from "should compact": a plan can exceed the window while there
+    /// is nothing left to cut (a single huge message), and the caller needs to
+    /// tell "cut more" from "this cannot be sent".
+    #[must_use]
+    pub fn overflows(&self) -> bool {
+        self.context_window > 0 && self.total() > self.context_window
+    }
+
+    /// The same plan with the fixed prefix priced in.
+    #[must_use]
+    pub fn with_prefix(mut self, system_prompt: u64, tool_schemas: u64) -> Self {
+        self.system_prompt = system_prompt;
+        self.tool_schemas = tool_schemas;
+        self
+    }
+}
+
+/// Estimate tokens for a text the same way the message estimator does
+/// (`chars / 4`), so the prefix and the messages are priced in one unit.
+#[must_use]
+pub fn estimate_text_tokens(text: &str) -> u64 {
+    div4(text.chars().count() as u64)
+}
+
+/// Estimate the tokens one tool schema costs on the wire.
+///
+/// Serialized, because that is what the provider receives: the definition's
+/// name, description and JSON schema all travel, and a schema with a long
+/// description costs exactly as much as a long message.
+#[must_use]
+pub fn estimate_tool_schema_tokens(tool: &dyn pa_agent::types::AgentTool) -> u64 {
+    let mut total = estimate_text_tokens(tool.name());
+    total = total.saturating_add(estimate_text_tokens(tool.description()));
+    if let Ok(serialized) = serde_json::to_string(tool.parameters()) {
+        total = total.saturating_add(estimate_text_tokens(&serialized));
+    }
+    total
 }
 
 /// The message-anchored context estimate: the last valid assistant usage
@@ -1102,6 +1209,141 @@ mod tests {
         assert_eq!(estimate.last_usage_index, None);
         // "describe this" = 13 chars -> ceil(13/4) = 4; the 1_000x1_000 image adds 1_334.
         assert_eq!(estimate.tokens, 4 + 1_334);
+    }
+
+    /// S5: the trigger must price the REQUEST, not only the history.
+    ///
+    /// The fixed prefix (system prompt + tool schemas) is billed on every call
+    /// and appeared in NO estimate: the static prompt layer alone is ~6 300
+    /// tokens (25 174 chars over `prompts/layers/*.md`). A session could sit at
+    /// "comfortably below threshold" by the message count while the request was
+    /// already past it.
+    #[test]
+    fn the_plan_prices_the_prefix_the_message_estimate_ignores() {
+        let settings = CompactionSettings::default();
+        // 20k window, 4k output reserve: threshold is 80% of what remains.
+        let window = 20_000;
+        let output = 4_000;
+        let threshold = compaction_threshold(window, output, &settings);
+        assert!(threshold > 0, "the fixture must have a live threshold");
+
+        // Messages just under the threshold: the message-only trigger says no.
+        let messages = threshold - 100;
+        assert!(!should_compact(messages, window, output, &settings));
+
+        // The same session, priced with what the wire actually carries.
+        let plan = ContextPlan {
+            messages,
+            system_prompt: 6_300,
+            tool_schemas: 1_500,
+            output_reserve: output,
+            context_window: window,
+        };
+        assert_eq!(
+            plan.input(),
+            messages + 6_300 + 1_500,
+            "input is messages plus the prefix"
+        );
+        assert!(
+            plan_compaction_due(&plan, &settings),
+            "7 800 tokens of prefix must move the trigger: threshold {threshold}, \
+             plan input {}",
+            plan.input()
+        );
+    }
+
+    /// The prefix is measured, not assumed: the schema estimator must see a real
+    /// tool's serialized cost, or `ContextPlan::tool_schemas` is decoration.
+    #[test]
+    fn a_tool_schema_costs_the_bytes_it_actually_sends() {
+        let definition = crate::tools::bash::create_bash_tool_definition("/tmp");
+        let tool: std::sync::Arc<dyn pa_agent::types::AgentTool> = std::sync::Arc::new(
+            crate::session_engine::tool_bridge::ToolDefinitionBridge::new(definition),
+        );
+        let tool = tool.as_ref();
+        // What the wire carries: name + description + the JSON schema.
+        let sent = serde_json::to_string(tool.parameters()).expect("schema serializes");
+        let expected = div4(tool.name().chars().count() as u64)
+            + div4(tool.description().chars().count() as u64)
+            + div4(sent.chars().count() as u64);
+        assert_eq!(estimate_tool_schema_tokens(tool), expected);
+        assert!(
+            expected > 100,
+            "a real bash schema must cost more than a rounding error: {expected}"
+        );
+    }
+
+    /// The static prompt layer is a real cost, not a token of politeness: if this
+    /// number were zero the plan would still under-count the request.
+    #[test]
+    fn the_static_prompt_layer_is_a_measurable_share_of_a_small_window() {
+        let static_prompt = include_str!("../prompts/layers/core.md");
+        let tokens = estimate_text_tokens(static_prompt);
+        assert!(
+            tokens > 3_000,
+            "the core layer alone measured ~4k tokens; got {tokens}"
+        );
+        // Against an 8k window that is most of the budget.
+        let plan = ContextPlan {
+            messages: 0,
+            system_prompt: tokens,
+            tool_schemas: 0,
+            output_reserve: 0,
+            context_window: 8_192,
+        };
+        assert!(
+            plan.input() as f64 / 8_192.0 > 0.4,
+            "the static layer must be a large share of a small window: {}",
+            plan.input()
+        );
+    }
+
+    /// A plan with no prefix must agree with the message-only trigger, so the two
+    /// numbers are differently-scoped rather than differently-wrong.
+    #[test]
+    fn a_plan_without_a_prefix_agrees_with_should_compact() {
+        let settings = CompactionSettings::default();
+        for window in [8_192u64, 32_768, 200_000] {
+            for output in [1_024u64, 4_096] {
+                let threshold = compaction_threshold(window, output, &settings);
+                for messages in [0, threshold.saturating_sub(1), threshold, threshold + 1] {
+                    let plan = ContextPlan {
+                        messages,
+                        output_reserve: output,
+                        context_window: window,
+                        ..ContextPlan::default()
+                    };
+                    assert_eq!(
+                        plan_compaction_due(&plan, &settings),
+                        should_compact(messages, window, output, &settings),
+                        "window {window} output {output} messages {messages}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Overflow is a separate question from "should compact": a plan can exceed
+    /// the window with nothing left to cut, and a caller that conflates them
+    /// compacts forever without fixing the request.
+    #[test]
+    fn overflow_is_not_the_same_question_as_compaction_due() {
+        let plan = ContextPlan {
+            messages: 200_000,
+            system_prompt: 6_300,
+            tool_schemas: 1_500,
+            output_reserve: 4_000,
+            context_window: 200_000,
+        };
+        assert!(plan.overflows());
+        let empty_window = ContextPlan {
+            context_window: 0,
+            ..plan
+        };
+        assert!(
+            !empty_window.overflows(),
+            "an unknown window is not an overflow"
+        );
     }
 
     #[test]
