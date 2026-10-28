@@ -1021,3 +1021,78 @@ async fn engine_sessions_capture_the_outbound_payload_when_the_flag_is_on() {
         None => std::env::remove_var(REQUEST_TIMING_ENV),
     }
 }
+
+/// The snapshot must split the body along the same seams the plan prices, and
+/// must MEASURE the total rather than sum the parts: JSON punctuation and keys are
+/// not additive, so a sum would drift from the body it claims to describe.
+#[test]
+fn the_snapshot_splits_the_body_along_the_plan_seams() {
+    let payload = serde_json::json!({
+        "model": "m",
+        "max_tokens": 1024,
+        "system": [{"type": "text", "text": "stable"}, {"type": "text", "text": "tail"}],
+        "messages": [{"role": "user", "content": "hello"}],
+        "tools": [{"name": "bash", "description": "run", "parameters": {"type": "object"}}],
+    });
+    let snapshot = RequestSnapshot::of(&payload);
+
+    assert!(snapshot.messages_bytes > 0);
+    assert!(
+        snapshot.system_bytes > snapshot.messages_bytes,
+        "two blocks vs one"
+    );
+    assert!(snapshot.tools_bytes > 0);
+    assert_eq!(
+        snapshot.total_bytes,
+        serde_json::to_vec(&payload).expect("serializes").len() as u64
+    );
+    // Measured, not summed: the parts are strictly less than the whole.
+    let summed = snapshot.messages_bytes + snapshot.system_bytes + snapshot.tools_bytes;
+    assert!(
+        summed < snapshot.total_bytes,
+        "the whole must include the keys and punctuation the parts do not: {summed} vs {}",
+        snapshot.total_bytes
+    );
+
+    // A body with no tools declares none rather than borrowing another field.
+    let bare = RequestSnapshot::of(&serde_json::json!({"messages": []}));
+    assert_eq!(bare.tools_bytes, 0);
+    assert_eq!(bare.system_bytes, 0);
+}
+
+/// The drift ratio exists to answer one question: is the plan pricing the request
+/// that was sent? A plan and a snapshot of the same shape must land near the
+/// estimator's own chars-per-token, and a plan with no claim must report nothing
+/// rather than a perfect score.
+#[test]
+fn the_plan_drift_is_a_ratio_against_the_measured_body() {
+    use crate::session_engine::compaction::ContextPlan;
+
+    let payload = serde_json::json!({
+        "system": [{"type": "text", "text": "s".repeat(400)}],
+        "messages": [{"role": "user", "content": "m".repeat(400)}],
+        "tools": [],
+    });
+    let snapshot = RequestSnapshot::of(&payload);
+    let measured = snapshot.messages_bytes + snapshot.system_bytes + snapshot.tools_bytes;
+
+    // A plan priced with the same chars/4 the estimator uses.
+    let plan = ContextPlan {
+        messages: 100,
+        system_prompt: 100,
+        tool_schemas: 0,
+        output_reserve: 1_000,
+        context_window: 200_000,
+    };
+    let drift = PlanDrift::between(&plan, &snapshot).expect("a plan with input has a ratio");
+    assert_eq!(drift.planned_input_tokens, 200);
+    assert_eq!(drift.measured_input_bytes, measured);
+    assert!((drift.bytes_per_planned_token - measured as f64 / 200.0).abs() < f64::EPSILON);
+
+    // A plan that claims no input says nothing: 0.0 would read as "exact".
+    let empty = ContextPlan {
+        context_window: 200_000,
+        ..ContextPlan::default()
+    };
+    assert!(PlanDrift::between(&empty, &snapshot).is_none());
+}

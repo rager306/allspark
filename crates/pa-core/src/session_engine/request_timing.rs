@@ -328,6 +328,115 @@ fn is_request_timing_first_token_event(event: &AssistantMessageEvent) -> bool {
 }
 
 /// UTF-8 bytes of the wire payload, not a code-unit count.
+/// A measured breakdown of the request body a provider was actually handed.
+///
+/// `measure_request_bytes` answers "how big", which is enough to log and not
+/// enough to check a plan: the plan prices messages, system prompt and tool
+/// schemas separately, and a total cannot confirm three parts. This splits the
+/// same body along those seams, so `ContextPlan` can be compared with what was
+/// sent instead of being trusted.
+///
+/// Bytes are the serialized UTF-8 length of each part, which is what the wire
+/// carries; `estimate_text_tokens` (chars / 4) still prices them, because the
+/// provider's tokenizer is not available here and one unit must stay in use
+/// everywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestSnapshot {
+    /// Bytes of the messages array.
+    pub messages_bytes: u64,
+    /// Bytes of the system prompt (a string or an array of blocks).
+    pub system_bytes: u64,
+    /// Bytes of the tool declarations.
+    pub tools_bytes: u64,
+    /// The whole serialized body.
+    pub total_bytes: u64,
+}
+
+impl RequestSnapshot {
+    /// Split `payload` along the same seams `ContextPlan` prices.
+    ///
+    /// JSON length of a part is not additive to the whole (commas, keys,
+    /// escaping), so `total_bytes` is measured, never summed: a sum would drift
+    /// from the body it claims to describe.
+    #[must_use]
+    pub fn of(payload: &Value) -> Self {
+        let bytes_of = |part: Option<&Value>| {
+            part.and_then(|value| serde_json::to_vec(value).ok())
+                .map_or(0, |bytes| bytes.len() as u64)
+        };
+        let object = payload.as_object();
+        Self {
+            messages_bytes: bytes_of(object.and_then(|map| map.get("messages"))),
+            system_bytes: bytes_of(object.and_then(|map| map.get("system"))),
+            tools_bytes: bytes_of(object.and_then(|map| map.get("tools"))),
+            total_bytes: serde_json::to_vec(payload)
+                .ok()
+                .map_or(0, |bytes| bytes.len() as u64),
+        }
+    }
+
+    /// The input's share of the body, discounting what the provider charges for
+    /// output (`max_tokens` is a budget, not content).
+    ///
+    /// Equal to `total_bytes` today, because the body carries no output text; it
+    /// is named so a reader does not have to re-derive that.
+    #[must_use]
+    pub fn input_bytes(&self) -> u64 {
+        self.total_bytes
+    }
+}
+
+/// Whether a [`ContextPlan`]'s estimate is consistent with the body that was
+/// actually sent, and by how much it was wrong.
+///
+/// The plan is a PREDICTION (chars/4 over three parts); the snapshot is a
+/// MEASUREMENT (serialized bytes of those same parts). Comparing them is the only
+/// way to know whether the trigger is calibrated, and the comparison has to happen
+/// where both exist: the plan is built at a turn boundary, the body at send time.
+///
+/// A ratio far from the observed token-per-byte rate means the plan is pricing a
+/// different request than the one on the wire — a stale prompt, a tool roster that
+/// changed, or messages the plan did not see.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanDrift {
+    /// Tokens the plan attributed to messages + system + tools.
+    pub planned_input_tokens: u64,
+    /// Bytes those same three parts occupied on the wire.
+    pub measured_input_bytes: u64,
+    /// `measured_input_bytes / planned_input_tokens`, when the plan claimed any.
+    pub bytes_per_planned_token: f64,
+}
+
+impl PlanDrift {
+    /// Compare a plan with a snapshot of the request it was meant to describe.
+    ///
+    /// `None` when the plan claimed no input tokens: a ratio against zero says
+    /// nothing, and returning `0.0` would read as "the plan was exact".
+    #[must_use]
+    pub fn between(
+        plan: &crate::session_engine::compaction::ContextPlan,
+        sent: &RequestSnapshot,
+    ) -> Option<Self> {
+        let planned = plan.input();
+        if planned == 0 {
+            return None;
+        }
+        let measured = sent
+            .messages_bytes
+            .saturating_add(sent.system_bytes)
+            .saturating_add(sent.tools_bytes);
+        Some(Self {
+            planned_input_tokens: planned,
+            measured_input_bytes: measured,
+            // 4 is the estimator's own chars-per-token, so a well-calibrated plan
+            // lands near 4.0; the number is a diagnostic, not a threshold.
+            bytes_per_planned_token: measured as f64 / planned as f64,
+        })
+    }
+}
+
 fn measure_request_bytes(payload: &Value) -> Option<u64> {
     serde_json::to_vec(payload)
         .ok()
@@ -373,6 +482,7 @@ pub fn instrument_stream_fn(wiring: Arc<RequestTimingWiring>, stream_fn: StreamF
                     .and_then(|hook| hook(payload.clone(), model))
                     .unwrap_or(payload);
                 timing_for_payload.record_request_bytes(measure_request_bytes(&next));
+                timing_for_payload.record_request_snapshot(RequestSnapshot::of(&next));
                 timing_for_payload.mark_request_sent();
                 if let Some(capture) = capture_for_payload.as_ref() {
                     capture.record(&next, model, session_id.as_deref(), request_seq);

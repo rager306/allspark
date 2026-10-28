@@ -103,6 +103,7 @@ pub(super) struct RequestTiming {
 struct RequestTimingInner {
     request_sent_at: Option<Instant>,
     request_bytes: Option<u64>,
+    request_snapshot: Option<crate::session_engine::request_timing::RequestSnapshot>,
     first_byte_at: Option<Instant>,
     first_token_at: Option<Instant>,
     stream_done_at: Option<Instant>,
@@ -174,6 +175,21 @@ impl RequestTiming {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .request_bytes = request_bytes;
+    }
+
+    /// The request body split along the same seams `ContextPlan` prices.
+    ///
+    /// Recorded at the same moment as the byte total (the payload hook, before
+    /// the request is sent), so the breakdown describes the body that was
+    /// actually sent rather than a later reconstruction.
+    pub(super) fn record_request_snapshot(
+        &self,
+        snapshot: crate::session_engine::request_timing::RequestSnapshot,
+    ) {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .request_snapshot = Some(snapshot);
     }
 
     /// first-byte: HTTP response headers received (provider TTFB complete).
@@ -329,6 +345,11 @@ impl RequestTiming {
             }
             if let Some(request_bytes) = inner.request_bytes {
                 fields.insert("requestBytes".to_string(), json!(request_bytes));
+            }
+            // The measured split, so a ContextPlan can be checked against what was
+            // sent instead of trusted: a total cannot confirm three parts.
+            if let Some(snapshot) = inner.request_snapshot {
+                fields.insert("requestSnapshot".to_string(), json!(snapshot));
             }
             fields.insert("phases".to_string(), Value::Object(phases));
             let total_ms = self
