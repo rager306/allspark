@@ -214,8 +214,15 @@ pub(crate) fn prepare_attempt(
     // details.
     let mut file_op_messages = history.clone();
     file_op_messages.extend(turn_prefix_messages.iter().cloned());
-    let details: CompactionDetails =
+    let mut details: CompactionDetails =
         details_for(&file_op_messages, &entries, prev_compaction_index);
+    // The deterministic task state rides the same entry as the file lists: both are
+    // derived from the entries, both are re-derivable by a reader that doubts them.
+    details.task = Some(super::compaction_exec::task_state_for(
+        &file_op_messages,
+        &entries,
+        entries.len().saturating_sub(cut.first_kept_entry_index),
+    ));
     Ok(CompactionAttempt {
         session_id: session.get_session_id().to_string(),
         prefix_leaf,

@@ -16,6 +16,61 @@ use std::fmt::Write as _;
 pub struct CompactionDetails {
     pub read_files: Vec<String>,
     pub modified_files: Vec<String>,
+    /// What the session was DOING at the cut, computed from the transcript rather
+    /// than asked of the model.
+    ///
+    /// The donor's `TaskState` is the right idea and the wrong default if it is
+    /// written by a summarizer: a summary of a task is a claim, and a claim about
+    /// "the next step" is exactly what a resuming agent must not trust blindly.
+    /// Everything here is derived: it can be checked against the entries it came
+    /// from, and a reader that disagrees can re-derive it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<TaskState>,
+}
+
+/// The deterministic part of "where the work stands" at a compaction boundary.
+///
+/// Deliberately narrow. Each field answers a question the transcript can answer:
+/// what was asked last, which checks ran and how they ended, what is still open,
+/// and where the boundary is. Anything that requires interpretation (why a
+/// decision was made, what the next step should be) stays out — it belongs to the
+/// summary, which is allowed to be wrong and is read as prose rather than state.
+#[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskState {
+    /// The newest user instruction before the cut: what the session was told to do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_instruction: Option<String>,
+    /// How many user instructions the cut history holds (a long one is a session
+    /// that changed direction, which a resuming agent should know).
+    pub instruction_count: usize,
+    /// Verification commands that ran, with the outcome of the LAST run of each.
+    ///
+    /// A command is a receipt: `cargo test` that exited 0 is evidence; "the tests
+    /// pass" in prose is a claim. Keyed by the command text so a re-run replaces
+    /// the earlier verdict rather than accumulating.
+    pub checks: Vec<CheckReceipt>,
+    /// Files edited but not yet verified by a check that ran after the edit.
+    ///
+    /// This is the one inference here, and it is mechanical: an edit whose
+    /// timestamp follows every check's is not covered by any of them.
+    pub unverified_edits: Vec<String>,
+    /// Entries the cut keeps (the retained tail) — the boundary a resuming reader
+    /// can re-read, so the state does not have to restate it.
+    pub retained_entries: usize,
+}
+
+/// One verification command and how it ended.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckReceipt {
+    /// The command as run.
+    pub command: String,
+    /// Its exit status, when the transcript recorded one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    /// Whether the run is known to have failed.
+    pub failed: bool,
 }
 
 /// The result of running a compaction.
@@ -407,7 +462,122 @@ pub fn details_for(
     CompactionDetails {
         read_files,
         modified_files,
+        task: None,
     }
+}
+
+/// The deterministic [`TaskState`] of a cut history.
+///
+/// Reads only what the entries record: user instructions, bash executions, and
+/// tool results that name a modified file. Nothing here is generated, so nothing
+/// here can be wrong in the way a summary can be wrong.
+#[must_use]
+pub fn task_state_for(
+    messages: &[AgentMessage],
+    entries: &[FileEntry],
+    retained_entries: usize,
+) -> TaskState {
+    let mut state = TaskState {
+        retained_entries,
+        ..TaskState::default()
+    };
+    for message in messages {
+        match message {
+            AgentMessage::User(user) => {
+                let text = match &user.content {
+                    UserContent::Text(text) => text.clone(),
+                    UserContent::Blocks(blocks) => blocks
+                        .iter()
+                        .filter_map(|block| match block {
+                            UserContentBlock::Text(text) => Some(text.text.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                };
+                let text = text.trim();
+                if !text.is_empty() {
+                    state.instruction_count += 1;
+                    state.last_instruction = Some(text.to_string());
+                }
+            }
+            AgentMessage::BashExecution(bash) => {
+                let command = bash.command.trim();
+                if command.is_empty() {
+                    continue;
+                }
+                // Keyed by the command, so a re-run replaces the earlier verdict:
+                // a suite that failed and then passed is a pass, and a list that
+                // kept both would say the opposite.
+                let receipt = CheckReceipt {
+                    command: command.to_string(),
+                    exit_code: bash.exit_code.and_then(|code| i32::try_from(code).ok()),
+                    failed: bash.exit_code.is_some_and(|code| code != 0) || bash.cancelled,
+                };
+                match state
+                    .checks
+                    .iter_mut()
+                    .find(|existing| existing.command == command)
+                {
+                    Some(existing) => *existing = receipt,
+                    None => state.checks.push(receipt),
+                }
+            }
+            _ => {}
+        }
+    }
+    // An edit is unverified when no check ran after it. `entries` carries the
+    // timestamps the transcript already ordered, so this is a comparison, not a
+    // judgement about what the edit was.
+    let last_check_at = entries
+        .iter()
+        .filter(|entry| matches!(entry, FileEntry::Message { message, .. } if matches!(message, AgentMessage::BashExecution(_))))
+        .map(FileEntry::timestamp)
+        .max();
+    let mut edited_after: Vec<String> = Vec::new();
+    for entry in entries {
+        let FileEntry::Message { message, .. } = entry else {
+            continue;
+        };
+        let AgentMessage::ToolResult(result) = message else {
+            continue;
+        };
+        if result.is_error {
+            continue;
+        }
+        let after_last_check = last_check_at.is_none_or(|at| entry.timestamp() > at);
+        if !after_last_check {
+            continue;
+        }
+        if let Some(path) = edited_path_from_tool_result(&result.tool_name, result.details.as_ref())
+        {
+            if !edited_after.contains(&path) {
+                edited_after.push(path);
+            }
+        }
+    }
+    edited_after.sort();
+    state.unverified_edits = edited_after;
+    state
+}
+
+/// The path a successful edit-shaped tool result touched, when it names one.
+fn edited_path_from_tool_result(
+    tool_name: &str,
+    details: Option<&serde_json::Value>,
+) -> Option<String> {
+    if !matches!(tool_name, "edit" | "write" | "apply_patch" | "replace") {
+        return None;
+    }
+    let details = details?;
+    for key in ["path", "filePath", "file_path"] {
+        if let Some(path) = details.get(key).and_then(serde_json::Value::as_str) {
+            if !path.is_empty() {
+                return Some(path.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// The XML file-ops block appended to a summary presentation.
@@ -419,6 +589,135 @@ pub fn file_ops_block(read_files: &[String], modified_files: &[String]) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bash_message(command: &str, exit_code: Option<i64>) -> AgentMessage {
+        AgentMessage::BashExecution(pa_types::session::BashExecutionMessage {
+            command: command.to_string(),
+            output: String::new(),
+            exit_code,
+            cancelled: false,
+            truncated: false,
+            full_output_path: None,
+            timestamp: 0,
+            exclude_from_context: None,
+        })
+    }
+
+    /// A check is a RECEIPT, not prose: "the tests pass" in a summary is a claim,
+    /// `cargo test` exiting 0 in the transcript is evidence. The state records the
+    /// command and its verdict, and a re-run replaces the earlier verdict rather
+    /// than leaving both — a suite that failed and then passed is a pass.
+    #[test]
+    fn a_check_is_a_receipt_and_a_rerun_replaces_its_verdict() {
+        let messages = vec![
+            user("make the parser accept tabs"),
+            bash_message("cargo test", Some(1)),
+            assistant_text("fixed it"),
+            bash_message("cargo test", Some(0)),
+        ];
+        let state = task_state_for(&messages, &[], 0);
+        assert_eq!(
+            state.checks.len(),
+            1,
+            "one command, one receipt: {:?}",
+            state.checks
+        );
+        assert_eq!(state.checks[0].command, "cargo test");
+        assert!(!state.checks[0].failed, "the LAST run decides");
+        assert_eq!(state.checks[0].exit_code, Some(0));
+        assert_eq!(
+            state.last_instruction.as_deref(),
+            Some("make the parser accept tabs")
+        );
+        assert_eq!(state.instruction_count, 1);
+    }
+
+    /// "Unverified" is mechanical, not a judgement: an edit whose timestamp
+    /// follows every check's is not covered by any of them.
+    #[test]
+    fn an_edit_after_the_last_check_is_unverified() {
+        fn entry(id: &str, at: &str, message: AgentMessage) -> FileEntry {
+            FileEntry::Message {
+                message,
+                base: pa_types::session::EntryBase {
+                    id: Some(id.to_string()),
+                    parent_id: None,
+                    timestamp: Some(at.to_string()),
+                    rest: serde_json::Map::default(),
+                },
+            }
+        }
+        let check = entry(
+            "e1",
+            "2026-01-01T00:00:00.000Z",
+            bash_message("cargo test", Some(0)),
+        );
+        let later_edit = entry(
+            "e2",
+            "2026-01-01T01:00:00.000Z",
+            AgentMessage::ToolResult(pa_types::ai::ToolResultMessage {
+                tool_call_id: "c1".to_string(),
+                tool_name: "edit".to_string(),
+                content: Vec::new(),
+                details: Some(serde_json::json!({"path": "src/parser.rs"})),
+                is_error: false,
+                timestamp: 0,
+                rest: serde_json::Map::default(),
+            }),
+        );
+        let state = task_state_for(
+            &[user("fix it"), bash_message("cargo test", Some(0))],
+            &[check, later_edit.clone()],
+            0,
+        );
+        assert_eq!(
+            state.unverified_edits,
+            vec!["src/parser.rs".to_string()],
+            "an edit after the last check has no receipt covering it"
+        );
+
+        // The same edit BEFORE the check is covered, and must not be listed.
+        let state = task_state_for(
+            &[],
+            &[
+                later_edit,
+                entry(
+                    "e3",
+                    "2026-01-01T02:00:00.000Z",
+                    bash_message("cargo test", Some(0)),
+                ),
+            ],
+            0,
+        );
+        assert!(
+            state.unverified_edits.is_empty(),
+            "a check that ran after the edit covers it: {:?}",
+            state.unverified_edits
+        );
+    }
+
+    fn assistant_text(text: &str) -> AgentMessage {
+        AgentMessage::Assistant(pa_types::ai::AssistantMessage {
+            content: vec![pa_types::ai::AssistantContentBlock::Text(TextContent {
+                text: text.to_string(),
+                text_signature: None,
+                rest: serde_json::Map::default(),
+            })],
+            api: "openai-completions".to_string(),
+            provider: "test".to_string(),
+            model: "m".to_string(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: pa_types::ai::Usage::default(),
+            stop_reason: pa_types::ai::StopReason::Stop,
+            stop_reason_raw: None,
+            error_message: None,
+            timestamp: 0,
+            rest: serde_json::Map::default(),
+        })
+    }
+
     use pa_types::session::EntryBase;
 
     fn user(text: &str) -> AgentMessage {
@@ -488,6 +787,7 @@ mod tests {
         let details = CompactionDetails {
             read_files: vec!["a.rs".to_string()],
             modified_files: vec![],
+            task: None,
         };
         assert_eq!(
             compaction_entry_for(&result, &details, Some("focus"), None, None),
@@ -550,6 +850,7 @@ mod tests {
         let details = CompactionDetails {
             read_files: vec!["a.rs".to_string(), "b.rs".to_string()],
             modified_files: vec!["c.rs".to_string()],
+            task: None,
         };
         assert_eq!(
             serde_json::to_string(&details).unwrap(),
