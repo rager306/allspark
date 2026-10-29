@@ -113,6 +113,22 @@ pub struct TraceOptions {
     /// A capped walk sets [`TraceResult::truncated`] and states the reason, so a
     /// short answer is never read as the complete reachable set.
     pub work_budget: Option<usize>,
+    /// A cancellation token and a deadline, so a walk can be STOPPED.
+    ///
+    /// `work_budget` bounds a walk that runs to completion; this bounds one that should
+    /// not finish at all — the caller lost interest (a client disconnected, a turn was
+    /// aborted) or the answer is no longer worth its cost. Without it a `trace` on a
+    /// pathological graph could hold a turn open for its whole budget with no way out.
+    ///
+    /// `Cancelled` is reported in [`TraceResult::stopped_by`] rather than as an error: a
+    /// cancelled walk still has the steps it found, and throwing them away would make
+    /// cancellation cost more than waiting.
+    pub cancel: Option<crate::lease::CancelToken>,
+    /// Wall-clock ceiling for the walk, checked between edges.
+    ///
+    /// A deadline is the cooperative form: the walk stops where it is and reports what it
+    /// reached, so a caller gets a partial answer instead of a timeout error.
+    pub deadline: Option<std::time::Instant>,
 }
 
 /// Why a [`trace`] walk stopped early.
@@ -122,6 +138,8 @@ pub enum Truncation {
     Limit,
     /// [`TraceOptions::work_budget`] capped the edges examined.
     WorkBudget,
+    /// [`TraceOptions::cancel`] fired, or [`TraceOptions::deadline`] passed.
+    Cancelled,
 }
 
 impl Truncation {
@@ -131,6 +149,7 @@ impl Truncation {
         match self {
             Self::Limit => "step limit",
             Self::WorkBudget => "work budget",
+            Self::Cancelled => "cancellation",
         }
     }
 }
@@ -170,6 +189,8 @@ impl TraceOptions {
             limit: 200,
             confidence_floor: None,
             work_budget: Some(DEFAULT_WORK_BUDGET),
+            cancel: None,
+            deadline: None,
         }
     }
 
@@ -229,6 +250,20 @@ impl TraceOptions {
         self.work_budget = budget;
         self
     }
+
+    /// Stop the walk when `cancel` fires.
+    #[must_use]
+    pub fn with_cancel(mut self, cancel: crate::lease::CancelToken) -> Self {
+        self.cancel = Some(cancel);
+        self
+    }
+
+    /// Stop the walk at `deadline`.
+    #[must_use]
+    pub fn with_deadline(mut self, deadline: std::time::Instant) -> Self {
+        self.deadline = Some(deadline);
+        self
+    }
 }
 
 /// The full trace result.
@@ -282,6 +317,7 @@ impl TraceResult {
 /// # Errors
 /// Returns [`GraphError::SymbolNotFound`] when `symbol` matches nothing, and
 /// propagates SQLite errors.
+#[allow(clippy::too_many_lines)] // one BFS with three stop conditions; splitting hides their order
 pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
     let origin = resolve_symbol(store, &opts.project, &opts.symbol)?;
     let conn = store.connection();
@@ -334,6 +370,21 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
                 .is_some_and(|budget| edges_examined >= budget)
             {
                 stopped_by = Some(Truncation::WorkBudget);
+                break;
+            }
+            // Cancellation is checked per EDGE, not per node: a node with hundreds of
+            // outgoing edges must not delay a stop by a whole fan-out.
+            // Cancellation is checked per EDGE, not per node: a node with hundreds of
+            // outgoing edges must not delay a stop by a whole fan-out.
+            if opts
+                .cancel
+                .as_ref()
+                .is_some_and(crate::lease::CancelToken::is_cancelled)
+                || opts
+                    .deadline
+                    .is_some_and(|at| std::time::Instant::now() >= at)
+            {
+                stopped_by = Some(Truncation::Cancelled);
                 break;
             }
             if !visited.insert(edge.target) {
@@ -779,6 +830,72 @@ mod tests {
         assert!(!r.truncated);
         assert_eq!(r.steps.len(), 2);
         assert!(r.edges_examined >= 2, "examined {}", r.edges_examined);
+    }
+
+    /// A walk must be STOPPABLE. `work_budget` bounds one that runs to completion; this
+    /// bounds one that should not finish at all — the caller lost interest, or the answer
+    /// is no longer worth its cost. Without it a `trace` on a pathological graph holds a
+    /// turn open for its whole budget with no way out.
+    #[test]
+    fn a_cancelled_walk_stops_and_keeps_what_it_found() {
+        let store = seed();
+        let cancel = crate::lease::CancelToken::new();
+        cancel.cancel();
+        let r = trace(
+            &store,
+            &TraceOptions::new("p", "p::main")
+                .with_depth(2)
+                .with_cancel(cancel),
+        )
+        .expect("trace");
+        assert_eq!(
+            r.stopped_by,
+            Some(Truncation::Cancelled),
+            "an already-cancelled token stops the walk at the first edge"
+        );
+        assert!(r.truncated, "a prefix is still a prefix");
+        // Cancellation is not an error: whatever was reached before the stop survives,
+        // because throwing it away would make cancelling cost more than waiting.
+        assert!(r.steps.len() <= 2, "the walk stopped early: {:?}", r.steps);
+    }
+
+    /// A deadline is the cooperative form: stop where you are and report what you
+    /// reached, instead of failing the call.
+    #[test]
+    fn a_passed_deadline_stops_the_walk_without_an_error() {
+        let store = seed();
+        // `checked_sub` because a process that started moments ago may not have a
+        // millisecond to subtract; `unwrap_or(now)` still lands in the past.
+        let now = std::time::Instant::now();
+        let past = now
+            .checked_sub(std::time::Duration::from_millis(1))
+            .unwrap_or(now);
+        let r = trace(
+            &store,
+            &TraceOptions::new("p", "p::main")
+                .with_depth(2)
+                .with_deadline(past),
+        )
+        .expect("a deadline is not an error");
+        assert_eq!(r.stopped_by, Some(Truncation::Cancelled));
+        assert!(r.edges_examined <= 1, "it stopped at the first edge");
+    }
+
+    /// A live token and a future deadline change nothing: the guards must not fire on
+    /// their own.
+    #[test]
+    fn a_live_token_and_a_future_deadline_do_not_stop_a_walk() {
+        let store = seed();
+        let r = trace(
+            &store,
+            &TraceOptions::new("p", "p::main")
+                .with_depth(2)
+                .with_cancel(crate::lease::CancelToken::new())
+                .with_deadline(std::time::Instant::now() + std::time::Duration::from_secs(30)),
+        )
+        .expect("trace");
+        assert_eq!(r.stopped_by, None, "nothing stopped it");
+        assert_eq!(r.steps.len(), 2);
     }
 
     #[test]

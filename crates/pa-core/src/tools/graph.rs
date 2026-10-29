@@ -802,6 +802,7 @@ const ACCEPTED_PARAMS: &[(&str, &[&str])] = &[
             "edge_types",
             "confidence_floor",
             "work_budget",
+            "timeout_ms",
         ],
     ),
     ("architecture", &["path", "root", "view"]),
@@ -1651,6 +1652,13 @@ impl GraphTool {
         {
             opts = opts.with_work_budget((budget > 0).then_some(budget as usize));
         }
+        // A wall-clock ceiling on the WALK: `work_budget` bounds a walk that finishes,
+        // this bounds one that should not finish at all. `0` means "stop at the first
+        // edge", which is how a caller asks for the shape without the cost.
+        if let Some(ms) = params.get("timeout_ms").and_then(serde_json::Value::as_u64) {
+            opts = opts
+                .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(ms));
+        }
         let edge_types =
             parse_edge_types(params.get("edge_types").and_then(serde_json::Value::as_str));
         if !edge_types.is_empty() {
@@ -1687,6 +1695,12 @@ impl GraphTool {
                      reachable nodes were not listed, raise `limit` for the full set",
                     result.steps.len(),
                     result.edges_examined
+                ),
+                Some(Truncation::Cancelled) => format!(
+                    " — STOPPED by cancellation after examining {} edge(s); the {} step(s) \
+                     below are what the walk reached, not the reachable set",
+                    result.edges_examined,
+                    result.steps.len()
                 ),
                 Some(Truncation::WorkBudget) => format!(
                     " — TRUNCATED at the work budget after examining {} edge(s) and returning \
@@ -2581,6 +2595,11 @@ pub fn params_schema() -> serde_json::Value {
                 "type": "integer",
                 "description": "Result cap for search/trace: how many hits or steps may be RETURNED."
             },
+            "timeout_ms": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "action=\"trace\": wall-clock ceiling for the walk in milliseconds. `work_budget` bounds a walk that finishes; this bounds one that should NOT finish — a very high-fanout symbol whose answer is not worth the cost. On expiry the walk stops where it is and the header says `STOPPED by cancellation ... not the reachable set`, so a short answer is not read as the whole neighbourhood. 0 stops at the first edge, which is how a caller asks for the shape without the cost."
+            },
             "work_budget": {
                 "type": "integer",
                 "minimum": 0,
@@ -2764,6 +2783,38 @@ mod tests {
         );
         let details = pack.details;
         assert!(details["coverage"]["sites"].is_number(), "{details}");
+    }
+
+    /// A cancelled walk must SAY it was cancelled: "2 steps" from a stopped walk reads
+    /// as "2 neighbours", which is the wrong conclusion about the graph.
+    #[tokio::test]
+    async fn a_cancelled_trace_header_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "pub fn leaf() -> u32 { 1 }\npub fn mid() -> u32 { leaf() }\npub fn root() -> u32 { mid() }\n",
+        )
+        .unwrap();
+        let tool = tool(dir.path());
+        tool.dispatch(&serde_json::json!({ "action": "index" }))
+            .unwrap();
+        // A past deadline is the deterministic form: the clock is not raced.
+        let result = tool
+            .dispatch(&serde_json::json!({
+                "action": "trace",
+                "symbol": "root",
+                "timeout_ms": 0,
+            }))
+            .unwrap();
+        let text = text_of(&result);
+        assert!(
+            text.contains("STOPPED by cancellation"),
+            "a stopped walk must say so: {text}"
+        );
+        assert!(
+            text.contains("not the reachable set"),
+            "and must not read as the whole answer: {text}"
+        );
     }
 
     /// A short trace must say whether it stopped on the answer cap or on COST.
@@ -3441,6 +3492,7 @@ mod tests {
                 "status",
                 "supersedes",
                 "symbol",
+                "timeout_ms",
                 "title",
                 "view",
                 "work_budget",
