@@ -1141,6 +1141,10 @@ fn reject_unknown_params(
 
 /// The native `graph` tool. `db_path` is the SQLite store; `cwd` is the
 /// default project root index/search/trace resolve against.
+/// The graph tool's own output cap (`tools/truncate.rs`'s byte limit, inlined when the
+/// shared module went away with the built-in bash tool upstream).
+const GRAPH_OUTPUT_MAX_BYTES: usize = 50 * 1024;
+
 pub struct GraphTool {
     db_path: PathBuf,
     cwd: PathBuf,
@@ -2248,14 +2252,12 @@ impl GraphTool {
         // the report gets the same byte ceiling as bash output and says so
         // when it is cut.
         let mut report = lines.join("\n");
-        let (capped, was_truncated) = crate::resources::truncate_context_content(
-            &report,
-            crate::tools::truncate::DEFAULT_MAX_BYTES,
-        );
+        let (capped, was_truncated) =
+            crate::resources::truncate_context_content(&report, GRAPH_OUTPUT_MAX_BYTES);
         if was_truncated {
             report = format!(
-                "{capped}\n[architecture report truncated at {} bytes; query a narrower view]",
-                crate::tools::truncate::DEFAULT_MAX_BYTES,
+                "{capped}\n[architecture report truncated at {GRAPH_OUTPUT_MAX_BYTES} bytes; \
+                 query a narrower view]",
             );
         }
         Ok(AgentToolResult {

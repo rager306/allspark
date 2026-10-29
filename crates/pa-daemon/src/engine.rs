@@ -201,6 +201,10 @@ pub trait SessionEngine: Send + Sync {
     fn native_tool_names(&self) -> Option<Vec<String>> {
         None
     }
+
+    /// The worker's turn loop started: engines hosting RLM children hold
+    /// the task prompts of children spawned from here until `on_turn_done`.
+    fn on_turn_start(&self) {}
     /// The worker's turn loop completed: engines hosting RLM children
     /// release prompt tasks spawned mid-turn, so the parent's continuation
     /// request always reaches the provider before a child's first turn.

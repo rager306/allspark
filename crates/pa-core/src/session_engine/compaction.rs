@@ -1321,10 +1321,17 @@ mod tests {
     /// tool's serialized cost, or `ContextPlan::tool_schemas` is decoration.
     #[test]
     fn a_tool_schema_costs_the_bytes_it_actually_sends() {
-        let definition = crate::tools::bash::create_bash_tool_definition("/tmp");
-        let tool: std::sync::Arc<dyn pa_agent::types::AgentTool> = std::sync::Arc::new(
-            crate::session_engine::tool_bridge::ToolDefinitionBridge::new(definition),
-        );
+        // A REAL fork tool, not a synthetic schema: the native edit tool's schema is what the
+        // model actually receives on a session with `editHybrid.enabled`. (It priced the bash
+        // definition before upstream removed the built-in bash tool as dead code.)
+        let tool: std::sync::Arc<dyn pa_agent::types::AgentTool> =
+            std::sync::Arc::new(crate::tools::edit_hybrid::EditHybridTool::new(
+                std::sync::Arc::new(std::sync::Mutex::new(pa_edit::EditStore::new())),
+                None,
+                std::path::PathBuf::from("/tmp"),
+                pa_edit::EditMode::Replace,
+                vec![pa_edit::EditMode::Replace],
+            ));
         let tool = tool.as_ref();
         // What the wire carries: name + description + the JSON schema.
         let sent = serde_json::to_string(tool.parameters()).expect("schema serializes");
