@@ -633,12 +633,20 @@ impl GraphStore {
         } else {
             GateDecision::Reject(crate::proof_gate::RejectReason::BrokenChain)
         };
+        // The INDEX's own completeness, separate from the run's honesty. `None` for a
+        // store with no recorded call sites: an unknown coverage is not a clean one.
+        let sites = self.call_sites(project).unwrap_or_default();
+        let coverage = (!sites.is_empty()).then(|| AnswerCoverage {
+            sites: sites.len(),
+            resolved: sites.iter().filter(|s| s.resolution == "resolved").count(),
+        });
         Ok(RunVerdict {
             project: project.to_string(),
             receipts: receipts.len(),
             chain_ok,
             envelope,
             decision,
+            coverage,
         })
     }
 
@@ -1560,7 +1568,56 @@ pub struct RunVerdict {
     /// The gate's decision over the receipts and the envelope.
     #[serde(serialize_with = "decision_json")]
     pub decision: GateDecision,
+    /// Whether THIS INDEX can support the answer, as distinct from whether the run's own
+    /// receipts are intact.
+    ///
+    /// The review's §2 lists this as the next step for `verify`: "Различать здоровье индекса
+    /// и полноту/правильность конкретного ответа". `chain_ok` and the quality envelope say
+    /// the RUN was recorded honestly; neither says the graph RESOLVED enough to answer. A
+    /// perfectly recorded index can have half its calls unresolved, and an agent reading
+    /// "accept" would take a thin answer as complete.
+    ///
+    /// `None` when the project recorded no call sites (an index built before `call_sites`
+    /// existed): an unknown coverage is not a clean one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<AnswerCoverage>,
 }
+
+/// How much of the project's call graph this index can actually answer for.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnswerCoverage {
+    /// Call sites the indexer saw.
+    pub sites: usize,
+    /// Sites that resolved to a definition in the tree.
+    pub resolved: usize,
+}
+
+impl AnswerCoverage {
+    /// Fraction resolved, in `[0, 1]`; `1.0` for zero sites, which `is_clean` treats as
+    /// unknown rather than perfect.
+    #[must_use]
+    pub fn ratio(&self) -> f64 {
+        if self.sites == 0 {
+            return 1.0;
+        }
+        self.resolved as f64 / self.sites as f64
+    }
+
+    /// Whether an `accept` may be read as "the answer is complete", not merely "the run was
+    /// recorded".
+    ///
+    /// The threshold is a third of the calls unresolved: a graph that cannot place more than
+    /// that is answering from a partial view, and the verdict must say so instead of
+    /// inheriting `chain_ok`.
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.sites > 0 && self.ratio() >= CLEAN_COVERAGE_RATIO
+    }
+}
+
+/// Fraction of call sites an index must resolve for its answers to be called complete.
+pub const CLEAN_COVERAGE_RATIO: f64 = 2.0 / 3.0;
 
 /// Render a [`GateDecision`] as `{"accept": true}` or `{"reject": "reason"}`.
 fn decision_json<S: serde::Serializer>(

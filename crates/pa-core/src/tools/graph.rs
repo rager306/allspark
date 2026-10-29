@@ -85,6 +85,12 @@ pub struct ImpactCaller {
     pub confidence: f32,
     /// The resolution basis of the edge that reached this caller (exact/scoped/guess).
     pub strategy: String,
+    /// Why this caller is affected: the qualified names from the changed symbol down to it.
+    ///
+    /// "C, via CALLS" says how it was reached; `victim -> direct_caller` says WHY. The
+    /// review's §10 lists "почему этот модуль затронут" among the most valuable answers, and
+    /// that question is about the chain, not the last edge.
+    pub witness: Vec<String>,
 }
 
 /// A call site that mentions the symbol but did not resolve to it.
@@ -250,6 +256,7 @@ pub(crate) fn build_impact(
                     depth: step.depth,
                     confidence: step.confidence,
                     strategy: step.strategy.clone(),
+                    witness: step.witness.clone(),
                 })
                 .collect()
         })
@@ -2199,8 +2206,11 @@ impl GraphTool {
             },
         ));
         for caller in report.callers.iter().take(40) {
+            // The path IS the explanation; a reader asking "why is my module affected"
+            // needs the chain, not the last edge's type.
+            let chain = caller.witness.join(" -> ");
             lines.push(format!(
-                "- [depth {}] {} ({}:{}) confidence={:.2} via {}",
+                "- [depth {}] {} ({}:{}) confidence={:.2} via {}\n  why: {chain}",
                 caller.depth,
                 caller.qualified_name,
                 caller.file_path,
@@ -2591,10 +2601,29 @@ impl GraphTool {
         } else {
             flags.join(", ")
         };
+        // The two questions the review says `verify` must keep apart: is the RUN honestly
+        // recorded, and can THIS INDEX support a complete answer. A graph with half its
+        // calls unresolved can pass the first and fail the second.
+        let answer_coverage = match verdict.coverage {
+            Some(coverage) if coverage.is_clean() => format!(
+                "answer coverage {}/{} call site(s) resolved",
+                coverage.resolved, coverage.sites
+            ),
+            Some(coverage) => format!(
+                "answer coverage {}/{} ({:.0}%) — ANSWERS ARE PARTIAL: more than a third of \
+                     the call graph did not resolve, so a caller set from this index is a lower \
+                     bound",
+                coverage.resolved,
+                coverage.sites,
+                coverage.ratio() * 100.0
+            ),
+            None => "answer coverage UNKNOWN (no call sites recorded)".to_string(),
+        };
         Ok(AgentToolResult {
             content: vec![pa_agent::types::ToolResultContent::text(format!(
                 "Verify `{project}`: {decision} over {} run receipt(s), chain {}; \
-                 quality samples {} (min {:.2}, median {:.2}, max {:.2}), flags: {flags}.",
+                 quality samples {} (min {:.2}, median {:.2}, max {:.2}), flags: {flags}; \
+                 {answer_coverage}.",
                 verdict.receipts,
                 if verdict.chain_ok { "intact" } else { "BROKEN" },
                 verdict.envelope.count,
@@ -2961,6 +2990,54 @@ pub fn params_schema() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The review's §7: "сохранять witness path", and §10's "почему этот модуль затронут".
+    /// "C, via CALLS" says how a caller was reached; the CHAIN says why.
+    #[tokio::test]
+    async fn impact_explains_why_through_the_witness_path() {
+        let dir = tempfile::tempdir().unwrap();
+        // A three-hop chain: leaf <- mid <- top. `impact leaf` must show the whole chain for
+        // the deepest caller, not just its last edge.
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "pub fn leaf() -> u32 { 1 }\n\
+             pub fn mid() -> u32 { leaf() }\n\
+             pub fn top() -> u32 { mid() }\n",
+        )
+        .unwrap();
+        let tool = tool(dir.path());
+        tool.dispatch(&serde_json::json!({ "action": "index" }))
+            .unwrap();
+        let result = tool
+            .dispatch(&serde_json::json!({
+                "action": "impact",
+                "symbol": "leaf",
+                "depth": 3,
+            }))
+            .unwrap();
+        let details = result.details.clone();
+        let callers = details["callers"].as_array().expect("callers");
+        let top = callers
+            .iter()
+            .find(|caller| caller["qualifiedName"] == serde_json::json!("lib::top"))
+            .unwrap_or_else(|| panic!("top must be reached at depth 2: {details}"));
+        let witness: Vec<&str> = top["witness"]
+            .as_array()
+            .expect("a witness path")
+            .iter()
+            .filter_map(|step| step.as_str())
+            .collect();
+        assert_eq!(
+            witness,
+            vec!["lib::leaf", "lib::mid", "lib::top"],
+            "the witness must be the WHOLE chain from the changed symbol"
+        );
+        assert!(
+            text_of(&result).contains("why: lib::leaf -> lib::mid -> lib::top"),
+            "and the readable answer must show the chain: {}",
+            text_of(&result)
+        );
+    }
 
     fn tool(dir: &std::path::Path) -> GraphTool {
         GraphTool::new(dir.join("graph.db"), dir.to_path_buf())
@@ -5326,6 +5403,48 @@ mod tests {
     /// facts." A decision that a newer one replaced must SAY so in the same breath, or a
     /// reader acts on a decision that no longer holds. The record already printed what it
     /// supersedes; nothing printed what replaced IT.
+    /// The review's §2, `verify`'s next step: "Различать здоровье индекса и
+    /// полноту/правильность конкретного ответа." A graph that resolved half its calls can pass
+    /// the receipt chain and still give a lower-bound caller set — an agent reading "accept"
+    /// would take a thin answer as complete.
+    #[tokio::test]
+    async fn verify_states_answer_coverage_beside_the_receipt_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        // Two unresolved calls (no such definitions) out of three sites: well under the
+        // clean threshold, so the answer must be labelled partial.
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "pub fn real() -> u32 { 1 }\n\
+             pub fn caller() -> u32 { real() + wibble() + wobble() }\n",
+        )
+        .unwrap();
+        let tool = tool(dir.path());
+        tool.dispatch(&serde_json::json!({ "action": "index" }))
+            .unwrap();
+        let result = tool
+            .dispatch(&serde_json::json!({ "action": "verify" }))
+            .unwrap();
+        let details = result.details.clone();
+        let coverage = &details["coverage"];
+        assert!(
+            coverage["sites"].as_u64().unwrap_or(0) >= 3,
+            "the fixture must record its call sites: {details}"
+        );
+        assert!(
+            coverage["resolved"].as_u64().unwrap_or(1) < coverage["sites"].as_u64().unwrap_or(1),
+            "and some must be unresolved: {details}"
+        );
+        let text = text_of(&result);
+        assert!(
+            text.contains("answer coverage"),
+            "the verdict must state answer coverage, not only the chain: {text}"
+        );
+        assert!(
+            text.contains("ANSWERS ARE PARTIAL"),
+            "a thin index must say its answers are partial: {text}"
+        );
+    }
+
     #[tokio::test]
     async fn a_superseded_decision_says_it_no_longer_holds() {
         let dir = tempfile::tempdir().unwrap();

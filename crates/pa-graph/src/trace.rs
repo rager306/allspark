@@ -60,6 +60,16 @@ pub struct TraceStep {
     pub risk_labels: Vec<String>,
     /// Argument expressions (data-flow), when the edge carried them.
     pub args: Vec<Value>,
+    /// The WITNESS PATH: the qualified names from the origin down to this node.
+    ///
+    /// `via` names the last edge only, which says how this node was reached but not WHY.
+    /// The review's §7 asks for the path to be preserved ("сохранять witness path"), and
+    /// `impact` cannot answer "why is my module affected" without it: "A -> B -> C" is an
+    /// explanation, "C, via CALLS" is not.
+    ///
+    /// Bounded by construction: the BFS stores one parent per visited node, so the path is
+    /// at most `depth` entries, and `depth` is capped by the caller.
+    pub witness: Vec<String>,
 }
 
 /// Options for a [`trace`] call.
@@ -331,12 +341,17 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
     visited.insert(origin);
     let mut steps = Vec::new();
     let mut filtered = 0usize;
-    let mut queue: VecDeque<(i64, usize, f32)> = VecDeque::new();
-    queue.push_back((origin, 0, 1.0));
+    // The queue carries each node's WITNESS PATH alongside its depth and confidence: the
+    // path is what turns "reached" into "why reached".
+    let origin_name = store
+        .node_by_id(origin)?
+        .map_or_else(|| opts.symbol.clone(), |node| node.qualified_name);
+    let mut queue: VecDeque<(i64, usize, f32, Vec<String>)> = VecDeque::new();
+    queue.push_back((origin, 0, 1.0, vec![origin_name]));
 
     let mut stopped_by: Option<Truncation> = None;
     let mut edges_examined = 0usize;
-    while let Some((node_id, depth, path_conf)) = queue.pop_front() {
+    while let Some((node_id, depth, path_conf, witness)) = queue.pop_front() {
         if depth >= opts.depth {
             continue;
         }
@@ -400,11 +415,17 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
             // pruned subtree could then hide a step that does pass the floor.
             if opts.confidence_floor.is_some_and(|floor| path_conf < floor) {
                 filtered += 1;
-                queue.push_back((edge.target, depth + 1, path_conf));
+                let mut next_witness = witness.clone();
+                if let Some(node) = store.node_by_id(edge.target)? {
+                    next_witness.push(node.qualified_name);
+                }
+                queue.push_back((edge.target, depth + 1, path_conf, next_witness));
                 continue;
             }
             if let Some(node) = store.node_by_id(edge.target)? {
                 let risk = risk_labels(confidence, &strategy, opts.label_floor());
+                let mut next_witness = witness.clone();
+                next_witness.push(node.qualified_name.clone());
                 steps.push(TraceStep {
                     id: node.id,
                     name: node.name.clone(),
@@ -418,8 +439,9 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
                     candidates,
                     risk_labels: risk,
                     args,
+                    witness: next_witness.clone(),
                 });
-                queue.push_back((edge.target, depth + 1, path_conf));
+                queue.push_back((edge.target, depth + 1, path_conf, next_witness));
             }
         }
         if stopped_by.is_some() {
