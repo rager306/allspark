@@ -1894,6 +1894,13 @@ impl GraphTool {
                     result.edges_examined,
                     result.steps.len()
                 ),
+                Some(Truncation::WitnessBytes) => format!(
+                    " — TRUNCATED at the witness-byte ceiling after examining {} edge(s) and \
+                     returning {} step(s); the paths kept for queued nodes grew past the \
+                     budget, so deeper nodes were not explored. Lower `depth`",
+                    result.edges_examined,
+                    result.steps.len()
+                ),
                 Some(Truncation::Frontier) => format!(
                     " — TRUNCATED at the frontier ceiling after examining {} edge(s) and \
                      returning {} step(s); one node expanded into more than the walk will \

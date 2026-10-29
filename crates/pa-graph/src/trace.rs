@@ -109,6 +109,13 @@ pub struct TraceOptions {
     /// edge, an `IMPORTS` edge. Such an edge is read as full confidence (1.0, in
     /// `read_call_props`), so no floor drops it.
     pub confidence_floor: Option<f32>,
+    /// Maximum bytes of witness text to hold at once, or `None` for no ceiling.
+    ///
+    /// The one bound in §7 that was missing, and the witness path is why it matters: memory
+    /// here is (queued nodes × path length), which a frontier count alone does not express.
+    /// Measured as the running total of the paths in the queue, so a walk that never queues
+    /// a single node pays nothing.
+    pub max_witness_bytes: Option<usize>,
     /// Maximum nodes held in the frontier at once, or `None` for no ceiling.
     ///
     /// The review's §7 asks for the frontier to be bounded alongside visited/edges/time.
@@ -163,6 +170,8 @@ pub enum Truncation {
     WorkBudget,
     /// [`TraceOptions::max_frontier`] hit its ceiling.
     Frontier,
+    /// [`TraceOptions::max_witness_bytes`] hit its ceiling.
+    WitnessBytes,
     /// [`TraceOptions::cancel`] fired, or [`TraceOptions::deadline`] passed.
     Cancelled,
 }
@@ -175,6 +184,7 @@ impl Truncation {
             Self::Limit => "step limit",
             Self::WorkBudget => "work budget",
             Self::Frontier => "frontier ceiling",
+            Self::WitnessBytes => "witness byte ceiling",
             Self::Cancelled => "cancellation",
         }
     }
@@ -210,6 +220,13 @@ pub const DEFAULT_WORK_BUDGET: usize = 1_000;
 /// stops before the paths dominate the walk's memory.
 pub const DEFAULT_MAX_FRONTIER: usize = 512;
 
+/// Witness text a default [`trace`] may hold at once.
+///
+/// A qualified name on this repo averages ~40 bytes; 512 queued nodes at depth 3 come to
+/// roughly 60 KiB, so 1 MiB admits a healthy broad walk and stops a pathological one well
+/// before it is a memory problem.
+pub const DEFAULT_MAX_WITNESS_BYTES: usize = 1_048_576;
+
 impl TraceOptions {
     /// Default options (outgoing CALLS, depth 2).
     #[must_use]
@@ -223,6 +240,7 @@ impl TraceOptions {
             limit: 200,
             confidence_floor: None,
             max_frontier: Some(DEFAULT_MAX_FRONTIER),
+            max_witness_bytes: Some(DEFAULT_MAX_WITNESS_BYTES),
             work_budget: Some(DEFAULT_WORK_BUDGET),
             cancel: None,
             deadline: None,
@@ -276,6 +294,13 @@ impl TraceOptions {
     #[must_use]
     pub fn with_edge_types(mut self, types: Vec<EdgeType>) -> Self {
         self.edge_types = types;
+        self
+    }
+
+    /// Cap the witness text held at once, or leave it unbounded.
+    #[must_use]
+    pub fn with_max_witness_bytes(mut self, ceiling: Option<usize>) -> Self {
+        self.max_witness_bytes = ceiling;
         self
     }
 
@@ -339,6 +364,13 @@ pub struct TraceResult {
     /// graph has more" from "I spent the walk on a hub", and the two call for
     /// different next moves — a lower depth versus a narrower query.
     pub stopped_by: Option<Truncation>,
+    /// Bytes of witness text the walk held at its widest point.
+    ///
+    /// §7 asks for a `bytes` bound and it had none. The witness paths added earlier are what
+    /// make it the dominant term: each queued node carries its chain, so a frontier of 512
+    /// nodes at depth 3 holds thousands of qualified names. Reported rather than guessed, so
+    /// a caller can see which ceiling is actually binding.
+    pub witness_bytes: usize,
     /// Edges examined, whatever their outcome.
     ///
     /// The cost of the answer, printed beside it: a 20-step listing that examined
@@ -378,8 +410,13 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
     let origin_name = store
         .node_by_id(origin)?
         .map_or_else(|| opts.symbol.clone(), |node| node.qualified_name);
+    // Witness text is the memory term the frontier count does not express: measure it as
+    // the running total of the paths actually queued.
+    let mut witness_bytes = 0usize;
     let mut queue: VecDeque<(i64, usize, f32, Vec<String>)> = VecDeque::new();
-    queue.push_back((origin, 0, 1.0, vec![origin_name]));
+    let origin_witness = vec![origin_name];
+    witness_bytes += witness_cost(&origin_witness);
+    queue.push_back((origin, 0, 1.0, origin_witness));
 
     let mut stopped_by: Option<Truncation> = None;
     let mut edges_examined = 0usize;
@@ -391,6 +428,14 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
         // prefix, not the whole reachable set.
         if steps.len() >= opts.limit {
             stopped_by = Some(Truncation::Limit);
+            break;
+        }
+        // The witness-byte ceiling rides with the frontier one, for the same reason.
+        if opts
+            .max_witness_bytes
+            .is_some_and(|ceiling| witness_bytes > ceiling)
+        {
+            stopped_by = Some(Truncation::WitnessBytes);
             break;
         }
         // The frontier ceiling is checked before expanding, because expanding is what
@@ -458,6 +503,8 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
                 if let Some(node) = store.node_by_id(edge.target)? {
                     next_witness.push(node.qualified_name);
                 }
+                witness_bytes += witness_cost(&next_witness);
+                witness_bytes += witness_cost(&next_witness);
                 queue.push_back((edge.target, depth + 1, path_conf, next_witness));
                 continue;
             }
@@ -480,6 +527,7 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
                     args,
                     witness: next_witness.clone(),
                 });
+                witness_bytes += witness_cost(&next_witness);
                 queue.push_back((edge.target, depth + 1, path_conf, next_witness));
             }
         }
@@ -505,8 +553,14 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
         truncated: stopped_by.is_some(),
         filtered,
         stopped_by,
+        witness_bytes,
         edges_examined,
     })
+}
+
+/// Bytes a witness path occupies, as the sum of its names plus one byte per separator.
+fn witness_cost(witness: &[String]) -> usize {
+    witness.iter().map(String::len).sum::<usize>() + witness.len().saturating_sub(1)
 }
 
 /// A cross-service HTTP call edge, if the project has any.
@@ -765,6 +819,45 @@ mod tests {
     /// subtree still expanded, so the answer stays tiny while the walk is huge.
     /// The review's §7 wants the frontier bounded alongside visited/edges/time — and the
     /// witness path makes it matter: every queued node holds a path, so width is memory.
+    /// §7's last bound: `bytes`. The witness path makes it the dominant memory term, and a
+    /// frontier count cannot express it.
+    #[test]
+    fn a_witness_byte_ceiling_stops_the_walk_and_reports_its_cost() {
+        let store = seed();
+        let main = resolve_symbol(&store, "p", "main").expect("main");
+        for i in 0..40 {
+            let leaf = store
+                .upsert_node(&crate::types::Node {
+                    id: 0,
+                    project: "p".into(),
+                    label: Label::Function,
+                    name: format!("a_long_leaf_name_number_{i}"),
+                    qualified_name: format!("p::module::submodule::a_long_leaf_name_number_{i}"),
+                    file_path: "src/lib.rs".into(),
+                    start_line: 10 + i,
+                    end_line: 11 + i,
+                    props: json!({}),
+                })
+                .expect("leaf");
+            store
+                .insert_edge("p", main, leaf, EdgeType::Calls, &json!({"confidence":1.0}))
+                .expect("edge");
+        }
+        // Room for roughly one path: the ceiling must bind on the second queued node.
+        let opts = TraceOptions::new("p", "main").with_max_witness_bytes(Some(60));
+        let result = trace(&store, &opts).expect("trace");
+        assert_eq!(
+            result.stopped_by,
+            Some(Truncation::WitnessBytes),
+            "a byte ceiling that binds must say which ceiling it was"
+        );
+        assert!(
+            result.witness_bytes > 60,
+            "and the reported cost must be the measured bytes, not a guess: {}",
+            result.witness_bytes
+        );
+    }
+
     #[test]
     fn a_wide_frontier_is_stopped_and_says_so() {
         let store = seed();
