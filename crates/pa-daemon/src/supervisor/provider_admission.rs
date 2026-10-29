@@ -242,6 +242,23 @@ impl Supervisor {
                         None,
                     );
                 };
+                // Ownership, not shape (review #14). `is_worker_token_shape` accepts any
+                // 8+ alphanumeric string, so the token check above authenticates
+                // NOTHING on this path: any same-user local process could mint leases and
+                // settle or release another worker's. A forged rate-limited settle drives
+                // the provider's limit to the floor; a foreign release corrupts in-flight
+                // accounting. The holder recorded at mint is the only authority here.
+                if !registry.lease_held_by(*lease_id, worker_token) {
+                    self.log_line(&format!(
+                        "{ADMISSION_COMMAND}: {action} lease {lease_id} refused — not held by {worker_token}"
+                    ));
+                    return response_failure(
+                        Some(command_id),
+                        type_name,
+                        "provider admission lease is not held by this worker",
+                        None,
+                    );
+                }
                 let settled = match outcome.as_deref().and_then(StreamOutcome::from_wire) {
                     // The typed reason rides the wire beside the outcome
                     // (the worker's raw-JSON settle sends it as a plain

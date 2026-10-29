@@ -1212,6 +1212,25 @@ impl ProviderAdmission {
         self.dispatch(&mut state, &record.key);
     }
 
+    /// Whether `holder` owns `lease`.
+    ///
+    /// Settle and release are MUTATIONS of provider capacity, and the wire only carried the
+    /// lease id plus a shape-checked token — so any same-user local process could settle or
+    /// release another worker's lease (review #14). Forged rate-limited settles drive the
+    /// provider limit to the floor; foreign releases corrupt in-flight accounting. The holder
+    /// is already recorded at mint; this is what reads it.
+    ///
+    /// An UNKNOWN lease answers `false`: a lease that is gone cannot be authoritatively
+    /// settled by anyone, and pretending otherwise would let a stale id win a race with a
+    /// reused one.
+    pub fn lease_held_by(&self, lease: u64, holder: &str) -> bool {
+        let state = self.lock();
+        state
+            .leases
+            .get(&lease)
+            .is_some_and(|record| record.holder == holder)
+    }
+
     /// Drop every lease a holder still owns: a worker that died mid-stream
     /// must not shrink the pool forever.
     pub fn release_holder(&self, holder: &str) -> usize {
