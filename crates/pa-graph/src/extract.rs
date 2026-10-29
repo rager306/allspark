@@ -523,6 +523,28 @@ fn module_of(path: &str) -> String {
 mod tests {
     use super::*;
 
+    /// `parse_alias` had no test, and the aliased branch disagrees with the plain one about
+    /// what the TARGET is: a path for one, a name for the other. The resolver looks candidates
+    /// up by name, so only the name form can resolve.
+    #[test]
+    fn parse_alias_reduces_both_branches_to_a_definition_name() {
+        assert_eq!(
+            parse_alias("crate::b::helper"),
+            Some(("helper".to_string(), "helper".to_string())),
+            "the plain branch names the definition"
+        );
+        assert_eq!(
+            parse_alias("crate::b::helper as renamed_helper"),
+            Some(("renamed_helper".to_string(), "helper".to_string())),
+            "and so must the aliased one: the local name is new, the target is not"
+        );
+        assert_eq!(
+            parse_alias("SuperLongTraitName as _"),
+            Some(("_".to_string(), "SuperLongTraitName".to_string())),
+            "`as _` still names the trait it imports, which is what an IMPORTS edge needs"
+        );
+    }
+
     fn rust(source: &str) -> ExtractedFile {
         extract(source, SupportLang::Rust, "m")
     }
