@@ -306,7 +306,13 @@ impl GraphStore {
         // movement, while miss rows for calls the edit deleted stayed behind.
         // A later full index then produced a different graph for the same tree.
         let deps = crate::deps::DependencyCrates::from_workspace(&root).unwrap_or_default();
-        let resolver = Resolver::with_deps(symbols, deps);
+        let mut resolver = Resolver::with_deps(symbols, deps);
+        // The same alias table the full index builds, or the two write paths disagree about
+        // a tree with an aliased call — which is exactly what the parity test caught when
+        // only the full path had it.
+        for (rel, import) in &pending_imports {
+            resolver.note_imports(rel, std::slice::from_ref(import));
+        }
         let file_nodes = self.file_node_ids(&opts.project)?;
         // `record_call_edge` is the full index's per-call writer: it resolves,
         // ELSE records a dependency-rooted self-loop, ELSE records a miss row
@@ -406,7 +412,8 @@ impl GraphStore {
                 line: site.line,
                 args: Vec::new(),
             };
-            let Some((source, _target, props)) = resolver.resolve_call(&site.caller_qn, &call)
+            let Some((source, _target, props)) =
+                resolver.resolve_call(&site.caller_qn, &site.rel_path, &call)
             else {
                 continue;
             };
@@ -955,6 +962,61 @@ mod tests {
             "the fixture must exercise the dependency path"
         );
     }
+    /// An aliased import must be visible to the CALL beside it.
+    ///
+    /// `use crate::b::helper as renamed;` binds `renamed` to `helper`. Two bugs met here:
+    /// `parse_alias` kept the PATH as the target name (`crate::b::helper`), which the
+    /// by-short-name resolver could not match, and the resolver had no alias table at all, so
+    /// even a correct target name was never consulted. The call was recorded unresolved while
+    /// the import beside it resolved to an IMPORTS edge — one half of the file seeing what the
+    /// other half could not.
+    #[test]
+    fn an_aliased_import_resolves_the_call_through_it() {
+        let dir = tempfile::tempdir().expect("dir");
+        write(
+            dir.path(),
+            "a.rs",
+            "use crate::b::helper as renamed_helper;\npub fn caller() { renamed_helper(); }\n",
+        );
+        write(dir.path(), "b.rs", "pub fn helper() -> u32 { 1 }\n");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("index");
+
+        let nodes: HashMap<i64, String> = store
+            .all_nodes("p")
+            .expect("nodes")
+            .into_iter()
+            .map(|n| (n.id, n.qualified_name))
+            .collect();
+        let calls: Vec<(String, String)> = store
+            .all_edges("p")
+            .expect("edges")
+            .iter()
+            .filter(|e| e.edge_type == crate::types::EdgeType::Calls)
+            .map(|e| {
+                (
+                    nodes.get(&e.source).cloned().unwrap_or_default(),
+                    nodes.get(&e.target).cloned().unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert!(
+            calls.contains(&("a::caller".to_string(), "b::helper".to_string())),
+            "the aliased call must resolve to the imported definition: {calls:?}"
+        );
+        let sites = store.call_sites("p").expect("sites");
+        let site = sites
+            .iter()
+            .find(|s| s.callee == "renamed_helper")
+            .expect("the site is recorded");
+        assert_eq!(
+            site.resolution, "resolved",
+            "and must not be left unresolved beside a resolving import: {site:?}"
+        );
+    }
+
     /// The review's first acceptance check, made exhaustive: "Canonical parity full vs
     /// incremental: add/delete/rename/alias/body-only edit; исчезнувший unresolved call;
     /// новая definition, разрешающая прежний unresolved; occurrence multiplicity.
@@ -968,6 +1030,7 @@ mod tests {
     /// Compared by NORMALIZED FACTS: edge (type, source qn, target qn) triples and
     /// per-symbol occurrence counts. Row ids and order are store-local and would make
     /// the comparison test the allocator.
+
     #[test]
     fn incremental_and_full_index_agree_across_every_mutation_shape() {
         /// (name, files to seed, the mutation to apply, files after the mutation)
@@ -992,6 +1055,18 @@ mod tests {
             }),
             ("renamed file", |dir| {
                 std::fs::rename(dir.join("c.rs"), dir.join("renamed.rs")).expect("rename");
+            }),
+            // §11 names `alias` explicitly, and it is the mutation a resolver is most likely
+            // to get wrong: the CALL records `helper()` either way, but the IMPORT that
+            // binds the local name changes, so a stale `local_name` keeps resolving a call
+            // the new source no longer makes that way.
+            ("alias introduced", |dir| {
+                write(
+                    dir,
+                    "a.rs",
+                    "use crate::b::helper as renamed_helper;\n\
+                     pub fn caller() { renamed_helper(); missing_old(); missing_old(); }\n",
+                );
             }),
         ];
 

@@ -492,8 +492,14 @@ fn parse_alias(item: &str) -> Option<(String, String)> {
     if item.is_empty() {
         return None;
     }
+    // `target` is the DEFINITION's name, not the path it was written with. The resolver
+    // looks candidates up by short name, so `use crate::b::helper as renamed` must yield
+    // `("renamed", "helper")` — it used to yield `("renamed", "crate::b::helper")`, which
+    // matched no candidate and left every aliased import with no IMPORTS edge AND every call
+    // through the alias unresolved. The non-aliased branch already reduced to the last
+    // segment; only this one did not.
     let (local, target) = if let Some((orig, alias)) = item.split_once(" as ") {
-        (alias.trim().to_string(), orig.trim().to_string())
+        (alias.trim().to_string(), last_segment(orig))
     } else {
         let name = last_segment(item);
         (name.clone(), name)

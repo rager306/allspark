@@ -361,7 +361,14 @@ impl GraphStore {
         // Read the manifests once per run. A workspace without manifests yields an
         // empty set, which simply means no call is attributed to a dependency.
         let deps = crate::deps::DependencyCrates::from_workspace(&root).unwrap_or_default();
-        let resolver = Resolver::with_deps(symbols, deps);
+        let mut resolver = Resolver::with_deps(symbols, deps);
+        // Aliases must be known BEFORE any call resolves: a call written through an alias
+        // names the local name, and the resolver looks definitions up by name. Keyed by the
+        // FILE, which the indexer already holds — deriving a module path from the file name
+        // was a guess (`a.rs` -> `a`) that the next language breaks.
+        for (rel, import) in &pending_imports {
+            resolver.note_imports(rel, std::slice::from_ref(import));
+        }
         for (rel, caller_qn, call) in &pending_calls {
             self.record_call_edge(&resolver, &opts.project, rel, caller_qn, call)?;
         }
@@ -509,7 +516,7 @@ impl GraphStore {
         caller_qn: &str,
         call: &CallSite,
     ) -> Result<()> {
-        if let Some((source, target, props)) = resolver.resolve_call(caller_qn, call) {
+        if let Some((source, target, props)) = resolver.resolve_call(caller_qn, rel_path, call) {
             // A self-call resolves to the caller: the target is known, but the
             // verdict says WHY the edge is a self-loop.
             let verdict = if props.get("strategy").and_then(serde_json::Value::as_str)
@@ -894,6 +901,13 @@ pub(crate) struct Resolver {
     /// External crates the workspace depends on, so a miss can say "this is a
     /// dependency call" instead of guessing at the leaf name. Built once per run.
     deps: crate::deps::DependencyCrates,
+    /// Per-file import aliases: file path → (local name → definition name).
+    ///
+    /// A call through an alias (`use a::helper as h; h()`) names `h`, and `by_name` holds
+    /// definition names only, so without this table every aliased call was recorded
+    /// unresolved while the import beside it resolved to an edge. Keyed by the CALLER's
+    /// file: an alias is file-local and must not wire an unrelated file's call.
+    alias_targets: HashMap<String, HashMap<String, String>>,
 }
 
 impl Resolver {
@@ -925,7 +939,29 @@ impl Resolver {
         Self {
             by_qn,
             by_name,
+            alias_targets: HashMap::new(),
             deps,
+        }
+    }
+
+    /// Record one file's import aliases so `resolve_call` can see through them.
+    ///
+    /// Takes the imports that belong to `rel_path` — the file the caller lives in, which is
+    /// a fact the indexer already holds. Deriving a module path from the qualified name was
+    /// a guess that held only for extensionless stems — and keeps only the imports that
+    /// actually alias something: `use a::b;` gives `("b", "b")`, which is not an alias and
+    /// would add nothing to look up.
+    pub(crate) fn note_imports(&mut self, rel_path: &str, imports: &[crate::extract::ImportDef]) {
+        let aliases: HashMap<String, String> = imports
+            .iter()
+            .filter(|import| import.local_name != import.target_name)
+            .map(|import| (import.local_name.clone(), import.target_name.clone()))
+            .collect();
+        if !aliases.is_empty() {
+            self.alias_targets
+                .entry(rel_path.to_string())
+                .or_default()
+                .extend(aliases);
         }
     }
 
@@ -969,10 +1005,26 @@ impl Resolver {
     pub(crate) fn resolve_call(
         &self,
         caller_qn: &str,
+        rel_path: &str,
         call: &CallSite,
     ) -> Option<(i64, i64, serde_json::Value)> {
         let source = *self.by_qn.get(caller_qn)?;
-        let candidates = self.by_name.get(&call.callee)?;
+        // An alias is a LOCAL name: `use crate::b::helper as renamed` means `renamed()`
+        // names `helper`, and `by_name` holds definition names only. Without this, every call
+        // through an alias was recorded unresolved even though the import above it bound the
+        // name — the import resolved to an IMPORTS edge while the call beside it did not.
+        //
+        // Scoped to the caller's OWN file: an alias does not leak into another module, and
+        // resolving it globally would wire `renamed()` in an unrelated file to this import.
+        // `alias_targets` holds only imports whose callers already passed both lookups, so a
+        // file that is still pending contributes nothing rather than a guess.
+        let name = self
+            .alias_targets
+            .get(rel_path)
+            .and_then(|aliases| aliases.get(&call.callee))
+            .cloned()
+            .unwrap_or_else(|| call.callee.clone());
+        let candidates = self.by_name.get(&name)?;
         let (target_qn, strategy) = if candidates.len() == 1 {
             (candidates[0].clone(), CallStrategy::UniqueName)
         } else {
@@ -986,14 +1038,6 @@ impl Resolver {
             }
         };
         let target = *self.by_qn.get(&target_qn)?;
-        // A self-call has a fully known target: it is the caller. Returning
-        // `None` here sent every direct recursion down the MISS path, where it
-        // was recorded as `unresolved / shape_not_modelled` — indistinguishable
-        // from a name the resolver could not handle. The edge is still a
-        // self-loop (that is what a recursive target is); only the strategy and
-        // the confidence change, so a reader can tell the three cases apart:
-        // `recursive` (known, here), `dependency` (known, outside the tree),
-        // unresolved (no idea).
         // A self-call has a fully known target: it is the caller. Returning
         // `None` here sent every direct recursion down the MISS path, where it
         // was recorded as `unresolved / shape_not_modelled` — indistinguishable
@@ -2127,7 +2171,7 @@ mod tests {
             args: Vec::new(),
         };
         let (src, tgt, props) = resolver
-            .resolve_call("a::m::caller", &call)
+            .resolve_call("a::m::caller", "a/m.rs", &call)
             .expect("resolve");
         assert_eq!(src, 3);
         assert_eq!(tgt, 1, "same-module foo must win");
@@ -2150,7 +2194,9 @@ mod tests {
             line: 1,
             args: Vec::new(),
         };
-        let (_, tgt, props) = resolver.resolve_call("a::caller", &call).expect("resolve");
+        let (_, tgt, props) = resolver
+            .resolve_call("a::caller", "a/m.rs", &call)
+            .expect("resolve");
         assert_eq!(tgt, 5);
         assert_eq!(
             props.get("strategy").and_then(|v| v.as_str()),
