@@ -91,7 +91,7 @@ pub use session::{
     ApplyOutcome, ApplyRequest, EditWriter, FileOutcome, PreviewBatch, Session, WriteRequest,
     WriteResponse,
 };
-pub use store::EditStore;
+pub use store::{EditPrecondition, EditStore, PreconditionState, file_hash};
 pub use stream_json::{ArgSnapshot, ArgStream, EditEntry};
 
 /// Prompt text for a mode (the tool description).

@@ -358,6 +358,31 @@ impl EditWriter for FsWriter {
                     .map_err(|err| write_err(&request.absolute, err))?;
             }
             FileOp::Create | FileOp::Update => {
+                // The review's check #5, at the last possible moment: a plan built seconds
+                // ago can be stale by now, and writing planned bytes over someone else's
+                // change lands a patch on the wrong lines. `Update` is the case that can be
+                // stale — `Create` asserts the file did not exist.
+                if request.op == FileOp::Update {
+                    let existing = std::fs::read(&request.absolute).ok();
+                    if let Some(bytes) = &existing {
+                        let text = String::from_utf8_lossy(bytes);
+                        if let Some(expected) = &request.expected_hash {
+                            let actual = pa_edit::file_hash(&text);
+                            if &actual != expected {
+                                return Err(pa_edit::EditError::Writer(format!(
+                                    "{} changed since it was read (hash {expected} -> {actual}); \
+                                     re-read it and plan the edit again",
+                                    request.display
+                                )));
+                            }
+                        }
+                    } else if request.expected_hash.is_some() {
+                        return Err(pa_edit::EditError::Writer(format!(
+                            "{} no longer exists; the edit was planned against a file that is gone",
+                            request.display
+                        )));
+                    }
+                }
                 if let Some(content) = &request.content {
                     if let Some(parent) = request.absolute.parent() {
                         std::fs::create_dir_all(parent).map_err(|err| write_err(parent, err))?;
@@ -437,6 +462,62 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// The review's check #5 at the last possible moment: a plan can be stale by the time
+    /// the write lands, and writing planned bytes over someone else's change puts a patch on
+    /// the wrong lines. The writer refuses with both tags, so the caller replans.
+    #[tokio::test]
+    async fn the_writer_refuses_bytes_that_changed_since_the_plan() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("a.rs");
+        std::fs::write(&path, "pub fn one() {}\n").expect("seed");
+        let planned = pa_edit::file_hash("pub fn one() {}\n");
+        let writer = FsWriter { lsp: None };
+
+        // Someone else edits the file between planning and writing.
+        std::fs::write(&path, "pub fn changed() {}\n").expect("edit");
+        let refused = writer
+            .write(WriteRequest {
+                expected_hash: Some(planned.clone()),
+                absolute: path.clone(),
+                display: "a.rs".to_string(),
+                op: FileOp::Update,
+                move_to: None,
+                content: Some("pub fn planned() {}\n".to_string()),
+                flush_lsp: false,
+                lsp_batch_id: None,
+            })
+            .await;
+        assert!(
+            refused.is_err(),
+            "a stale plan must be refused, not written: {refused:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "pub fn changed() {}\n",
+            "the file must be UNTOUCHED: refusing after writing protects nothing"
+        );
+
+        // The same write against the bytes the plan actually saw succeeds.
+        std::fs::write(&path, "pub fn one() {}\n").expect("restore");
+        writer
+            .write(WriteRequest {
+                expected_hash: Some(planned),
+                absolute: path.clone(),
+                display: "a.rs".to_string(),
+                op: FileOp::Update,
+                move_to: None,
+                content: Some("pub fn planned() {}\n".to_string()),
+                flush_lsp: false,
+                lsp_batch_id: None,
+            })
+            .await
+            .expect("a matching precondition writes");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "pub fn planned() {}\n"
+        );
     }
 
     #[tokio::test]
@@ -641,6 +722,7 @@ mod tests {
         // Delete (content None).
         writer
             .write(WriteRequest {
+                expected_hash: None,
                 absolute: src.clone(),
                 display: "src.txt".to_string(),
                 op: FileOp::Delete,
@@ -658,6 +740,7 @@ mod tests {
         let dest = dir.path().join("moved.txt");
         writer
             .write(WriteRequest {
+                expected_hash: None,
                 absolute: created.clone(),
                 display: "created.txt".to_string(),
                 op: FileOp::Create,
@@ -679,6 +762,7 @@ mod tests {
         let writer = FsWriter { lsp: None };
         let response = writer
             .write(WriteRequest {
+                expected_hash: None,
                 absolute: path.clone(),
                 display: "a.txt".to_string(),
                 op: FileOp::Create,

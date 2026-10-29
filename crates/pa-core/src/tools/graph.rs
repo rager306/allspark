@@ -2182,6 +2182,27 @@ impl GraphTool {
                 use std::fmt::Write as _;
                 let _ = writeln!(body, "\nSupersedes: #{supersedes}");
             }
+            // Who replaced THIS one, which the record above cannot answer. The review's
+            // check #7 says a superseded ADR must not become a confirmed dependency fact;
+            // the reader needs that verdict in the same breath as the decision, or it will
+            // act on a decision that no longer holds. `superseded_by_in_project` already
+            // existed for this and had no caller.
+            let replaced_by = self.with_reader(|store| {
+                let adrs = pa_graph::adr::AdrStore::new(store.connection())
+                    .map_err(|err| anyhow::anyhow!("adr store: {err}"))?;
+                let found = adrs
+                    .superseded_by_in_project(adr.id, &adr.project)
+                    .map_err(|err| anyhow::anyhow!("superseded_by: {err}"))?;
+                Ok::<_, anyhow::Error>(found)
+            })?;
+            if let Some(newer) = replaced_by {
+                use std::fmt::Write as _;
+                let _ = writeln!(
+                    body,
+                    "\nSUPERSEDED BY #{newer}: this decision no longer holds. Read #{newer} \
+                     before acting on it."
+                );
+            }
             if !adr.project.is_empty() {
                 use std::fmt::Write as _;
                 let _ = writeln!(body, "Project: {}", adr.project);
@@ -4916,6 +4937,87 @@ mod tests {
             .expect("the same root resolves to the same project");
         assert!(text_of(&again).contains("only_in_b"));
     }
+    /// The review's check #7: "Superseded ADR ... не становятся подтверждёнными dependency
+    /// facts." A decision that a newer one replaced must SAY so in the same breath, or a
+    /// reader acts on a decision that no longer holds. The record already printed what it
+    /// supersedes; nothing printed what replaced IT.
+    #[tokio::test]
+    async fn a_superseded_decision_says_it_no_longer_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("lib.rs"), "pub fn x() {}\n").unwrap();
+        let tool = tool(dir.path());
+        tool.dispatch(&serde_json::json!({ "action": "index" }))
+            .unwrap();
+
+        let record = |title: &str, decision: &str, supersedes: Option<i64>| {
+            let mut params = serde_json::json!({
+                "action": "adr",
+                "title": title,
+                "context": "a decision was needed",
+                "decision": decision,
+                "consequences": "follow it",
+            });
+            if let Some(id) = supersedes {
+                params["supersedes"] = serde_json::json!(id);
+            }
+            tool.dispatch(&params).unwrap()
+        };
+        let first = record("use a flat map", "flat", None);
+        let all = tool
+            .dispatch(&serde_json::json!({ "action": "adr" }))
+            .unwrap();
+        let listing = text_of(&all);
+        let old_id: i64 = listing
+            .split("- #")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|digits| digits.parse().ok())
+            .unwrap_or_else(|| {
+                panic!(
+                    "id in listing: {listing}
+first: {}",
+                    text_of(&first)
+                )
+            });
+
+        // A newer decision replaces it.
+        record("use a sharded map", "sharded", Some(old_id));
+
+        let read = tool
+            .dispatch(&serde_json::json!({ "action": "adr", "id": old_id }))
+            .unwrap();
+        let body = text_of(&read);
+        assert!(
+            body.contains("SUPERSEDED BY #"),
+            "the replaced decision must name its replacement: {body}"
+        );
+        assert!(
+            body.contains("no longer holds"),
+            "and must say the decision does not stand: {body}"
+        );
+
+        // A decision nobody replaced carries no such line.
+        let all = tool
+            .dispatch(&serde_json::json!({ "action": "adr" }))
+            .unwrap();
+        let listing = text_of(&all);
+        let newest: i64 = listing
+            .split("- #")
+            .skip(1)
+            .filter_map(|rest| rest.split_whitespace().next())
+            .filter_map(|digits| digits.parse::<i64>().ok())
+            .max()
+            .expect("two decisions exist");
+        let read = tool
+            .dispatch(&serde_json::json!({ "action": "adr", "id": newest }))
+            .unwrap();
+        assert!(
+            !text_of(&read).contains("SUPERSEDED BY"),
+            "the replacement itself is current: {}",
+            text_of(&read)
+        );
+    }
+
     /// Review 4.4: `id` must not read another workspace's decision.
     ///
     /// The list was scoped in a previous change; the by-id read was not, so an

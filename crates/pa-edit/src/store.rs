@@ -78,6 +78,97 @@ impl Clipboard {
 /// Hashes the text with trailing spaces, tabs, and CRs stripped from every
 /// line. Unchanged runs between stripped spans are fed straight from `text`, so
 /// no normalized copy is built.
+/// A precondition an edit was planned against, and whether it still holds.
+///
+/// The review's check #5: "Concurrent source change, stale LSP version, stale graph
+/// generation: pack/apply отклоняет или явно пересобирает выбранные данные." A snapshot
+/// taken at read time is a CLAIM about the file; applying an edit minutes later against a
+/// file someone else changed is how a patch lands on the wrong lines.
+///
+/// The caller plans against `expected`, and `check` compares it with the file NOW. A
+/// mismatch is a replan, never a silent write: the four-character tag is enough to detect
+/// it without holding the text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditPrecondition {
+    /// Canonical path the plan was built from.
+    pub path: PathBuf,
+    /// The content tag the plan saw.
+    pub expected_hash: String,
+}
+
+impl EditPrecondition {
+    /// A precondition for `path`, from the store's current head.
+    ///
+    /// `None` when nothing was read: an edit planned without a snapshot has no claim to
+    /// check, and inventing one would refuse work that was never stale.
+    #[must_use]
+    pub fn of(store: &EditStore, path: &Path) -> Option<Self> {
+        store.head_hash(path).map(|expected_hash| Self {
+            path: path.to_path_buf(),
+            expected_hash,
+        })
+    }
+
+    /// Whether the file still matches this precondition.
+    ///
+    /// `Err` carries the reason a caller can show: the two tags, or the I/O failure. A file
+    /// that no longer exists is a violation, not an error — a plan against a deleted file is
+    /// exactly the stale case this exists for.
+    ///
+    /// # Errors
+    /// When the file cannot be read for a reason other than absence.
+    pub fn check(&self) -> Result<PreconditionState, std::io::Error> {
+        let Ok(raw) = std::fs::read(&self.path) else {
+            return Ok(PreconditionState::Missing);
+        };
+        let text = String::from_utf8_lossy(&raw);
+        let actual = file_hash(&text);
+        Ok(if actual == self.expected_hash {
+            PreconditionState::Holds
+        } else {
+            PreconditionState::Changed {
+                expected: self.expected_hash.clone(),
+                actual,
+            }
+        })
+    }
+}
+
+/// What a precondition's check found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreconditionState {
+    /// The bytes are the ones the plan saw.
+    Holds,
+    /// The file changed since the plan was built: REPLAN against these bytes.
+    Changed { expected: String, actual: String },
+    /// The file is gone: the plan has no subject.
+    Missing,
+}
+
+impl PreconditionState {
+    /// Whether an edit may proceed.
+    #[must_use]
+    pub fn is_applicable(&self) -> bool {
+        matches!(self, Self::Holds)
+    }
+
+    /// A one-line reason for a refusal, or `None` when it holds.
+    #[must_use]
+    pub fn refusal(&self) -> Option<String> {
+        match self {
+            Self::Holds => None,
+            Self::Changed { expected, actual } => Some(format!(
+                "the file changed since it was read (hash {expected} -> {actual}); \
+                 re-read it and plan the edit again"
+            )),
+            Self::Missing => Some(
+                "the file no longer exists; the edit was planned against a file that is gone"
+                    .to_string(),
+            ),
+        }
+    }
+}
+
 pub fn file_hash(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut hasher = Xxh32::new(0);
@@ -794,5 +885,77 @@ mod tests {
         let file = std::fs::File::create(&path).unwrap();
         file.set_len(MAX_SNAPSHOT_FILE_BYTES + 1).unwrap();
         assert!(EditStore::new().record_file(&path, None).is_none());
+    }
+}
+
+#[cfg(test)]
+mod precondition_tests {
+    use super::*;
+
+    /// The review's check #5: a plan built against a snapshot must be REFUSED when the file
+    /// changed under it, and the refusal must name both tags so a caller can replan.
+    #[test]
+    fn a_precondition_refuses_a_file_that_changed_since_the_plan() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("a.rs");
+        std::fs::write(&path, "pub fn one() {}\n").expect("write");
+
+        let store = EditStore::new();
+        store.record(&path, "pub fn one() {}\n", None);
+        let precondition = EditPrecondition::of(&store, &path).expect("a snapshot exists");
+        assert_eq!(
+            precondition.check().expect("readable"),
+            PreconditionState::Holds
+        );
+
+        // Someone else edits the file: the plan is now stale.
+        std::fs::write(&path, "pub fn one() {}\npub fn two() {}\n").expect("write");
+        let state = precondition.check().expect("readable");
+        assert!(!state.is_applicable(), "a changed file is not applicable");
+        let refusal = state.refusal().expect("a reason");
+        assert!(
+            refusal.contains("changed since it was read")
+                && refusal.contains("plan the edit again"),
+            "the refusal must say what happened and what to do: {refusal}"
+        );
+
+        // The same bytes again: it holds, so the guard is not merely "always refuse".
+        std::fs::write(&path, "pub fn one() {}\n").expect("write");
+        assert_eq!(
+            precondition.check().expect("readable"),
+            PreconditionState::Holds
+        );
+    }
+
+    /// A deleted file is a VIOLATION, not an I/O error: a plan against a file that is gone is
+    /// exactly the stale case.
+    #[test]
+    fn a_precondition_reports_a_deleted_file_as_a_violation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("gone.rs");
+        std::fs::write(&path, "pub fn x() {}\n").expect("write");
+        let store = EditStore::new();
+        store.record(&path, "pub fn x() {}\n", None);
+        let precondition = EditPrecondition::of(&store, &path).expect("snapshot");
+        std::fs::remove_file(&path).expect("remove");
+        let state = precondition.check().expect("absence is not an I/O error");
+        assert_eq!(state, PreconditionState::Missing);
+        assert!(
+            state
+                .refusal()
+                .expect("reason")
+                .contains("no longer exists")
+        );
+    }
+
+    /// No snapshot means NO claim: an edit planned without a read must not be refused for a
+    /// staleness nobody asserted.
+    #[test]
+    fn an_unread_file_has_no_precondition_to_check() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("never.ts");
+        std::fs::write(&path, "x\n").expect("write");
+        let store = EditStore::new();
+        assert!(EditPrecondition::of(&store, &path).is_none());
     }
 }

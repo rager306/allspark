@@ -54,6 +54,15 @@ pub struct WriteRequest {
     pub move_to: Option<PathBuf>,
     /// Final bytes as text; `None` for deletes.
     pub content: Option<String>,
+    /// The content tag the caller PLANNED against, when it read the file first.
+    ///
+    /// The review's check #5: "Concurrent source change ... pack/apply отклоняет или явно
+    /// пересобирает". A plan built seconds ago can be stale by the time the write lands, and
+    /// writing planned bytes over someone else's change puts a patch on the wrong lines. The
+    /// writer checks this and refuses with both tags, so the caller replans instead of
+    /// silently overwriting. `None` means "no claim": an edit planned without a read must not
+    /// be refused for a staleness nobody asserted.
+    pub expected_hash: Option<String>,
     /// Last write of this call && the LSP batch requested a flush.
     pub flush_lsp: bool,
     pub lsp_batch_id: Option<String>,
@@ -322,6 +331,10 @@ impl Session {
                         op: file.op,
                         move_to: file.move_to.as_ref().map(|m| m.absolute.clone()),
                         content: file.persisted.clone(),
+                        // The tag of the bytes this patch was PLANNED against — the engine
+                        // already holds them in `before`, so the contract costs one hash
+                        // instead of a second read.
+                        expected_hash: file.existed.then(|| file_hash(&file.before)),
                         flush_lsp: request.lsp_flush && last_write == Some(index),
                         lsp_batch_id: request.lsp_batch_id.clone(),
                     })
