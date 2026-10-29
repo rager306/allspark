@@ -959,25 +959,72 @@ impl GraphStore {
     /// # Errors
     /// Propagates SQLite errors.
     pub fn call_sites(&self, project: &str) -> Result<Vec<CallSiteRow>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT rel_path, caller_qn, line, callee, callee_path, resolution, reason, confidence
-             FROM call_sites WHERE project = ?1 ORDER BY rel_path, line",
+        self.call_sites_for_callee(project, None)
+    }
+
+    /// How many call sites in `project` did NOT resolve.
+    ///
+    /// A COUNT and not a filter over loaded rows: the number is a project-wide honesty
+    /// figure, so materializing every site to compute it was the expensive way to learn one
+    /// integer.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    pub fn unresolved_call_site_count(&self, project: &str) -> Result<usize> {
+        let count: i64 = self.conn.query_row(
+            "SELECT count(*) FROM call_sites WHERE project = ?1 AND resolution = 'unresolved'",
+            params![project],
+            |row| row.get(0),
         )?;
-        let rows = stmt
-            .query_map(params![project], |row| {
-                Ok(CallSiteRow {
-                    rel_path: row.get(0)?,
-                    caller_qn: row.get(1)?,
-                    line: row.get(2)?,
-                    callee: row.get(3)?,
-                    callee_path: row.get(4)?,
-                    resolution: row.get(5)?,
-                    reason: row.get(6)?,
-                    confidence: row.get(7)?,
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
-            .map_err(crate::GraphError::from)?;
+        Ok(usize::try_from(count).unwrap_or(0))
+    }
+
+    /// Call sites naming one callee, or all of them when `callee` is `None`.
+    ///
+    /// The impact scan needs one leaf name, and loading the whole table to filter it in Rust
+    /// read 45 760 rows for `pa-core` alone. The predicate belongs in SQL beside the index
+    /// that already exists on `(project, callee)`.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    pub fn call_sites_for_callee(
+        &self,
+        project: &str,
+        callee: Option<&str>,
+    ) -> Result<Vec<CallSiteRow>> {
+        let sql = match callee {
+            Some(_) => {
+                "SELECT rel_path, caller_qn, line, callee, callee_path, resolution, reason, \
+                 confidence FROM call_sites WHERE project = ?1 AND callee = ?2 \
+                 ORDER BY rel_path, line"
+            }
+            None => {
+                "SELECT rel_path, caller_qn, line, callee, callee_path, resolution, reason, \
+                 confidence FROM call_sites WHERE project = ?1 ORDER BY rel_path, line"
+            }
+        };
+        let mut stmt = self.conn.prepare(sql)?;
+        let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<CallSiteRow> {
+            Ok(CallSiteRow {
+                rel_path: row.get(0)?,
+                caller_qn: row.get(1)?,
+                line: row.get(2)?,
+                callee: row.get(3)?,
+                callee_path: row.get(4)?,
+                resolution: row.get(5)?,
+                reason: row.get(6)?,
+                confidence: row.get(7)?,
+            })
+        };
+        let rows = match callee {
+            Some(name) => stmt
+                .query_map(params![project, name], map_row)?
+                .collect::<std::result::Result<Vec<_>, rusqlite::Error>>(),
+            None => stmt
+                .query_map(params![project], map_row)?
+                .collect::<std::result::Result<Vec<_>, rusqlite::Error>>(),
+        }
+        .map_err(crate::GraphError::from)?;
         Ok(rows)
     }
 

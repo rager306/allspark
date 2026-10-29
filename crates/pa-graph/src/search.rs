@@ -55,6 +55,13 @@ impl Embedder for NoopEmbedder {
     }
 }
 
+/// Largest candidate pool one search may fuse.
+///
+/// A `usize` pool above `i64::MAX` casts to a NEGATIVE `i64`, which SQLite reads as
+/// `LIMIT -1` — the opposite of a bound. This is the ceiling that keeps the cast honest, and
+/// it sits in the library so a caller outside the tool cannot bypass it.
+pub const MAX_POOL: usize = 4096;
+
 /// Options controlling a [`crate::GraphStore::search`] call.
 #[derive(Clone)]
 pub struct SearchOptions {
@@ -334,10 +341,15 @@ pub fn search_report(
     let plan = cascade::plan(QueryShape::classify(query), cascade::DEFAULT_BUDGET, &[]);
     let report = CascadeReport::of(&plan);
 
+    // `saturating_mul` can reach `usize::MAX`, and `usize::MAX as i64` is NEGATIVE, which
+    // SQLite reads as `LIMIT -1` — no limit at all. The cast below is the last place this is
+    // safe, so the ceiling lives here as well as at the tool boundary: a library caller that
+    // never sees the tool must not be able to turn one query into a full-table scan.
     let pool = opts
         .limit
         .max(1)
-        .saturating_mul(opts.candidate_multiplier.max(1));
+        .saturating_mul(opts.candidate_multiplier.max(1))
+        .min(crate::search::MAX_POOL);
 
     let name_channel = fts_channel(conn, query, "tokens", opts, pool)?;
     // Skipped when the plan stops at the exact-name answer: a docstring pass
@@ -464,7 +476,7 @@ fn fts_channel(
     let (filter_sql, filter_params) = compile_filter(opts.filter.as_ref(), params.len() + 1)?;
     params.extend(filter_params);
     let limit_idx = params.len() + 1;
-    params.push(Value::from(pool as i64));
+    params.push(Value::from(i64::try_from(pool).unwrap_or(i64::MAX)));
 
     let sql = format!(
         "SELECT n.id,n.label,n.name,n.qualified_name,n.file_path,n.start_line,n.end_line
@@ -508,7 +520,7 @@ fn graph_channel(
     let (filter_sql, filter_params) = compile_filter(opts.filter.as_ref(), params.len() + 1)?;
     params.extend(filter_params);
     let limit_idx = params.len() + 1;
-    params.push(Value::from(pool as i64));
+    params.push(Value::from(i64::try_from(pool).unwrap_or(i64::MAX)));
 
     let sql = format!(
         "SELECT n.id,

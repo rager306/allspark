@@ -322,7 +322,10 @@ pub(crate) fn build_impact(
         })
         .unwrap_or_default();
 
-    let sites = store.call_sites(project)?;
+    // One leaf name, one predicate: loading the whole table read 45 760 rows for `pa-core`
+    // alone and filtered them in Rust (review #25). `project_unresolved_sites` still needs a
+    // count, which SQLite answers without materializing the rows.
+    let sites = store.call_sites_for_callee(project, Some(leaf))?;
     // TWO kinds of invisible caller, not one. A site the resolver could not place
     // (`unresolved`) has no edge at all; a site it placed by a NAME GUESS (`suffix`, 0.55)
     // has an edge to SOME definition with that name, which may be the wrong one — so a
@@ -347,10 +350,7 @@ pub(crate) fn build_impact(
             },
         })
         .collect();
-    let project_unresolved_sites = sites
-        .iter()
-        .filter(|site| site.resolution == "unresolved")
-        .count();
+    let project_unresolved_sites = store.unresolved_call_site_count(project)?;
 
     Ok(ImpactReport {
         symbol: symbol.to_string(),
@@ -966,16 +966,37 @@ fn root_is_stale(
     false
 }
 
-/// Read `candidate_multiplier` as a pool factor of at least 1.
-fn parse_candidate_multiplier(raw: &serde_json::Value) -> anyhow::Result<usize> {
+/// Most candidates one search may fuse, however large the multiplier asks.
+///
+/// The pool directly sizes twice as many FTS `LIMIT`s, and a saturated pool casts to a
+/// negative `i64` that SQLite reads as `LIMIT -1` — unbounded. Same precedent as
+/// `PACK_MAX_SYMBOLS`: a model-facing knob needs a ceiling the model cannot raise.
+pub const SEARCH_MAX_POOL: usize = 512;
+
+/// Most results one search may return.
+pub const SEARCH_MAX_LIMIT: usize = 200;
+
+/// Read `candidate_multiplier` as a pool factor, clamped so `limit * multiplier` fits.
+///
+/// The multiplier is model-controlled and sizes real work, so it is clamped rather than
+/// trusted: a multiplier that would push the pool past [`SEARCH_MAX_POOL`] is reduced to the
+/// largest one that fits. The `bool` says the request was reduced, so the answer can report
+/// it instead of silently doing less than asked.
+fn parse_candidate_multiplier(
+    raw: &serde_json::Value,
+    limit: usize,
+) -> anyhow::Result<(usize, bool)> {
     let multiplier = raw
         .as_u64()
         .filter(|multiplier| *multiplier >= 1)
         .ok_or_else(|| {
             anyhow::anyhow!("`candidate_multiplier` must be an integer >= 1, got {raw}")
         })?;
-    usize::try_from(multiplier)
-        .map_err(|_| anyhow::anyhow!("`candidate_multiplier` is too large: {multiplier}"))
+    let asked = usize::try_from(multiplier)
+        .map_err(|_| anyhow::anyhow!("`candidate_multiplier` is too large: {multiplier}"))?;
+    let ceiling = (SEARCH_MAX_POOL / limit.max(1)).max(1);
+    let applied = asked.min(ceiling);
+    Ok((applied, applied != asked))
 }
 
 /// The parameter names each action accepts (`action` itself aside).
@@ -1478,10 +1499,16 @@ impl GraphTool {
             "explain_change" | "explain-change" | "explainChange" => {
                 self.action_explain_change(params)
             }
-            other => anyhow::bail!(
-                "unknown graph action {other:?}: expected one of index, reindex, search, \
-                 trace, architecture, coverage, changes, status, verify, adr"
-            ),
+            other => {
+                // Derived, never hand-listed: this text had drifted twice — it named no
+                // `context`, `impact` or `explain_change` while all three worked, because a
+                // second copy of the action list has no way to stay true.
+                let accepted: Vec<&str> = ACCEPTED_PARAMS.iter().map(|(name, _)| *name).collect();
+                anyhow::bail!(
+                    "unknown graph action {other:?}: expected one of {}",
+                    accepted.join(", ")
+                )
+            }
         }
     }
 
@@ -1614,9 +1641,6 @@ impl GraphTool {
         // the first query into a real answer instead of a false negative.
         let indexed_now = self.ensure_indexed(&root, &project)?;
         let mut opts = SearchOptions::new(&project);
-        if let Some(limit) = params.get("limit").and_then(serde_json::Value::as_u64) {
-            opts = opts.with_limit(limit as usize);
-        }
         // The store can already diversify (MMR), restrict by label and filter by
         // regex, but nothing could ask it to: every knob was reachable only from
         // Rust. These four read the model's request into the same builder, so a
@@ -1627,6 +1651,23 @@ impl GraphTool {
         // `search` object at all, so its answer stays exactly what it was before
         // these knobs existed.
         let mut applied = serde_json::Map::new();
+        if let Some(limit) = params.get("limit").and_then(serde_json::Value::as_u64) {
+            // Clamped, not trusted (review #8): the limit sizes the pool, which sizes two FTS
+            // `LIMIT`s, and `as i64` on a saturated pool is negative — which SQLite reads as
+            // unlimited. A model-facing knob needs a ceiling the model cannot raise.
+            let asked = usize::try_from(limit).unwrap_or(usize::MAX);
+            let applied_limit = asked.min(SEARCH_MAX_LIMIT);
+            // `limit` alone is not a tunable knob, so a search that asked for it and got it
+            // must produce NO `details.search` — an existing test pins that. Only a real cut
+            // is news, and it is the one thing the caller cannot otherwise notice.
+            if applied_limit != asked {
+                applied.insert(
+                    "limitClampedTo".to_string(),
+                    serde_json::json!(applied_limit),
+                );
+            }
+            opts = opts.with_limit(applied_limit);
+        }
         if let Some(raw) = params.get("rerank") {
             raw.as_bool()
                 .ok_or_else(|| anyhow::anyhow!("`rerank` must be a boolean, got {raw}"))?;
@@ -1669,11 +1710,17 @@ impl GraphTool {
             }
         }
         if let Some(raw) = params.get("candidate_multiplier") {
-            let multiplier = parse_candidate_multiplier(raw)?;
+            let (multiplier, clamped) = parse_candidate_multiplier(raw, opts.limit)?;
             applied.insert(
                 "candidate_multiplier".to_string(),
                 serde_json::json!(multiplier),
             );
+            if clamped {
+                applied.insert(
+                    "candidate_multiplierClampedTo".to_string(),
+                    serde_json::json!(multiplier),
+                );
+            }
             opts.candidate_multiplier = multiplier;
         }
         let (hits, cascade) = self.with_read(|store| {
@@ -1741,10 +1788,13 @@ impl GraphTool {
         details.insert("results".to_string(), serde_json::Value::Array(results));
         if !applied.is_empty() {
             // A knob was set, so the echo is useful: it leads with the effective
-            // limit, which bounds every other knob, then the knobs themselves.
+            // limit, which bounds every other knob, then the knobs themselves. The
+            // `limit` entry is set by the caller's own request, so it is merged rather
+            // than overwritten — a clamped limit must report the CLAMP, not the ask.
             let mut echo = serde_json::Map::new();
             echo.insert("limit".to_string(), serde_json::json!(opts.limit));
             echo.append(&mut applied);
+            // `append` lets the applied map win, which is what a reported clamp needs.
             details.insert("search".to_string(), serde_json::Value::Object(echo));
         }
         details.insert(
@@ -2287,6 +2337,40 @@ impl GraphTool {
                 .map(|node| node.file_path)
             });
 
+        // Which candidate decisions really name the changed file, decided in ONE pass over
+        // the ADR rows rather than one store open per candidate.
+        let verified_decisions: Vec<i64> = match &changed_file {
+            Some(file) => self.with_read(|store| {
+                let adrs = pa_graph::adr::AdrStore::new(store.connection())
+                    .map_err(|err| anyhow::anyhow!("adr store: {err}"))?;
+                let file_name = file.rsplit('/').next().unwrap_or(file);
+                let candidates = adrs
+                    .query_adr(&pa_graph::adr::AdrQuery::new().with_text(file_name))
+                    .map_err(|err| anyhow::anyhow!("adr query: {err}"))?;
+                let mut verified = Vec::new();
+                for candidate in candidates {
+                    let Some(full) = adrs
+                        .get_adr_in_project(candidate.id, &project)
+                        .map_err(|err| anyhow::anyhow!("get adr: {err}"))?
+                    else {
+                        continue;
+                    };
+                    let prose = format!(
+                        "{}\n{}\n{}\n{}",
+                        full.title, full.context, full.decision, full.consequences
+                    );
+                    if pa_graph::adr::code_refs_in(&prose)
+                        .iter()
+                        .any(|r| file.ends_with(r.as_str()) || r.ends_with(file))
+                    {
+                        verified.push(candidate.id);
+                    }
+                }
+                verified.sort_unstable();
+                Ok(verified)
+            })?,
+            None => Vec::new(),
+        };
         let decisions = match &changed_file {
             Some(file) => self
                 .with_read(|store| {
@@ -2307,28 +2391,13 @@ impl GraphTool {
                         .collect::<Vec<_>>())
                 })?
                 .into_iter()
+                // One read for ALL candidates (review #65): the predicate reopened the ADR
+                // store once per decision, so a project with twenty matching ADRs did twenty
+                // full store opens to answer one question.
                 .filter(|decision| {
-                    // Keep only decisions that really name the file, not every ADR in the
-                    // project: the query matched on the bare file name.
-                    self.with_read(|store| {
-                        let adrs = pa_graph::adr::AdrStore::new(store.connection())
-                            .map_err(|err| anyhow::anyhow!("adr store: {err}"))?;
-                        let full = adrs
-                            .get_adr_in_project(decision.id, &project)
-                            .map_err(|err| anyhow::anyhow!("get adr: {err}"))?;
-                        Ok(full.is_some_and(|adr| {
-                            let prose = format!(
-                                "{}\n{}\n{}\n{}",
-                                adr.title, adr.context, adr.decision, adr.consequences
-                            );
-                            pa_graph::adr::code_refs_in(&prose).iter().any(|r| {
-                                changed_file.as_deref().is_some_and(|file| {
-                                    file.ends_with(r.as_str()) || r.ends_with(file)
-                                })
-                            })
-                        }))
-                    })
-                    .unwrap_or(false)
+                    verified_decisions
+                        .binary_search_by_key(&decision.id, |id| *id)
+                        .is_ok()
                 })
                 .collect::<Vec<_>>(),
             None => Vec::new(),
@@ -3151,8 +3220,13 @@ pub fn params_schema() -> serde_json::Value {
                     "trace",
                     "impact",
                     "explain_change",
-                    "architecture", "coverage", "changes", "status",
-                    "verify", "adr", "context", "impact"
+                    "architecture",
+                    "coverage",
+                    "changes",
+                    "status",
+                    "verify",
+                    "adr",
+                    "context"
                 ],
                 "description": "The graph operation to run. `context` assembles a bounded evidence pack for a question: ranked symbols with their CURRENT line placement (flagged when the index disagrees with the file), the call links between symbols that are both in the pack, and the graph's own coverage. Prefer it over search+trace+open when you need several related facts at once."
             },
@@ -3885,6 +3959,49 @@ mod tests {
             rows[1]["relevance"].as_f64().is_some_and(|p| p < 0.1),
             "{:?}",
             rows[1]
+        );
+    }
+
+    /// Review #8: the pool a model can ask for must be bounded, and the cast that feeds it
+    /// must never go negative. `pool as i64` on a saturated `usize` is negative, and SQLite
+    /// reads a negative LIMIT as "no limit" — the opposite of what a bound is for.
+    #[tokio::test]
+    async fn a_search_pool_is_clamped_and_never_negative() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("lib.rs"), "pub fn alpha() -> u32 { 1 }\n").unwrap();
+        let tool = tool(dir.path());
+        tool.dispatch(&serde_json::json!({ "action": "index" }))
+            .unwrap();
+
+        // A limit and multiplier far past the ceilings: both are reduced, and the reduction
+        // is REPORTED rather than silently applied.
+        let result = tool
+            .dispatch(&serde_json::json!({
+                "action": "search",
+                "query": "alpha",
+                "limit": 1_000_000u64,
+                "candidate_multiplier": 1_000_000u64,
+            }))
+            .unwrap();
+        let applied = &result.details["search"];
+        let limit = applied["limit"]
+            .as_u64()
+            .expect("the applied limit is echoed");
+        assert!(
+            limit <= super::SEARCH_MAX_LIMIT as u64,
+            "the limit must be clamped to the ceiling, got {limit}: {applied}"
+        );
+        let multiplier = applied["candidate_multiplier"]
+            .as_u64()
+            .expect("the applied multiplier is echoed");
+        assert!(
+            multiplier.saturating_mul(limit) <= super::SEARCH_MAX_POOL as u64,
+            "and the pool it implies must fit the pool ceiling: {applied}"
+        );
+        assert_eq!(
+            applied["candidate_multiplierClampedTo"].as_u64(),
+            Some(multiplier),
+            "a reduced request must SAY it was reduced: {applied}"
         );
     }
 
