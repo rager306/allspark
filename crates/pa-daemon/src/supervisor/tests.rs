@@ -2661,6 +2661,114 @@ async fn provider_admission_leases_are_shared_across_worker_tokens() {
     assert_eq!(supervisor.provider_admission().snapshot(&key).in_flight, 0);
 }
 
+/// A lease belongs to the worker that minted it (review #14).
+///
+/// `is_worker_token_shape` accepts any 8+ alphanumeric string, so it authenticates nothing on
+/// the mutating paths: before the holder check, any same-user local process could settle
+/// another worker's lease as rate-limited and drive the provider's AIMD limit to the floor for
+/// everyone on it, or release one mid-flight and corrupt in-flight accounting.
+#[tokio::test]
+async fn a_lease_cannot_be_settled_or_released_by_another_worker() {
+    use pa_types::daemon::DaemonCommand;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let agent_dir = dir.path().join("agent");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    let supervisor = Arc::new(
+        Supervisor::new(SupervisorOptions {
+            socket_path: dir.path().join("daemon.sock"),
+            agent_dir: agent_dir.clone(),
+        })
+        .expect("supervisor"),
+    );
+    let command = |action: &str, token: &str, lease: Option<u64>, outcome: Option<&str>| {
+        DaemonCommand::ProviderAdmission {
+            id: None,
+            worker_token: token.to_string(),
+            action: action.to_string(),
+            provider: Some("zai".to_string()),
+            model: Some("glm-5.3".to_string()),
+            spawn_id: None,
+            lease_id: lease,
+            outcome: outcome.map(str::to_string),
+            rest: Map::default(),
+        }
+    };
+
+    let acquired = supervisor
+        .handle_provider_admission(
+            "c1",
+            "provider_admission",
+            &command("acquire_stream", "worker-real-owner", None, None),
+        )
+        .await;
+    assert!(acquired.success, "the owner must admit: {acquired:?}");
+    let lease = acquired.data.as_ref().unwrap()["leaseId"]
+        .as_u64()
+        .expect("lease id");
+    let key = crate::agent_engine::provider_admission::ProviderKey::new("zai", "glm-5.3");
+    let before = supervisor.provider_admission().snapshot(&key);
+
+    // A different worker, same user, same socket: refused on both mutations.
+    let stolen_settle = supervisor
+        .handle_provider_admission(
+            "c2",
+            "provider_admission",
+            &command(
+                "settle_stream",
+                "worker-thief",
+                Some(lease),
+                Some("rate_limited"),
+            ),
+        )
+        .await;
+    assert!(
+        !stolen_settle.success,
+        "a foreign settle must be refused: {stolen_settle:?}"
+    );
+    let stolen_release = supervisor
+        .handle_provider_admission(
+            "c3",
+            "provider_admission",
+            &command("release_stream", "worker-thief", Some(lease), None),
+        )
+        .await;
+    assert!(
+        !stolen_release.success,
+        "a foreign release must be refused: {stolen_release:?}"
+    );
+
+    // Nothing the thief attempted may have landed: the limit, the in-flight count and the
+    // 429 streak are exactly as the owner left them.
+    let after = supervisor.provider_admission().snapshot(&key);
+    assert_eq!(
+        after.limit, before.limit,
+        "a forged 429 must not move the limit"
+    );
+    assert_eq!(after.in_flight, before.in_flight, "nor release a slot");
+    assert_eq!(after.consecutive_429, before.consecutive_429);
+
+    // The owner can still settle its own lease, so the check is an ownership test and not a
+    // blanket refusal.
+    let owned = supervisor
+        .handle_provider_admission(
+            "c4",
+            "provider_admission",
+            &command(
+                "settle_stream",
+                "worker-real-owner",
+                Some(lease),
+                Some("rate_limited"),
+            ),
+        )
+        .await;
+    assert!(owned.success, "the owner must still settle: {owned:?}");
+    assert!(
+        supervisor.provider_admission().snapshot(&key).limit < before.limit,
+        "and its settle must actually move the limit"
+    );
+}
+
 /// The admission arm authenticates the worker token and refuses an unknown
 /// action; both answer a plain failure the worker reads as fail-open.
 #[tokio::test]

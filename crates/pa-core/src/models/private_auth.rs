@@ -325,6 +325,7 @@ pub fn write_private_prime_authorization_cache(
 }
 
 /// `PI_OFFLINE=1/true/yes` disables network refreshes.
+#[must_use]
 pub fn is_offline_mode_enabled() -> bool {
     pa_types::truthy_env_flag(std::env::var("PI_OFFLINE").ok().as_deref())
 }
