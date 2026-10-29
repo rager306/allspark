@@ -170,6 +170,23 @@ pub fn build_system_prompt(
     Some(blocks)
 }
 
+/// Append user blocks to the trailing user turn, or start a new one.
+///
+/// Converse rejects two consecutive `user` messages (review #5, upstream #3683). They arise
+/// from a run of user messages in the history and from an EMPTY assistant turn, which
+/// `convert_messages` skips — removing the very message that would have separated the users.
+fn push_user_turn(result: &mut Vec<Value>, content_blocks: Vec<Value>) {
+    if let Some(last) = result.last_mut() {
+        if last.get("role").and_then(Value::as_str) == Some("user") {
+            if let Some(array) = last.get_mut("content").and_then(Value::as_array_mut) {
+                array.extend(content_blocks);
+                return;
+            }
+        }
+    }
+    result.push(json!({ "role": "user", "content": content_blocks }));
+}
+
 // Long by design: mirrors the provider's stream shape.
 #[allow(clippy::too_many_lines)]
 pub fn convert_messages(
@@ -205,7 +222,12 @@ pub fn convert_messages(
                         })
                         .collect(),
                 };
-                result.push(json!({ "role": "user", "content": content_blocks }));
+                // Converse rejects two consecutive `user` messages. They arise two ways: a
+                // run of user messages in the history, and the `assistant.content.is_empty()`
+                // skip below, which removes the turn that would have separated them (review
+                // #5, upstream #3683). Appending to the trailing user message is what the
+                // API expects; pushing a new one fails the whole request.
+                push_user_turn(&mut result, content_blocks);
                 i += 1;
             }
             Message::Assistant(assistant) => {
@@ -516,5 +538,110 @@ mod prompt_caching_gate_tests {
         ] {
             assert!(!supports_prompt_caching(&model_with_id(id)), "{id}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn model() -> Model {
+        serde_json::from_value(serde_json::json!({
+            "id": "anthropic.claude-3-5-sonnet",
+            "name": "Claude",
+            "api": "bedrock-converse-stream",
+            "provider": "bedrock",
+            "baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+            "reasoning": true,
+            "input": ["text"],
+            "contextWindow": 200_000,
+            "maxTokens": 8192,
+            "cost": {"input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0}
+        }))
+        .expect("model")
+    }
+
+    fn user(text: &str) -> crate::types::Message {
+        crate::types::Message::User(crate::types::UserMessage {
+            content: crate::types::UserMessageContent::Text(text.to_string()),
+            timestamp: 0,
+            rest: serde_json::Map::new(),
+        })
+    }
+
+    fn assistant_with(content: Vec<crate::types::AssistantContent>) -> crate::types::Message {
+        crate::types::Message::Assistant(crate::types::AssistantMessage {
+            content,
+            api: "bedrock-converse-stream".to_string(),
+            provider: "bedrock".to_string(),
+            model: "anthropic.claude-3-5-sonnet".to_string(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: crate::types::Usage::default(),
+            stop_reason: crate::types::StopReason::Stop,
+            stop_reason_raw: None,
+            error_message: None,
+            timestamp: 0,
+            rest: serde_json::Map::new(),
+        })
+    }
+
+    fn assistant_text(text: &str) -> crate::types::Message {
+        assistant_with(vec![crate::types::AssistantContent::Text(
+            crate::types::TextContent {
+                text: text.to_string(),
+                text_signature: None,
+                rest: serde_json::Map::new(),
+            },
+        )])
+    }
+
+    fn empty_assistant() -> crate::types::Message {
+        assistant_with(Vec::new())
+    }
+
+    fn roles(converted: &[Value]) -> Vec<&str> {
+        converted
+            .iter()
+            .map(|m| m["role"].as_str().unwrap_or(""))
+            .collect()
+    }
+
+    /// Review #5 (upstream #3683): Converse REJECTS two consecutive `user` messages.
+    ///
+    /// Two shapes produce them: a run of user messages in the history, and an EMPTY assistant
+    /// turn — which this converter skips, removing the very message that would have separated
+    /// the users. Both must merge into one turn.
+    #[test]
+    fn consecutive_user_turns_merge_instead_of_failing_the_request() {
+        let context = crate::types::Context {
+            system_prompt: None,
+            system_prompt_cache_prefix: None,
+            messages: vec![user("first"), empty_assistant(), user("second")],
+            tools: None,
+        };
+        let converted = convert_messages(&context, &model(), CacheRetention::None);
+        assert_eq!(
+            roles(&converted),
+            vec!["user"],
+            "consecutive user turns must collapse into ONE Converse message: {converted:?}"
+        );
+        let blocks = converted[0]["content"].as_array().expect("blocks");
+        assert_eq!(blocks.len(), 2, "and both texts must survive: {blocks:?}");
+
+        // A proper alternation stays untouched: the fix must not over-merge.
+        let context = crate::types::Context {
+            system_prompt: None,
+            system_prompt_cache_prefix: None,
+            messages: vec![user("first"), assistant_text("reply"), user("second")],
+            tools: None,
+        };
+        let converted = convert_messages(&context, &model(), CacheRetention::None);
+        assert_eq!(
+            roles(&converted),
+            vec!["user", "assistant", "user"],
+            "alternation is preserved"
+        );
     }
 }
