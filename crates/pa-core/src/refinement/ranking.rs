@@ -189,6 +189,83 @@ pub struct HarnessStatePromptOptions {
     pub query_terms: Option<HarnessQueryTerms>,
 }
 
+/// Whether a memory lesson still APPLIES, from its own recorded conditions.
+///
+/// The review's check #10: "Изменившийся source/config/env инвалидирует применимость
+/// тестового observation и memory lesson, даже если текст задачи похож." A lesson is only
+/// as durable as the conditions it was learned under — "graph.auto=watch is slow" stops
+/// being advice the day `watch` is rewritten.
+///
+/// # Why a LABEL and not a filter
+///
+/// A violated condition does not mean the lesson is wrong; it means nobody has checked it
+/// under the new conditions. Dropping it silently loses the accumulated evidence, and a
+/// model that never sees it cannot decide to re-test. So the render marks it `STALE
+/// (validity not met: ...)` and keeps the content — the same rule as a stale digest: a
+/// reader must be told, not protected from the fact.
+///
+/// # What "met" means here
+///
+/// `metadata.validity` is a free-form string written by refinement. Two machine-checkable
+/// forms are recognised, because they are the ones a write path can record today:
+///
+/// - `path:<glob>=<sha256-prefix>` — a file's content digest, for a lesson about code;
+/// - `env:<NAME>=<value>` — an environment value, for a lesson about configuration.
+///
+/// Anything else is unverifiable rather than violated: the check says nothing, so a
+/// hand-written note ("before 0.11") is never falsely marked stale.
+#[must_use]
+pub fn validity_state(entry: &super::HarnessEntry) -> ValidityState {
+    let Some(raw) = entry.metadata.get("validity").and_then(|v| v.as_str()) else {
+        return ValidityState::Unstated;
+    };
+    let raw = raw.trim();
+    if let Some(rest) = raw.strip_prefix("env:") {
+        let Some((name, expected)) = rest.split_once('=') else {
+            return ValidityState::Unverifiable;
+        };
+        return match std::env::var(name) {
+            Ok(actual) if actual == expected => ValidityState::Holds,
+            Ok(actual) => ValidityState::Violated {
+                detail: format!("env {name}={actual}, expected {expected}"),
+            },
+            Err(_) => ValidityState::Violated {
+                detail: format!("env {name} is unset, expected {expected}"),
+            },
+        };
+    }
+    // `path:` needs a repository root, which a pure renderer does not have. It is reported
+    // as unverifiable HERE rather than guessed: a wrong "stale" is worse than none.
+    if raw.starts_with("path:") {
+        return ValidityState::Unverifiable;
+    }
+    ValidityState::Unverifiable
+}
+
+/// What a lesson's recorded conditions say about its applicability right now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValidityState {
+    /// No `validity` recorded: the lesson claims no conditions.
+    Unstated,
+    /// Recorded conditions that hold.
+    Holds,
+    /// Recorded conditions that no longer hold; the lesson needs re-checking.
+    Violated { detail: String },
+    /// Conditions this renderer cannot check (a path digest, prose).
+    Unverifiable,
+}
+
+impl ValidityState {
+    /// The marker the render appends, or empty when nothing needs saying.
+    #[must_use]
+    pub fn marker(&self) -> String {
+        match self {
+            Self::Violated { detail } => format!(" STALE (validity not met: {detail})"),
+            Self::Unstated | Self::Holds | Self::Unverifiable => String::new(),
+        }
+    }
+}
+
 /// Render the harness state as the model-facing digest block. Strings must
 /// stay byte-identical with the TS formatter.
 #[must_use]
@@ -310,7 +387,7 @@ pub fn format_harness_state_for_prompt(
                 _ => "global",
             };
             lines.push(format!(
-                "- [{}:{}] {} ({}, v{}){}{}: {}",
+                "- [{}:{}] {} ({}, v{}){}{}{}: {}",
                 scope,
                 entry.id,
                 entry.title,
@@ -318,6 +395,9 @@ pub fn format_harness_state_for_prompt(
                 entry.version,
                 reference_text,
                 arguments_text,
+                // Marked, not hidden: a lesson whose conditions changed is still evidence,
+                // and a model that never sees it cannot decide to re-test it.
+                validity_state(entry).marker(),
                 compact_harness_text(&entry.content, max_content_length)
             ));
         }
@@ -769,6 +849,93 @@ mod tests {
     /// re-billed — while every rendered byte stayed identical. That is the
     /// stability defect in this layer, and it costs tokens rather than
     /// correctness, which is why nothing failed.
+    /// The review's check #10: a changed config/env invalidates a lesson's APPLICABILITY,
+    /// "даже если текст задачи похож". The rendering marks it and keeps the content —
+    /// hiding the lesson would destroy the evidence a model needs to decide to re-test.
+    #[test]
+    fn a_lesson_whose_conditions_changed_is_marked_not_hidden() {
+        let mut state = empty_harness_state();
+        let mut memory = HarnessEntry {
+            id: "env-bound".to_string(),
+            kind: RefinementKind::Memory,
+            title: "watch mode is slow".to_string(),
+            content: "graph.auto=watch adds ~200 ms per turn".to_string(),
+            path: "general".to_string(),
+            scope: Some(HarnessScope::Local),
+            reference: serde_json::Map::new(),
+            arguments: serde_json::Map::new(),
+            metadata: serde_json::Map::new(),
+            source: "agent".to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            version: 1,
+        };
+        // A condition the process cannot satisfy.
+        memory.metadata.insert(
+            "validity".to_string(),
+            serde_json::json!("env:PA_TEST_GATE_SLOW_SETTING=on"),
+        );
+        state
+            .entries
+            .get_mut(&RefinementKind::Memory)
+            .expect("kind")
+            .insert(memory.id.clone(), memory.clone());
+
+        let rendered =
+            format_harness_state_for_prompt(&state, &HarnessStatePromptOptions::default());
+        assert!(
+            rendered.contains("STALE (validity not met:"),
+            "an unmet condition must be marked: {rendered}"
+        );
+        assert!(
+            rendered.contains("graph.auto=watch adds"),
+            "and the CONTENT must survive: hiding it destroys the evidence"
+        );
+
+        // The same lesson under a condition that holds: no marker.
+        memory.metadata.insert(
+            "validity".to_string(),
+            serde_json::json!("env:PATH"), // wrong shape: no `=value`, so unverifiable
+        );
+        state
+            .entries
+            .get_mut(&RefinementKind::Memory)
+            .expect("kind")
+            .insert(memory.id.clone(), memory.clone());
+        let rendered =
+            format_harness_state_for_prompt(&state, &HarnessStatePromptOptions::default());
+        assert!(
+            !rendered.contains("STALE"),
+            "an unparseable condition says nothing rather than lying: {rendered}"
+        );
+    }
+
+    /// Prose conditions ("before 0.11") are UNVERIFIABLE, not violated: a hand-written note
+    /// must never be falsely marked stale.
+    #[test]
+    fn a_prose_condition_is_never_marked_stale() {
+        let entry = HarnessEntry {
+            id: "prose".to_string(),
+            kind: RefinementKind::Memory,
+            title: "t".to_string(),
+            content: "c".to_string(),
+            path: "general".to_string(),
+            scope: None,
+            reference: serde_json::Map::new(),
+            arguments: serde_json::Map::new(),
+            metadata: serde_json::Map::from_iter([(
+                "validity".to_string(),
+                serde_json::json!("before 0.11 with graph.auto=watch"),
+            )]),
+            source: "agent".to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            version: 1,
+        };
+        assert_eq!(validity_state(&entry), ValidityState::Unverifiable);
+        assert_eq!(validity_state(&entry).marker(), "");
+    }
+
     #[test]
     fn a_change_past_the_render_clip_does_not_move_the_fingerprint() {
         let long = "x".repeat(400);
