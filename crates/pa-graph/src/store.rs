@@ -448,6 +448,40 @@ impl GraphStore {
     ///
     /// # Errors
     /// Propagates SQLite errors.
+    /// How many symbols the index holds in `file_path`, or `None` when the file is absent.
+    ///
+    /// Used to check an ADR's prose references against the tree: `Some(0)` means the file is
+    /// indexed but yields no symbols (a data file, or a language with no symbols extracted),
+    /// `None` means the ADR names a path this tree does not have — the drift signal.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors from the node count.
+    pub fn symbols_in_file(&self, project: &str, file_path: &str) -> Result<Option<usize>> {
+        let conn = self.connection();
+        let file_path = file_path.trim_start_matches("./");
+        let indexed: Option<i64> = conn
+            .query_row(
+                "SELECT count(*) FROM file_hashes WHERE project = ?1 AND rel_path = ?2",
+                rusqlite::params![project, file_path],
+                |row| row.get(0),
+            )
+            .ok()
+            .filter(|count: &i64| *count > 0);
+        if indexed.is_none() {
+            return Ok(None);
+        }
+        let symbols: i64 = conn.query_row(
+            "SELECT count(*) FROM nodes WHERE project = ?1 AND file_path = ?2",
+            rusqlite::params![project, file_path],
+            |row| row.get(0),
+        )?;
+        Ok(Some(usize::try_from(symbols).unwrap_or(0)))
+    }
+
+    /// Count of indexed symbols in `project`.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
     pub fn node_count(&self, project: &str) -> Result<usize> {
         let n: i64 = self.conn.query_row(
             "SELECT count(*) FROM nodes WHERE project = ?1",

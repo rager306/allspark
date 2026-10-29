@@ -2479,6 +2479,47 @@ impl GraphTool {
                 use std::fmt::Write as _;
                 let _ = writeln!(body, "\nSupersedes: #{supersedes}");
             }
+            // "Which decision governs this file" needs the ADR's prose references checked
+            // against the tree. The review's §2 names this as ADR's next step; `indexed` is
+            // what keeps an extraction honest — a path the ADR names but the tree does not
+            // have is drift a reader can act on, not a dependency fact.
+            {
+                use std::fmt::Write as _;
+                let prose = format!(
+                    "{}\n{}\n{}\n{}",
+                    adr.title, adr.context, adr.decision, adr.consequences
+                );
+                let refs: Vec<pa_graph::adr::AdrCodeRef> = self.with_read(|store| {
+                    let found = pa_graph::adr::code_refs_in(&prose)
+                        .into_iter()
+                        .map(|path| {
+                            let symbols = store
+                                .symbols_in_file(&adr.project, &path)
+                                .map_err(|err| anyhow::anyhow!("symbols_in_file: {err}"))?;
+                            Ok(pa_graph::adr::AdrCodeRef {
+                                path,
+                                indexed: symbols.is_some(),
+                                symbols: symbols.unwrap_or(0),
+                            })
+                        })
+                        .collect::<anyhow::Result<Vec<_>>>()?;
+                    Ok(found)
+                })?;
+                if !refs.is_empty() {
+                    let _ = writeln!(body, "\nCode this decision names:");
+                    for cref in &refs {
+                        let _ = if cref.indexed {
+                            writeln!(body, "  {} ({} symbol(s))", cref.path, cref.symbols)
+                        } else {
+                            writeln!(
+                                body,
+                                "  {} — NOT IN THE TREE (renamed or never existed)",
+                                cref.path
+                            )
+                        };
+                    }
+                }
+            }
             // Who replaced THIS one, which the record above cannot answer. The review's
             // check #7 says a superseded ADR must not become a confirmed dependency fact;
             // the reader needs that verdict in the same breath as the decision, or it will
@@ -5420,6 +5461,79 @@ mod tests {
     /// facts." A decision that a newer one replaced must SAY so in the same breath, or a
     /// reader acts on a decision that no longer holds. The record already printed what it
     /// supersedes; nothing printed what replaced IT.
+    /// The review's §2, ADR's next step: "Связать ADR с code/evidence и контекстом". An ADR
+    /// names files in prose and nothing read them, so "which decision governs this file"
+    /// required grep. The `indexed` half matters most: a path the ADR names but the tree does
+    /// not have is drift, and it is only visible against the index.
+    #[test]
+    fn prose_references_are_extracted_and_checked() {
+        // The exact shapes an ADR uses: a backticked path with a line, a bare name, a path
+        // with a colon in it, and prose that must NOT be extracted.
+        let text = "See `crates/pa-core/src/tools/graph.rs:120` and graph.rs, plus \
+                    settings/types.rs and the word done.rs already. Also a/b:c.rs stays.";
+        let refs = pa_graph::adr::code_refs_in(text);
+        assert!(
+            refs.contains(&"crates/pa-core/src/tools/graph.rs".to_string()),
+            "a backticked path with a line suffix must resolve to the path: {refs:?}"
+        );
+        assert!(
+            refs.contains(&"graph.rs".to_string()),
+            "a bare file name in prose counts, since that is how prose refers to a file: {refs:?}"
+        );
+        assert!(
+            refs.contains(&"settings/types.rs".to_string()),
+            "and a relative path: {refs:?}"
+        );
+        assert!(
+            !refs.iter().any(|r| r.contains(":120")),
+            "the line suffix must be stripped: {refs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_adr_names_the_code_it_governs_and_the_drift() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("lib.rs"), "pub fn x() -> u32 { 1 }\n").unwrap();
+        let tool = tool(dir.path());
+        tool.dispatch(&serde_json::json!({ "action": "index" }))
+            .unwrap();
+        let project = tool.project_key(dir.path());
+        let adr = pa_graph::adr::Adr {
+            id: 0,
+            title: "Govern lib.rs".to_string(),
+            status: pa_graph::adr::AdrStatus::Accepted,
+            context: "lib.rs holds x. A file named gone.rs was removed.".to_string(),
+            decision: "Keep lib.rs the single owner.".to_string(),
+            consequences: "gone.rs no longer exists.".to_string(),
+            supersedes: None,
+            project,
+        };
+        let id = tool
+            .with_read(|store| {
+                pa_graph::adr::AdrStore::new(store.connection())
+                    .map_err(|err| anyhow::anyhow!("adr store: {err}"))?
+                    .record_adr(&adr)
+                    .map_err(|err| anyhow::anyhow!("record: {err}"))
+            })
+            .unwrap();
+        let result = tool
+            .dispatch(&serde_json::json!({ "action": "adr", "id": id }))
+            .unwrap();
+        let text = text_of(&result);
+        assert!(
+            text.contains("Code this decision names:"),
+            "an ADR that names files must list them: {text}"
+        );
+        assert!(
+            text.contains("lib.rs") && text.contains("symbol"),
+            "an indexed file must report its symbols: {text}"
+        );
+        assert!(
+            text.contains("gone.rs") && text.contains("NOT IN THE TREE"),
+            "a named file the tree does not have is DRIFT and must say so: {text}"
+        );
+    }
+
     /// The review's §2, `cycles`' next step: "объяснение исходными связями". A cycle printed
     /// as files says a dependency exists but not which symbols make it, and the fix is always
     /// at a symbol.

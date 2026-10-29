@@ -50,6 +50,69 @@ impl AdrStatus {
     }
 }
 
+/// A code reference found in an ADR's own text, checked against the index.
+///
+/// The review's §2 names ADR's next step: "Связать ADR с code/evidence и контекстом". An ADR
+/// names the files it talks about in prose (`crates/pa-core/src/tools/graph.rs`), and until
+/// now nothing read them, so "which decision governs this file" required grep.
+///
+/// Deliberately NOT an edge type: the reference is EXTRACTED FROM PROSE, so it is a
+/// candidate, not an observed dependency. The review's §5 warns against mixing a Markdown
+/// link with an `IMPORTS` edge, and the same reasoning applies here — a wrong extraction must
+/// not become a confirmed fact. `indexed` is the check that keeps it honest.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AdrCodeRef {
+    /// The path as written in the ADR.
+    pub path: String,
+    /// Whether the index holds a file with that path.
+    ///
+    /// `false` is the interesting half: the ADR names a file the tree does not have — a
+    /// renamed module, a path that never existed, a typo. That is a drift signal a reader can
+    /// act on, and it is only visible because the ADR's claim is compared to the index.
+    pub indexed: bool,
+    /// Symbols indexed in that file, when it exists.
+    pub symbols: usize,
+}
+
+/// Paths an ADR's text names, deduplicated in first-seen order.
+///
+/// Matches a token ending in a known source extension, with optional surrounding backticks and
+/// an optional `:line`. A bare word like `graph.rs` counts (it is how prose refers to a file).
+#[must_use]
+pub fn code_refs_in(text: &str) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut found = Vec::new();
+    for token in text.split(|c: char| c.is_whitespace() || c == ',' || c == ';' || c == ')') {
+        let token = token.trim_matches(|c: char| {
+            matches!(
+                c,
+                '`' | '\'' | '"' | '(' | '[' | ']' | '*' | '<' | '>' | '.'
+            )
+        });
+        // Strip a `:line` suffix so `foo.rs:120` resolves to `foo.rs`; a colon that is not
+        // followed by digits belongs to the path (`crates/x:y`), so it stays.
+        let path = match token.split_once(':') {
+            Some((head, tail)) if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) => {
+                head
+            }
+            _ => token,
+        };
+        let has_ext = std::path::Path::new(path)
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|ext| {
+                matches!(
+                    ext,
+                    "rs" | "toml" | "py" | "ts" | "tsx" | "js" | "md" | "sh" | "sql" | "yml"
+                )
+            });
+        if has_ext && path.len() > 4 && seen.insert(path.to_string()) {
+            found.push(path.to_string());
+        }
+    }
+    found
+}
+
 /// One Architecture Decision Record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Adr {
