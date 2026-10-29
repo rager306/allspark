@@ -17,7 +17,6 @@ use ignore::WalkBuilder;
 /// by the graph, not git: it expresses "tracked but not code" and "ignored but
 /// graph-visible", which `.gitignore` cannot (issue #11).
 pub(crate) const GRAPHIGNORE_FILE: &str = ".graphignore";
-use rayon::prelude::*;
 use serde_json::json;
 
 use crate::coverage::{classify_source, ParseHealth, KIND_SKIPPED};
@@ -76,6 +75,43 @@ impl Depth {
     pub const fn resolves_edges(self) -> bool {
         matches!(self, Self::Full)
     }
+}
+
+/// Source text one batch may hold, in bytes.
+///
+/// The lightweight-graph review budgets 8–16 MiB resident at once. 8 MiB is the low end:
+/// a batch competes with the extractor's trees and the SQLite cache in the same process.
+pub const SOURCE_BATCH_BYTES: usize = 8 * 1024 * 1024;
+
+/// The ceiling the batch loop reads, so a test can force a boundary through a small tree.
+fn source_batch_bytes() -> usize {
+    #[cfg(test)]
+    return TEST_SOURCE_BATCH_BYTES
+        .with(std::cell::Cell::get)
+        .unwrap_or(SOURCE_BATCH_BYTES);
+    #[cfg(not(test))]
+    SOURCE_BATCH_BYTES
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TEST_SOURCE_BATCH_BYTES: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Batches produced while a test overrides the ceiling — the evidence that the loop ran
+/// more than once, which is what makes the parity test a batching test.
+#[cfg(test)]
+pub(crate) static TEST_BATCHES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// The tree still to be read, and the cursor [`GraphStore::next_batch`] advances.
+struct SourceBatches<'a> {
+    root: PathBuf,
+    opts: &'a IndexOptions,
+    stored: &'a HashMap<String, FileHash>,
+    files: Vec<PathBuf>,
+    cursor: usize,
 }
 
 pub struct IndexOptions {
@@ -201,6 +237,7 @@ impl GraphStore {
     /// lease for this database past `opts.lease_wait`, and
     /// [`std::io::ErrorKind::Interrupted`] when `opts.lease_cancel` fires —
     /// in both cases nothing is registered and nothing is written.
+    #[allow(clippy::too_many_lines)] // one ordered pass; see the numbered comment
     pub fn index_project(
         &mut self,
         root: impl AsRef<Path>,
@@ -221,83 +258,95 @@ impl GraphStore {
             ..IndexReport::default()
         };
 
-        // 1. Discover + read + hash (parallel).
+        // 1. Discover + hash, then read + write ONE BYTE-BOUNDED BATCH at a time.
         let stored = self.all_file_hashes(&opts.project)?;
-        let work = self.prepare_work(&root, opts, &stored, &mut report)?;
 
-        // 2. Write nodes/FTS for changed files; collect call sites to resolve.
-        let mut seen: Vec<String> = Vec::with_capacity(work.len());
+        // 2. Write nodes/FTS per batch; call sites accumulate for resolution below.
+        let mut seen: Vec<String> = Vec::new();
         let mut pending_calls: Vec<(String, String, CallSite)> = Vec::new();
         let mut pending_imports: Vec<(String, ImportDef)> = Vec::new();
         let mut file_node_ids: HashMap<String, i64> = HashMap::new();
+        let mut batches = Self::read_batches(&root, opts, &stored);
+        loop {
+            let batch = self.next_batch(&mut batches, &mut report)?;
+            if batch.is_empty() {
+                break;
+            }
+            for w in &batch {
+                seen.push(w.rel.clone());
+                match w.change {
+                    FileChange::Unchanged => {
+                        report.unchanged += 1;
+                        continue;
+                    }
+                    FileChange::Added => report.added += 1,
+                    FileChange::Modified => report.modified += 1,
+                }
+                report.parsed += 1;
 
-        for w in &work {
-            seen.push(w.rel.clone());
-            match w.change {
-                FileChange::Unchanged => {
-                    report.unchanged += 1;
+                // Keep this file's nodes (stable ids) so CALLS edges from
+                // unchanged files survive the re-parse; only its FTS rows and
+                // outgoing edges are dropped. Stale symbols go once extraction
+                // has run (see `delete_file_nodes_not_in` below).
+                self.clear_file_for_reparse(&opts.project, &w.rel)?;
+                // Re-record this file's coverage from scratch so a file that now
+                // parses cleanly stops being reported as `parse_partial`.
+                self.clear_file_coverage(&opts.project, &w.rel)?;
+                let Some(lang) = pa_ast::SupportLang::from_path(&w.abs) else {
+                    self.record_coverage(
+                        &opts.project,
+                        &w.rel,
+                        KIND_SKIPPED,
+                        "unsupported language",
+                    )?;
+                    report.skipped += 1;
+                    continue;
+                };
+                let module = module_of(&w.rel);
+                if opts.depth == Depth::Skeleton {
+                    self.write_skeleton_file(&opts.project, w, &mut report)?;
                     continue;
                 }
-                FileChange::Added => report.added += 1,
-                FileChange::Modified => report.modified += 1,
-            }
-            report.parsed += 1;
+                let extracted = crate::extract::extract(&w.source, lang, &module);
+                if !opts.depth.resolves_edges() {
+                    self.write_symbols_only(
+                        &opts.project,
+                        w,
+                        &extracted,
+                        &mut report,
+                        &mut file_node_ids,
+                    )?;
+                    continue;
+                }
 
-            // Keep this file's nodes (stable ids) so CALLS edges from
-            // unchanged files survive the re-parse; only its FTS rows and
-            // outgoing edges are dropped. Stale symbols go once extraction
-            // has run (see `delete_file_nodes_not_in` below).
-            self.clear_file_for_reparse(&opts.project, &w.rel)?;
-            // Re-record this file's coverage from scratch so a file that now
-            // parses cleanly stops being reported as `parse_partial`.
-            self.clear_file_coverage(&opts.project, &w.rel)?;
-            let Some(lang) = pa_ast::SupportLang::from_path(&w.abs) else {
-                self.record_coverage(&opts.project, &w.rel, KIND_SKIPPED, "unsupported language")?;
-                report.skipped += 1;
-                continue;
-            };
-            let module = module_of(&w.rel);
-            if opts.depth == Depth::Skeleton {
-                self.write_skeleton_file(&opts.project, w, &mut report)?;
-                continue;
-            }
-            let extracted = crate::extract::extract(&w.source, lang, &module);
-            if !opts.depth.resolves_edges() {
-                self.write_symbols_only(
+                self.account_parse_health(&opts.project, w, lang, &extracted, &mut report)?;
+                let (nodes, file_id) = self.write_file(&opts.project, &w.rel, &extracted)?;
+                self.drop_stale_symbols(&opts.project, &w.rel, &extracted)?;
+                let surface = crate::surface::surface_of(&w.source, lang, &module);
+                self.put_file_surface(
                     &opts.project,
-                    w,
-                    &extracted,
-                    &mut report,
-                    &mut file_node_ids,
+                    &w.rel,
+                    &surface.surface_sha,
+                    &surface.body_sha,
+                    &surface.surface_json,
                 )?;
-                continue;
+                report.nodes += nodes;
+                if let Some(id) = file_id {
+                    file_node_ids.insert(w.rel.clone(), id);
+                }
+                for call in &extracted.calls {
+                    pending_calls.push((w.rel.clone(), call.caller_qn.clone(), call.clone()));
+                }
+                for import in &extracted.imports {
+                    pending_imports.push((w.rel.clone(), import.clone()));
+                }
+                self.put_file_hash(&opts.project, &w.rel, &w.hash)?;
             }
-
-            self.account_parse_health(&opts.project, w, lang, &extracted, &mut report)?;
-            let (nodes, file_id) = self.write_file(&opts.project, &w.rel, &extracted)?;
-            self.drop_stale_symbols(&opts.project, &w.rel, &extracted)?;
-            let surface = crate::surface::surface_of(&w.source, lang, &module);
-            self.put_file_surface(
-                &opts.project,
-                &w.rel,
-                &surface.surface_sha,
-                &surface.body_sha,
-                &surface.surface_json,
-            )?;
-            report.nodes += nodes;
-            if let Some(id) = file_id {
-                file_node_ids.insert(w.rel.clone(), id);
-            }
-            for call in &extracted.calls {
-                pending_calls.push((w.rel.clone(), call.caller_qn.clone(), call.clone()));
-            }
-            for import in &extracted.imports {
-                pending_imports.push((w.rel.clone(), import.clone()));
-            }
-            self.put_file_hash(&opts.project, &w.rel, &w.hash)?;
         }
 
-        // 3. Removed files: stored but not seen this run.
+        // 3. Removed files: stored but not seen in ANY batch. A property of the pass,
+        // not of a batch — inside the loop it ran once per batch, which double-counted
+        // every removal (measured: 4 reported for 2 files).
         for rel in stored.keys() {
             if !seen.contains(rel) {
                 self.clear_file(&opts.project, rel)?;
@@ -576,30 +625,67 @@ impl GraphStore {
     /// Discover, read, and hash every candidate file, recording a coverage
     /// note for each file that is skipped before parsing (oversized/unreadable)
     /// and returning the work items for the rest.
-    fn prepare_work(
-        &self,
+    /// Discover + hash, then hand back the files ONE BYTE-BOUNDED BATCH at a time.
+    ///
+    /// The read used to be a single `par_iter().map(read_work).collect()` over the whole
+    /// tree: 2 113 files and **43.2 MiB** resident at once on this repo, three times the
+    /// 8-16 MiB the lightweight-graph review budgets ("не собирать весь workspace в
+    /// `Vec<FileWork>`").
+    ///
+    /// A batch is bounded by BYTES: 3 000 tiny files and 30 large ones need the same
+    /// memory ceiling. A single file over the ceiling still gets its own batch — capping
+    /// one file is `max_file_bytes`'s job.
+    ///
+    /// The caller writes each batch before asking for the next, so peak resident source
+    /// text is one batch. Coverage notes for skipped files are recorded here, because a
+    /// skip is a property of the pass.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors from the coverage notes.
+    fn read_batches<'a>(
         root: &Path,
-        opts: &IndexOptions,
-        stored: &HashMap<String, FileHash>,
+        opts: &'a IndexOptions,
+        stored: &'a HashMap<String, FileHash>,
+    ) -> SourceBatches<'a> {
+        SourceBatches {
+            root: root.to_path_buf(),
+            opts,
+            stored,
+            files: discover(root, opts),
+            cursor: 0,
+        }
+    }
+
+    /// The next batch, or empty at the end of the tree.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors from the coverage notes.
+    fn next_batch(
+        &self,
+        batches: &mut SourceBatches<'_>,
         report: &mut IndexReport,
     ) -> Result<Vec<FileWork>> {
-        let files = discover(root, opts);
-        let outcomes: Vec<Option<FileWork>> = files
-            .par_iter()
-            .map(|abs| read_work(root, abs, stored, opts))
-            .collect();
-        let mut work: Vec<FileWork> = Vec::with_capacity(outcomes.len());
-        for (abs, outcome) in files.iter().zip(outcomes) {
-            if let Some(w) = outcome {
-                work.push(w);
-            } else {
+        let mut work: Vec<FileWork> = Vec::new();
+        let mut bytes = 0usize;
+        while batches.cursor < batches.files.len() {
+            let abs = &batches.files[batches.cursor];
+            batches.cursor += 1;
+            let Some(w) = read_work(&batches.root, abs, batches.stored, batches.opts) else {
                 self.record_coverage(
-                    &opts.project,
-                    &rel_path(root, abs),
+                    &batches.opts.project,
+                    &rel_path(&batches.root, abs),
                     KIND_SKIPPED,
-                    &skip_reason(abs, opts),
+                    &skip_reason(abs, batches.opts),
                 )?;
                 report.skipped += 1;
+                continue;
+            };
+            bytes = bytes.saturating_add(w.source.len());
+            work.push(w);
+            if bytes >= source_batch_bytes() {
+                #[cfg(test)]
+                TEST_BATCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                break;
             }
         }
         Ok(work)
@@ -1833,6 +1919,59 @@ mod tests {
         )
         .expect("search");
         assert!(fresh.iter().any(|h| h.name == "renamed_only"), "{fresh:?}");
+    }
+
+    /// Batching bounds MEMORY and must not change a single fact. A batching bug shows up
+    /// as a file silently missing from the graph — the class `coverage` exists to make
+    /// visible, and the one a green index run would not report.
+    #[test]
+    fn many_small_batches_produce_the_same_graph_as_one_large_batch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_tree(dir.path());
+        for i in 0..12 {
+            std::fs::write(
+                dir.path().join(format!("m{i}.rs")),
+                format!("pub fn m{i}_one() {{}}\npub fn m{i}_two() {{ m{i}_one() }}\n"),
+            )
+            .expect("module");
+        }
+
+        let mut single = GraphStore::open_in_memory().expect("store");
+        single
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("one batch");
+        let expected = (
+            single.node_count("p").expect("nodes"),
+            single.edge_count("p").expect("edges"),
+            single.all_file_hashes("p").expect("hashes"),
+        );
+
+        let mut many = GraphStore::open_in_memory().expect("store");
+        TEST_SOURCE_BATCH_BYTES.with(|slot| slot.set(Some(60)));
+        TEST_BATCHES.store(0, std::sync::atomic::Ordering::Relaxed);
+        let result = many.index_project(dir.path(), &IndexOptions::new("p"));
+        TEST_SOURCE_BATCH_BYTES.with(|slot| slot.set(None));
+        let result = result.expect("many batches");
+        assert!(
+            TEST_BATCHES.load(std::sync::atomic::Ordering::Relaxed) > 1,
+            "the fixture must force several batches, or it proves nothing: {result:?}"
+        );
+        assert_eq!(
+            (
+                many.node_count("p").expect("nodes"),
+                many.edge_count("p").expect("edges"),
+                many.all_file_hashes("p").expect("hashes"),
+            ),
+            expected,
+            "the graph must be identical however the files were grouped"
+        );
+
+        // A removal is still detected once, not once per batch.
+        std::fs::remove_file(dir.path().join("m3.rs")).expect("remove");
+        let report = many
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("removal");
+        assert_eq!(report.removed, 1, "removal is a pass property: {report:?}");
     }
 
     #[test]
