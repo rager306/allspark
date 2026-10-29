@@ -58,6 +58,12 @@ pub struct CatalogFetcher {
     client: OnceLock<reqwest::Client>,
     timeout: Duration,
     max_bytes: usize,
+    /// Requests this fetcher has STARTED.
+    ///
+    /// A counter, not a logging side effect: "offline must not touch the network" is only
+    /// testable if a test can see an attempt, and a path that returns early looks identical
+    /// to one that tried and failed. Written by `fetch_with` before the request is built.
+    attempts: std::sync::atomic::AtomicUsize,
 }
 
 impl Default for CatalogFetcher {
@@ -79,7 +85,17 @@ impl CatalogFetcher {
             client: OnceLock::new(),
             timeout,
             max_bytes,
+            attempts: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// How many requests this fetcher has started.
+    ///
+    /// The observable half of "offline stays offline": a guard that returns early and a guard
+    /// that does not both produce a plausible answer, but only one leaves this at zero.
+    #[must_use]
+    pub fn attempts(&self) -> usize {
+        self.attempts.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn client(&self) -> &reqwest::Client {
@@ -125,6 +141,8 @@ impl CatalogFetcher {
         etag: Option<&str>,
         extra_headers: &[(String, String)],
     ) -> Result<FetchOutcome, FetchError> {
+        self.attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let mut request = self
             .client()
             .get(url)

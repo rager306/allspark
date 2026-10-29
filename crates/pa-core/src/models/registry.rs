@@ -103,6 +103,12 @@ pub struct ModelRegistry {
     /// The provider-discovery snapshot (`doc/discovery.json`): which ids each
     /// live list serves right now. `None` until the first refresh attempt.
     discovery_snapshot: Option<pa_models::discovery::DiscoverySnapshot>,
+    /// The HTTP fetcher every network path shares.
+    ///
+    /// Held rather than constructed per call so a caller can observe it — and so one
+    /// `CatalogFetcher` (one client, one trust store) serves all three refresh paths instead
+    /// of building a new one each time.
+    fetcher: std::sync::Arc<pa_models::fetch::CatalogFetcher>,
 }
 
 /// Under a stored xAI subscription the provider's models switch onto the
@@ -176,6 +182,20 @@ impl ModelRegistry {
         Self::new(auth, None)
     }
 
+    /// A registry whose network paths use `fetcher` rather than a fresh one.
+    ///
+    /// The seam an offline test needs: the guard is only observable through the fetcher's
+    /// attempt counter, and a fetcher built inside the call cannot be inspected.
+    pub fn create_with_fetcher(
+        auth: AuthStorage,
+        models_json_path: impl Into<PathBuf>,
+        fetcher: std::sync::Arc<pa_models::fetch::CatalogFetcher>,
+    ) -> Self {
+        let mut registry = Self::new(auth, Some(models_json_path.into()));
+        registry.fetcher = fetcher;
+        registry
+    }
+
     fn new(auth: AuthStorage, models_json_path: Option<PathBuf>) -> Self {
         let catalog = catalog_chain::catalog_for(models_json_path.as_deref());
         let mut registry = Self {
@@ -192,6 +212,7 @@ impl ModelRegistry {
             catalog,
             opencode_snapshot: None,
             discovery_snapshot: None,
+            fetcher: std::sync::Arc::new(pa_models::fetch::CatalogFetcher::new()),
         };
         registry.load_models();
         // The SAVED discovery snapshot is applied at construction, not only on a
@@ -714,7 +735,20 @@ impl ModelRegistry {
                 }
             }
         }
-        let fetcher = pa_models::fetch::CatalogFetcher::new();
+        // The ONLY network refresh without this guard. `refresh_private_prime_inference_
+        // authorization` and the catalog refresh both return early when offline; this one
+        // fetched anyway, so an offline daemon still reached the network — and in tests it
+        // reached the LIVE endpoint, which is how `refresh_failure_keeps_the_last_good_
+        // catalog_and_stays_silent` started failing: the primary refresh failed as designed,
+        // while this one succeeded and changed the payload under it.
+        if is_offline_mode_enabled() {
+            if let Some(cached) = cached {
+                self.apply_opencode_snapshot(&cached);
+                self.opencode_snapshot = Some(cached);
+            }
+            return;
+        }
+        let fetcher = std::sync::Arc::clone(&self.fetcher);
         let known = |id: &str| {
             pa_ai::models_fork::fork_provider_models()
                 .into_iter()
@@ -963,6 +997,16 @@ impl ModelRegistry {
     /// failed fetch, or an unparseable list is a debug note, not an error —
     /// the hand table keeps deciding offline, which is the documented contract.
     async fn refresh_discovery(&mut self, models_dir: &Path) {
+        // Offline means offline (review #10-adjacent): this fetches `models.dev` and then every
+        // dictionary provider's own endpoint, and it was the THIRD network path with no
+        // `PI_OFFLINE` guard. The cached snapshot below still applies, so an offline run keeps
+        // whatever discovery last found instead of silently contacting the network.
+        if is_offline_mode_enabled() {
+            if let Some(snapshot) = pa_models::discovery::read_snapshot(models_dir) {
+                self.apply_discovery_snapshot(&snapshot, None);
+            }
+            return;
+        }
         let dictionary = match pa_models::discovery::load_embedded_dictionary() {
             Ok(dictionary) => dictionary,
             Err(error) => {
@@ -971,7 +1015,7 @@ impl ModelRegistry {
             }
         };
         let mut snapshot = pa_models::discovery::read_snapshot(models_dir).unwrap_or_default();
-        let fetcher = pa_models::fetch::CatalogFetcher::new();
+        let fetcher = std::sync::Arc::clone(&self.fetcher);
         // models.dev is the precedence-3 properties source for every dictionary provider that
         // names a key; fetched once per refresh and shared by the fold below.
         let models_dev = match fetcher
@@ -1383,3 +1427,45 @@ fn now_millis() -> u64 {
 
 #[cfg(test)]
 mod tests;
+
+/// `PI_OFFLINE` must stop EVERY network refresh, not two of three.
+///
+/// `refresh_private_prime_inference_authorization` and the catalog refresh both returned
+/// early offline; `refresh_discovery` and `refresh_opencode_free_tier` did not, so an
+/// offline daemon still reached `models.dev`, GitHub, and every dictionary provider's own
+/// endpoint. It also made `refresh_failure_keeps_the_last_good_catalog_and_stays_silent`
+/// depend on the live internet: the primary refresh failed as designed while the
+/// unguarded path succeeded and changed the payload underneath it.
+///
+/// The oracle is the fetcher's ATTEMPT COUNTER, not "it returned": a guard that returns
+/// early and one that fetches and fails both produce a plausible catalog, so only the
+/// count can tell them apart. This test was written the weak way first and passed with
+/// the guard deleted — which is the failure mode it exists to catch.
+#[tokio::test]
+async fn every_network_refresh_honours_the_offline_flag() {
+    let previous = std::env::var("PI_OFFLINE").ok();
+    std::env::set_var("PI_OFFLINE", "1");
+    let dir = tempfile::TempDir::new().expect("dir");
+    let agent_dir = dir.path().join("agent");
+    std::fs::create_dir_all(&agent_dir).expect("agent dir");
+    let fetcher = std::sync::Arc::new(pa_models::fetch::CatalogFetcher::new());
+    let mut registry = ModelRegistry::create_with_fetcher(
+        crate::auth::AuthStorage::create(&agent_dir),
+        agent_dir.join("models.json"),
+        std::sync::Arc::clone(&fetcher),
+    );
+    let served = registry.refresh_available_models().await;
+    let attempts = fetcher.attempts();
+    match previous {
+        Some(value) => std::env::set_var("PI_OFFLINE", value),
+        None => std::env::remove_var("PI_OFFLINE"),
+    }
+    assert_eq!(
+        attempts, 0,
+        "offline must make NO network attempt; {attempts} were started"
+    );
+    assert!(
+        !served.is_empty(),
+        "and it must still serve the bundled table, not an empty catalog"
+    );
+}
