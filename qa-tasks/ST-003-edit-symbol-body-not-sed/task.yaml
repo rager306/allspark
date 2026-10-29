@@ -26,6 +26,16 @@ must:
   - tool: lsp
     args_regex: "replace_symbol_body|find_symbol"
 must_not:
+  # Constrain the BEHAVIOR, not the shell spelling (review #17). These two rules used to name
+  # `bash` only, so a full-file rewrite through `edit` or an lsp `insert` bypassed the gate even
+  # though it violates the intent — replacing the whole file is exactly what corrupts the twin.
+  # The oracle below still catches the OUTCOME (verified: a textual replace of both bodies fails
+  # with "the original body must survive exactly once"), so this is defence in depth, not the
+  # only check.
   - tool: bash
     args_regex: "sed -i|perl -pi|awk .*-i"
+  - tool: edit
+    args_regex: "old_string.{0,80}pub fn summary"
+  - tool: lsp
+    args_regex: "insert|replace_range|apply_workspace_edit"
 reference: reference/solution.md

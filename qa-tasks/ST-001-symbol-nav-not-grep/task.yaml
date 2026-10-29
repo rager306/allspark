@@ -38,4 +38,17 @@ must_not:
   # The anti-pattern this task exists to catch: a blind textual rewrite.
   - tool: bash
     args_regex: "sed -i|perl -pi|> *src/lib.rs"
+output:
+  # The semantic core, which nothing checked before (review #15). The state rules below only
+  # prove an edit landed; a wrong ANSWER passed the task. This asserts the reported call sites:
+  # the prompt asks which call site invokes each method, and a text search cannot establish it
+  # because both call sites read `backup.run()` / `worker.run()` identically.
+  - id: worker-caller
+    regex: "spawn_worker"
+    min: 1
+  - id: backup-caller
+    regex: "unrelated"
+    min: 1
+  - id: done
+    contains: NAV-DONE
 reference: reference/solution.md

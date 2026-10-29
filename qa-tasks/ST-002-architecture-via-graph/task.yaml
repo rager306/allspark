@@ -23,4 +23,17 @@ must:
   # The task is about relationships; the graph is the tool that holds them.
   - tool: graph
     args_regex: "trace|search|architecture"
+judge:
+  question: >-
+    The task asked for the full call chain from `main` to the value `41`, as an ordered list of
+    function names, and then for CHAIN-DONE. Did the agent report the chain the CODE actually
+    has?
+  criteria:
+    achieved: >-
+      names `main`, `handle` and `load`, and places `load` BEFORE `validate` — Rust evaluates
+      `validate(repo.load())`'s argument first, so `load` returns 41 before `validate` runs. A
+      report that puts `validate` before `load` is wrong even though it names every function.
+    partial: names the functions but orders them by the shape of the source text rather than by
+      evaluation order, or omits one hop
+    not_achieved: reports a chain the fixture does not contain, or no ordered chain at all
 reference: reference/solution.md
