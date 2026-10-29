@@ -306,6 +306,57 @@ mod tests {
         assert_eq!(project_name(Path::new("/a/service")), "service");
     }
 
+    /// The review's acceptance check #3, verbatim: "Новый файл появляется во время
+    /// занятого writer; после этого нет событий. Он всё равно должен попасть в индекс."
+    ///
+    /// The existing test proves the batch is RETRIED. It does not prove the case the review
+    /// names: a NEW file nobody has seen yet, appearing while another writer holds the
+    /// lease, with no further filesystem event to trigger a second look. That is the
+    /// failure mode where a dropped batch means the file is invisible until something
+    /// unrelated happens to notice.
+    #[tokio::test]
+    async fn a_file_created_during_a_held_lease_is_indexed_without_a_second_event() {
+        use pa_graph::lease::{CancelToken, IndexLease};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        std::fs::write(root.join("a.rs"), "pub fn one() {}\n").expect("a.rs");
+        let db_path = root.join("graph.db");
+        let cancel = CancelToken::new();
+        // Establish the store so the check below reads a real project, not an empty file.
+        assert_eq!(
+            reindex(&root, &db_path, "watchtest", 1, &cancel).await,
+            ReindexOutcome::Done
+        );
+
+        // A writer we do not control takes the lease, and a NEW file lands while it is held.
+        let held = IndexLease::acquire(&db_path, Duration::ZERO, &cancel).expect("lease");
+        std::fs::write(root.join("b_new.rs"), "pub fn brand_new() {}\n").expect("new file");
+        assert_eq!(
+            reindex(&root, &db_path, "watchtest", 1, &cancel).await,
+            ReindexOutcome::LeaseBusy,
+            "the batch is outstanding, not lost"
+        );
+        drop(held);
+
+        // The retry the loop performs — and NO new event: the file is still there, and the
+        // pass re-derives changes from hashes rather than from the event stream.
+        assert_eq!(
+            reindex(&root, &db_path, "watchtest", 1, &cancel).await,
+            ReindexOutcome::Done
+        );
+        let store = pa_graph::GraphStore::open(&db_path).expect("open");
+        let names: Vec<String> = store
+            .search("brand_new", &pa_graph::SearchOptions::new("watchtest"))
+            .expect("search")
+            .into_iter()
+            .map(|hit| hit.qualified_name)
+            .collect();
+        assert!(
+            names.iter().any(|name| name.contains("brand_new")),
+            "the file created during the held lease must be in the graph: {names:?}"
+        );
+    }
+
     /// The end-to-end shape of the retry: with the writer lease held by someone
     /// else, the watcher's pass reports `LeaseBusy` (so the loop retries) and
     /// NOT success, and once the lease is released the same pass applies.

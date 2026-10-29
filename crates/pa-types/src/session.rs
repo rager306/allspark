@@ -126,6 +126,15 @@ pub struct CompactionSummaryMessage {
     /// Harness digest snapshot attached mechanically at compaction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness_digest: Option<String>,
+    /// The deterministic task state at this cut: what was asked, which checks ran, what is
+    /// unverified, and the boundary — derived from entries, never generated.
+    ///
+    /// Carried on the SUMMARY message so it survives a restart: the durable compaction
+    /// entry holds it in `details`, and rebuilding the context from the log is what makes it
+    /// reachable again. Without this field the state was written and never read — a
+    /// resuming session could not see the receipts it had recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_state: Option<serde_json::Value>,
     /// Fingerprint of the harness state behind `harness_digest`; lets cold
     /// boundaries skip re-delivery (TS #2400).
     #[serde(default, skip_serializing_if = "Option::is_none")]

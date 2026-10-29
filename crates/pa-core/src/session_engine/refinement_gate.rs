@@ -207,6 +207,7 @@ mod tests {
             retained_message_count: None,
             custom_instructions: None,
             harness_digest: Some("saved memory".to_string()),
+            task_state: None,
             harness_state_fingerprint: Some("fp".to_string()),
             timestamp: 0,
         };

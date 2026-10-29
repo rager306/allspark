@@ -476,6 +476,14 @@ pub fn build_session_context(entries: &[FileEntry], leaf_id: Option<&str>) -> Se
             retained_message_count: Some(retained.len() as u64),
             custom_instructions: payload.custom_instructions,
             harness_digest: summary_harness_digest,
+            // The cut's task state, re-read from the durable entry: this is what makes it
+            // survive a restart. A caller that rebuilds the context from the log gets the
+            // receipts back without a second parse.
+            task_state: payload
+                .details
+                .as_ref()
+                .and_then(|details| details.get("task"))
+                .cloned(),
             harness_state_fingerprint: summary_harness_state_fingerprint,
             timestamp: timestamp_to_millis(entries[compaction_index].timestamp()),
         }));
@@ -649,6 +657,44 @@ mod context_tests {
                 AgentMessage::CompactionSummary(summary) => summary.harness_digest.clone(),
                 _ => None,
             })
+    }
+
+    /// The review's acceptance check #9: "После двух compactions и restart сохраняются
+    /// `TaskState`, durable refs и constraints; текущий source не подменяется историческим
+    /// snapshot."
+    ///
+    /// The state was being WRITTEN into the compaction entry's `details` and never read
+    /// back: a resuming session could not see the receipts it had recorded, which makes the
+    /// whole derivation pointless. This pins the read path — log in, context out.
+    #[test]
+    fn a_task_state_survives_a_restart_of_the_context() {
+        let content = r#"
+{"type":"session","id":"s","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/w","version":3}
+{"type":"message","id":"u1","parentId":null,"timestamp":"2024-01-01T00:00:01.000Z","message":{"role":"user","content":"fix the parser","timestamp":0}}
+{"type":"compaction","id":"c1","parentId":"u1","timestamp":"2024-01-01T00:00:02.000Z","summary":"first","firstKeptEntryId":"u1","tokensBefore":10,"details":{"readFiles":[],"modifiedFiles":[],"task":{"lastInstruction":"fix the parser","instructionCount":1,"checks":[{"command":"cargo test","exitCode":0,"failed":false}],"unverifiedEdits":["src/parser.rs"],"retainedEntries":1}}}
+{"type":"message","id":"u2","parentId":"c1","timestamp":"2024-01-01T00:00:03.000Z","message":{"role":"user","content":"continue","timestamp":0}}
+"#;
+        let entries = parse_session_entries(content);
+        let session_context = build_session_context(&entries, None);
+        let summary = session_context
+            .messages
+            .iter()
+            .find_map(|message| match message {
+                AgentMessage::CompactionSummary(summary) => Some(summary),
+                _ => None,
+            })
+            .expect("the compaction boundary is in the context");
+        let task = summary
+            .task_state
+            .as_ref()
+            .expect("the task state must survive the rebuild");
+        assert_eq!(task["lastInstruction"], "fix the parser");
+        assert_eq!(task["instructionCount"], 1);
+        assert_eq!(task["checks"][0]["command"], "cargo test");
+        assert_eq!(
+            task["unverifiedEdits"][0], "src/parser.rs",
+            "the receipt that matters most after a restart: what was edited and not verified"
+        );
     }
 
     #[test]
