@@ -137,8 +137,11 @@ pub fn installer_url_refusal(url: &str, allow_http: bool) -> Option<String> {
 }
 
 /// Whether the [`ENV_ALLOW_HTTP`] escape hatch is active (`=1`).
+///
+/// Public so every surface that fetches an update over the network reads the SAME hatch. The
+/// download base in `pa-cli`'s plan step was missing the check entirely (review #6).
 #[must_use]
-fn allow_http() -> bool {
+pub fn allow_http() -> bool {
     std::env::var(ENV_ALLOW_HTTP).is_ok_and(|value| value == "1")
 }
 

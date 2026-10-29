@@ -95,6 +95,19 @@ pub async fn plan(
         }
     };
     let base_url = download_base_url(download_base_override, &installation.base_url);
+    // The download base builds the manifest and archive URLs, and the manifest is UNSIGNED —
+    // the archive's sha comes FROM it, so a network attacker serving a manifest over plain
+    // http also supplies a matching hash and the updater installs their bytes (review #6).
+    //
+    // The installer path already refused this (`ensure_https_url`), which is why the hole was
+    // invisible: the funnel that EXECS a script was guarded, the funnel that FETCHES an archive
+    // and swaps the binary was not. One rule, both surfaces: `installer_url_refusal`.
+    if let Some(refusal) = pa_core::update::installer::installer_url_refusal(
+        &base_url,
+        pa_core::update::installer::allow_http(),
+    ) {
+        anyhow::bail!("the update download base must be https: {refusal}");
+    }
     if rollback {
         let previous = read_rollback_installation(install_root)
             .map_err(|_| anyhow!("No valid previous compiled release is available."))?;
@@ -209,6 +222,33 @@ pub async fn plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review #6 (CWE-319): the download base must be https, and the escape hatch is the same
+    /// one the installer path honours.
+    ///
+    /// The manifest is UNSIGNED and the archive's sha comes from it, so an http base lets a
+    /// network attacker supply both the bytes and the hash that vouches for them. The installer
+    /// path already refused this; the archive path is what swaps the binary, and it did not.
+    #[test]
+    fn an_http_download_base_is_refused_unless_the_hatch_is_open() {
+        let refusal =
+            pa_core::update::installer::installer_url_refusal("http://mirror.example.com", false)
+                .expect("a plaintext base must be refused");
+        assert!(
+            refusal.contains("https") && refusal.contains("PRIME_AGENT_ALLOW_HTTP"),
+            "the refusal must name both the rule and the hatch: {refusal}"
+        );
+        assert_eq!(
+            pa_core::update::installer::installer_url_refusal("https://mirror.example.com", false),
+            None,
+            "https needs no hatch"
+        );
+        assert_eq!(
+            pa_core::update::installer::installer_url_refusal("http://127.0.0.1:8080", true),
+            None,
+            "the explicitly-named hatch opens it, for a local channel the operator controls"
+        );
+    }
 
     #[test]
     fn download_base_url_prefers_the_override() {

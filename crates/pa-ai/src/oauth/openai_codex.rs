@@ -321,30 +321,30 @@ async fn token_post_bounded(
             response.status
         ));
     }
-    let json: serde_json::Value =
-        serde_json::from_str(&response.body).map_err(|_| response.body.clone())?;
+    // Name only the missing FIELD and never the body (review #4, CWE-209). The old shape
+    // returned `response.body` verbatim on a parse failure and interpolated `{json}` on a
+    // missing field, so a partial token response put a live bearer token into an error the TUI
+    // renders and users paste into issues.
+    let json: serde_json::Value = serde_json::from_str(&response.body)
+        .map_err(|error| format!("OpenAI Codex token {label} returned invalid JSON: {error}"))?;
+    let missing =
+        |field: &str| format!("OpenAI Codex token {label} response missing field `{field}`");
     let Some(access) = json
         .get("access_token")
         .and_then(serde_json::Value::as_str)
         .filter(|token| !token.is_empty())
     else {
-        return Err(format!(
-            "OpenAI Codex token {label} response missing fields: {json}"
-        ));
+        return Err(missing("access_token"));
     };
     let Some(refresh) = json
         .get("refresh_token")
         .and_then(serde_json::Value::as_str)
         .filter(|token| !token.is_empty())
     else {
-        return Err(format!(
-            "OpenAI Codex token {label} response missing fields: {json}"
-        ));
+        return Err(missing("refresh_token"));
     };
     let Some(expires_in) = json.get("expires_in").and_then(serde_json::Value::as_f64) else {
-        return Err(format!(
-            "OpenAI Codex token {label} response missing fields: {json}"
-        ));
+        return Err(missing("expires_in"));
     };
     if !expires_in.is_finite() {
         // A NaN/`inf` lifetime is not a lifetime (TS's arithmetic yields
@@ -682,9 +682,16 @@ mod tests {
         let error = login_openai_codex(&http, &ui, DEFAULT_ORIGINATOR)
             .await
             .unwrap_err();
-        assert_eq!(
-            error,
-            r#"OpenAI Codex token exchange response missing fields: {"access_token":"a"}"#
+        // Names the FIELD, never the body. This assertion used to pin the whole response —
+        // including the `"a"` access token — which is the leak itself, not a description of it
+        // (review #4, CWE-209).
+        assert!(
+            error.contains("missing field `refresh_token`"),
+            "the error must name the absent field: {error}"
+        );
+        assert!(
+            !error.contains("\"a\""),
+            "and must not quote the token it did receive: {error}"
         );
     }
 

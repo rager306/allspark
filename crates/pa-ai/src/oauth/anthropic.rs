@@ -312,34 +312,43 @@ async fn json_token_request(
             format!("{label} request failed. url={url};{wire_context} details={message}")
         })?;
     if !response.ok() {
+        // Status only, never the body (CWE-209): an OAuth error body can echo the submitted
+        // credentials, and a partial SUCCESS body carries real tokens.
         return Err(format!(
-            "{label} request failed. url={url};{wire_context} details=Error: HTTP request failed. status={}; url={url}; body={}",
-            response.status, response.body
+            "{label} request failed. url={url};{wire_context} details=Error: HTTP request \
+             failed. status={}",
+            response.status
         ));
     }
     let json: serde_json::Value = serde_json::from_str(&response.body).map_err(|error| {
-        format!(
-            "{label} returned invalid JSON. url={url}; body={}; details=Error: {error}",
-            response.body
-        )
+        // The parse error names the offset, not the payload: a truncated token response would
+        // otherwise be quoted in full.
+        format!("{label} returned invalid JSON. url={url}; details=Error: {error}")
     })?;
+    // Name only the MISSING FIELD (review #4, CWE-209). This used to interpolate the whole
+    // response body, so a partial token response — an access token present, expiry absent, a
+    // shape OAuth servers really do emit on error — put a LIVE BEARER TOKEN into an error
+    // string that travels to the TUI error row, the CLI's stderr, and any pasted bug report.
+    // The diagnostic value of the body is nil next to that: the reader needs to know which
+    // field was absent, and the token must never leave this function.
+    let missing = |field: &str| format!("{label} response missing field `{field}`");
     let access = json
         .get("access_token")
         .and_then(serde_json::Value::as_str)
         .filter(|token| !token.is_empty())
-        .ok_or_else(|| format!("{label} response missing fields: {json}"))?
+        .ok_or_else(|| missing("access_token"))?
         .to_string();
     let refresh = json
         .get("refresh_token")
         .and_then(serde_json::Value::as_str)
         .filter(|token| !token.is_empty())
-        .ok_or_else(|| format!("{label} response missing fields: {json}"))?
+        .ok_or_else(|| missing("refresh_token"))?
         .to_string();
     let expires_in = json
         .get("expires_in")
         .and_then(serde_json::Value::as_f64)
         .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
-        .ok_or_else(|| format!("{label} response missing fields: {json}"))?;
+        .ok_or_else(|| missing("expires_in"))?;
     // The wire's expires_in is an integer second count read through JSON f64; the i64 truncation is the port's convention.
     #[allow(clippy::cast_possible_truncation)]
     let expires_in_seconds = expires_in as i64;
@@ -708,8 +717,13 @@ mod tests {
         assert_eq!(
             error,
             format!(
-                "Token exchange request failed. url={TOKEN_URL}; redirect_uri={REDIRECT_URI}; response_type=authorization_code; details=Error: HTTP request failed. status=400; url={TOKEN_URL}; body=no grant"
-            )
+                "Token exchange request failed. url={TOKEN_URL}; redirect_uri={REDIRECT_URI}; response_type=authorization_code; details=Error: HTTP request failed. status=400"
+            ),
+            "status only: the body can echo the submitted code (review #4)"
+        );
+        assert!(
+            !error.contains("no grant"),
+            "body must not be quoted: {error}"
         );
     }
 
@@ -718,9 +732,15 @@ mod tests {
         let http = ScriptedHttp::new(vec![(TOKEN_URL, 200, r#"{"access_token":"a"}"#)]);
         let ui = ScriptedUi::new(Some(ScriptedAnswer::value("the-code")), None);
         let error = login_on_a_free_port(&http, &ui).await.unwrap_err();
+        // Names the FIELD, never the body: the fixture's body is a partial success carrying a
+        // real `access_token`, which must not reach the error string (review #4).
         assert!(
-            error.starts_with("Token exchange response missing fields"),
-            "{error}"
+            error.contains("missing field `refresh_token`"),
+            "the error must name the absent field: {error}"
+        );
+        assert!(
+            !error.contains("\"a\""),
+            "and must not quote the token it did receive: {error}"
         );
     }
 
@@ -731,8 +751,13 @@ mod tests {
         assert_eq!(
             error,
             format!(
-                "Anthropic token refresh request failed. url={TOKEN_URL}; details=Error: HTTP request failed. status=401; url={TOKEN_URL}; body=expired"
-            )
+                "Anthropic token refresh request failed. url={TOKEN_URL}; details=Error: HTTP request failed. status=401"
+            ),
+            "the status names the failure; the BODY must never be quoted (review #4)"
+        );
+        assert!(
+            !error.contains("expired"),
+            "an OAuth error body may echo the submitted credentials: {error}"
         );
     }
 

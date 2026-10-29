@@ -175,7 +175,7 @@ impl Supervisor {
     }
 
     pub(crate) fn log_line(&self, message: &str) {
-        self.log.append(&format!("[{}] {message}", util::now_iso()));
+        self.log.append(&render_log_line(message));
     }
 
     /// The spawn ledger for one sessions dir (TS `rlmSpawnLedgerFor`): the
@@ -220,5 +220,99 @@ impl Supervisor {
         ));
         *cached = Some(std::sync::Arc::clone(&ledger));
         Ok(ledger)
+    }
+}
+
+/// The exact bytes one log line becomes: timestamped, and token-redacted.
+///
+/// Split from [`Supervisor::log_line`] so a test can assert the WRITTEN FORM without building a
+/// supervisor — the point being that the assertion runs through the same function the writer
+/// uses, so detaching the redaction fails the test.
+pub(crate) fn render_log_line(message: &str) -> String {
+    format!("[{}] {}", util::now_iso(), redact_tokens(message))
+}
+
+/// Replace worker bearer tokens in a log line with a stable, non-reversible tag.
+///
+/// The daemon log is written under the agent dir with ordinary file permissions and is read
+/// by `--debug`, bug reports and anything else the operator shares; a worker token is the
+/// credential the admission wire accepts for that worker's whole lifetime (review #40,
+/// CWE-532). Redaction lives at the LOG BOUNDARY rather than at each call site: four sites
+/// interpolate `worker_token` today, and a fifth would reintroduce the leak silently.
+///
+/// A worker token is a UUID (36 chars, hyphenated) or an 8+ alphanumeric token, so matching is
+/// shape-based and conservative: only strings that look like tokens are replaced, and a
+/// non-token word of ordinary prose is left alone.
+pub(crate) fn redact_tokens(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    for (index, word) in message.split(' ').enumerate() {
+        if index > 0 {
+            out.push(' ');
+        }
+        let trimmed = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
+        // The SAME shape the admission wire accepts (`is_worker_token_shape`: len >= 8, all
+        // ascii-alphanumeric or '-'). Matching a stricter guess would leave real tokens
+        // unredacted, which is the failure mode that matters here.
+        let looks_like_token = trimmed.len() >= 8
+            && trimmed
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if looks_like_token && trimmed.chars().any(|c| c.is_ascii_digit()) {
+            let suffix = if trimmed.len() >= 4 {
+                format!("..{}", &trimmed[trimmed.len() - 4..])
+            } else {
+                String::new()
+            };
+            out.push_str(&word.replace(trimmed, &format!("<redacted{suffix}>")));
+        } else {
+            out.push_str(word);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review #40 (CWE-532): the daemon log must not carry a worker's bearer token.
+    ///
+    /// The log sits in the agent dir with ordinary permissions and is read by `--debug`, by bug
+    /// reports and by anything the operator shares. This asserts through `RotatingLog::append`,
+    /// the real write path — asserting `redact_tokens` alone would pass with the call site
+    /// detached, which is the trap this test exists to avoid.
+    #[test]
+    fn a_worker_token_never_reaches_the_daemon_log() {
+        let dir = tempfile::TempDir::new().expect("dir");
+        let path = dir.path().join("daemon.log");
+        let log = paths::RotatingLog::new(path.clone());
+        let rendered = format!(
+            "[now] provider_admission: settle_stream lease 7 by {} (rate_limited) queued=0",
+            "3f9a1c2e-8b4d-4a6f-9c1d-2e5a7b8c9d0f"
+        );
+        log.append(&render_log_line(&rendered));
+        let written = std::fs::read_to_string(&path).expect("the log exists");
+        assert!(
+            !written.contains("3f9a1c2e-8b4d-4a6f-9c1d-2e5a7b8c9d0f"),
+            "the token must be gone from the file: {written}"
+        );
+        assert!(
+            written.contains("settle_stream") && written.contains("lease 7"),
+            "the diagnostic content must survive: {written}"
+        );
+    }
+
+    /// The redaction rules itself: real token shapes go, ordinary prose stays.
+    #[test]
+    fn redaction_matches_the_admission_wire_shape_and_spares_prose() {
+        let uuid = redact_tokens("by 3f9a1c2e-8b4d-4a6f-9c1d-2e5a7b8c9d0f");
+        assert!(uuid.contains("<redacted"), "{uuid}");
+        let bare = redact_tokens("by worker0719a3f refused");
+        assert!(!bare.contains("worker0719a3f"), "{bare}");
+        assert_eq!(
+            redact_tokens("released 2 lease(s) of a stopped worker"),
+            "released 2 lease(s) of a stopped worker",
+            "no false positives on prose"
+        );
     }
 }
