@@ -203,6 +203,25 @@ impl AgentSessionEngine {
     /// (the failover switch and restore install through here too).
     /// Returns `false` when no route is armed.
     pub(crate) fn install_armed_route_target(&self) -> bool {
+        self.install_armed_route_target_for(None)
+    }
+
+    /// [`Self::install_armed_route_target`], but built for the model the episode switched TO.
+    ///
+    /// The plain form always installs `route.target`, the ROUTE's original model. On a failover
+    /// switch that is exactly wrong: the turn decided to serve `next`, and reinstalling the
+    /// route's target sent the retry back to the provider that had just failed — with zero
+    /// delay, skipping its Retry-After — while the model-change event named a backup that never
+    /// received the request (upstream #3312, a live recursion; review #12).
+    ///
+    /// `Some(next)` resolves the backup's OWN credentials, the way the unrouted path already
+    /// does, and reuses the route's tier/headers policy. `None` keeps the original install for
+    /// the restore path, where the route's target IS the one that should serve.
+    pub(crate) fn install_armed_route_target_for(
+        &self,
+        next: Option<&pa_types::ai::Model>,
+    ) -> bool {
+        let session_tier = *self.service_tier.read().expect("service tier lock");
         let slot = self
             .image_route
             .lock()
@@ -210,7 +229,20 @@ impl AgentSessionEngine {
         let Some(route) = slot.as_ref() else {
             return false;
         };
-        let target = route.target.clone();
+        let target = match next {
+            // The backup candidate's OWN key and headers: a routed episode must not keep
+            // serving the primary's credentials against a different provider.
+            Some(model) => {
+                let (api_key, headers) = self.resolve_request_key_and_headers(model);
+                ProviderTarget {
+                    service_tier: session_tier,
+                    api_key,
+                    model: model.clone(),
+                    headers,
+                }
+            }
+            None => route.target.clone(),
+        };
         *self.provider_target.write().expect("provider target lock") = Some(target);
         true
     }
@@ -372,6 +404,67 @@ mod tests {
             data: "aGk=".to_string(),
             mime_type: "image/png".to_string(),
         }]
+    }
+
+    /// Review #12 (upstream #3312, live recursion): a failover switch inside an armed image
+    /// episode must install the BACKUP's target.
+    ///
+    /// The plain `install_armed_route_target()` always writes `route.target` — the route's
+    /// ORIGINAL model — so the retry went straight back to the provider that had just failed,
+    /// with zero delay and no Retry-After, while the model-change event named a backup that never
+    /// received a request.
+    #[test]
+    fn a_route_failover_switch_installs_the_backup_target_not_the_route_target() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let engine = image_route_engine(
+            dir.path(),
+            &serde_json::json!({ "imageModel": "battery/mock-vision" }),
+        );
+        let armed = engine.arm_image_turn_route(true);
+        assert!(
+            armed.is_ok(),
+            "the fixture must arm a route, or the test proves nothing: {armed:?}"
+        );
+        let route = engine.armed_image_route().expect("an armed route");
+        assert_eq!(
+            route.target.model.id, "mock-vision",
+            "the route serves the vision model"
+        );
+
+        // The backup the failover decided to serve: a DIFFERENT model on the same provider.
+        // Taken by value because `route` is not read again — a clone here would be redundant.
+        let mut backup = route.target.model;
+        backup.id = "mock-1".to_string();
+        backup.name = "Mock 1".to_string();
+
+        assert!(
+            engine.install_armed_route_target_for(Some(&backup)),
+            "an armed route must accept the backup install"
+        );
+        let installed = engine
+            .provider_target
+            .read()
+            .expect("target lock")
+            .clone()
+            .expect("a serving target");
+        assert_eq!(
+            installed.model.id, "mock-1",
+            "the switch must serve the BACKUP, not reinstall the route's own model"
+        );
+
+        // And the plain form still reinstalls the route's target, which is what the RESTORE
+        // path wants — the two must not collapse into one behaviour.
+        assert!(engine.install_armed_route_target());
+        let restored = engine
+            .provider_target
+            .read()
+            .expect("target lock")
+            .clone()
+            .expect("a serving target");
+        assert_eq!(
+            restored.model.id, "mock-vision",
+            "the no-argument form keeps its meaning"
+        );
     }
 
     #[test]

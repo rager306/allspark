@@ -562,7 +562,12 @@ impl AgentSessionEngine {
                             // target across the failover switch — through
                             // the fenced install (the route lock covers
                             // the clone and the slot write together).
-                            if !self.install_armed_route_target() {
+                            // Install the BACKUP's target, not the route's original one
+                            // (review #12, upstream #3312): `install_armed_route_target()` would
+                            // re-point the slot at the provider that just failed, so the retry
+                            // goes back to it with no delay and the announced backup model never
+                            // receives a request.
+                            if !self.install_armed_route_target_for(Some(&next)) {
                                 let (api_key, headers) =
                                     self.resolve_request_key_and_headers(&next);
                                 let mut target =

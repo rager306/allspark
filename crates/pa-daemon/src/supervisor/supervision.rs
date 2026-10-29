@@ -318,6 +318,11 @@ impl Supervisor {
                     .authentication_token
                     .clone();
                 self.reap_provider_admission(&token);
+                // A pause lease outliving its worker is a gate nobody holds: the relaunched
+                // worker starts with an empty pause table, so held-back input runs while the
+                // client still believes it is queued, and the later release succeeds
+                // vacuously against an unknown pause (review #13).
+                self.reap_worker_pauses(&resident.worker_id).await;
                 // The residency change lands in the scheduled-jobs invalidation (TS
                 // `broadcastHeartbeatsChanged`): the dead worker's durable jobs are passive
                 // from here on, so a snapshot from while it was live must not be served again.

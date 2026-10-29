@@ -380,6 +380,43 @@ impl Supervisor {
         }
     }
 
+    /// Drop every pause lease a DEAD worker held (review #13).
+    ///
+    /// A client that armed a pause and then the worker crashed keeps believing queued input is
+    /// gated: the relaunched worker starts with an empty pause table, so the held-back work
+    /// runs, and the later release succeeds vacuously against an `Unknown` pause. Nothing
+    /// reports the lost gate, which is the worst shape — the client cannot tell.
+    ///
+    /// The record must go with the worker, not just the remote pause: the supervisor's copy is
+    /// what answers the dedupe at `:164`, so a surviving record would make a post-restart
+    /// re-acquire return the DEAD pause id and restore the illusion.
+    ///
+    /// No remote release: the worker is gone, and a new one has no pause to release.
+    pub(crate) async fn reap_worker_pauses(&self, worker_id: &str) -> usize {
+        let dead: Vec<String> = {
+            let leases = self.input_pauses.leases.lock().await;
+            leases
+                .iter()
+                .filter(|(_, entry)| entry.worker_id == worker_id)
+                .map(|(pause_id, _)| pause_id.clone())
+                .collect()
+        };
+        if dead.is_empty() {
+            return 0;
+        }
+        {
+            let mut leases = self.input_pauses.leases.lock().await;
+            for pause_id in &dead {
+                leases.remove(pause_id);
+            }
+        }
+        self.log_line(&format!(
+            "session input pauses: dropped {} lease(s) of dead worker {worker_id}; the client must re-arm",
+            dead.len()
+        ));
+        dead.len()
+    }
+
     /// The reattach clear (TS reattach arm): reattached sessions may
     /// acquire pauses again.
     pub(crate) fn clear_detaching_after_reattach(
@@ -437,4 +474,56 @@ impl Supervisor {
 #[derive(Debug, Default)]
 pub(crate) struct SupervisorPauseTable {
     pub(crate) leases: tokio::sync::Mutex<HashMap<String, SupervisorPauseEntry>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::supervisor::SupervisorOptions;
+
+    /// Review #13: a pause lease must not outlive the worker that held it.
+    ///
+    /// If it does, the client keeps believing queued input is gated while the relaunched worker
+    /// has no pause at all, and the later release succeeds vacuously — the gate is lost with no
+    /// report. The dedupe below is what makes the surviving RECORD the problem: it would answer
+    /// a post-restart re-acquire with the DEAD pause id.
+    #[tokio::test]
+    async fn a_dead_workers_pause_leases_are_reaped_and_cannot_be_deduped() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let agent_dir = dir.path().join("agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let supervisor = Arc::new(
+            Supervisor::new(SupervisorOptions {
+                socket_path: dir.path().join("daemon.sock"),
+                agent_dir,
+            })
+            .expect("supervisor"),
+        );
+        let entry = |worker: &str, key: &str| crate::input_pause_lease::SupervisorPauseEntry {
+            owner_connection_id: "conn-1".to_string(),
+            worker_id: worker.to_string(),
+            active_session_id: "session-1".to_string(),
+            requested_active_session_id: "session-1".to_string(),
+            lease_key: key.to_string(),
+        };
+        {
+            let mut leases = supervisor.input_pauses.leases.lock().await;
+            leases.insert("pause-dead".to_string(), entry("worker-dead", "k1"));
+            leases.insert("pause-live".to_string(), entry("worker-live", "k1"));
+        }
+
+        let reaped = supervisor.reap_worker_pauses("worker-dead").await;
+        assert_eq!(reaped, 1, "exactly the dead worker's lease is dropped");
+
+        let leases = supervisor.input_pauses.leases.lock().await;
+        assert!(
+            !leases.contains_key("pause-dead"),
+            "the dead worker's record must be gone, or a re-acquire would dedupe to it: {:?}",
+            leases.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            leases.contains_key("pause-live"),
+            "another worker's lease must survive"
+        );
+    }
 }

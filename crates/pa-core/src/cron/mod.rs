@@ -626,6 +626,16 @@ struct CronFields {
     day_of_month: BTreeSet<u32>,
     month: BTreeSet<u32>,
     day_of_week: BTreeSet<u32>,
+    /// Whether the DAY-OF-MONTH field was written as a bare `*`.
+    ///
+    /// The day pair is the one place cron is not a plain AND: when BOTH day fields are
+    /// restricted, Vixie cron treats them as OR, so `0 0 13 * 5` runs on the 13th AND on every
+    /// Friday. Conjoining them (which this did) turns `every Friday plus the 13th` into
+    /// "Friday the 13th, four times a decade" — a schedule that silently fires almost never
+    /// (review #32).
+    day_of_month_starred: bool,
+    /// Whether the DAY-OF-WEEK field was written as a bare `*`.
+    day_of_week_starred: bool,
 }
 
 fn next_cron_run_after(expression: &str, after_millis: u64) -> anyhow::Result<u64> {
@@ -655,6 +665,8 @@ fn parse_cron_expression(expression: &str) -> anyhow::Result<CronFields> {
         day_of_month: parse_cron_field(parts[2], 1, 31)?,
         month: parse_cron_field(parts[3], 1, 12)?,
         day_of_week: parse_cron_field(parts[4], 0, 7)?,
+        day_of_month_starred: parts[2].trim() == "*",
+        day_of_week_starred: parts[4].trim() == "*",
     })
 }
 
@@ -713,13 +725,20 @@ fn parse_cron_number(value: Option<&str>, min: u32, max: u32) -> anyhow::Result<
 /// UTC civil-time matching for the five-field cron expression.
 fn matches_cron_fields(timestamp_ms: u64, fields: &CronFields) -> bool {
     let (minute, hour, day, month, weekday) = civil_time(timestamp_ms);
-    let day_matches =
+    let weekday_matches =
         fields.day_of_week.contains(&weekday) || (weekday == 0 && fields.day_of_week.contains(&7));
+    // The day pair is cron's one exception to AND (see `day_of_month_starred`): when BOTH are
+    // restricted, either may match. When one is `*`, that one always matches, so OR and AND
+    // agree — which is why the bug went unnoticed: only a doubly-restricted expression differs.
+    let day_matches = if fields.day_of_month_starred || fields.day_of_week_starred {
+        fields.day_of_month.contains(&day) && weekday_matches
+    } else {
+        fields.day_of_month.contains(&day) || weekday_matches
+    };
     fields.minute.contains(&minute)
         && fields.hour.contains(&hour)
-        && fields.day_of_month.contains(&day)
-        && fields.month.contains(&month)
         && day_matches
+        && fields.month.contains(&month)
 }
 
 /// (minute, hour, day-of-month, month, weekday) in UTC. Weekday: 0=Sunday.
@@ -887,6 +906,79 @@ pub fn is_due_job(job: &AgentCronJob, now_millis: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Review #32: when BOTH day fields are restricted, cron ORs them.
+    ///
+    /// `0 0 13 * 5` means "the 13th, and every Friday". Conjoining gives "a Friday the 13th", which
+    /// fires roughly four times a decade — a schedule that looks accepted and almost never runs.
+    #[test]
+    fn a_doubly_restricted_day_pair_matches_either_field() {
+        // 2026-11-13 is a Friday, so it satisfies both. Test a plain Friday and a plain 13th
+        // first, because those are the cases AND gets wrong.
+        // 2026-11-06 is a Friday (13th is not).
+        let friday = 1_794_211_200_000u64; // 2026-11-06T00:00:00Z?  computed below instead
+        let _ = friday;
+        let midnight = |y: i64, m: u32, d: u32| {
+            let days = days_from_civil(y, m, d);
+            (days as u64) * 24 * 60 * ONE_MINUTE_MS
+        };
+        // A Friday that is NOT the 13th: 2026-11-06. Ask from midnight, and the answer is the
+        // NEXT matching midnight — a week later, because `next` starts at the following minute.
+        let plain_friday = midnight(2026, 11, 6);
+        let got = next_cron_run_after("0 0 13 * 5", plain_friday).expect("schedule matches");
+        assert_eq!(
+            got,
+            midnight(2026, 11, 13),
+            "a Friday must match: OR, not AND (AND would jump to a Friday the 13th)"
+        );
+
+        // The 13th that is NOT a Friday: 2026-12-13 (a Sunday).
+        let plain_thirteenth = midnight(2026, 12, 13);
+        let got = next_cron_run_after("0 0 13 * 5", plain_thirteenth).expect("schedule matches");
+        assert_eq!(
+            got,
+            midnight(2026, 12, 18),
+            "the 13th matched, and the NEXT match is the following Friday — OR, not AND \
+             (AND would have waited for 2027-01-13)"
+        );
+
+        // A day matching neither field must be skipped: 2026-11-10 (a Tuesday, not the 13th).
+        let neither = midnight(2026, 11, 10);
+        let got = next_cron_run_after("0 0 13 * 5", neither).expect("a later run exists");
+        assert!(
+            got > neither,
+            "a day matching neither field must be skipped"
+        );
+
+        // With one field starred, the pair is effectively AND, which is what OR degenerates to.
+        let got = next_cron_run_after("0 0 13 * *", plain_friday).expect("matches");
+        assert_eq!(
+            got,
+            midnight(2026, 11, 13),
+            "with a starred weekday the pair degenerates to AND: the plain Friday is skipped"
+        );
+
+        // And the doubly-restricted expression must NOT collapse to "Friday the 13th": from the
+        // 13th itself, the very next run is a week away, not eight months.
+        let from_the_thirteenth =
+            next_cron_run_after("0 0 13 * 5", plain_thirteenth).expect("schedule matches");
+        assert!(
+            from_the_thirteenth - plain_thirteenth <= 14 * 24 * 60 * ONE_MINUTE_MS,
+            "a doubly-restricted pair must fire at least twice a month, not twice a year: got \
+             {} ms later",
+            from_the_thirteenth - plain_thirteenth
+        );
+    }
+
+    /// Days since 1970-01-01 for a civil date (the inverse of `civil_time`).
+    fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+        let y = if m <= 2 { y - 1 } else { y };
+        let era = y.div_euclid(400);
+        let yoe = y - era * 400;
+        let mp = i64::from((m + 9) % 12);
+        let doy = (153 * mp + 2) / 5 + i64::from(d) - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        era * 146_097 + doe - 719_468
+    }
 
     const BASE: u64 = 1_700_000_000_000; // 2023-11-14T22:13:20Z
 

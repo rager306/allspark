@@ -790,6 +790,10 @@ impl Supervisor {
             .authentication_token
             .clone();
         self.reap_provider_admission(&token);
+        // Same rule as the give-up path: a dead worker's pause leases must not survive it, or
+        // the client's next re-acquire returns the dead pause id and the gate stays lost
+        // silently (review #13).
+        self.reap_worker_pauses(&resident.worker_id).await;
         // The residency change lands in the scheduled-jobs invalidation (TS
         // `broadcastHeartbeatsChanged`): the stopped session's durable jobs are passive
         // from here on, so a snapshot from while it was live must not be served again.
