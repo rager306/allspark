@@ -420,7 +420,11 @@ mod tests {
         let _faux = FAUX_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let plan = r#"{"summary":"one edit","edits":[{"action":"create","kind":"memory","id":"m1","title":"t","content":"c"}]}"#;
+        // A memory MUST name its evidence (`metadata.sources`), enforced since the
+        // durable-fact validation landed: a fact nothing can check later is the thing that
+        // rule exists to refuse. Without `sources` this plan is correctly rejected and the
+        // `applied: true` assertion below fails for a reason unrelated to the refine events.
+        let plan = r#"{"summary":"one edit","edits":[{"action":"create","kind":"memory","id":"m1","title":"t","content":"c","metadata":{"sources":["crates/pa-daemon/src/compact_autorefine.rs:423"]}}]}"#;
         let (engine, _dir) = trigger_engine(&json!({ "responses": [ {"text": plan} ] }), 1, true);
         let mut events: Vec<EngineEvent> = Vec::new();
         let execution = crate::session_commands::run_session_command(
