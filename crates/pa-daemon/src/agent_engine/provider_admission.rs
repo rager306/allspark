@@ -1321,6 +1321,11 @@ impl ProviderAdmission {
             // through a half-open probe (finding #5: the settle path used
             // to dispatch through an open breaker, so the fail-fast never
             // stopped the stream of fresh leases into a dead provider).
+            //
+            // Half-open needs no arm here (review #9, checked): `breaker_gate` already
+            // answers `Refuse` for it, so no acquirer reaches `admit_now` — and therefore no
+            // waiter reaches this queue — while a probe is in flight. Adding the same check a
+            // second time would be dead code, which is why this comment is the change.
             if let Some(breaker) = state.breakers.get(&key.provider) {
                 if breaker.state == BreakerState::Open {
                     return;

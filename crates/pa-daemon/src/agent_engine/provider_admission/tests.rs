@@ -238,6 +238,86 @@ async fn a_low_settings_cap_clamps_the_aimd_start() {
     );
 }
 
+/// A half-open breaker admits ONLY its probe (review #9).
+///
+/// The queue that piled up during the outage used to drain as soon as the cooldown expired,
+/// because `dispatch` gated on `Open` alone. Those backlog grants were not the probe, so their
+/// settles hit the no-transition arm: the breaker learned nothing from them while fresh
+/// traffic stayed refused, and full traffic could not resume.
+#[tokio::test]
+async fn a_half_open_breaker_drains_no_backlog() {
+    let clock = ScriptedClock::new(1_000);
+    let registry = ProviderAdmission::with_parts(
+        12,
+        Arc::new(JitteredStagger::new()),
+        Arc::clone(&clock) as Arc<dyn ClockSource>,
+    );
+    let key = key();
+    // Ten failures open the breaker, but only ONE may be a rate limit: each 429 halves the
+    // limit, and at the floor `dispatch` refuses on `in_flight >= limit` instead of on the
+    // breaker — which would make this test pass whether or not the breaker gates. The rest are
+    // `Failed`, which count as failures (review #10) and leave the limit alone.
+    for index in 0..RETRY_BUDGET_MIN_SAMPLES {
+        let lease = admitted(&registry, &key, "storm-worker").await;
+        if index == 0 {
+            registry.settle(
+                lease,
+                StreamOutcome::RateLimited(RateLimitReason::RateLimit),
+            );
+        } else {
+            registry.settle(lease, StreamOutcome::Failed);
+        }
+    }
+    assert_eq!(
+        registry.snapshot(&key).breaker.state,
+        BreakerState::Open,
+        "the fixture must open the breaker, or the test proves nothing"
+    );
+    assert!(
+        registry.snapshot(&key).limit > 1,
+        "and the limit must stay above the floor, or the refusal comes from the LIMIT rather \
+         than the breaker: {:?}",
+        registry.snapshot(&key)
+    );
+
+    // Past the cooldown the FIRST acquire is the single probe.
+    clock.advance(BREAKER_COOLDOWN_MS);
+    let probe = match registry
+        .acquire_stream_within(&key, "probe", Duration::from_millis(50))
+        .await
+    {
+        StreamAdmission::Admitted(lease) => lease,
+        other => panic!("the probe must admit, got {other:?}"),
+    };
+    assert_eq!(
+        registry.snapshot(&key).in_flight,
+        1,
+        "the probe holds the only slot; slots exist, so a backlog drain would show here"
+    );
+
+    // A backlog waiter arriving now is REFUSED, not queued and not admitted: `breaker_gate`
+    // answers `Refuse` for every non-probe acquirer in half-open, so the backlog cannot drain
+    // beside the probe. Asserting `Refused` specifically (not `Unadmitted`) is what
+    // distinguishes "the breaker stopped it" from "the wait budget expired while it queued" —
+    // the second shape would be the defect.
+    let backlog = registry
+        .acquire_stream_within(&key, "backlog-worker", Duration::from_millis(20))
+        .await;
+    assert_eq!(
+        backlog,
+        StreamAdmission::Refused,
+        "a non-probe waiter must be refused by the breaker, not queued beside the probe"
+    );
+    assert_eq!(
+        registry.snapshot(&key).in_flight,
+        1,
+        "and the probe is still the only holder"
+    );
+    // Release the probe so the slot returns; a lease id is a plain `u64`, so `drop` would be
+    // a no-op and the pool would stay held for the rest of the binary.
+    registry.release(probe);
+}
+
 /// The narrow bracket (oh-my-pi #3749): a spawn tree must not deadlock on
 /// its own admission. With a limit of ONE, three generations nest: the
 /// parent's stream slot must free for the child's spawn, and the child's
