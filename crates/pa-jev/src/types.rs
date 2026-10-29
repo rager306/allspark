@@ -30,6 +30,21 @@ impl JudgmentState {
         }
     }
 
+    /// The canonical bytes, without cloning the text variant.
+    ///
+    /// `canonical()` is what a caller needs when it stores the state; a cache key only
+    /// needs its DIGEST, and cloning a 1 MB pack to hash it doubles the peak for nothing.
+    /// The JSON variant still serializes, because a `Value` has no contiguous bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> std::borrow::Cow<'_, [u8]> {
+        match self {
+            JudgmentState::Text(text) => std::borrow::Cow::Borrowed(text.as_bytes()),
+            JudgmentState::Json(value) => {
+                std::borrow::Cow::Owned(serde_json::to_vec(value).unwrap_or_default())
+            }
+        }
+    }
+
     /// The wire form: text passes through, JSON embeds as-is.
     #[must_use]
     pub fn to_wire(&self) -> serde_json::Value {
