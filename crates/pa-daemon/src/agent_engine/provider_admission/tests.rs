@@ -174,6 +174,51 @@ async fn aimd_halves_on_429_down_to_the_floor_and_grows_back_to_the_cap() {
     );
 }
 
+/// A 5xx/timeout storm must not RAISE the concurrency limit (review #10).
+///
+/// The AIMD loop is the thing being tested, not the classifier: `Settled` grew the limit by
+/// one per stream, so a provider failing every request was rewarded for failing. `Failed`
+/// releases the slot and leaves the limit alone — and, unlike `RateLimited`, does not halve
+/// it either, because the right concurrency for a broken provider is not knowable.
+///
+/// The breaker half is asserted too: a failure is a failure for the retry budget, or a
+/// provider returning 500 to everything would never trip it.
+#[tokio::test]
+async fn a_failed_settle_neither_grows_nor_halves_the_limit() {
+    // Cap 8, start 6 (START_LIMIT clamped): `Settled` would climb toward 8 in four steps, so
+    // a `Failed` that climbed is visible instead of hidden by the ceiling.
+    let registry = ProviderAdmission::new(8);
+    let key = key();
+    let start = registry.snapshot(&key).limit;
+    assert_eq!(
+        start, 6,
+        "the fixture starts below its cap, or the test proves nothing"
+    );
+
+    for _ in 0..4 {
+        let lease = admitted(&registry, &key, "worker-a").await;
+        registry.settle(lease, StreamOutcome::Failed);
+        let snapshot = registry.snapshot(&key);
+        assert_eq!(
+            snapshot.limit, start,
+            "a failure must not move the limit in either direction"
+        );
+        assert_eq!(
+            snapshot.consecutive_429, 0,
+            "and must not be counted as a rate limit"
+        );
+    }
+    // The failures DID reach the retry budget, which is what opens the breaker on a 5xx storm.
+    let snapshot = registry.snapshot(&key);
+    assert!(
+        snapshot.breaker.budget_failures > 0,
+        "a 5xx storm must land in the breaker's budget: {snapshot:?}"
+    );
+
+    // The slot was released every time, so the pool still admits.
+    assert_eq!(snapshot.in_flight, 0, "every failure released its slot");
+}
+
 /// A settings cap below the compiled start limit clamps the start: the
 /// ceiling is honored immediately instead of being grown into.
 #[tokio::test]
@@ -469,9 +514,37 @@ fn a_message_carries_its_aimd_signal() {
         StreamOutcome::RateLimited(RateLimitReason::Concurrent)
     );
 
-    // A non-429 failure is a plain settle: the slot returns without
-    // touching the limit.
+    // A non-429 FAILURE is not a settle (review #10). It used to be, and that made a 5xx
+    // storm raise the concurrency limit against a provider failing every request while the
+    // breaker counted those settles as clean samples. `Failed` releases the slot and counts
+    // in the breaker, but sends no AIMD signal in either direction.
     message.error_message = Some("provider down: 503".to_string());
+    assert_eq!(outcome_for_message(&message), StreamOutcome::Failed);
+
+    // A 5xx STATUS is the same verdict even when the error text says nothing about it.
+    message.error_message = None;
+    message.diagnostics = Some(vec![pa_agent::types::AssistantMessageDiagnostic {
+        kind: "provider_stream_failure".to_string(),
+        timestamp: 0,
+        error: None,
+        details: Some(serde_json::json!({ "status": 503, "kind": "server_error" })),
+    }]);
+    assert_eq!(outcome_for_message(&message), StreamOutcome::Failed);
+
+    // And a transport/timeout kind, which carries no status at all.
+    message.diagnostics = Some(vec![pa_agent::types::AssistantMessageDiagnostic {
+        kind: "provider_stream_failure".to_string(),
+        timestamp: 0,
+        error: None,
+        details: Some(serde_json::json!({ "kind": "timeout" })),
+    }]);
+    assert_eq!(outcome_for_message(&message), StreamOutcome::Failed);
+
+    // A message with NO failure at all is still a plain settle: the third arm must not
+    // swallow the healthy case, or the limit can never grow.
+    message.diagnostics = None;
+    message.error_message = None;
+    message.stop_reason = pa_agent::types::StopReason::Stop;
     assert_eq!(outcome_for_message(&message), StreamOutcome::Settled);
 }
 

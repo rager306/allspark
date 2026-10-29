@@ -281,6 +281,7 @@ impl Supervisor {
                 let reason_wire = match settled {
                     StreamOutcome::RateLimited(reason) => reason.as_wire(),
                     StreamOutcome::Settled => "settled",
+                    StreamOutcome::Failed => "failed",
                 };
                 self.log_line(&format!(
                     "{ADMISSION_COMMAND}: {action} lease {lease_id} by {worker_token} ({reason_wire}) queued={}",

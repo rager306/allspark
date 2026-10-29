@@ -151,6 +151,18 @@ pub enum StreamOutcome {
     /// kind, or a billing cap): halve the limit — or drop it to the
     /// floor when the reason is account-local (M3).
     RateLimited(RateLimitReason),
+    /// The request failed for a reason that is NOT a rate limit — a 5xx, a
+    /// timeout, a transport error.
+    ///
+    /// Review #10: these used to settle as [`Self::Settled`], which is `+1` to the
+    /// limit and a clean sample for the breaker. A 5xx storm therefore INFLATED the
+    /// concurrency limit against a provider that was failing every request, while
+    /// diluting the breaker's failure ratio at exactly the moment shedding was
+    /// needed. A failure is not a success, and it is not a rate limit either: it
+    /// releases the slot and counts as a breaker failure, but sends no AIMD signal,
+    /// because the correct concurrency for a broken provider is unknown — the
+    /// breaker's job is to stop traffic, not to guess a number.
+    Failed,
 }
 
 impl StreamOutcome {
@@ -160,6 +172,7 @@ impl StreamOutcome {
         match self {
             StreamOutcome::Settled => "settled",
             StreamOutcome::RateLimited(_) => "rate_limited",
+            StreamOutcome::Failed => "failed",
         }
     }
 
@@ -173,16 +186,42 @@ impl StreamOutcome {
     }
 }
 
-/// The AIMD signal one settled assistant message carries: a provider
-/// rate limit (the 429 family, a `rate_limit` kind, or a billing cap)
-/// is the decrease trigger with its typed reason (M3), everything else
-/// is a plain settle.
+/// The AIMD signal one settled assistant message carries.
+///
+/// Three outcomes, not two (review #10). A provider rate limit (the 429 family, a
+/// `rate_limit` kind, a billing cap) is the decrease trigger with its typed reason (M3); a
+/// FAILURE that is not a rate limit — a 5xx, a timeout, a transport error — is
+/// [`StreamOutcome::Failed`]; only a message with no provider failure at all is a plain
+/// settle.
+///
+/// The second arm used to be lumped into `Settled`, which is `+1` to the concurrency limit
+/// and a clean breaker sample. A provider returning 500 to every request therefore RAISED
+/// the limit against itself while diluting the breaker's failure ratio.
 #[must_use]
 pub fn outcome_for_message(message: &AssistantMessage) -> StreamOutcome {
-    match pa_core::session_engine::provider_retry::rate_limit_reason_for_message(message) {
-        Some(reason) => StreamOutcome::RateLimited(reason),
-        None => StreamOutcome::Settled,
+    use pa_core::session_engine::provider_retry::{
+        provider_stream_failure_kind, provider_stream_failure_status, rate_limit_reason_for_message,
+    };
+    if let Some(reason) = rate_limit_reason_for_message(message) {
+        return StreamOutcome::RateLimited(reason);
     }
+    // "A provider failure that is not a rate limit." The disclosure gate is the same one the
+    // 402 diagnosis uses: lifecycle and abort conversions stay silent, so they are not
+    // failures here either.
+    let status = provider_stream_failure_status(message);
+    let kind = provider_stream_failure_kind(message);
+    let failure_shaped = status.is_some_and(|status| status >= 500)
+        || kind.as_deref().is_some_and(|kind| {
+            matches!(
+                kind,
+                "server_error" | "timeout" | "transport" | "connection" | "overloaded"
+            )
+        })
+        || message.error_message.is_some();
+    if failure_shaped {
+        return StreamOutcome::Failed;
+    }
+    StreamOutcome::Settled
 }
 
 /// One provider's live counters (the M5 observability surface: a snapshot
@@ -270,7 +309,8 @@ struct ProviderBreaker {
     opened_at_ms: u64,
     /// The half-open probe's lease, when one is in flight.
     probe_lease: Option<u64>,
-    /// The sliding window of recent settle samples (`true` = rate-limited).
+    /// The sliding window of recent settle samples (`true` = a failure: rate-limited or
+    /// otherwise failed).
     window: VecDeque<bool>,
 }
 
@@ -287,7 +327,7 @@ impl Default for ProviderBreaker {
 
 impl ProviderBreaker {
     fn failures(&self) -> usize {
-        self.window.iter().filter(|limited| **limited).count()
+        self.window.iter().filter(|failed| **failed).count()
     }
 
     /// Whether the retry budget is spent past the SRE bound (10% of the
@@ -1055,6 +1095,11 @@ impl ProviderAdmission {
                         entry.limit += 1;
                     }
                 }
+                StreamOutcome::Failed => {
+                    // No AIMD signal either way: the provider is broken, and the right
+                    // concurrency for a broken provider is not something this loop knows.
+                    // The breaker below is what stops traffic.
+                }
                 StreamOutcome::RateLimited(reason) => {
                     entry.consecutive_429 = entry.consecutive_429.saturating_add(1);
                     // M3: an account-local cause (a spent quota or spend
@@ -1075,6 +1120,7 @@ impl ProviderAdmission {
                         "account_local"
                     }
                     StreamOutcome::RateLimited(_) => "rate_limited",
+                    StreamOutcome::Failed => "failed",
                 };
                 self.track_limit_step(&record.key.provider, old_limit, entry.limit, reason);
             }
@@ -1096,9 +1142,13 @@ impl ProviderAdmission {
     }
 
     /// Fold one settle into the provider's retry budget and breaker
-    /// (M4): every settle is a sample, a rate-limited settle is a
-    /// failure. Past 10% of the window the breaker opens; the half-open
-    /// probe's settle is the only verdict that transitions it.
+    /// (M4): every settle is a sample; a rate-limited OR failed settle is a
+    /// failure. Past 10% of the window the breaker opens; the half-open probe's
+    /// settle is the only verdict that transitions it.
+    ///
+    /// `Failed` counts as a failure because a 5xx storm is exactly the condition the
+    /// breaker exists for. Counting only `RateLimited` meant a provider returning 500
+    /// to everything never tripped it (review #10).
     fn breaker_settle(
         &self,
         state: &mut RegistryState,
@@ -1107,11 +1157,14 @@ impl ProviderAdmission {
         outcome: StreamOutcome,
     ) {
         let now = self.clock.now_ms();
-        let limited = matches!(outcome, StreamOutcome::RateLimited(_));
+        let failed = matches!(
+            outcome,
+            StreamOutcome::RateLimited(_) | StreamOutcome::Failed
+        );
         let Some(breaker) = state.breakers.get_mut(provider) else {
             return;
         };
-        breaker.window.push_back(limited);
+        breaker.window.push_back(failed);
         while breaker.window.len() > RETRY_BUDGET_WINDOW {
             breaker.window.pop_front();
         }
@@ -1119,7 +1172,7 @@ impl ProviderAdmission {
         match breaker.state {
             BreakerState::HalfOpen if is_probe => {
                 breaker.probe_lease = None;
-                if limited {
+                if failed {
                     breaker.state = BreakerState::Open;
                     breaker.opened_at_ms = now;
                     let failures = breaker.failures();
