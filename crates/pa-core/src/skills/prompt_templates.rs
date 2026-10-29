@@ -145,6 +145,17 @@ impl SaturatingSub1OrZero for usize {
 
 fn load_template_from_file(file_path: &Path, source_info: SourceInfo) -> Option<PromptTemplate> {
     let raw_content = std::fs::read_to_string(file_path).ok()?;
+    // A template body is substituted verbatim into the turn's prompt, so it is prompt input
+    // like a context file — same cap, same visible marker (review #7). The file comes from the
+    // working tree, i.e. untrusted.
+    // A template body is substituted verbatim into the turn's prompt, so it is prompt input
+    // like a context file — same cap, same visible marker (review #7). The file comes from the
+    // working tree, i.e. untrusted.
+    let raw_content = crate::resources::truncate_context_content_marked(
+        &raw_content,
+        crate::resources::MAX_CONTEXT_FILE_BYTES,
+        "PROMPT TEMPLATE",
+    );
     let (frontmatter, body) = parse_frontmatter(&raw_content);
     let name = file_path
         .file_name()?
@@ -367,6 +378,41 @@ mod tests {
             Some(("review".to_string(), String::new()))
         );
         assert_eq!(parse_slash_command("no slash"), None);
+    }
+
+    /// Review #7: a template body is substituted verbatim into the turn's prompt, so an
+    /// oversized `prompts/*.md` from the working tree is prompt input and must carry the same
+    /// cap and visible marker as a context file.
+    #[test]
+    fn an_oversized_template_body_is_capped_and_marked() {
+        let dir = tempfile::tempdir().unwrap();
+        // The project prompts dir is `cwd/<CONFIG_DIR_NAME>/prompts` (`.prime/agent/prompts`).
+        let prompts_dir = dir
+            .path()
+            .join(crate::skills::loader::CONFIG_DIR_NAME)
+            .join("prompts");
+        std::fs::create_dir_all(&prompts_dir).unwrap();
+        let huge = "X".repeat(5_000_000);
+        std::fs::write(prompts_dir.join("huge.md"), &huge).unwrap();
+        let templates = load_prompt_templates(&LoadPromptTemplatesOptions {
+            agent_dir: dir.path().to_path_buf(),
+            cwd: dir.path().to_path_buf(),
+            prompt_paths: Vec::new(),
+            include_defaults: true,
+        });
+        let template = templates
+            .iter()
+            .find(|template| template.name == "huge")
+            .expect("the oversized template is discovered");
+        assert!(
+            template.content.len() < 5_000_000,
+            "the body must be capped, got {}",
+            template.content.len()
+        );
+        assert!(
+            template.content.contains("PROMPT TEMPLATE TRUNCATED"),
+            "and the cut must be visible where the model reads it"
+        );
     }
 
     #[test]

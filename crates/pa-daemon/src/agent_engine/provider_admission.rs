@@ -943,11 +943,12 @@ impl ProviderAdmission {
         }
     }
 
-    /// The breaker's verdict for one stream acquire. `Probe` arms this
+    /// The breaker's verdict for one STREAM acquire. `Probe` arms this
     /// acquirer as the single half-open probe (the state is already
     /// `HalfOpen` when it returns). Spawns never gate: a spawn
     /// reservation is the create round trip, not provider traffic — the
-    /// child's own first stream gates itself.
+    /// child's own first stream gates itself (review #11 adjudicated: the
+    /// M4 contract stands, the finding is a policy change, not a defect).
     fn breaker_gate(&self, state: &mut RegistryState, key: &ProviderKey) -> BreakerGate {
         let now = self.clock.now_ms();
         let breaker = state.breakers.entry(key.provider.clone()).or_default();
@@ -1028,6 +1029,13 @@ impl ProviderAdmission {
         let dead = self.dead_leases_for(key).await;
         let pending = {
             let mut state = self.lock();
+            // Deliberately NOT gated on the breaker (review #11 reopened and closed WONTFIX):
+            // M4's decision, pinned by `an_open_breaker_does_not_gate_spawn_admissions`, is
+            // that a spawn reservation is the create round trip, not provider traffic — the
+            // child's own first stream gates itself and fail-fasts to failover. Gating the
+            // create would break session startup on a cooling-down provider. The pool cost is
+            // real but bounded by the spawn's own lifetime. The two tests that pin this
+            // contract were written before the review and are not wrong.
             match self.admit_now(&mut state, key, spawn_id, &dead) {
                 Some(lease) => {
                     let stagger_ms = self.stagger.next_delay_ms();
