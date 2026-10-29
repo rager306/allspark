@@ -316,6 +316,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let jev_enabled = settings.get_jev_enabled();
     let jev_model = settings.get_jev_model();
     let jev_fallback_chain = settings.get_jev_fallback_chain();
+    // `jev.fallback` had no reader at all (review #23): the getter now exists and its answer
+    // rides the resolved settings, so the operator's intent is at least visible where the judge
+    // is built instead of parsing into nothing.
+    let jev_prompted_fallback = settings.get_jev_fallback();
     let jev_timeout = std::time::Duration::from_millis(settings.get_jev_timeout_ms());
     let jev_cache_enabled = settings.get_jev_cache_enabled();
     // FORK-ONLY (jev Phase 2): the consumer gates, captured before `settings`
@@ -645,6 +649,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 enabled: jev_enabled,
                 model: jev_model,
                 fallback_chain: jev_fallback_chain,
+                prompted_fallback: jev_prompted_fallback,
                 timeout: jev_timeout,
                 cache_enabled: jev_cache_enabled,
             };

@@ -271,7 +271,13 @@ impl Supervisor {
                             .unwrap_or(default_reason);
                         StreamOutcome::RateLimited(reason)
                     }
-                    other => other.unwrap_or(StreamOutcome::Settled),
+                    // An unrecognised or absent word must NOT become `Settled`. Settled is the
+                    // one outcome that RAISES the concurrency limit, so defaulting to it turns
+                    // a protocol mismatch — a new outcome the supervisor is too old to know, a
+                    // truncated frame — into a silent success for a request whose result nobody
+                    // reported. `Failed` is the fail-closed reading: release the slot, count it
+                    // for the breaker, send no AIMD signal in either direction.
+                    other => other.unwrap_or(StreamOutcome::Failed),
                 };
                 if action == "settle_stream" {
                     registry.settle(*lease_id, settled);

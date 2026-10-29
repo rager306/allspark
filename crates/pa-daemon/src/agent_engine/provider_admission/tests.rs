@@ -219,6 +219,95 @@ async fn a_failed_settle_neither_grows_nor_halves_the_limit() {
     assert_eq!(snapshot.in_flight, 0, "every failure released its slot");
 }
 
+/// A backlog queued BEFORE the breaker tripped must not drain while it is half-open (#9).
+///
+/// The uncovered half of the finding. `breaker_gate` refuses half-open on the ACQUIRE path,
+/// but `dispatch()` — reached from `settle` and `release` — never passes through it, and it
+/// gated only on `Open`. A waiter parked while the breaker was CLOSED therefore got its grant
+/// as soon as the cooldown expired: a non-probe lease beside the single probe, whose settle
+/// lands in the `Open | HalfOpen => {}` no-op arm and teaches the breaker nothing.
+///
+/// Breakers are keyed by PROVIDER and limits by (provider, model), which is what makes the
+/// scenario reachable: a waiter can sit at its limit on one model while the breaker for the
+/// same provider trips from another model's failures.
+#[tokio::test]
+async fn a_backlog_queued_before_the_trip_does_not_drain_while_half_open() {
+    let clock = ScriptedClock::new(1_000);
+    let registry = ProviderAdmission::with_parts(
+        1,
+        Arc::new(JitteredStagger::new()),
+        Arc::clone(&clock) as Arc<dyn ClockSource>,
+    );
+    // Fill the ONLY slot on the waiting model, so the next acquirer must park in its FIFO.
+    let parked_key = ProviderKey::new("zai", "glm-parked");
+    let holder = admitted(&registry, &parked_key, "slot-holder").await;
+
+    // Park a second acquirer there while the breaker is still CLOSED.
+    let parked = {
+        let registry = Arc::clone(&registry);
+        let key = parked_key.clone();
+        tokio::spawn(async move {
+            registry
+                .acquire_stream_within(&key, "pre-trip-waiter", Duration::from_secs(30))
+                .await
+        })
+    };
+    until(
+        || registry.snapshot(&parked_key).queued == 1,
+        "the pre-trip waiter parks in the FIFO",
+    )
+    .await;
+
+    // NOW trip the provider's breaker from a different model on the same provider.
+    let tripping_key = ProviderKey::new("zai", "glm-tripping");
+    for _ in 0..RETRY_BUDGET_MIN_SAMPLES {
+        let lease = admitted(&registry, &tripping_key, "storm-worker").await;
+        registry.settle(
+            lease,
+            StreamOutcome::RateLimited(RateLimitReason::RateLimit),
+        );
+    }
+    assert_eq!(
+        registry.snapshot(&tripping_key).breaker.state,
+        BreakerState::Open,
+        "the fixture must open the provider breaker, or the test proves nothing"
+    );
+
+    // The `Open -> HalfOpen` transition happens INSIDE `breaker_gate`, so it takes an acquire
+    // to reach it — that acquire is the probe. Without it the state stays `Open`, which already
+    // blocks `dispatch`, and the scenario would not exist.
+    clock.advance(BREAKER_COOLDOWN_MS);
+    let probe = match registry
+        .acquire_stream_within(&tripping_key, "probe", Duration::from_millis(50))
+        .await
+    {
+        StreamAdmission::Admitted(lease) => lease,
+        other => panic!("the probe must admit, got {other:?}"),
+    };
+    assert_eq!(
+        registry.snapshot(&tripping_key).breaker.state,
+        BreakerState::HalfOpen,
+        "the probe acquire is what moves the breaker to half-open"
+    );
+
+    // Freeing the parked key's slot calls `dispatch` with the breaker HALF-OPEN and the probe in
+    // flight. The backlog must stay parked: only the probe may be admitted in half-open.
+    registry.release(holder);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        registry.snapshot(&parked_key).queued,
+        1,
+        "the pre-trip backlog must NOT drain while the breaker is half-open"
+    );
+    assert_eq!(
+        registry.snapshot(&parked_key).in_flight,
+        0,
+        "and the freed slot must stay free"
+    );
+    parked.abort();
+    registry.release(probe);
+}
+
 /// A settings cap below the compiled start limit clamps the start: the
 /// ceiling is honored immediately instead of being grown into.
 #[tokio::test]
@@ -633,6 +722,21 @@ fn a_message_carries_its_aimd_signal() {
 /// typed reason rides its own wire field beside it.
 #[test]
 fn stream_outcomes_round_trip_through_their_wire_spelling() {
+    // EVERY variant, not just the happy one. This assertion was `Settled`-only, which is
+    // exactly how `Failed` could be added to `as_wire` and left out of `from_wire`: the write
+    // side emitted a word the read side turned into `None`, and the supervisor's
+    // `unwrap_or(Settled)` turned that back into a success (review #10).
+    for outcome in [
+        StreamOutcome::Settled,
+        StreamOutcome::Failed,
+        StreamOutcome::RateLimited(RateLimitReason::RateLimit),
+    ] {
+        assert_eq!(
+            StreamOutcome::from_wire(outcome.as_wire()),
+            Some(outcome),
+            "{outcome:?} must survive its own wire spelling"
+        );
+    }
     assert_eq!(
         StreamOutcome::from_wire(StreamOutcome::Settled.as_wire()),
         Some(StreamOutcome::Settled)

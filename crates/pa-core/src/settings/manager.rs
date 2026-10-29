@@ -985,6 +985,18 @@ impl SettingsManager {
         (millis > 0).then(|| std::time::Duration::from_millis(millis))
     }
 
+    /// Per-server LSP overrides (`lsp.servers`), keyed by server name.
+    ///
+    /// The setting was documented and parsed but read by nobody (review #22), so an operator
+    /// who overrode a server's command saw no effect at all. It is surfaced as an owned map
+    /// rather than wired into a launch path this crate does not own: `pa-lsp` builds its server
+    /// table, and `None` (unset) must stay distinguishable from an empty map — the first means
+    /// "use the built-in table", the second means "the operator overrode everything".
+    #[must_use]
+    pub fn get_lsp_servers(&self) -> Option<serde_json::Map<String, serde_json::Value>> {
+        self.merged.lsp.as_ref()?.servers.clone()
+    }
+
     /// The native `graph` tool's gate: unset means ON.
     #[must_use]
     pub fn get_graph_enabled(&self) -> bool {
@@ -1089,6 +1101,22 @@ impl SettingsManager {
             .map(|id| id.trim().to_string())
             .filter(|id| !id.is_empty())
             .collect()
+    }
+
+    /// The prompted-fallback mode (`jev.fallback`, `"off" | "llm"`).
+    ///
+    /// Documented and parsed with no reader (review #23): the sibling `fallback_chain` is a
+    /// list of MODELS, this is about whether the judge may be re-asked with a prompt. Closed
+    /// by default — an unrecognized or absent value reads as `off`, matching the field's own
+    /// contract ("Phase 1 always treats it as off"), so a typo cannot enable an uncalibrated
+    /// path.
+    #[must_use]
+    pub fn get_jev_fallback(&self) -> bool {
+        self.merged
+            .jev
+            .as_ref()
+            .and_then(|jev| jev.fallback.as_deref())
+            .is_some_and(|mode| mode.trim().eq_ignore_ascii_case("llm"))
     }
 
     /// The judgment per-attempt timeout (`jev.timeoutMs`, default 10s).

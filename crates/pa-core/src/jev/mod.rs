@@ -134,6 +134,13 @@ pub struct JevResolvedSettings {
     pub model: String,
     /// Fallback candidates in attempt order.
     pub fallback_chain: Vec<String>,
+    /// Whether the judge may be re-asked with a prompt (`jev.fallback: "llm"`).
+    ///
+    /// The setting existed, parsed, and reached nothing (review #23). It rides this snapshot so
+    /// the resolver can see the operator's intent; `resolve_judge` reports it rather than
+    /// acting on it, because the prompted path is not implemented and silently pretending
+    /// otherwise would be worse than the dead key.
+    pub prompted_fallback: bool,
     pub timeout: Duration,
     pub cache_enabled: bool,
 }
@@ -171,6 +178,16 @@ pub fn resolve_judge(
         if let Some(candidate) = resolve_candidate(&id, settings, registry, cache.as_ref()) {
             candidates.push(candidate);
         }
+    }
+    // `jev.fallback: "llm"` asks for a prompted re-ask the judge does not implement. Reporting
+    // it is the honest consumer: an operator who set it learns here that the request was seen
+    // and is not honoured, instead of the key parsing into nothing (review #23).
+    if settings.prompted_fallback && !candidates.is_empty() {
+        tracing::warn!(
+            candidates = candidates.len(),
+            "jev.fallback is \"llm\", but prompted fallback is not implemented; \
+             the judge chain answers per candidate only"
+        );
     }
     // The process-shared ledger: a re-resolved chain (next session, next
     // consumer) inherits another chain's cooldowns, like the omp

@@ -181,6 +181,12 @@ impl StreamOutcome {
         match value {
             "settled" => Some(StreamOutcome::Settled),
             "rate_limited" => Some(StreamOutcome::RateLimited(RateLimitReason::RateLimit)),
+            // Without this arm `as_wire()` WRITES "failed" and `from_wire()` reads it back as
+            // `None`, which the supervisor turns into `Settled` — `+1` to the concurrency
+            // limit for a failed request. The local classifier was fixed and the wire path
+            // still downgraded it, so a 5xx storm kept inflating the limit in production
+            // (review #10; the write/read asymmetry is what hid it).
+            "failed" => Some(StreamOutcome::Failed),
             _ => None,
         }
     }
@@ -1322,12 +1328,19 @@ impl ProviderAdmission {
             // to dispatch through an open breaker, so the fail-fast never
             // stopped the stream of fresh leases into a dead provider).
             //
-            // Half-open needs no arm here (review #9, checked): `breaker_gate` already
-            // answers `Refuse` for it, so no acquirer reaches `admit_now` — and therefore no
-            // waiter reaches this queue — while a probe is in flight. Adding the same check a
-            // second time would be dead code, which is why this comment is the change.
+            // HALF-OPEN IS THE SAME REFUSAL (review #9). `breaker_gate` answers `Refuse` for
+            // half-open, but it runs on the ACQUIRE path only — `dispatch` is called from
+            // `settle` and `release`, which never pass through it. So a backlog queued while
+            // the breaker was CLOSED (a waiter's budget is 600 s, the cooldown 30 s) was
+            // granted as soon as the cooldown expired: non-probe leases beside the single
+            // probe, whose settles land in the `BreakerState::Open | HalfOpen => {}` no-op arm
+            // and teach the breaker nothing, while fresh traffic stays refused.
+            //
+            // The earlier note here claimed this arm was dead code. It was not: the test that
+            // "proved" it only covered a waiter arriving AFTER the probe was taken, which
+            // `breaker_gate` does refuse. Pre-trip backlog was the uncovered half.
             if let Some(breaker) = state.breakers.get(&key.provider) {
-                if breaker.state == BreakerState::Open {
+                if matches!(breaker.state, BreakerState::Open | BreakerState::HalfOpen) {
                     return;
                 }
             }

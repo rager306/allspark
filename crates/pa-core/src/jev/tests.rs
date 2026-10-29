@@ -562,6 +562,47 @@ fn jev_settings_default_off() {
     );
 }
 
+/// `jev.fallback` and `lsp.servers` were documented and parsed with no reader (review
+/// #22/#23): an operator set them and nothing happened. Each getter is asserted here, because
+/// a field with no consumer is indistinguishable from a typo in the settings file.
+#[test]
+fn a_documented_setting_with_no_reader_now_reaches_one() {
+    let settings: Settings = serde_json::from_value(serde_json::json!({
+        "jev": {"enabled": "on", "fallback": "llm"},
+        "lsp": {"servers": {"rust-analyzer": {"command": "custom-ra"}}}
+    }))
+    .unwrap();
+    let manager = manager_with(&settings);
+    assert!(
+        manager.get_jev_fallback(),
+        "`fallback: \"llm\"` must be visible to the judge wiring"
+    );
+    let servers = manager
+        .get_lsp_servers()
+        .expect("`lsp.servers` must be readable, not just parseable");
+    assert_eq!(
+        servers["rust-analyzer"]["command"],
+        serde_json::json!("custom-ra"),
+        "and its contents must survive verbatim"
+    );
+
+    // Defaults stay closed: an absent `fallback` is `off`, and an absent `servers` is `None`
+    // (use the built-in table), which is NOT the same as an empty override map.
+    let bare = manager_with(&Settings::default());
+    assert!(!bare.get_jev_fallback(), "unset reads as off");
+    assert_eq!(bare.get_lsp_servers(), None, "unset is not an empty map");
+
+    // A typo cannot enable the uncalibrated path.
+    let typo: Settings = serde_json::from_value(
+        serde_json::json!({"jev": {"enabled": "on", "fallback": "LLM-ish"}}),
+    )
+    .unwrap();
+    assert!(
+        !manager_with(&typo).get_jev_fallback(),
+        "only the documented `llm` spelling enables it"
+    );
+}
+
 #[test]
 fn jev_settings_parse_every_gate_and_default_the_rest() {
     let settings: Settings = serde_json::from_value(serde_json::json!({
@@ -690,6 +731,7 @@ fn resolve_builds_the_chain_from_settings_and_the_registry() {
         enabled: JevEnabledSetting::On,
         model: "typesafe/jev-1.13.0".to_string(),
         fallback_chain: vec!["typesafe/jev-1.14.0".to_string()],
+        prompted_fallback: false,
         timeout: Duration::from_millis(10_000),
         cache_enabled: true,
     };
@@ -719,6 +761,7 @@ fn resolve_returns_none_without_any_judgment_candidate() {
         enabled: JevEnabledSetting::On,
         model: "openai/gpt-5".to_string(),
         fallback_chain: Vec::new(),
+        prompted_fallback: false,
         timeout: Duration::from_millis(10_000),
         cache_enabled: true,
     };
