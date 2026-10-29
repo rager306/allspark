@@ -2081,10 +2081,19 @@ impl GraphTool {
             for cycle in &arch.cycles {
                 lines.push(format!("cycle: {}", cycle.files.join(" -> ")));
                 for edge in &cycle.edges {
-                    lines.push(format!(
-                        "  {} -> {} (weight={})",
-                        edge.from, edge.to, edge.weight,
-                    ));
+                    // The file pair says a dependency exists; the witness says WHICH symbols
+                    // make it, and a cycle is always broken at a symbol (review §2:
+                    // "объяснение исходными связями").
+                    match &edge.witness {
+                        Some(witness) => lines.push(format!(
+                            "  {} -> {} (weight={}) via {witness}",
+                            edge.from, edge.to, edge.weight,
+                        )),
+                        None => lines.push(format!(
+                            "  {} -> {} (weight={})",
+                            edge.from, edge.to, edge.weight,
+                        )),
+                    }
                 }
             }
         }
@@ -5411,6 +5420,40 @@ mod tests {
     /// facts." A decision that a newer one replaced must SAY so in the same breath, or a
     /// reader acts on a decision that no longer holds. The record already printed what it
     /// supersedes; nothing printed what replaced IT.
+    /// The review's §2, `cycles`' next step: "объяснение исходными связями". A cycle printed
+    /// as files says a dependency exists but not which symbols make it, and the fix is always
+    /// at a symbol.
+    #[tokio::test]
+    async fn a_cycle_names_the_symbols_that_close_it() {
+        let dir = tempfile::tempdir().unwrap();
+        // Two files that call each other: a real file-level cycle.
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "pub fn from_a() -> u32 { crate::b::from_b() }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("b.rs"),
+            "pub fn from_b() -> u32 { crate::a::from_a() }\n",
+        )
+        .unwrap();
+        let tool = tool(dir.path());
+        tool.dispatch(&serde_json::json!({ "action": "index" }))
+            .unwrap();
+        let result = tool
+            .dispatch(&serde_json::json!({ "action": "architecture", "view": "cycles" }))
+            .unwrap();
+        let text = text_of(&result);
+        assert!(
+            text.contains("cycle"),
+            "the fixture must produce a cycle, or the test proves nothing: {text}"
+        );
+        assert!(
+            text.contains("via ") && (text.contains("from_a") || text.contains("from_b")),
+            "a cycle must name the symbols that close it, not only the files: {text}"
+        );
+    }
+
     /// The review's §2, `verify`'s next step: "Различать здоровье индекса и
     /// полноту/правильность конкретного ответа." A graph that resolved half its calls can pass
     /// the receipt chain and still give a lower-bound caller set — an agent reading "accept"

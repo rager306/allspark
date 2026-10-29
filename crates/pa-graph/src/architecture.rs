@@ -110,6 +110,16 @@ pub struct ModuleEdge {
     pub weight: usize,
     /// Distinct edge types that produced the fold.
     pub kinds: Vec<String>,
+    /// One symbol-level edge that this file pair stands for, as
+    /// `caller_qualified_name -> callee_qualified_name`.
+    ///
+    /// The review's §2 lists "объяснение исходными связями" as the next step for cycles: a
+    /// cycle printed as files says a dependency exists but not which symbols make it, and
+    /// the fix is always at a symbol. A fold is many-to-one, so this is ONE witness chosen
+    /// by lowest qualified-name pair — deterministic, not necessarily the only one. `None`
+    /// when the node names are unavailable (a store opened without node rows).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub witness: Option<String>,
 }
 
 /// One longest-path dependency layer.
@@ -264,7 +274,11 @@ pub fn architecture(
     // Fold symbol edges up to files for the graph views.
     let node_file: HashMap<i64, String> =
         nodes.iter().map(|n| (n.id, n.file_path.clone())).collect();
-    let module_edges = fold_to_files(&edges, &node_file);
+    let node_name: HashMap<i64, String> = nodes
+        .iter()
+        .map(|n| (n.id, n.qualified_name.clone()))
+        .collect();
+    let module_edges = fold_to_files(&edges, &node_file, &node_name);
 
     match view {
         ArchitectureView::Overview => {
@@ -311,12 +325,14 @@ impl GraphStore {
 fn fold_to_files(
     edges: &[crate::types::Edge],
     node_file: &HashMap<i64, String>,
+    node_name: &HashMap<i64, String>,
 ) -> Vec<ModuleEdge> {
     // Only dependency-shaped edges carry architecture signal; CONTAINS is
     // intra-file by construction and HAS_BRANCH/FILE_CHANGES_WITH are git
     // provenance, not code structure.
     let mut acc: BTreeMap<(String, String), (usize, std::collections::BTreeSet<String>)> =
         BTreeMap::new();
+    let mut witness: BTreeMap<(String, String), String> = BTreeMap::new();
     for e in edges {
         if !matches!(
             e.edge_type,
@@ -335,9 +351,23 @@ fn fold_to_files(
             .or_insert((0, { std::collections::BTreeSet::new() }));
         entry.0 += 1;
         entry.1.insert(e.edge_type.as_str().to_string());
+        // Keep the LOWEST qualified-name pair for the file pair: deterministic across runs,
+        // and a fold of 300 symbol edges has no room to list them all.
+        if let (Some(source), Some(target)) = (node_name.get(&e.source), node_name.get(&e.target)) {
+            let key = format!("{source} -> {target}");
+            witness
+                .entry((from.clone(), to.clone()))
+                .and_modify(|current| {
+                    if key < *current {
+                        current.clone_from(&key);
+                    }
+                })
+                .or_insert(key);
+        }
     }
     acc.into_iter()
         .map(|((from, to), (weight, kinds))| ModuleEdge {
+            witness: witness.get(&(from.clone(), to.clone())).cloned(),
             from,
             to,
             weight,
@@ -916,18 +946,29 @@ mod tests {
         ];
         let node_file: HashMap<i64, String> =
             nodes.iter().map(|n| (n.id, n.file_path.clone())).collect();
+        let node_name: HashMap<i64, String> = nodes
+            .iter()
+            .map(|n| (n.id, n.qualified_name.clone()))
+            .collect();
         let edges = [
             edge(1, 2, EdgeType::Calls),
             edge(3, 2, EdgeType::Calls),
             edge(1, 3, EdgeType::Calls),    // same file → dropped
             edge(1, 2, EdgeType::Contains), // not a dependency → dropped
         ];
-        let folded = fold_to_files(&edges, &node_file);
+        let folded = fold_to_files(&edges, &node_file, &node_name);
         assert_eq!(folded.len(), 1, "{folded:?}");
         assert_eq!(folded[0].from, "a.rs");
         assert_eq!(folded[0].to, "b.rs");
         assert_eq!(folded[0].weight, 2);
         assert_eq!(folded[0].kinds, vec!["CALLS".to_string()]);
+        // Two symbol edges folded into one file pair; the witness is the lowest-named
+        // one (`a::x -> b::y`), so the answer is stable across runs.
+        assert_eq!(
+            folded[0].witness.as_deref(),
+            Some("a::x -> b::y"),
+            "a fold must keep ONE symbol-level edge so a reader can act on it"
+        );
     }
 
     #[test]
@@ -938,18 +979,21 @@ mod tests {
                 to: "b.rs".into(),
                 weight: 1,
                 kinds: vec!["CALLS".into()],
+                witness: None,
             },
             ModuleEdge {
                 from: "b.rs".into(),
                 to: "a.rs".into(),
                 weight: 1,
                 kinds: vec!["CALLS".into()],
+                witness: None,
             },
             ModuleEdge {
                 from: "b.rs".into(),
                 to: "c.rs".into(),
                 weight: 1,
                 kinds: vec!["CALLS".into()],
+                witness: None,
             },
         ];
         let cyc = cycles(&edges);
@@ -966,12 +1010,14 @@ mod tests {
                 to: "b.rs".into(),
                 weight: 1,
                 kinds: vec!["CALLS".into()],
+                witness: None,
             },
             ModuleEdge {
                 from: "b.rs".into(),
                 to: "c.rs".into(),
                 weight: 1,
                 kinds: vec!["CALLS".into()],
+                witness: None,
             },
         ];
         assert_eq!(cycles(&edges).len(), 0);
@@ -985,12 +1031,14 @@ mod tests {
                 to: "svc.rs".into(),
                 weight: 1,
                 kinds: vec!["CALLS".into()],
+                witness: None,
             },
             ModuleEdge {
                 from: "svc.rs".into(),
                 to: "db.rs".into(),
                 weight: 1,
                 kinds: vec!["CALLS".into()],
+                witness: None,
             },
         ];
         let layers = layers(&edges);
@@ -1020,12 +1068,14 @@ mod tests {
                 to: "b.rs".into(),
                 weight: 1,
                 kinds: vec!["CALLS".into()],
+                witness: None,
             },
             ModuleEdge {
                 from: "x.rs".into(),
                 to: "y.rs".into(),
                 weight: 1,
                 kinds: vec!["CALLS".into()],
+                witness: None,
             },
         ];
         let report = clusters(&edges);
@@ -1047,6 +1097,7 @@ mod tests {
                 to: to.into(),
                 weight: 1,
                 kinds: vec!["CALLS".into()],
+                witness: None,
             });
         }
         let report = clusters(&edges);
