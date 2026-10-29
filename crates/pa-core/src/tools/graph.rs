@@ -65,6 +65,66 @@ pub struct ImpactReport {
     pub envelope: ImpactEnvelope,
 }
 
+/// What a change to one symbol touches, assembled from the answers that already exist.
+///
+/// The review's §9 names `graph.explain_change` as one of four task-oriented actions:
+/// "затронутые symbols, witness paths, relevant ADR/tests, unresolved areas". Every part
+/// existed as a separate answer; nothing composed them, so an agent asking "what does
+/// changing this touch" had to call three actions and merge them by hand — which is exactly
+/// the "dozens of weakly documented tools" §9 warns against.
+///
+/// The rule is composition, not a new traversal: `impact` supplies the callers and the
+/// unresolved candidates, the ADR store is searched by the CHANGED FILE's name, and test
+/// files are recognised by path convention because the graph has no test label.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeExplanation {
+    /// The symbol whose change is being explained.
+    pub symbol: String,
+    /// Callers the walk resolved, each with its witness path.
+    pub impact: ImpactReport,
+    /// Decisions whose prose names the changed file.
+    pub decisions: Vec<RelevantDecision>,
+    /// Resolved callers that live in a test file, so the caller knows what will catch it.
+    pub tests: Vec<String>,
+    /// What this answer does NOT cover, in the same shape `impact` uses.
+    pub not_covered: Vec<String>,
+}
+
+/// An ADR whose text names the changed file.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelevantDecision {
+    /// Numeric id.
+    pub id: i64,
+    /// Title.
+    pub title: String,
+    /// Lifecycle status (`accepted`, `proposed`, ...).
+    pub status: String,
+}
+
+/// Whether `path` looks like a test file by convention.
+///
+/// The graph has no test label: tests are ordinary functions in ordinary files. The
+/// conventions below cover the languages the indexer extracts, and a false positive only
+/// means a file is listed as "may catch this", never that a check passed.
+fn is_test_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    // A repo-relative path has no leading separator: `tests/check.rs` used to fall through
+    // every arm because each one required a `/` before the directory name.
+    lower.starts_with("tests/")
+        || lower.starts_with("test/")
+        || lower.starts_with("benches/")
+        || lower.contains("/tests/")
+        || lower.contains("/test/")
+        || lower.contains("_test.")
+        || lower.contains("_tests.")
+        || lower.contains(".test.")
+        || lower.contains(".spec.")
+        || lower.contains("test_")
+        || lower.contains("/benches/")
+}
+
 /// Confidence at or below which a resolution is a NAME GUESS rather than a fact.
 ///
 /// `CallStrategy::Suffix` is the resolver's own guess tier (0.55); anything at or under it
@@ -990,6 +1050,7 @@ const ACCEPTED_PARAMS: &[(&str, &[&str])] = &[
     ("architecture", &["path", "root", "view"]),
     ("context", &["path", "root", "query", "limit"]),
     ("impact", &["path", "root", "symbol", "depth"]),
+    ("explain_change", &["path", "root", "symbol", "depth"]),
     ("coverage", &["path", "root"]),
     // `refA`/`refB` are the camelCase spellings the schema never documented;
     // they stay accepted so an existing caller does not break.
@@ -1023,6 +1084,7 @@ fn accepted_params(action: &str) -> Option<&'static [&'static str]> {
         "arch" => "architecture",
         "detect_changes" => "changes",
         "reindex_incremental" => "reindex",
+        "explain-change" | "explainChange" => "explain_change",
         other => other,
     };
     ACCEPTED_PARAMS
@@ -1413,6 +1475,9 @@ impl GraphTool {
             "adr" => self.action_adr(params),
             "context" => self.action_context(params),
             "impact" => self.action_impact(params),
+            "explain_change" | "explain-change" | "explainChange" => {
+                self.action_explain_change(params)
+            }
             other => anyhow::bail!(
                 "unknown graph action {other:?}: expected one of index, reindex, search, \
                  trace, architecture, coverage, changes, status, verify, adr"
@@ -2185,6 +2250,185 @@ impl GraphTool {
         })
     }
 
+    /// `explain_change`: what a change to this symbol touches, in one answer.
+    ///
+    /// The review's §9 lists it among four task-oriented actions and every part already
+    /// existed separately. Composition, not a new traversal: an agent asking this question
+    /// should not have to call `impact`, `adr` and `search` and merge them.
+    fn action_explain_change(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
+        let root = self.resolve_root(params);
+        let project = self.project_key(&root);
+        let symbol = params
+            .get("symbol")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("`explain_change` needs a `symbol`"))?
+            .to_string();
+        let depth = params
+            .get("depth")
+            .and_then(serde_json::Value::as_u64)
+            .map_or(3, |d| usize::try_from(d.clamp(1, 8)).unwrap_or(3));
+
+        let impact = self.with_read(|store| build_impact(store, &project, &symbol, depth))?;
+
+        // Which file does the symbol live in? The ADRs are searched by that file's name,
+        // because that is how an ADR names the code it governs.
+        let changed_file = impact
+            .callers
+            .first()
+            .map(|caller| caller.file_path.clone())
+            .or_else(|| {
+                self.with_read(|store| {
+                    store
+                        .node_by_qn(&project, &symbol)
+                        .map_err(|err| anyhow::anyhow!("lookup: {err}"))
+                })
+                .ok()
+                .flatten()
+                .map(|node| node.file_path)
+            });
+
+        let decisions = match &changed_file {
+            Some(file) => self
+                .with_read(|store| {
+                    let adrs = pa_graph::adr::AdrStore::new(store.connection())
+                        .map_err(|err| anyhow::anyhow!("adr store: {err}"))?;
+                    let file_name = file.rsplit('/').next().unwrap_or(file);
+                    let found = adrs
+                        .query_adr(&pa_graph::adr::AdrQuery::new().with_text(file_name))
+                        .map_err(|err| anyhow::anyhow!("adr query: {err}"))?;
+                    Ok(found
+                        .into_iter()
+                        .filter(|adr| adr.project == project || adr.project.is_empty())
+                        .map(|adr| RelevantDecision {
+                            id: adr.id,
+                            title: adr.title,
+                            status: adr.status.as_str().to_string(),
+                        })
+                        .collect::<Vec<_>>())
+                })?
+                .into_iter()
+                .filter(|decision| {
+                    // Keep only decisions that really name the file, not every ADR in the
+                    // project: the query matched on the bare file name.
+                    self.with_read(|store| {
+                        let adrs = pa_graph::adr::AdrStore::new(store.connection())
+                            .map_err(|err| anyhow::anyhow!("adr store: {err}"))?;
+                        let full = adrs
+                            .get_adr_in_project(decision.id, &project)
+                            .map_err(|err| anyhow::anyhow!("get adr: {err}"))?;
+                        Ok(full.is_some_and(|adr| {
+                            let prose = format!(
+                                "{}\n{}\n{}\n{}",
+                                adr.title, adr.context, adr.decision, adr.consequences
+                            );
+                            pa_graph::adr::code_refs_in(&prose).iter().any(|r| {
+                                changed_file.as_deref().is_some_and(|file| {
+                                    file.ends_with(r.as_str()) || r.ends_with(file)
+                                })
+                            })
+                        }))
+                    })
+                    .unwrap_or(false)
+                })
+                .collect::<Vec<_>>(),
+            None => Vec::new(),
+        };
+
+        let tests: Vec<String> = impact
+            .callers
+            .iter()
+            .filter(|caller| is_test_path(&caller.file_path))
+            .map(|caller| format!("{} ({})", caller.qualified_name, caller.file_path))
+            .collect();
+
+        let mut not_covered = Vec::new();
+        if impact.envelope.unresolved_mentions > 0 {
+            not_covered.push(format!(
+                "{} site(s) reference this symbol without a resolvable edge — see the \
+                 candidates; they may be callers this answer cannot name",
+                impact.envelope.unresolved_mentions
+            ));
+        }
+        if !impact.envelope.empty_is_conclusive() {
+            not_covered.push(
+                "the caller set is at least what is listed and at most the index's \
+                 completeness"
+                    .to_string(),
+            );
+        }
+        not_covered.push(
+            "test coverage is by PATH CONVENTION: the graph has no test label, so a listed \
+             file may not exercise this symbol and an unlisted one may"
+                .to_string(),
+        );
+
+        let explanation = ChangeExplanation {
+            symbol: symbol.clone(),
+            impact: impact.clone(),
+            decisions,
+            tests,
+            not_covered,
+        };
+
+        let mut lines = vec![format!("Changing `{symbol}`:")];
+        if impact.callers.is_empty() {
+            lines.push("  no resolved caller".to_string());
+        } else {
+            for caller in &impact.callers {
+                lines.push(format!(
+                    "  [depth {}] {} ({}:{}) via {}",
+                    caller.depth,
+                    caller.qualified_name,
+                    caller.file_path,
+                    caller.start_line,
+                    caller.witness.join(" -> ")
+                ));
+            }
+        }
+        if impact.envelope.unresolved_mentions > 0 {
+            lines.push(format!(
+                "  {} candidate(s) the walk cannot follow:",
+                impact.envelope.unresolved_mentions
+            ));
+            for candidate in &impact.unresolved_candidates {
+                lines.push(format!(
+                    "    {} ({}:{}) — {}",
+                    candidate.caller_qn, candidate.rel_path, candidate.line, candidate.reason
+                ));
+            }
+        }
+        if explanation.decisions.is_empty() {
+            lines.push("Decisions: none name this file.".to_string());
+        } else {
+            lines.push("Decisions:".to_string());
+            for decision in &explanation.decisions {
+                lines.push(format!(
+                    "  #{} [{}] {}",
+                    decision.id, decision.status, decision.title
+                ));
+            }
+        }
+        if explanation.tests.is_empty() {
+            lines.push("Test files that call this: none found.".to_string());
+        } else {
+            lines.push("Test files that call this:".to_string());
+            for test in &explanation.tests {
+                lines.push(format!("  {test}"));
+            }
+        }
+        lines.push("Not covered:".to_string());
+        for gap in &explanation.not_covered {
+            lines.push(format!("  {gap}"));
+        }
+
+        Ok(AgentToolResult {
+            content: vec![pa_agent::types::ToolResultContent::text(lines.join("\n"))],
+            details: serde_json::to_value(&explanation).unwrap_or(serde_json::Value::Null),
+            terminate: None,
+            is_error: false,
+        })
+    }
+
     /// `impact`: what a change to this symbol can reach, with its omissions counted.
     ///
     /// The review's §4: "Impact с UNKNOWN и lower bound ... Нулевой caller set не означает
@@ -2782,7 +3026,11 @@ impl AgentTool for GraphTool {
          hotspots/entry_points/file_tree), coverage (index honesty report), \
          changes (git-diff → affected symbols), status (store counts), verify \
          (run receipts + quality of the last index run), adr (record or list \
-         architecture decisions). Each action reads only its own parameters: \
+         architecture decisions; an ADR's prose file references are checked against \
+         the index and drift is named), context (evidence pack under a budget), \
+         impact (what a change reaches, with unresolved and guessed mentions counted \
+         as candidates), explain_change (impact + decision + test files in one answer). \
+         Each action reads only its own parameters: \
          an unknown or misspelt one is an error naming the accepted set, never \
          a silent default."
     }
@@ -2897,7 +3145,12 @@ pub fn params_schema() -> serde_json::Value {
             "action": {
                 "type": "string",
                 "enum": [
-                    "index", "reindex", "search", "trace",
+                    "index",
+                    "reindex",
+                    "search",
+                    "trace",
+                    "impact",
+                    "explain_change",
                     "architecture", "coverage", "changes", "status",
                     "verify", "adr", "context", "impact"
                 ],
@@ -3863,6 +4116,9 @@ mod tests {
             "status",
             "verify",
             "adr",
+            "context",
+            "impact",
+            "explain_change",
         ] {
             let dir = tempfile::tempdir().unwrap();
             let tool = std::sync::Arc::new(tool(dir.path()));
@@ -5538,6 +5794,102 @@ mod tests {
         assert!(
             text.contains("gone.rs") && text.contains("NOT IN THE TREE"),
             "a named file the tree does not have is DRIFT and must say so: {text}"
+        );
+    }
+
+    /// The review's §9 lists `graph.explain_change` as one task-oriented action: "затронутые
+    /// symbols, witness paths, relevant ADR/tests, unresolved areas". Every part existed
+    /// separately; nothing composed them, so the answer required three calls and a manual
+    /// merge.
+    #[tokio::test]
+    async fn explain_change_answers_all_four_parts_in_one_call() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "pub fn changed() -> u32 { 1 }\n\
+             pub fn caller() -> u32 { changed() }\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("tests")).unwrap();
+        std::fs::write(
+            dir.path().join("tests/check.rs"),
+            "pub fn checks_it() -> u32 { crate::changed() }\n",
+        )
+        .unwrap();
+        let tool = tool(dir.path());
+        tool.dispatch(&serde_json::json!({ "action": "index" }))
+            .unwrap();
+        let project = tool.project_key(dir.path());
+        tool.with_read(|store| {
+            pa_graph::adr::AdrStore::new(store.connection())
+                .map_err(|err| anyhow::anyhow!("adr store: {err}"))?
+                .record_adr(&pa_graph::adr::Adr {
+                    id: 0,
+                    title: "lib.rs owns the counter".to_string(),
+                    status: pa_graph::adr::AdrStatus::Accepted,
+                    context: "`lib.rs` holds the only counter.".to_string(),
+                    decision: "Keep it there.".to_string(),
+                    consequences: "Callers depend on lib.rs.".to_string(),
+                    supersedes: None,
+                    project: project.clone(),
+                })
+                .map_err(|err| anyhow::anyhow!("record: {err}"))
+        })
+        .unwrap();
+
+        let result = tool
+            .dispatch(&serde_json::json!({
+                "action": "explain_change",
+                "symbol": "changed",
+                "depth": 3,
+            }))
+            .unwrap();
+        let details = result.details.clone();
+
+        // 1. affected symbols, each with its witness path
+        let callers = details["impact"]["callers"].as_array().expect("callers");
+        assert!(
+            callers.iter().any(|c| c["qualifiedName"]
+                .as_str()
+                .is_some_and(|qn| qn.ends_with("caller"))),
+            "the affected caller must be listed: {details}"
+        );
+        assert!(
+            callers
+                .iter()
+                .any(|c| c["witness"].as_array().is_some_and(|w| w.len() >= 2)),
+            "and each caller must carry its witness path: {details}"
+        );
+
+        // 2. relevant decision, matched by the CHANGED FILE
+        let decisions = details["decisions"].as_array().expect("decisions");
+        assert!(
+            decisions
+                .iter()
+                .any(|d| d["title"] == serde_json::json!("lib.rs owns the counter")),
+            "a decision naming the changed file must be listed: {details}"
+        );
+
+        // 3. test files, by path convention (the graph has no test label)
+        let tests = details["tests"].as_array().expect("tests");
+        assert!(
+            tests
+                .iter()
+                .any(|t| t.as_str().is_some_and(|s| s.contains("check.rs"))),
+            "a calling file under tests/ must be named: {details}"
+        );
+
+        // 4. what is NOT covered, stated rather than implied
+        let gaps = details["notCovered"].as_array().expect("notCovered");
+        assert!(
+            gaps.iter()
+                .any(|g| g.as_str().is_some_and(|s| s.contains("PATH CONVENTION"))),
+            "the test-set's own weakness must be stated: {details}"
+        );
+        assert!(
+            text_of(&result).contains("Not covered:"),
+            "and printed, not only in JSON: {}",
+            text_of(&result)
         );
     }
 
