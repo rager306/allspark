@@ -310,14 +310,11 @@ async fn token_post_bounded(
         .await
         .map_err(|message| format!("OpenAI Codex token {label} error: {message}"))?;
     if !response.ok() {
-        // TS falls back to `response.statusText` when the body is empty.
-        let text = if response.body.is_empty() {
-            format!("HTTP {}", response.status)
-        } else {
-            response.body.clone()
-        };
+        // Status only (review #4, CWE-209). The TS fallback quoted the body when present, and
+        // an OAuth error body can echo the submitted code/credentials; the parity cost is one
+        // diagnostic string, the leak cost is a bearer token in a pasted bug report.
         return Err(format!(
-            "OpenAI Codex token {label} failed ({}): {text}",
+            "OpenAI Codex token {label} failed ({})",
             response.status
         ));
     }
@@ -348,9 +345,10 @@ async fn token_post_bounded(
     };
     if !expires_in.is_finite() {
         // A NaN/`inf` lifetime is not a lifetime (TS's arithmetic yields
-        // a never-expiring credential; the port refuses it).
+        // a never-expiring credential; the port refuses it). Field name only — the body may
+        // carry the fresh token this function is about to reject (review #4).
         return Err(format!(
-            "OpenAI Codex token {label} response missing fields: {json}"
+            "OpenAI Codex token {label} response has a non-finite `expires_in`"
         ));
     }
     // Epoch millis fit i64 for ~292 million years.
@@ -668,7 +666,12 @@ mod tests {
         let error = login_openai_codex(&http, &ui, DEFAULT_ORIGINATOR)
             .await
             .unwrap_err();
-        assert_eq!(error, "OpenAI Codex token exchange failed (400): no grant");
+        // Status only: the body can echo the submitted code (review #4).
+        assert_eq!(error, "OpenAI Codex token exchange failed (400)");
+        assert!(
+            !error.contains("no grant"),
+            "body must not be quoted: {error}"
+        );
     }
 
     #[tokio::test]
@@ -701,7 +704,12 @@ mod tests {
         let error = refresh_openai_codex_token(&http, "r-old")
             .await
             .unwrap_err();
-        assert_eq!(error, "OpenAI Codex token refresh failed (401): expired");
+        // Status only (review #4): an OAuth error body can echo the refresh grant.
+        assert_eq!(error, "OpenAI Codex token refresh failed (401)");
+        assert!(
+            !error.contains("expired"),
+            "body must not be quoted: {error}"
+        );
     }
 
     #[tokio::test]

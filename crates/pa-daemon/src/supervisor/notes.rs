@@ -274,6 +274,39 @@ pub(crate) fn redact_tokens(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Review #40's other half: the log FILE is created owner-only, and so is its directory.
+    ///
+    /// Redaction keeps tokens out of the text; this keeps the file unreadable to anyone but the
+    /// owner. A log that gets its permissions "later" was world-readable from the first line
+    /// until then.
+    #[test]
+    fn a_new_daemon_log_file_and_its_dir_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().expect("dir");
+        let path = dir.path().join("logs").join("daemon.log");
+        let log = paths::RotatingLog::new(path.clone());
+        log.append(&render_log_line("provider admission: settle"));
+        let file_mode = std::fs::metadata(&path)
+            .expect("log file")
+            .permissions()
+            .mode();
+        assert_eq!(
+            file_mode & 0o777,
+            0o600,
+            "the log file must be owner-read/write only, got {:o}",
+            file_mode & 0o777
+        );
+        let dir_mode = std::fs::metadata(path.parent().expect("parent"))
+            .expect("log dir")
+            .permissions()
+            .mode();
+        assert_eq!(
+            dir_mode & 0o777,
+            0o700,
+            "the logs directory must be owner-only, got {:o}",
+            dir_mode & 0o777
+        );
+    }
 
     /// Review #40 (CWE-532): the daemon log must not carry a worker's bearer token.
     ///

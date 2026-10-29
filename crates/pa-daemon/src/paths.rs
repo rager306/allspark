@@ -124,10 +124,14 @@ impl RotatingLog {
     }
 
     pub fn append(&self, line: &str) {
-        // The log lives in `<agent-dir>/logs`; create it if this is the first
-        // write (a fresh agent dir has no logs directory yet).
+        // The log lives in `<agent-dir>/logs`; create it if this is the first write (a fresh
+        // agent dir has no logs directory yet). The file carries provider-failure detail and
+        // worker identities, so it is created owner-only (review #40, CWE-532) — the log may be
+        // world-readable FOREVER after creation, so the mode must be right at creation, not
+        // "also fixed later".
         if let Some(parent) = self.path.parent() {
             let _ = std::fs::create_dir_all(parent);
+            let _ = pa_core::platform::perms::restrict_dir(parent);
         }
         let Ok(mut file) = std::fs::OpenOptions::new()
             .create(true)
@@ -136,6 +140,7 @@ impl RotatingLog {
         else {
             return;
         };
+        let _ = pa_core::platform::perms::restrict_file(&self.path);
         let payload = format!("{line}\n");
         if let Ok(metadata) = file.metadata() {
             if metadata.len() + payload.len() as u64 > self.max_bytes {
