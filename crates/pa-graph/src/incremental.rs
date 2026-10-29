@@ -28,11 +28,12 @@
 //! wrong — when the surface of a file is unknown (no stored row) the file is
 //! treated as a surface change.
 //!
-//! Added-file caveat: a brand-new file can satisfy a call another file left
-//! *unresolved* in a previous run (no edge exists yet, so no dependent is
-//! discoverable). This matches the coarse [`GraphStore::index_project`]
-//! behaviour, which likewise only re-resolves calls from re-parsed files;
-//! callers that need that edge should run with [`IndexOptions::with_force`].
+//! Added-file repair: a brand-new file can satisfy a call another file left
+//! *unresolved* in a previous run. No edge exists, so the depth-1 closure cannot
+//! discover the dependent — `resolve_newly_satisfiable` therefore re-resolves the
+//! still-unresolved rows of files this run did NOT touch. Without it a full index
+//! and an incremental one disagreed about the same tree, which the review lists as
+//! an acceptance check ("новая definition, разрешающая прежний unresolved").
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -283,7 +284,10 @@ impl GraphStore {
         let mut pending_calls: Vec<(String, String, CallSite)> = Vec::new();
         let mut pending_imports: Vec<(String, ImportDef)> = Vec::new();
 
+        let mut reindexed_rels: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for t in targets.iter().chain(closure_targets.iter()) {
+            reindexed_rels.insert(t.rel.clone());
             let (calls, imports) = self.reindex_file_in_place(&opts.project, t)?;
             for call in calls {
                 pending_calls.push((t.rel.clone(), call.caller_qn.clone(), call));
@@ -320,6 +324,21 @@ impl GraphStore {
             }
         }
 
+        // A NEW definition can satisfy a call another file left unresolved in a previous
+        // run, and no edge exists for it — so the closure cannot discover it and the stale
+        // `USAGE` row would outlive its own reason. The review makes this an acceptance
+        // check ("новая definition, разрешающая прежний unresolved"), and the parity test
+        // caught the disagreement: incremental kept `USAGE a::caller`, a full index wrote
+        // `CALLS a::caller -> d::missing_old` for the same tree.
+        //
+        // The doc used to call this a known limitation and point at `with_force`. A
+        // limitation that a full index does not share is a divergence, and "run a full
+        // index" costs a whole-tree parse to fix one edge.
+        //
+        // Cost: one pass over `call_sites` for the files this run did NOT touch. The
+        // touched files have already been re-resolved above, so their rows are current.
+        self.resolve_newly_satisfiable(&resolver, &opts.project, &reindexed_rels)?;
+
         let reason = pick_reason(&reasons);
         let report = IncrementalReport {
             files_reindexed: targets.len(),
@@ -351,6 +370,62 @@ impl GraphStore {
             }
         }
         Ok(report)
+    }
+
+    /// Re-resolve unresolved call sites whose callee now HAS a definition.
+    ///
+    /// A new file can satisfy a call another file left unresolved: no edge existed, so the
+    /// depth-1 closure could not discover the dependent. A full index resolves it, so
+    /// leaving it stale makes the two write paths disagree about the same tree — the
+    /// review's own acceptance check.
+    ///
+    /// Only rows still marked `unresolved` and in files this run did NOT touch are
+    /// considered: a touched file's rows were just rewritten from its fresh parse.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    fn resolve_newly_satisfiable(
+        &mut self,
+        resolver: &Resolver,
+        project: &str,
+        reindexed: &std::collections::HashSet<String>,
+    ) -> Result<usize> {
+        let candidates: Vec<crate::types::CallSiteRow> = self
+            .call_sites(project)?
+            .into_iter()
+            .filter(|site| site.resolution == "unresolved" && !reindexed.contains(&site.rel_path))
+            .collect();
+        let mut repaired = 0usize;
+        for site in candidates {
+            // The same resolver and the same writer the full index uses, so a repaired row
+            // is indistinguishable from one written in a full pass.
+            let call = crate::extract::CallSite {
+                caller_qn: site.caller_qn.clone(),
+                callee: site.callee.clone(),
+                callee_path: (!site.callee_path.is_empty()).then(|| site.callee_path.clone()),
+                line: site.line,
+                args: Vec::new(),
+            };
+            let Some((source, _target, props)) = resolver.resolve_call(&site.caller_qn, &call)
+            else {
+                continue;
+            };
+            // Only a call that resolves to a REAL definition is a repair: a self-loop
+            // would be the same unresolved fact with a different label.
+            if props.get("strategy").and_then(serde_json::Value::as_str)
+                == Some(crate::types::CallStrategy::Recursive.as_str())
+            {
+                continue;
+            }
+            // Drop the stale UNRESOLVED marker first. `edges` keeps it as a self-loop, and
+            // the new CALLS edge does not replace it (different target), so without this the
+            // graph carries both: a resolved call and the same call's "no idea" row.
+            self.clear_unresolved_edge(project, &site.rel_path, &site.caller_qn, &site.callee)?;
+            self.record_call_edge(resolver, project, &site.rel_path, &site.caller_qn, &call)?;
+            let _ = source;
+            repaired += 1;
+        }
+        Ok(repaired)
     }
 
     /// Re-parse one file **in place**: preserve node ids, refresh FTS rows,
@@ -880,6 +955,114 @@ mod tests {
             "the fixture must exercise the dependency path"
         );
     }
+    /// The review's first acceptance check, made exhaustive: "Canonical parity full vs
+    /// incremental: add/delete/rename/alias/body-only edit; исчезнувший unresolved call;
+    /// новая definition, разрешающая прежний unresolved; occurrence multiplicity.
+    /// Сравнивать normalized facts, не только counts."
+    ///
+    /// The existing parity test covers ONE mutation (body-only + a new function). Each
+    /// mutation below has produced a real bug in this tree at some point — the stale
+    /// USES fact, the collapsed call site, the removal that double-counted — so a
+    /// single scenario is not coverage.
+    ///
+    /// Compared by NORMALIZED FACTS: edge (type, source qn, target qn) triples and
+    /// per-symbol occurrence counts. Row ids and order are store-local and would make
+    /// the comparison test the allocator.
+    #[test]
+    fn incremental_and_full_index_agree_across_every_mutation_shape() {
+        /// (name, files to seed, the mutation to apply, files after the mutation)
+        type Mutation = fn(&std::path::Path);
+        let seed: &[(&str, &str)] = &[
+            (
+                "a.rs",
+                "pub fn caller() { helper(); missing_old(); missing_old(); }\n",
+            ),
+            ("b.rs", "pub fn helper() -> u32 { 1 }\n"),
+            ("c.rs", "pub fn orphan() -> u32 { 2 }\n"),
+        ];
+        let mutations: &[(&str, Mutation)] = &[
+            ("body-only edit", |dir| {
+                write(dir, "a.rs", "pub fn caller() { helper(); helper(); }\n");
+            }),
+            ("new definition resolving an unresolved call", |dir| {
+                write(dir, "d.rs", "pub fn missing_old() {}\n");
+            }),
+            ("deleted file", |dir| {
+                std::fs::remove_file(dir.join("c.rs")).expect("remove c.rs");
+            }),
+            ("renamed file", |dir| {
+                std::fs::rename(dir.join("c.rs"), dir.join("renamed.rs")).expect("rename");
+            }),
+        ];
+
+        let normalized = |store: &GraphStore| -> (EdgeFacts, Occurrences) {
+            let nodes: HashMap<i64, String> = store
+                .all_nodes("p")
+                .expect("nodes")
+                .into_iter()
+                .map(|n| (n.id, n.qualified_name))
+                .collect();
+            let mut edges: Vec<(String, String, String)> = store
+                .all_edges("p")
+                .expect("edges")
+                .iter()
+                .map(|e| {
+                    (
+                        e.edge_type.to_string(),
+                        nodes.get(&e.source).cloned().unwrap_or_default(),
+                        nodes.get(&e.target).cloned().unwrap_or_default(),
+                    )
+                })
+                .collect();
+            edges.sort();
+            let mut occurrences: Vec<(String, usize)> = store
+                .call_sites("p")
+                .expect("sites")
+                .into_iter()
+                .fold(std::collections::BTreeMap::new(), |mut acc, site| {
+                    *acc.entry(format!(
+                        "{}/{}/{}",
+                        site.caller_qn, site.callee, site.resolution
+                    ))
+                    .or_insert(0) += 1;
+                    acc
+                })
+                .into_iter()
+                .collect();
+            occurrences.sort();
+            (edges, occurrences)
+        };
+
+        for (label, mutate) in mutations {
+            // Reset the tree so each mutation starts from the same seed.
+            let dir = tempfile::tempdir().expect("tempdir");
+            for (name, body) in seed {
+                write(dir.path(), name, body);
+            }
+            let mut incremental = GraphStore::open_in_memory().expect("store");
+            index(&mut incremental, dir.path());
+
+            mutate(dir.path());
+            incremental
+                .reindex_incremental(dir.path(), &IndexOptions::new("p"))
+                .expect("reindex");
+
+            let mut fresh = GraphStore::open_in_memory().expect("store");
+            fresh
+                .index_project(dir.path(), &IndexOptions::new("p"))
+                .expect("full index");
+
+            assert_eq!(
+                normalized(&incremental),
+                normalized(&fresh),
+                "{label}: incremental and full index disagree about the same tree"
+            );
+        }
+    }
+
+    type EdgeFacts = Vec<(String, String, String)>;
+    type Occurrences = Vec<(String, usize)>;
+
     /// §4.3 (audit): the stored hash must be the one that travelled WITH the
     /// parsed bytes. The old code re-read the file at write time, so a change
     /// landing between parse and write paired old symbols with a newer hash and

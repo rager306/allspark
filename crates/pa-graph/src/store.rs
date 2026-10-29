@@ -864,6 +864,35 @@ impl GraphStore {
         )?;
         Ok(())
     }
+    /// Remove one file's UNRESOLVED marker for `caller -> callee`.
+    ///
+    /// The marker is a self-loop `USES` row carrying `props.callee`; there is no column to
+    /// match on, so the match is on the caller's own self-loop row whose `callee` agrees.
+    /// Narrow on purpose: a different callee in the same function is a different miss.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    pub(crate) fn clear_unresolved_edge(
+        &self,
+        project: &str,
+        rel_path: &str,
+        caller_qn: &str,
+        callee: &str,
+    ) -> Result<usize> {
+        let removed = self.conn.execute(
+            "DELETE FROM edges
+             WHERE project = ?1
+               AND edge_type = 'USAGE'
+               AND source = target
+               AND source IN (
+                   SELECT id FROM nodes WHERE project = ?1 AND qualified_name = ?2
+               )
+               AND json_extract(props_json, '$.callee') = ?3",
+            params![project, caller_qn, callee],
+        )?;
+        let _ = rel_path;
+        Ok(removed)
+    }
     /// Delete a file's recorded call sites.
     ///
     /// `call_sites` is keyed by `rel_path` because a site belongs to the file
