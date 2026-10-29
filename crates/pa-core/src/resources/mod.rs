@@ -41,6 +41,27 @@ pub fn truncate_context_content(content: &str, limit: usize) -> (String, bool) {
     (content[..end].to_string(), true)
 }
 
+/// Truncate `content` and MARK the cut in the text the model receives.
+///
+/// The flag `truncate_context_content` returns was discarded at every prompt-input
+/// callsite, so an oversized AGENTS.md, `--system-prompt` file, per-model prompt layer or
+/// `/skill` body reached the model as if the author had written it that way (review #2). The
+/// contract in AGENTS.md is explicit — "must reuse `truncate_context_content` ... and report
+/// the truncation" — and a marker in the text is the only place the MODEL can see it; a
+/// diagnostic struct that never reaches the prompt reports to a log, not to the reader.
+#[must_use]
+pub fn truncate_context_content_marked(content: &str, limit: usize, what: &str) -> String {
+    let (kept, truncated) = truncate_context_content(content, limit);
+    if !truncated {
+        return kept;
+    }
+    format!(
+        "{kept}\n\n[... {what} TRUNCATED at {limit} bytes of {} — the rest is NOT in this \
+         prompt ...]",
+        content.len()
+    )
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextFile {
     pub path: PathBuf,
@@ -52,8 +73,10 @@ fn load_context_file_from_dir(dir: &Path) -> Option<ContextFile> {
         let file_path = dir.join(filename);
         if let Ok(content) = std::fs::read_to_string(&file_path) {
             // Cap before the content ever reaches the prompt: the file is
-            // untrusted input from the working tree.
-            let (content, _truncated) = truncate_context_content(&content, MAX_CONTEXT_FILE_BYTES);
+            // untrusted input from the working tree. The marker travels IN the text, because
+            // a flag nobody reads is a truncation the model cannot notice (review #2).
+            let content =
+                truncate_context_content_marked(&content, MAX_CONTEXT_FILE_BYTES, "CONTEXT FILE");
             return Some(ContextFile {
                 path: file_path,
                 content,
@@ -284,11 +307,17 @@ fn resolve_prompt_input(input: &str) -> Option<String> {
         // its appended tail, so an oversized file is the same denial of
         // service by another route.
         let content = std::fs::read_to_string(path).ok()?;
-        let (content, _truncated) = truncate_context_content(&content, MAX_CONTEXT_FILE_BYTES);
-        return Some(content);
+        return Some(truncate_context_content_marked(
+            &content,
+            MAX_CONTEXT_FILE_BYTES,
+            "PROMPT INPUT",
+        ));
     }
-    let (content, _truncated) = truncate_context_content(input, MAX_CONTEXT_FILE_BYTES);
-    Some(content)
+    Some(truncate_context_content_marked(
+        input,
+        MAX_CONTEXT_FILE_BYTES,
+        "PROMPT INPUT",
+    ))
 }
 
 fn is_local_path(path: &str) -> bool {
@@ -560,10 +589,22 @@ mod tests {
         std::fs::write(tmp.path().join("AGENTS.md"), &huge).unwrap();
 
         let file = load_context_file_from_dir(tmp.path()).expect("the file is found");
-        assert_eq!(file.content.len(), MAX_CONTEXT_FILE_BYTES);
+        // The kept prefix is byte-exact, and the cut is MARKED in the text the model sees: a
+        // discarded flag was a truncation the model could not notice (review #2).
         assert!(
-            file.content.bytes().all(|byte| byte == b'A'),
+            file.content
+                .starts_with(&"A".repeat(MAX_CONTEXT_FILE_BYTES)),
             "truncation must not corrupt the retained bytes"
+        );
+        assert!(
+            file.content.contains("CONTEXT FILE TRUNCATED"),
+            "and it must SAY so where the model reads it: {}",
+            &file.content[MAX_CONTEXT_FILE_BYTES..]
+        );
+        assert!(
+            file.content.contains("10000000"),
+            "naming the size that was cut: {}",
+            &file.content[MAX_CONTEXT_FILE_BYTES..]
         );
     }
 
@@ -614,6 +655,14 @@ mod tests {
         let path = tmp.path().join("SYSTEM.md");
         std::fs::write(&path, "B".repeat(5_000_000)).unwrap();
         let content = resolve_prompt_input(path.to_str().unwrap()).expect("resolved");
-        assert_eq!(content.len(), MAX_CONTEXT_FILE_BYTES);
+        assert!(
+            content.starts_with(&"B".repeat(MAX_CONTEXT_FILE_BYTES)),
+            "the kept prefix is byte-exact"
+        );
+        assert!(
+            content.contains("PROMPT INPUT TRUNCATED"),
+            "and the cut is marked in the prompt: {}",
+            &content[MAX_CONTEXT_FILE_BYTES..]
+        );
     }
 }

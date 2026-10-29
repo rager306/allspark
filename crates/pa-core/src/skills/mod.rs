@@ -309,10 +309,12 @@ pub fn expand_skill_command<'a>(text: &str, skills: &'a [Skill]) -> (String, Opt
         return (text.to_string(), None);
     };
     // The expanded skill body is prompt input; cap it like any other untrusted
-    // file so a huge SKILL.md cannot blow the turn's context.
-    let (content, _truncated) = crate::resources::truncate_context_content(
+    // file so a huge SKILL.md cannot blow the turn's context. The marker rides in the body so
+    // a cut skill is visible to the model, not just to a discarded flag (review #2).
+    let content = crate::resources::truncate_context_content_marked(
         &content,
         crate::resources::MAX_CONTEXT_FILE_BYTES,
+        "SKILL BODY",
     );
     let body = frontmatter::strip_frontmatter(&content).trim().to_string();
     let block = format!(
