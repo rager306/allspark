@@ -1894,6 +1894,14 @@ impl GraphTool {
                     result.edges_examined,
                     result.steps.len()
                 ),
+                Some(Truncation::Frontier) => format!(
+                    " — TRUNCATED at the frontier ceiling after examining {} edge(s) and \
+                     returning {} step(s); one node expanded into more than the walk will \
+                     hold at once, so nodes BEYOND that fan-out were not explored. Lower \
+                     `depth` or name a more specific symbol",
+                    result.edges_examined,
+                    result.steps.len()
+                ),
                 None => String::new(),
             },
             // A floor makes a short listing ambiguous unless the drops are named:

@@ -109,6 +109,19 @@ pub struct TraceOptions {
     /// edge, an `IMPORTS` edge. Such an edge is read as full confidence (1.0, in
     /// `read_call_props`), so no floor drops it.
     pub confidence_floor: Option<f32>,
+    /// Maximum nodes held in the frontier at once, or `None` for no ceiling.
+    ///
+    /// The review's §7 asks for the frontier to be bounded alongside visited/edges/time.
+    /// It matters because a step now carries its `witness` path: a frontier of `n` nodes
+    /// holds `n` paths, so memory grows with the WIDTH of the walk, not just with the nodes
+    /// returned. Measured on the live workspace graph, max out-degree is 458 and the mean is
+    /// 5.4 — at depth 2 a single hub can put thousands of nodes in the queue.
+    ///
+    /// Reaching the ceiling stops the walk and records
+    /// [`Truncation::Frontier`]; it does NOT drop the nodes already queued, because a
+    /// partially expanded frontier is exactly the lower-bound shape the truncation label
+    /// exists to expose.
+    pub max_frontier: Option<usize>,
     /// Maximum edges EXAMINED during the walk, or `None` for no ceiling.
     ///
     /// [`Self::limit`] caps the answer; this caps the WORK. They are different
@@ -148,6 +161,8 @@ pub enum Truncation {
     Limit,
     /// [`TraceOptions::work_budget`] capped the edges examined.
     WorkBudget,
+    /// [`TraceOptions::max_frontier`] hit its ceiling.
+    Frontier,
     /// [`TraceOptions::cancel`] fired, or [`TraceOptions::deadline`] passed.
     Cancelled,
 }
@@ -159,6 +174,7 @@ impl Truncation {
         match self {
             Self::Limit => "step limit",
             Self::WorkBudget => "work budget",
+            Self::Frontier => "frontier ceiling",
             Self::Cancelled => "cancellation",
         }
     }
@@ -186,6 +202,14 @@ pub const DEFAULT_CONFIDENCE_FLOOR: f32 = 0.6;
 /// passes `work_budget: 0`.
 pub const DEFAULT_WORK_BUDGET: usize = 1_000;
 
+/// Nodes a default [`trace`] may hold in its frontier at once.
+///
+/// Each queued node carries its witness path, so the frontier's cost is
+/// (nodes × path length), not just nodes. Max out-degree on the live workspace graph is 458
+/// and the mean is 5.4, so depth 2 can queue thousands; 512 admits a broad first hop and
+/// stops before the paths dominate the walk's memory.
+pub const DEFAULT_MAX_FRONTIER: usize = 512;
+
 impl TraceOptions {
     /// Default options (outgoing CALLS, depth 2).
     #[must_use]
@@ -198,6 +222,7 @@ impl TraceOptions {
             edge_types: Vec::new(),
             limit: 200,
             confidence_floor: None,
+            max_frontier: Some(DEFAULT_MAX_FRONTIER),
             work_budget: Some(DEFAULT_WORK_BUDGET),
             cancel: None,
             deadline: None,
@@ -254,7 +279,14 @@ impl TraceOptions {
         self
     }
 
-    /// Cap the edges examined; `None` lifts the ceiling.
+    /// Cap the frontier at `ceiling` nodes, or leave it unbounded.
+    #[must_use]
+    pub fn with_max_frontier(mut self, ceiling: Option<usize>) -> Self {
+        self.max_frontier = ceiling;
+        self
+    }
+
+    /// Cap the edges examined at `budget`, or leave it unbounded.
     #[must_use]
     pub fn with_work_budget(mut self, budget: Option<usize>) -> Self {
         self.work_budget = budget;
@@ -361,6 +393,15 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
             stopped_by = Some(Truncation::Limit);
             break;
         }
+        // The frontier ceiling is checked before expanding, because expanding is what
+        // multiplies the queue.
+        if opts
+            .max_frontier
+            .is_some_and(|ceiling| queue.len() > ceiling)
+        {
+            stopped_by = Some(Truncation::Frontier);
+            break;
+        }
         // The work budget is checked before expanding, and again per edge: one
         // node with hundreds of outgoing edges must not overshoot it the way it
         // used to overshoot `limit`.
@@ -387,8 +428,6 @@ pub fn trace(store: &GraphStore, opts: &TraceOptions) -> Result<TraceResult> {
                 stopped_by = Some(Truncation::WorkBudget);
                 break;
             }
-            // Cancellation is checked per EDGE, not per node: a node with hundreds of
-            // outgoing edges must not delay a stop by a whole fan-out.
             // Cancellation is checked per EDGE, not per node: a node with hundreds of
             // outgoing edges must not delay a stop by a whole fan-out.
             if opts
@@ -724,6 +763,54 @@ mod tests {
     /// ответ может стоить большого обхода". A hub whose edges all fall below the
     /// floor is the exact shape: every neighbour is counted as filtered and its
     /// subtree still expanded, so the answer stays tiny while the walk is huge.
+    /// The review's §7 wants the frontier bounded alongside visited/edges/time — and the
+    /// witness path makes it matter: every queued node holds a path, so width is memory.
+    #[test]
+    fn a_wide_frontier_is_stopped_and_says_so() {
+        let store = seed();
+        // `main` already reaches `parse`; give it 40 more leaves so expanding it puts 40
+        // nodes in the queue at once.
+        let main = resolve_symbol(&store, "p", "main").expect("main");
+        for i in 0..40 {
+            let leaf = store
+                .upsert_node(&crate::types::Node {
+                    id: 0,
+                    project: "p".into(),
+                    label: Label::Function,
+                    name: format!("leaf{i}"),
+                    qualified_name: format!("p::leaf{i}"),
+                    file_path: "src/lib.rs".into(),
+                    start_line: 10 + i,
+                    end_line: 11 + i,
+                    props: json!({}),
+                })
+                .expect("leaf");
+            store
+                .insert_edge("p", main, leaf, EdgeType::Calls, &json!({"confidence":1.0}))
+                .expect("edge");
+        }
+        let opts = TraceOptions::new("p", "main").with_max_frontier(Some(8));
+        let result = trace(&store, &opts).expect("trace");
+        assert_eq!(
+            result.stopped_by,
+            Some(Truncation::Frontier),
+            "a frontier past its ceiling must stop the walk and say which ceiling it was"
+        );
+        // The ceiling bounds EXPANSION, not one node's fan-out: the 40 leaves are emitted
+        // at depth 1 (they are the queue that tripped the ceiling), but nothing below them
+        // is expanded. `seed()` has `parse -> load`, so a depth-2 step proves the walk
+        // continued past the ceiling.
+        assert!(
+            result.steps.iter().all(|step| step.depth <= 1),
+            "nothing below the ceiling may be expanded, but a deeper step appeared: {:?}",
+            result
+                .steps
+                .iter()
+                .map(|s| (s.name.clone(), s.depth))
+                .collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn a_hub_below_the_floor_costs_the_budget_not_the_answer() {
         let store = GraphStore::open_in_memory().expect("store");
