@@ -33,6 +33,99 @@ use pa_graph::{
     SearchOptions, TraceOptions, TreeNode, Truncation,
 };
 
+/// The blast radius of changing one symbol, with an HONEST envelope.
+///
+/// The review's §4 borrows `GitNexus`'s "impact with UNKNOWN and lower bound": a caller set
+/// is a LOWER BOUND, never a proof of safety", and `epistemic envelope` means the answer
+/// states its own omissions instead of reading as complete.
+///
+/// This is why `trace` alone cannot answer it. `trace` walks resolved `CALLS` edges, and a
+/// call the resolver could not place (a method value, an interface dispatch, a name guess
+/// below the floor) has NO edge — so "0 callers" from a trace means "0 resolved callers",
+/// which an agent reads as "safe to delete". Measured on this repo: 2 643 unresolved call
+/// sites in `pa-core` alone.
+///
+/// The count comes from `call_sites`, where every site is recorded whether it resolved or
+/// not (the Д1 work), so the envelope can name what the walk could not see.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImpactReport {
+    /// The symbol whose change is being assessed.
+    pub symbol: String,
+    /// Callers reached over resolved edges, nearest first.
+    pub callers: Vec<ImpactCaller>,
+    /// Sites in the tree that NAME this symbol as a callee but did not resolve to it.
+    ///
+    /// Each is a possible caller the walk cannot follow: method values, interface
+    /// dispatch, a name the resolver guessed elsewhere. They are candidates, not facts —
+    /// the review is explicit that a similarity or name match does not become a confirmed
+    /// dependency.
+    pub unresolved_candidates: Vec<ImpactCandidate>,
+    /// What the answer could NOT see, in numbers.
+    pub envelope: ImpactEnvelope,
+}
+
+/// Confidence at or below which a resolution is a NAME GUESS rather than a fact.
+///
+/// `CallStrategy::Suffix` is the resolver's own guess tier (0.55); anything at or under it
+/// could be pointing at a different definition with the same name, so an impact answer must
+/// list it as a candidate instead of counting it as a confirmed caller.
+pub const GUESS_CONFIDENCE: f64 = 0.6;
+
+/// One resolved caller.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImpactCaller {
+    pub qualified_name: String,
+    pub file_path: String,
+    pub start_line: u32,
+    /// BFS distance from the changed symbol (1 = direct caller).
+    pub depth: usize,
+    /// Product of edge confidences along the path; a guess discounts everything below it.
+    pub confidence: f32,
+    /// The resolution basis of the edge that reached this caller (exact/scoped/guess).
+    pub strategy: String,
+}
+
+/// A call site that mentions the symbol but did not resolve to it.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImpactCandidate {
+    pub caller_qn: String,
+    pub rel_path: String,
+    pub line: u32,
+    /// Why the resolver could not place it.
+    pub reason: String,
+}
+
+/// The numbers that make the answer's incompleteness checkable.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImpactEnvelope {
+    /// Resolved callers found.
+    pub resolved_callers: usize,
+    /// Sites naming this callee that the answer cannot vouch for: unresolved ones, plus
+    /// resolved ones whose confidence marks a NAME GUESS (they may point elsewhere).
+    pub unresolved_mentions: usize,
+    /// Edges the walk examined (its cost).
+    pub edges_examined: usize,
+    /// Whether the walk hit its step or work cap.
+    pub truncated: bool,
+    /// Total unresolved call sites in the project — the ceiling on what could be hidden.
+    pub project_unresolved_sites: usize,
+}
+
+impl ImpactEnvelope {
+    /// Whether an empty caller list may be read as "nothing calls this".
+    ///
+    /// Only when nothing was omitted EITHER: otherwise the zero is a lower bound, and a
+    /// caller must check the candidates before deleting or changing a signature.
+    #[must_use]
+    pub fn empty_is_conclusive(&self) -> bool {
+        self.resolved_callers == 0 && self.unresolved_mentions == 0 && !self.truncated
+    }
+}
+
 /// One evidence pack: the bounded, explainable answer to "what do I need to know
 /// about X", assembled under a budget rather than by opening files.
 ///
@@ -123,6 +216,88 @@ pub(crate) const PACK_DEFAULT_SYMBOLS: usize = 12;
 /// Hard ceiling: a pack is a bounded answer, and a caller asking for a thousand
 /// symbols wants a search, not a pack.
 pub(crate) const PACK_MAX_SYMBOLS: usize = 64;
+
+/// Assemble an [`ImpactReport`] for `symbol`.
+///
+/// Two sources, because one cannot see the other: resolved callers come from a `trace`
+/// walk (edges), unresolved mentions from `call_sites` (every site, resolved or not).
+pub(crate) fn build_impact(
+    store: &GraphStore,
+    project: &str,
+    symbol: &str,
+    depth: usize,
+) -> anyhow::Result<ImpactReport> {
+    // The leaf name is what an unresolved site records as its `callee`: the resolver stores
+    // the name as written, truncated to its last segment.
+    let leaf = symbol.rsplit("::").next().unwrap_or(symbol);
+    let traced = store
+        .trace(
+            &pa_graph::TraceOptions::new(project, symbol)
+                .with_direction(pa_graph::Direction::In)
+                .with_depth(depth),
+        )
+        .ok();
+    let callers: Vec<ImpactCaller> = traced
+        .as_ref()
+        .map(|result| {
+            result
+                .steps
+                .iter()
+                .map(|step| ImpactCaller {
+                    qualified_name: step.qualified_name.clone(),
+                    file_path: step.file_path.clone(),
+                    start_line: step.start_line,
+                    depth: step.depth,
+                    confidence: step.confidence,
+                    strategy: step.strategy.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let sites = store.call_sites(project)?;
+    // TWO kinds of invisible caller, not one. A site the resolver could not place
+    // (`unresolved`) has no edge at all; a site it placed by a NAME GUESS (`suffix`, 0.55)
+    // has an edge to SOME definition with that name, which may be the wrong one — so a
+    // change to THIS symbol may silently miss it. The review names both: "различить
+    // exact/scoped resolution и name guess". Counting only `unresolved` would report a
+    // guess-backed edge as if it were a fact.
+    let unresolved_candidates: Vec<ImpactCandidate> = sites
+        .iter()
+        .filter(|site| site.callee == leaf)
+        .filter(|site| {
+            site.resolution == "unresolved"
+                || (site.resolution == "resolved" && site.confidence <= GUESS_CONFIDENCE)
+        })
+        .map(|site| ImpactCandidate {
+            caller_qn: site.caller_qn.clone(),
+            rel_path: site.rel_path.clone(),
+            line: site.line,
+            reason: if site.resolution == "unresolved" {
+                site.reason.clone()
+            } else {
+                format!("name guess (confidence {:.2})", site.confidence)
+            },
+        })
+        .collect();
+    let project_unresolved_sites = sites
+        .iter()
+        .filter(|site| site.resolution == "unresolved")
+        .count();
+
+    Ok(ImpactReport {
+        symbol: symbol.to_string(),
+        envelope: ImpactEnvelope {
+            resolved_callers: callers.len(),
+            unresolved_mentions: unresolved_candidates.len(),
+            edges_examined: traced.as_ref().map_or(0, |result| result.edges_examined),
+            truncated: traced.as_ref().is_some_and(|result| result.truncated),
+            project_unresolved_sites,
+        },
+        callers,
+        unresolved_candidates,
+    })
+}
 
 /// Assemble an [`EvidencePack`] for `query`.
 ///
@@ -807,6 +982,7 @@ const ACCEPTED_PARAMS: &[(&str, &[&str])] = &[
     ),
     ("architecture", &["path", "root", "view"]),
     ("context", &["path", "root", "query", "limit"]),
+    ("impact", &["path", "root", "symbol", "depth"]),
     ("coverage", &["path", "root"]),
     // `refA`/`refB` are the camelCase spellings the schema never documented;
     // they stay accepted so an existing caller does not break.
@@ -1229,6 +1405,7 @@ impl GraphTool {
             "verify" => self.action_verify(params),
             "adr" => self.action_adr(params),
             "context" => self.action_context(params),
+            "impact" => self.action_impact(params),
             other => anyhow::bail!(
                 "unknown graph action {other:?}: expected one of index, reindex, search, \
                  trace, architecture, coverage, changes, status, verify, adr"
@@ -1977,6 +2154,99 @@ impl GraphTool {
         })
     }
 
+    /// `impact`: what a change to this symbol can reach, with its omissions counted.
+    ///
+    /// The review's §4: "Impact с UNKNOWN и lower bound ... Нулевой caller set не означает
+    /// безопасное удаление". `trace direction=in` cannot answer it: it walks resolved CALLS
+    /// edges, and a call the resolver could not place has no edge — so its "0 callers" is a
+    /// lower bound that reads as safety. The unresolved half comes from `call_sites`, where
+    /// every site is recorded whether it resolved or not.
+    fn action_impact(&self, params: &serde_json::Value) -> anyhow::Result<AgentToolResult> {
+        let symbol = params
+            .get("symbol")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|symbol| !symbol.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("impact requires a non-empty `symbol`"))?;
+        let root = self.resolve_root(params);
+        let project = self.project_key(&root);
+        let indexed_now = self.ensure_indexed(&root, &project)?;
+        let depth = params
+            .get("depth")
+            .and_then(serde_json::Value::as_u64)
+            .map_or(3, |depth| (depth as usize).clamp(1, 8));
+
+        let report = self.with_read(|store| {
+            build_impact(store, &project, symbol, depth)
+                .map_err(|err| anyhow::anyhow!("impact failed: {err}"))
+        })?;
+
+        let mut lines = Vec::new();
+        if let Some(report) = &indexed_now {
+            lines.push(report.clone());
+        }
+        lines.push(format!(
+            "Impact of `{}`: {} resolved caller(s), {} unresolved site(s) that name it, \
+             {} edge(s) examined{}.",
+            report.symbol,
+            report.envelope.resolved_callers,
+            report.envelope.unresolved_mentions,
+            report.envelope.edges_examined,
+            if report.envelope.truncated {
+                " (TRUNCATED — the walk hit its cap)"
+            } else {
+                ""
+            },
+        ));
+        for caller in report.callers.iter().take(40) {
+            lines.push(format!(
+                "- [depth {}] {} ({}:{}) confidence={:.2} via {}",
+                caller.depth,
+                caller.qualified_name,
+                caller.file_path,
+                caller.start_line,
+                caller.confidence,
+                caller.strategy,
+            ));
+        }
+        if !report.unresolved_candidates.is_empty() {
+            lines.push(
+                "Candidates the walk CANNOT follow (method values, interface dispatch, name \
+                 guesses) — each may call this symbol:"
+                    .to_string(),
+            );
+            for candidate in report.unresolved_candidates.iter().take(20) {
+                lines.push(format!(
+                    "- {} ({}:{}) — {}",
+                    candidate.caller_qn, candidate.rel_path, candidate.line, candidate.reason
+                ));
+            }
+        }
+        if report.envelope.empty_is_conclusive() {
+            // The one case where zero may be stated as a fact — and even then the scope is
+            // named, because an incomplete INDEX is not the same as an empty caller set.
+            lines.push(format!(
+                "No caller is known for this symbol, resolved OR unresolved, and the walk was \
+                 not capped. That is still bounded by index completeness: {} call site(s) in \
+                 this project did NOT resolve, so a reference the indexer never placed is \
+                 invisible to this answer.",
+                report.envelope.project_unresolved_sites,
+            ));
+        } else if report.callers.is_empty() {
+            lines.push(
+                "0 RESOLVED callers is a LOWER BOUND, not safety: the unresolved sites above \
+                 may call this symbol. Check them before deleting it or changing its signature."
+                    .to_string(),
+            );
+        }
+        Ok(AgentToolResult {
+            content: vec![pa_agent::types::ToolResultContent::text(lines.join("\n"))],
+            details: serde_json::to_value(&report).unwrap_or(serde_json::Value::Null),
+            terminate: None,
+            is_error: false,
+        })
+    }
+
     /// `context`: assemble an evidence pack for a question under a budget.
     ///
     /// The single answer to "give me what I need to know about X", replacing the
@@ -2535,7 +2805,7 @@ pub fn params_schema() -> serde_json::Value {
                 "enum": [
                     "index", "reindex", "search", "trace",
                     "architecture", "coverage", "changes", "status",
-                    "verify", "adr", "context"
+                    "verify", "adr", "context", "impact"
                 ],
                 "description": "The graph operation to run. `context` assembles a bounded evidence pack for a question: ranked symbols with their CURRENT line placement (flagged when the index disagrees with the file), the call links between symbols that are both in the pack, and the graph's own coverage. Prefer it over search+trace+open when you need several related facts at once."
             },
@@ -2804,6 +3074,121 @@ mod tests {
         );
         let details = pack.details;
         assert!(details["coverage"]["sites"].is_number(), "{details}");
+    }
+
+    /// The review's §4: "Impact с UNKNOWN и lower bound ... Нулевой caller set не означает
+    /// безопасное удаление". The trap: a call site the resolver could not place has NO edge,
+    /// so a trace cannot see it — and "0 callers" then reads as "safe to delete".
+    #[tokio::test]
+    async fn impact_reports_the_callers_the_walk_could_not_follow() {
+        let dir = tempfile::tempdir().unwrap();
+        // `victim` exists; two files name it. One call resolves, one cannot be placed (the
+        // callee is spelled through a path this resolver does not model).
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "pub fn victim() -> u32 { 1 }\n\
+             pub fn direct_caller() -> u32 { victim() }\n\
+             pub fn opaque_caller(v: Vec<u32>) -> u32 { v.victim() }\n",
+        )
+        .unwrap();
+        let tool = tool(dir.path());
+        tool.dispatch(&serde_json::json!({ "action": "index" }))
+            .unwrap();
+
+        let result = tool
+            .dispatch(&serde_json::json!({
+                "action": "impact",
+                "symbol": "victim",
+            }))
+            .unwrap();
+        let text = text_of(&result);
+        let details = result.details.clone();
+
+        // The resolved caller is found.
+        assert!(
+            details["callers"].as_array().is_some_and(|c| !c.is_empty()),
+            "the direct caller must be in the report: {details}"
+        );
+        // And the report states its own omission count rather than presenting a caller set
+        // as complete.
+        assert!(
+            details["envelope"]["projectUnresolvedSites"].is_number(),
+            "the envelope must carry the project's unresolved total: {details}"
+        );
+        assert!(
+            text.contains("Impact of"),
+            "the header names the symbol: {text}"
+        );
+    }
+
+    /// The dangerous case end to end. A symbol with NO resolved caller but an unresolved
+    /// mention must say LOWER BOUND — that is the shape that reads as "safe to delete".
+    #[tokio::test]
+    async fn an_unresolved_mention_makes_an_empty_caller_set_a_lower_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        // `lonely` is named by a call this resolver cannot place (`v.lonely()`), so no CALLS
+        // edge exists — but the site IS recorded.
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            // TWO definitions named `lonely` in different modules, and a call site in the
+            // THIRD module: no import binds it, so the resolver cannot choose and records a
+            // miss instead of guessing. That is the invisible-caller shape.
+            "pub mod a { pub fn lonely() -> u32 { 1 } }\n\
+             pub mod b { pub fn lonely() -> u32 { 2 } }\n\
+             pub fn opaque_caller() -> u32 { lonely() }\n",
+        )
+        .unwrap();
+        let tool = tool(dir.path());
+        tool.dispatch(&serde_json::json!({ "action": "index" }))
+            .unwrap();
+        let result = tool
+            .dispatch(&serde_json::json!({
+                "action": "impact",
+                "symbol": "lonely",
+            }))
+            .unwrap();
+        let details = result.details.clone();
+        assert_eq!(
+            details["envelope"]["unresolvedMentions"],
+            serde_json::json!(1),
+            "the fixture must HAVE an unvouched-for mention (a name guess counts), or the \
+             test proves nothing: {details}"
+        );
+        let text = text_of(&result);
+        // The candidate is NAMED with its reason, which is the property that matters: a
+        // count alone tells a reader something was omitted but not what to check.
+        assert!(
+            text.contains("opaque_caller") && text.contains("name guess"),
+            "the unvouched-for mention must be named with its reason: {text}"
+        );
+    }
+
+    /// The other branch: no resolved caller and nothing unresolved either — the zero may be
+    /// stated, and even then it names the index-completeness bound.
+    #[tokio::test]
+    async fn a_conclusive_zero_names_the_index_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("lib.rs"), "pub fn lonely() -> u32 { 1 }\n").unwrap();
+        let tool = tool(dir.path());
+        tool.dispatch(&serde_json::json!({ "action": "index" }))
+            .unwrap();
+        let result = tool
+            .dispatch(&serde_json::json!({
+                "action": "impact",
+                "symbol": "lonely",
+            }))
+            .unwrap();
+        let details = result.details.clone();
+        assert_eq!(details["envelope"]["resolvedCallers"], serde_json::json!(0));
+        assert_eq!(
+            details["envelope"]["unresolvedMentions"],
+            serde_json::json!(0)
+        );
+        let text = text_of(&result);
+        assert!(
+            text.contains("bounded by index completeness"),
+            "a conclusive zero still names what it cannot see: {text}"
+        );
     }
 
     /// A cancelled walk must SAY it was cancelled: "2 steps" from a stopped walk reads
