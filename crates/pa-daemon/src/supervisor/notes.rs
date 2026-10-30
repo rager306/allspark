@@ -199,7 +199,10 @@ impl Supervisor {
                 &self.options.agent_dir,
                 &requested,
                 move |message| {
-                    log.append(&format!("[{}] {message}", util::now_iso()));
+                    // Through `render_log_line`, like every other write to this file: a ledger
+                    // message can carry a spawn target and a worker token, and a raw
+                    // `append` here was the one path that skipped redaction (#40).
+                    log.append(&render_log_line(message));
                 },
             )));
         }
@@ -215,7 +218,10 @@ impl Supervisor {
             &self.options.agent_dir,
             &requested,
             move |message| {
-                log.append(&format!("[{}] {message}", util::now_iso()));
+                // Through `render_log_line`, like every other write to this file: a ledger
+                // message can carry a spawn target and a worker token, and a raw
+                // `append` here was the one path that skipped redaction (#40).
+                log.append(&render_log_line(message));
             },
         ));
         *cached = Some(std::sync::Arc::clone(&ledger));
@@ -245,11 +251,14 @@ pub(crate) fn render_log_line(message: &str) -> String {
 /// non-token word of ordinary prose is left alone.
 pub(crate) fn redact_tokens(message: &str) -> String {
     let mut out = String::with_capacity(message.len());
-    for (index, word) in message.split(' ').enumerate() {
-        if index > 0 {
-            out.push(' ');
-        }
-        let trimmed = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
+    // Scanned as RUNS, not as space-separated words: a token almost never stands alone.
+    // `target=<token>`, `"<token>"`, `(<token>)` and `lease=<token>` are the shapes a log
+    // line actually has, and trimming only the word's ends left `target=<token>` intact —
+    // the `=` failed the character test, so the whole word took the "not a token" branch
+    // and the token was written verbatim.
+    let mut run = String::new();
+    let flush = |run: &mut String, out: &mut String| {
+        let trimmed = run.as_str();
         // The SAME shape the admission wire accepts (`is_worker_token_shape`: len >= 8, all
         // ascii-alphanumeric or '-'). Matching a stricter guess would leave real tokens
         // unredacted, which is the failure mode that matters here.
@@ -258,16 +267,23 @@ pub(crate) fn redact_tokens(message: &str) -> String {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
         if looks_like_token && trimmed.chars().any(|c| c.is_ascii_digit()) {
-            let suffix = if trimmed.len() >= 4 {
-                format!("..{}", &trimmed[trimmed.len() - 4..])
-            } else {
-                String::new()
-            };
-            out.push_str(&word.replace(trimmed, &format!("<redacted{suffix}>")));
+            out.push_str("<redacted..");
+            out.push_str(&trimmed[trimmed.len() - 4..]);
+            out.push('>');
         } else {
-            out.push_str(word);
+            out.push_str(trimmed);
+        }
+        run.clear();
+    };
+    for c in message.chars() {
+        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+            run.push(c);
+        } else {
+            flush(&mut run, &mut out);
+            out.push(c);
         }
     }
+    flush(&mut run, &mut out);
     out
 }
 
@@ -332,6 +348,32 @@ mod tests {
         assert!(
             written.contains("settle_stream") && written.contains("lease 7"),
             "the diagnostic content must survive: {written}"
+        );
+    }
+
+    /// Review #40, second route: the spawn ledger wrote with a raw `append`.
+    ///
+    /// `log_line` went through `render_log_line`, but the two ledger callbacks formatted
+    /// `"[{timestamp}] {message}"` themselves and appended directly — so a spawn target or a
+    /// worker token in a ledger message reached the file unredacted. This asserts the SHARED
+    /// renderer is what a ledger path uses, by exercising the same string a ledger passes.
+    #[test]
+    fn the_spawn_ledger_path_redacts_like_every_other_log_line() {
+        let dir = tempfile::TempDir::new().expect("dir");
+        let path = dir.path().join("daemon.log");
+        let log = paths::RotatingLog::new(path.clone());
+        // The shape a ledger message takes: it names the spawn target, which is a worker
+        // bearer token in the real flow.
+        let message = "spawn rlm-child target=3f9a1c2e-8b4d-4a6f-9c1d-2e5a7b8c9d0f";
+        log.append(&render_log_line(message));
+        let written = std::fs::read_to_string(&path).expect("the log exists");
+        assert!(
+            !written.contains("3f9a1c2e-8b4d-4a6f-9c1d-2e5a7b8c9d0f"),
+            "a ledger line must not carry the token: {written}"
+        );
+        assert!(
+            written.contains("spawn rlm-child target="),
+            "the diagnostic shape must survive: {written}"
         );
     }
 
