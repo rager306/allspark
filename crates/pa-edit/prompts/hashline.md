@@ -1,4 +1,4 @@
-Hashline patches existing files. Each file: `[PATH#TAG]`, `TAG` required 4-hex snapshot. Read the file with `bash` (for example `cat -n FILE`); every `edit` response and every rejection names the current tag and the numbered lines it touched. Numbers: original `LINE:TEXT`, never hunk-shifted.
+Hashline patches existing files. Each file: `[PATH#TAG]`, `TAG` required 4-hex snapshot. Get both with `edit` `action: "read"` (prints `[path#TAG]` then `N:TEXT` rows, and mints the tag) — copy that header verbatim. Numbers: original `LINE:TEXT`, never hunk-shifted.
 
 <ops>
 `PUT N.=M:` replace inclusive N–M with `+` body (`N.=N` for one line); `PUT N*:` replace block N.
@@ -13,7 +13,7 @@ Hashline patches existing files. Each file: `[PATH#TAG]`, `TAG` required 4-hex s
 - Touch displayed changed lines only; `…`, `..`, collapsed `N-M:` and out-of-window lines UNSEEN. Re-read first. Tight ranges: split nonadjacent changes; NEVER include keepers or start/end mid-expression/block. Pure addition uses gap PUT.
 - `*` requires multi-line opener, NEVER closer/last/inner statement; use range/gap for one statement. Anchor first decorator/attribute/doc-comment to include it; standalone comments need explicit range.
 - Markdown heading blocks run through deeper headings until next same/higher; after section `PUT >N*:`, end body with blank line.
-- NEVER restyle unrelated code. After EVERY edit tag/numbers change: use the tag the edit response returned; stale tag/surprise → STOP, re-read with `bash` and start from the returned tag.
+- NEVER restyle unrelated code. After EVERY edit tag/numbers change: use the tag the edit response returned; stale tag/surprise → STOP, `action: "read"` the file again and start from the fresh tag.
 </rules>
 
 <example>

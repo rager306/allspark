@@ -48,6 +48,20 @@ const ALL_MODES: [EditMode; 5] = [
     EditMode::Sloppy,
 ];
 
+/// Rows a `read` action prints before it summarizes the rest.
+///
+/// A prompt is model input and cache payload at once (AGENTS.md: prompt-input caps
+/// are part of the contract), so the read surface is capped here rather than left to
+/// the caller. A file over the cap is printed head and tail with the elided range named,
+/// which is exactly the "unseen lines" state the seen-lines guard already understands.
+const READ_MAX_ROWS: usize = 2_000;
+
+/// Rows of tail kept when a file exceeds [`READ_MAX_ROWS`].
+const READ_TAIL_ROWS: usize = 40;
+
+/// Bytes a `read` action will touch before refusing the file as too large.
+const READ_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
 /// The native `edit` tool.
 pub struct EditHybridTool {
     /// Shared across calls so seen-line / no-op guards survive a session.
@@ -174,6 +188,18 @@ impl EditHybridTool {
 
     /// Run one edit call end to end.
     async fn run(&self, params: &serde_json::Value) -> AgentToolResult {
+        // `action: "read"` is the tag mint. The `hashline` prompt tells the model to cite
+        // a content tag, and the port assumed a separate `read` tool produced it. This
+        // fork has none, so the tag could only come from a rejection: the model had to
+        // fail once to learn the hash, and the seen-lines guard (which needs a recorded
+        // read) never armed. Serving it here keeps one surface and one store.
+        if params
+            .get("action")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|action| action.trim().eq_ignore_ascii_case("read"))
+        {
+            return self.read_file(params);
+        }
         let mode = match self.resolve_mode(params) {
             Ok(mode) => mode,
             Err(message) => return AgentToolResult::error(message),
@@ -212,6 +238,92 @@ impl EditHybridTool {
         match session.apply(request, &writer).await {
             Ok(outcome) => outcome_result(outcome),
             Err(err) => AgentToolResult::error(err.to_string()),
+        }
+    }
+}
+
+impl EditHybridTool {
+    /// Serve `action: "read"`: print numbered rows and mint the section tag.
+    ///
+    /// The output is deliberately the shape the `hashline` grammar consumes — a
+    /// `[path#TAG]` header followed by `N:TEXT` rows — so a model can copy the header
+    /// straight into its next payload. The read is recorded in the shared store, which
+    /// is what arms the seen-lines guard and lets a later stale edit recover from the
+    /// retained snapshot instead of only failing.
+    fn read_file(&self, params: &serde_json::Value) -> AgentToolResult {
+        let Some(raw_path) = params.get("path").and_then(serde_json::Value::as_str) else {
+            return AgentToolResult::error("`read` requires a `path`.");
+        };
+        let path = if std::path::Path::new(raw_path).is_absolute() {
+            std::path::PathBuf::from(raw_path)
+        } else {
+            self.cwd.join(raw_path)
+        };
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(err) => return AgentToolResult::error(format!("{raw_path}: {err}")),
+        };
+        if metadata.len() > READ_MAX_BYTES {
+            // A capped read must SAY it was capped: silently printing a prefix is how a
+            // model concludes a file is shorter than it is.
+            return AgentToolResult::error(format!(
+                "{raw_path} is {} bytes, over the {READ_MAX_BYTES}-byte read cap; \
+                 narrow the view with `bash` instead",
+                metadata.len()
+            ));
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return AgentToolResult::error(format!("{raw_path}: not valid UTF-8"));
+        };
+        let store = self
+            .store
+            .lock()
+            .map_or_else(|_| EditStore::new(), |guard| guard.clone());
+        let display = raw_path.trim();
+        let rows: Vec<&str> = crate::modes::hashline::format::split_addressable_file_lines(&text);
+        let truncated = rows.len() > READ_MAX_ROWS;
+        // Record the snapshot BEFORE formatting, so the tag printed is the tag the store
+        // holds. `record_file` re-reads and normalizes; using it keeps one definition of
+        // "the bytes a tag names".
+        let Some(tag) = store.record_file(&path, None) else {
+            return AgentToolResult::error(format!(
+                "{display}: could not record a snapshot (unreadable, not UTF-8, or over the \
+                 snapshot cap)"
+            ));
+        };
+        let header = crate::modes::hashline::format::format_hashline_header(display, &tag);
+        let mut out = String::with_capacity(text.len() + header.len() + 16);
+        out.push_str(&header);
+        out.push('\n');
+        if truncated {
+            let total = rows.len();
+            let head = total.saturating_sub(READ_TAIL_ROWS);
+            out.push_str(&crate::modes::hashline::format::format_numbered_lines(
+                rows[..head].join("\n").as_str(),
+                1,
+            ));
+            use std::fmt::Write as _;
+            let _ = write!(
+                out,
+                "\n… {head}:{total} elided ({total} rows; re-read a range with `bash` to see them)\n"
+            );
+            out.push_str(&crate::modes::hashline::format::format_numbered_lines(
+                rows[head..].join("\n").as_str(),
+                u32::try_from(head + 1).unwrap_or(u32::MAX),
+            ));
+        } else {
+            out.push_str(&crate::modes::hashline::format::format_numbered_lines(
+                rows.join("\n").as_str(),
+                1,
+            ));
+        }
+        AgentToolResult {
+            details: serde_json::json!({
+                "tag": tag,
+                "rows": rows.len(),
+                "truncated": truncated,
+            }),
+            ..AgentToolResult::text(out)
         }
     }
 }
@@ -259,6 +371,11 @@ fn params_schema(allow_modes: &[EditMode]) -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["edit", "read"],
+                "description": "`read` prints a file as `[path#TAG]` plus `N:TEXT` rows and mints the snapshot tag a `hashline` payload must cite. Omit for an edit."
+            },
             "mode": {
                 "type": "string",
                 "enum": enum_values,
@@ -805,6 +922,83 @@ mod tests {
             tool.execution_mode(),
             Some(pa_agent::types::ToolExecutionMode::Sequential),
             "an edit batch must not run its tools in parallel"
+        );
+    }
+
+    /// The loop the prompt promises: `read` mints the tag, the edit cites it.
+    ///
+    /// Before this, nothing in production produced a tag: `record_file` had no caller, so
+    /// a `hashline` edit could only learn the hash from a rejection. This pins the whole
+    /// path — header shape, numbering, tag round-trip — because each piece existed and
+    /// the connection did not.
+    #[tokio::test]
+    async fn read_mints_the_tag_the_next_hashline_edit_cites() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "alpha\nbeta\n").unwrap();
+        let tool = tool_for(dir.path(), EditMode::Hashline, all_modes());
+        let read = call(
+            &tool,
+            serde_json::json!({ "action": "read", "path": "a.txt" }),
+        )
+        .await;
+        assert!(!read.is_error, "read failed: {}", text_of(&read));
+        let text = text_of(&read);
+        let expected_tag = crate::store::file_hash("alpha\nbeta\n");
+        assert_eq!(
+            text.lines().next().unwrap(),
+            format!("[a.txt#{expected_tag}]"),
+            "the header must carry the live tag so it can be copied verbatim"
+        );
+        assert!(
+            text.contains("1:alpha"),
+            "rows must be numbered from 1: {text}"
+        );
+        assert!(text.contains("2:beta"), "{text}");
+
+        // Copy the header straight out of the read, as the prompt tells the model to.
+        let header = text.lines().next().unwrap();
+        let payload = format!("{header}\nPUT 2.=2:\n+gamma");
+        let edit = call(
+            &tool,
+            serde_json::json!({ "mode": "hashline", "payload": payload }),
+        )
+        .await;
+        assert!(
+            !edit.is_error,
+            "the tag from `read` must be accepted: {}",
+            text_of(&edit)
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "alpha\ngamma\n"
+        );
+    }
+
+    /// A read over the row cap says how many rows it elided.
+    #[tokio::test]
+    async fn a_long_read_names_the_rows_it_elided() {
+        let dir = tempfile::tempdir().unwrap();
+        let body: String =
+            (1..=READ_MAX_ROWS + 500).fold(String::new(), |mut acc, n| {
+                let _ = std::fmt::Write::write_fmt(&mut acc, format_args!("row{n}\n"));
+                acc
+            });
+        std::fs::write(dir.path().join("big.txt"), &body).unwrap();
+        let tool = tool_for(dir.path(), EditMode::Hashline, all_modes());
+        let read = call(
+            &tool,
+            serde_json::json!({ "action": "read", "path": "big.txt" }),
+        )
+        .await;
+        let text = text_of(&read);
+        assert!(
+            text.contains("elided"),
+            "a capped read must say so: {text:.200}"
+        );
+        assert!(
+            read.details["truncated"] == serde_json::json!(true),
+            "details must report the cap: {:?}",
+            read.details
         );
     }
 
