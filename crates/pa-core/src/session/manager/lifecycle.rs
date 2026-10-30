@@ -490,8 +490,10 @@ impl SessionManager {
         self.file_entries = vec![header];
         self.file_entries.extend(rest);
         self.has_assistant_entry = has_assistant;
-        let _ = self.rewrite_file();
-        self.flushed = true;
+        // Same rule as the two paths above (review #33): a rewrite that failed leaves the
+        // OLD file on disk, so claiming a flush would let a later reader trust a session
+        // file that never received the branch this call just built.
+        self.flushed = self.rewrite_file();
         target
     }
     /// Adopt a durable branch as this session's entries: keeps the header,
