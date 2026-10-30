@@ -78,6 +78,7 @@ pub(crate) const ACCEPTED_PARAMS: &[(&str, &[&str])] = &[
     ("context", &["path", "root", "query", "limit"]),
     ("impact", &["path", "root", "symbol", "depth"]),
     ("explain_change", &["path", "root", "symbol", "depth"]),
+    ("forget", &["path", "root"]),
     ("coverage", &["path", "root"]),
     // `refA`/`refB` are the camelCase spellings the schema never documented;
     // they stay accepted so an existing caller does not break.
@@ -165,7 +166,9 @@ impl AgentTool for GraphTool {
          architecture decisions; an ADR's prose file references are checked against \
          the index and drift is named), context (evidence pack under a budget), \
          impact (what a change reaches, with unresolved and guessed mentions counted \
-         as candidates), explain_change (impact + decision + test files in one answer). \
+         as candidates), explain_change (impact + decision + test files in one answer), \
+         forget (drop THIS project's rows from the store; the key is the resolved \
+         project name, so a same-named tree elsewhere is untouched). \
          Each action reads only its own parameters: \
          an unknown or misspelt one is an error naming the accepted set, never \
          a silent default."
@@ -257,7 +260,8 @@ pub fn params_schema() -> serde_json::Value {
                     "status",
                     "verify",
                     "adr",
-                    "context"
+                    "context",
+                    "forget"
                 ],
                 "description": "The graph operation to run. `context` assembles a bounded evidence pack for a question: ranked symbols with their CURRENT line placement (flagged when the index disagrees with the file), the call links between symbols that are both in the pack, and the graph's own coverage. Prefer it over search+trace+open when you need several related facts at once."
             },

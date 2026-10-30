@@ -827,6 +827,73 @@ impl GraphTool {
     /// The review's §9 lists it among four task-oriented actions and every part already
     /// existed separately. Composition, not a new traversal: an agent asking this question
     /// should not have to call `impact`, `adr` and `search` and merge them.
+    /// Drop one project from the store: `forget`.
+    ///
+    /// The store grew a project row per tree and had no way to drop one, so a database
+    /// accumulated every checkout ever indexed. Four store operations existed for exactly
+    /// this and had no caller (`delete_project`, `clear_project_graph`, `clear_coverage`,
+    /// `coverage_count`) — the capability was written, the action never was.
+    ///
+    /// Safety rests on the key: `delete_project` takes the project NAME, and
+    /// `project_key_in` forks a colliding basename into `name#digest`, so a delete by the
+    /// key this tool computes cannot reach a same-named tree elsewhere. Deleting by bare
+    /// basename would not have been safe to offer.
+    pub(crate) fn action_forget(
+        &self,
+        params: &serde_json::Value,
+    ) -> anyhow::Result<AgentToolResult> {
+        let root = self.resolve_root(params);
+        let project = self.project_key(&root);
+        // Counted BEFORE the delete: afterwards there is nothing left to report, and the
+        // caller needs to know what it removed.
+        let before = self.with_read(|store| {
+            Ok::<_, anyhow::Error>((
+                store.node_count(&project).unwrap_or(0),
+                store.edge_count(&project).unwrap_or(0),
+                store.coverage_count(&project).unwrap_or(0),
+            ))
+        })?;
+        if before.0 == 0 && before.1 == 0 && before.2 == 0 {
+            return Ok(AgentToolResult::text(format!(
+                "Nothing to forget: project `{project}` has no rows in {}.",
+                self.db_path.display()
+            )));
+        }
+        let removed = self.with_store(|store| {
+            // The project row cascades to nodes, edges, hashes, call sites and receipts.
+            // Coverage notes have no foreign key, so they are dropped explicitly — that is
+            // what makes this one coherent operation instead of a half-cleaned database.
+            let projects = store
+                .delete_project(&project)
+                .map_err(|err| anyhow::anyhow!("forget failed: {err}"))?;
+            let coverage = store
+                .clear_coverage(&project)
+                .map_err(|err| anyhow::anyhow!("forget failed: {err}"))?;
+            Ok::<_, anyhow::Error>((projects, coverage))
+        })?;
+        Ok(AgentToolResult {
+            content: vec![pa_agent::types::ToolResultContent::text(format!(
+                "Forgot project `{project}` from {}: {} node(s), {} edge(s), \
+                 {rows} project row(s), {notes} coverage note(s) removed. \
+                 The next `index` rebuilds it from the tree.",
+                self.db_path.display(),
+                before.0,
+                before.1,
+                rows = removed.0,
+                notes = removed.1,
+            ))],
+            details: serde_json::json!({
+                "db_path": self.db_path.display().to_string(),
+                "project": project,
+                "nodes": before.0,
+                "edges": before.1,
+                "coverage_notes": removed.1,
+            }),
+            terminate: None,
+            is_error: false,
+        })
+    }
+
     pub(crate) fn action_explain_change(
         &self,
         params: &serde_json::Value,

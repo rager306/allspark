@@ -264,6 +264,38 @@ impl GraphStore {
         Ok(root)
     }
 
+    /// The project registered for `root`, if any.
+    ///
+    /// Keys are derived from a basename, and a collision forks that basename into
+    /// `name#digest`. The derivation therefore needs the table — and must find the row
+    /// that already describes this tree even when the BARE basename is free again.
+    /// Without that, dropping one of two same-named projects silently changes the
+    /// survivor's key back to the bare name, orphaning the rows it wrote under the fork.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    pub fn project_by_root(&self, root: &str) -> Result<Option<String>> {
+        let mut stmt = self.conn.prepare("SELECT name, root_path FROM projects")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let canonical = std::fs::canonicalize(root).ok();
+        let mut fallback = None;
+        for row in rows {
+            let (name, stored) = row?;
+            if stored == root {
+                return Ok(Some(name));
+            }
+            // A symlinked spelling of the same tree is the same project: the store
+            // compares that way everywhere else, so it does here too.
+            if fallback.is_none()
+                && canonical.is_some()
+                && std::fs::canonicalize(&stored).is_ok_and(|theirs| Some(theirs) == canonical)
+            {
+                fallback = Some(name);
+            }
+        }
+        Ok(fallback)
+    }
+
     /// List every registered project name.
     ///
     /// # Errors

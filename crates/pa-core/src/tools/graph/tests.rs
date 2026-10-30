@@ -53,6 +53,72 @@ async fn impact_explains_why_through_the_witness_path() {
     );
 }
 
+/// `forget` drops this project and only this project.
+///
+/// The reason the action was missing is the safety question: `delete_project` takes the
+/// project NAME, and two trees can share a basename. `project_key_in` forks the collision
+/// into `name#digest`, so the key this tool computes names exactly one tree — asserted
+/// here against a real second tree with the SAME directory name.
+#[tokio::test]
+async fn forget_drops_one_project_and_leaves_a_same_named_sibling_alone() {
+    let outer = tempfile::tempdir().unwrap();
+    let first = outer.path().join("a/checkout");
+    let second = outer.path().join("b/checkout");
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::create_dir_all(&second).unwrap();
+    std::fs::write(first.join("one.rs"), "pub fn alpha() {}\n").unwrap();
+    std::fs::write(second.join("two.rs"), "pub fn beta() {}\n").unwrap();
+    // ONE database for both trees: that is what makes the basenames collide.
+    let db = outer.path().join("graph.db");
+    let first_tool = GraphTool::new(db.clone(), first);
+    let second_tool = GraphTool::new(db, second);
+    for tool in [&first_tool, &second_tool] {
+        tool.dispatch(&serde_json::json!({ "action": "index" }))
+            .unwrap();
+    }
+    let second_before = second_tool
+        .dispatch(&serde_json::json!({ "action": "status" }))
+        .unwrap();
+    assert!(
+        second_before.details["nodes"].as_u64().unwrap_or(0) > 0,
+        "the sibling must be indexed: {:?}",
+        second_before.details
+    );
+
+    let forgotten = first_tool
+        .dispatch(&serde_json::json!({ "action": "forget" }))
+        .unwrap();
+    assert!(
+        !forgotten.is_error,
+        "forget must succeed: {}",
+        text_of(&forgotten)
+    );
+    assert!(
+        forgotten.details["nodes"].as_u64().unwrap_or(0) > 0,
+        "it must report what it removed: {:?}",
+        forgotten.details
+    );
+    // THIS tree is gone...
+    let first_after = first_tool
+        .dispatch(&serde_json::json!({ "action": "status" }))
+        .unwrap();
+    assert_eq!(
+        first_after.details["nodes"].as_u64(),
+        Some(0),
+        "the forgotten project has no nodes: {:?}",
+        first_after.details
+    );
+    // ...and the same-named sibling in another tree is untouched.
+    let second_after = second_tool
+        .dispatch(&serde_json::json!({ "action": "status" }))
+        .unwrap();
+    assert_eq!(
+        second_after.details["nodes"], second_before.details["nodes"],
+        "a same-named project in another tree must survive: {:?}",
+        second_after.details
+    );
+}
+
 fn tool(dir: &std::path::Path) -> GraphTool {
     GraphTool::new(dir.join("graph.db"), dir.to_path_buf())
 }

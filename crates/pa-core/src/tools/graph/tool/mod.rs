@@ -387,6 +387,7 @@ impl GraphTool {
             "explain_change" | "explain-change" | "explainChange" => {
                 self.action_explain_change(params)
             }
+            "forget" => self.action_forget(params),
             other => {
                 // Derived, never hand-listed: this text had drifted twice — it named no
                 // `context`, `impact` or `explain_change` while all three worked, because a

@@ -251,6 +251,14 @@ pub(crate) fn project_name(root: &std::path::Path) -> String {
 /// The digest is over the CANONICAL path, so a symlinked spelling of the same
 /// tree keeps one key (the same rule `register_project_at` compares by).
 pub fn project_key_in(store: &GraphStore, root: &std::path::Path) -> anyhow::Result<String> {
+    // A tree that is ALREADY registered keeps the key it was registered under. Deriving
+    // from the table's current contents made the key unstable: with `checkout` and
+    // `checkout#1a2b` both present, dropping the second made the first's basename free
+    // again, so the next call derived plain `checkout` and left its own rows behind under
+    // the old key. Reading the existing row first is what makes the key an identity.
+    if let Some(existing) = store.project_by_root(&root.to_string_lossy())? {
+        return Ok(existing);
+    }
     let base = root
         .file_name()
         .and_then(|name| name.to_str())
