@@ -593,7 +593,15 @@ class SettingsHaveConsumers(Check):
             rel = shared.rel(path)
             if not rel.startswith("crates/"):
                 continue
-            if rel.startswith("crates/pa-core/src/settings/"):
+            # Only the DECLARATION and the accessors themselves are excluded -- not the
+            # whole settings module. The accessors moved to `settings/manager_parts/` on
+            # 2026-10-30 (a 2 091-line file split by domain), and excluding the directory
+            # made every accessor disappear from the corpus: seven fields instantly looked
+            # unconsumed when nothing about their consumption had changed. The rule the
+            # check exists for is "declared in types.rs, read by someone else".
+            if rel.startswith("crates/pa-core/src/settings/types"):
+                continue
+            if rel.startswith("crates/pa-core/src/settings/manager"):
                 continue
             corpus.append(shared.text(path))
         # ONE pass builds the set of accessed names; every field is then an O(1) lookup.
@@ -650,7 +658,31 @@ class SettingsHaveConsumers(Check):
             # accessor block split rides the module's uniform 4-space `pub fn`
             # layout; a name is only credited when it is actually referenced
             # outside, so an accessor no one calls still reports.
-            manager = ctx.read("crates/pa-core/src/settings/manager.rs") or ""
+            # The accessor BODIES live in `settings/manager_parts/` since the 2 091-line
+            # manager was split by domain (2026-10-30). Reading only `manager.rs` lost
+            # every moved body, so mediated reads (`get_image_model` -> the
+            # `provider_backup_model` field) stopped being credited and seven fields
+            # looked unconsumed. Concatenated, not merged: the block split below only
+            # needs the `fn name(` boundaries in one string.
+            manager = "\n".join(
+                ctx.read(rel) or ""
+                for rel in (
+                    ["crates/pa-core/src/settings/manager.rs"]
+                    + sorted(
+                        "crates/pa-core/src/settings/manager_parts/" + name
+                        for name in (
+                            "core.rs",
+                            "defaults.rs",
+                            "jev.rs",
+                            "onboarding.rs",
+                            "runtime.rs",
+                            "telemetry.rs",
+                            "tools.rs",
+                            "ui.rs",
+                        )
+                    )
+                )
+            )
             mediated: set[str] = set()
             blocks = re_module.split(r"\n    (?:pub )?fn ", manager)
             for block in blocks:
