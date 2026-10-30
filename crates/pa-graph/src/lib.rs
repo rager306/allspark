@@ -161,6 +161,7 @@ pub mod witness_cache;
 pub mod cypher;
 pub mod mcp_brain;
 pub mod observation_masking;
+pub mod pattern;
 pub mod prometheus_metrics;
 pub mod scoped_context;
 
@@ -259,6 +260,7 @@ pub use mcp_brain::{BrainEntry, BrainHit, BrainPartition, DriftFinding, SharedBr
 pub use observation_masking::{
     truncate_result, Content, MaskedMessages, Message, ObservationMasker, Role,
 };
+pub use pattern::{search_pattern, PatternHit, PatternReport, PatternSearch};
 pub use prometheus_metrics::{
     Counter, CounterHandle, Gauge, GaugeHandle, Health, HealthStatus, Histogram, HistogramHandle,
     MetricKind, MetricsRegistry, Readiness, DEFAULT_BUCKETS,

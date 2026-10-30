@@ -427,6 +427,13 @@ pub const SEARCH_MAX_POOL: usize = 512;
 /// Most results one search may return.
 pub const SEARCH_MAX_LIMIT: usize = 200;
 
+/// Most matches one structural (`pattern`) scan returns, and its default.
+///
+/// A structural pattern is broader than a text query by nature (`$A.foo($$$)` matches
+/// every call site of one method), and each hit is a whole source snippet, so the ceiling
+/// is the same as `search`'s: a model-facing knob needs a bound it cannot raise.
+pub const PATTERN_DEFAULT_LIMIT: usize = SEARCH_MAX_LIMIT;
+
 /// Read `candidate_multiplier` as a pool factor, clamped so `limit * multiplier` fits.
 ///
 /// The multiplier is model-controlled and sizes real work, so it is clamped rather than

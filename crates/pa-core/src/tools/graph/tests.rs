@@ -53,6 +53,46 @@ async fn impact_explains_why_through_the_witness_path() {
     );
 }
 
+/// `pattern` reaches ast-grep: a metavariable match regex cannot express.
+///
+/// `$A.unwrap()` is structural — `$A` binds any receiver — so a regex would need to
+/// know the receiver's grammar. This is the capability `pa-ast` carried with no caller.
+#[tokio::test]
+async fn pattern_finds_structural_matches_a_regex_cannot() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("lib.rs"),
+        "pub fn a() -> u32 {\n    let x: Option<u32> = None;\n    x.unwrap_or(0)\n}\n\
+         pub fn b() {\n    let y: Option<u32> = None;\n    y.unwrap();\n}\n",
+    )
+    .unwrap();
+    let tool = tool(dir.path());
+    let result = tool
+        .dispatch(&serde_json::json!({
+            "action": "pattern",
+            "pattern": "$RECV.unwrap()",
+            "lang": "rust",
+        }))
+        .unwrap();
+    assert!(!result.is_error, "pattern failed: {}", text_of(&result));
+    let hits = result.details["matches"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        hits.len(),
+        1,
+        "`unwrap_or(0)` must not match `$RECV.unwrap()`; got {hits:?} in {}",
+        text_of(&result)
+    );
+    assert_eq!(hits[0]["line"].as_u64(), Some(8), "line 8 is `y.unwrap()`");
+    assert!(
+        result.details["scanned_files"].as_u64().unwrap_or(0) >= 1,
+        "the report must say what it scanned, not only what it found: {:?}",
+        result.details
+    );
+}
+
 /// `forget` drops this project and only this project.
 ///
 /// The reason the action was missing is the safety question: `delete_project` takes the
@@ -1083,14 +1123,17 @@ fn the_schema_names_the_parameters_the_actions_read() {
             "edge_types",
             "extensions",
             "force",
+            "glob",
             "id",
             "index_depth",
             "label",
+            "lang",
             "lease_wait",
             "limit",
             "max_file_bytes",
             "mmr",
             "path",
+            "pattern",
             "query",
             "ref_a",
             "ref_b",

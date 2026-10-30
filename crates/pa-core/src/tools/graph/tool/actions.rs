@@ -5,7 +5,7 @@ use crate::tools::graph::args::{
     parse_candidate_multiplier, parse_confidence_floor, parse_direction, parse_edge_types,
     parse_labels, parse_mmr, parse_respect_gitignore, render_counts, render_file_tree,
     render_hit_line, string_field, unmatched_note, with_effective_ignore, IndexScope,
-    SEARCH_MAX_LIMIT,
+    PATTERN_DEFAULT_LIMIT, SEARCH_MAX_LIMIT,
 };
 use crate::tools::graph::build::{build_evidence_pack, build_impact, project_name};
 use crate::tools::graph::reports::{
@@ -827,6 +827,95 @@ impl GraphTool {
     /// The review's §9 lists it among four task-oriented actions and every part already
     /// existed separately. Composition, not a new traversal: an agent asking this question
     /// should not have to call `impact`, `adr` and `search` and merge them.
+    /// Structural search with ast-grep: `pattern`.
+    ///
+    /// Regex cannot answer `$A.foo($$$)` — that is what a structural match is for — so
+    /// this is the one search shape `search` cannot stand in for. The engine lives in
+    /// `pa-graph` (which already depends on `pa-ast` for symbol extraction) and this
+    /// action is the caller that layer never had.
+    pub(crate) fn action_pattern(
+        &self,
+        params: &serde_json::Value,
+    ) -> anyhow::Result<AgentToolResult> {
+        let pattern = params
+            .get("pattern")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|pattern| !pattern.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("pattern requires a non-empty `pattern`"))?
+            .to_string();
+        let root = self.resolve_root(params);
+        // `path` narrows to one file or subtree; `glob` (default `**/*`) shapes the walk.
+        let glob = params
+            .get("glob")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|glob| !glob.is_empty())
+            .map(str::to_string);
+        let lang = params
+            .get("lang")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let limit = params
+            .get("limit")
+            .and_then(serde_json::Value::as_u64)
+            .map_or(PATTERN_DEFAULT_LIMIT, |limit| {
+                usize::try_from(limit).unwrap_or(PATTERN_DEFAULT_LIMIT)
+            });
+        let search = pa_graph::PatternSearch {
+            pattern: pattern.clone(),
+            glob,
+            lang,
+            limit,
+        };
+        let report =
+            pa_graph::search_pattern(&root, &search).map_err(|err| anyhow::anyhow!("{err}"))?;
+        let mut text = format!(
+            "{} structural match(es) for `{pattern}` in {} file(s) \
+             ({} skipped: unsupported language or unreadable).",
+            report.hits.len(),
+            report.scanned_files,
+            report.skipped_files,
+        );
+        if report.truncated {
+            use std::fmt::Write as _;
+            let _ = write!(text, " Stopped at the limit of {limit}.");
+        }
+        // Every answer carries the store's state on its last line; a structural scan
+        // reads the tree, not the store, so it does not need to.
+        if !report.hits.is_empty() {
+            text.push('\n');
+            text.push_str(
+                &report
+                    .hits
+                    .iter()
+                    .map(|hit| {
+                        format!(
+                            "{}:{}:{}: {}",
+                            hit.path,
+                            hit.line,
+                            hit.column,
+                            hit.text.lines().next().unwrap_or_default().trim()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+        }
+        Ok(AgentToolResult {
+            content: vec![pa_agent::types::ToolResultContent::text(text)],
+            details: serde_json::json!({
+                "pattern": pattern,
+                "matches": report.hits,
+                "scanned_files": report.scanned_files,
+                "skipped_files": report.skipped_files,
+                "truncated": report.truncated,
+            }),
+            terminate: None,
+            is_error: false,
+        })
+    }
+
     /// Drop one project from the store: `forget`.
     ///
     /// The store grew a project row per tree and had no way to drop one, so a database

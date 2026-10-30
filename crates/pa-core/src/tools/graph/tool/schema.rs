@@ -79,6 +79,10 @@ pub(crate) const ACCEPTED_PARAMS: &[(&str, &[&str])] = &[
     ("impact", &["path", "root", "symbol", "depth"]),
     ("explain_change", &["path", "root", "symbol", "depth"]),
     ("forget", &["path", "root"]),
+    (
+        "pattern",
+        &["path", "root", "pattern", "glob", "lang", "limit"],
+    ),
     ("coverage", &["path", "root"]),
     // `refA`/`refB` are the camelCase spellings the schema never documented;
     // they stay accepted so an existing caller does not break.
@@ -261,7 +265,8 @@ pub fn params_schema() -> serde_json::Value {
                     "verify",
                     "adr",
                     "context",
-                    "forget"
+                    "forget",
+                    "pattern"
                 ],
                 "description": "The graph operation to run. `context` assembles a bounded evidence pack for a question: ranked symbols with their CURRENT line placement (flagged when the index disagrees with the file), the call links between symbols that are both in the pack, and the graph's own coverage. Prefer it over search+trace+open when you need several related facts at once."
             },
@@ -301,6 +306,18 @@ pub fn params_schema() -> serde_json::Value {
             "query": {
                 "type": "string",
                 "description": "Symbol query for action=\"search\"."
+            },
+            "pattern": {
+                "type": "string",
+                "description": "Structural pattern for action=\"pattern\", in ast-grep syntax: `$A` binds one node, `$$$` binds any sequence, so `$RECV.unwrap()` matches every receiver. This is the one search shape the `query` text search cannot express."
+            },
+            "glob": {
+                "type": "string",
+                "description": "File glob for action=\"pattern\" (default \"**/*\")."
+            },
+            "lang": {
+                "type": "string",
+                "description": "Language for action=\"pattern\", overriding the extension guess (for example \"rust\" or \"python\")."
             },
             "symbol": {
                 "type": "string",
