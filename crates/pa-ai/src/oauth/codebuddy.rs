@@ -39,8 +39,6 @@ const LOGIN_EXPIRES_IN_SECS: u64 = 10 * 60;
 /// The endpoint contract says to poll every five seconds unless it starts
 /// returning an explicit interval.
 const DEFAULT_POLL_INTERVAL_MS: u64 = 5_000;
-/// The cooperative cancel flag ends the wait mid-sleep.
-const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// The lifetime assumed when the refresh endpoint omits `expiresIn`: the
 /// observed token lifetime (one year), so the credential is never treated as
 /// already-expired.
@@ -114,7 +112,7 @@ pub async fn login_codebuddy(
     let deadline = std::time::Instant::now() + Duration::from_secs(LOGIN_EXPIRES_IN_SECS);
     while std::time::Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        cancel_aware_sleep(ui, remaining.min(Duration::from_millis(interval_ms))).await?;
+        super::cancel_aware_sleep(ui, remaining.min(Duration::from_millis(interval_ms))).await?;
         if std::time::Instant::now() >= deadline {
             break;
         }
@@ -458,21 +456,6 @@ fn trusted_auth_url(raw: &str, state: &str) -> Result<String, String> {
         Ok(url.to_string())
     } else {
         Err("Untrusted auth URL in CodeBuddy OAuth response".to_string())
-    }
-}
-
-/// The cooperative cancel flag ends the wait mid-sleep.
-async fn cancel_aware_sleep(ui: &dyn OAuthLoginUi, total: Duration) -> Result<(), String> {
-    let deadline = std::time::Instant::now() + total;
-    loop {
-        if ui.is_cancelled() {
-            return Err(LOGIN_CANCELLED.to_string());
-        }
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            return Ok(());
-        }
-        tokio::time::sleep(remaining.min(CANCEL_POLL_INTERVAL)).await;
     }
 }
 

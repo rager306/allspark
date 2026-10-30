@@ -19,7 +19,6 @@ const USER_AGENT: &str = "gsk/1.18.34";
 pub const REQUEST_TIMEOUT_MS: u64 = 30_000;
 /// The cancel error the driving surface maps to the silent cancelled outcome.
 pub const LOGIN_CANCELLED: &str = "Login cancelled";
-const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GensparkCredentials {
@@ -70,7 +69,7 @@ pub async fn login_genspark(
 
     while std::time::Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        cancel_aware_sleep(ui, remaining.min(poll_interval)).await?;
+        super::cancel_aware_sleep(ui, remaining.min(poll_interval)).await?;
         if std::time::Instant::now() >= deadline {
             break;
         }
@@ -229,21 +228,6 @@ fn trusted_url(raw: &str) -> Result<String, String> {
         return Err("Untrusted auth URL in Genspark login response".to_string());
     }
     Ok(url.to_string())
-}
-
-/// The cooperative cancel flag ends the wait mid-sleep.
-async fn cancel_aware_sleep(ui: &dyn OAuthLoginUi, total: Duration) -> Result<(), String> {
-    let deadline = std::time::Instant::now() + total;
-    loop {
-        if ui.is_cancelled() {
-            return Err(LOGIN_CANCELLED.to_string());
-        }
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            return Ok(());
-        }
-        tokio::time::sleep(remaining.min(CANCEL_POLL_INTERVAL)).await;
-    }
 }
 
 #[cfg(test)]

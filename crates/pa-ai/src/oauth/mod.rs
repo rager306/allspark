@@ -16,6 +16,31 @@ mod provider_http;
 mod types;
 mod xai;
 
+/// Wait `total`, polling the login UI's cancel flag so a Ctrl-C ends the wait.
+///
+/// One copy for every OAuth flow: the fork's four providers (`Genspark`, `Muse`,
+/// `CodeBuddy`, `GitHub Copilot`) each carried an identical eleven-line version, and a
+/// change to the poll interval or the cancellation contract would have had to land four
+/// times.
+/// Poll interval shared by every OAuth wait (the four providers agreed on 250 ms).
+pub(crate) const CANCEL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+pub(crate) async fn cancel_aware_sleep(
+    ui: &dyn OAuthLoginUi,
+    total: std::time::Duration,
+) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + total;
+    loop {
+        if ui.is_cancelled() {
+            return Err(crate::oauth::LOGIN_CANCELLED.to_string());
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(());
+        }
+        tokio::time::sleep(remaining.min(CANCEL_POLL_INTERVAL)).await;
+    }
+}
+
 pub use anthropic::{
     login_anthropic, refresh_anthropic_token, AnthropicCredentials,
     LOGIN_CANCELLED as ANTHROPIC_LOGIN_CANCELLED,

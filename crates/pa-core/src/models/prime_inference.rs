@@ -6,13 +6,13 @@ use pa_types::JsNumber;
 pub const PRIME_INFERENCE_BASE_URL: &str = "https://api.pinference.ai/api/v1";
 
 /// Private ids: `internal/*`, `dev/*`, or any id containing `:`.
-#[must_use]
-pub fn is_private_prime_inference_model_id(model_id: &str) -> bool {
-    let normalized = model_id.to_lowercase();
-    normalized.starts_with("internal/")
-        || normalized.starts_with("dev/")
-        || normalized.contains(':')
-}
+///
+/// ONE implementation, in `pa-models` (the lower crate, which already owns the private
+/// route table). The fork carried a copy here that differed by one keyword —
+/// `to_lowercase()` where the other said `to_ascii_lowercase()` — so a non-ASCII id could
+/// get different answers from the catalog and from the resolver (review #21). Re-exported
+/// rather than duplicated: the call sites keep their path, the behaviour has one owner.
+pub use pa_models::prime_inference::is_private_prime_inference_model_id;
 
 #[must_use]
 pub fn is_private_prime_inference_model(model: &Model) -> bool {

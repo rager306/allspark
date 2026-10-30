@@ -278,7 +278,12 @@ impl SettingsManager {
             .unwrap_or(false)
     }
 
-    pub fn record_model_use(&mut self, provider: &str, model: &str) {
+    /// Append a model to `recentModels`.
+    ///
+    /// Private: its only caller is [`Self::set_default_model_and_provider`], which also
+    /// persists the field. A `pub` method here invited callers to record a use without
+    /// saving it, leaving `pending_global_fields` set for the next save to flush.
+    fn record_model_use(&mut self, provider: &str, model: &str) {
         let key = format!("{provider}/{model}");
         let mut recent: Vec<String> = vec![key];
         for existing in self.global.recent_models.iter().flatten() {
@@ -398,14 +403,6 @@ impl SettingsManager {
     pub fn set_onboarding_shown(&mut self, shown: bool) -> Result<()> {
         self.global.onboarding_shown = Some(shown);
         self.save_global(&["onboardingShown"])
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error when the global settings file cannot be written.
-    pub fn set_onboarding_completed(&mut self, completed: bool) -> Result<()> {
-        self.global.onboarding_completed = Some(completed);
-        self.save_global(&["onboardingCompleted"])
     }
 
     /// The shown flag with the legacy completed flag as fallback.
