@@ -30,6 +30,14 @@ The edit engine: five modes over one session, staging, and preview machinery.
 
 ## Consumers
 
-`pa-core::tools::edit_hybrid` is the tool surface; the kernel-side `edit` skill
-(`skills/edit/`) duplicates a slice of `replace` and must match its line-ending
-contract.
+`crate::tool::EditHybridTool` is the tool surface (moved here from
+`pa-core::tools::edit_hybrid`, which no longer exists); the kernel-side `edit`
+skill (`skills/edit/`) duplicates a slice of `replace` and must match its
+line-ending contract.
+
+## Not wired
+
+The `hashline` machinery is complete, but nothing in production mints a tag:
+`EditStore::record_file` — the reader that would — has no caller, so the model
+gets its first tag from a rejection message, and the seen-lines guard (which
+needs a recorded read) stays dormant.

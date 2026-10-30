@@ -32,11 +32,22 @@ A symbol is addressed by a `Class/method` name path (`symbol`) or a 1-based
 - **Diagnostics are attributed to symbols**, not just files, and the ledger
   reports only the diagnostics a change introduced.
 
-## Mux
+## Server table
+
+Six servers are wired: `rust-analyzer`, `typescript-language-server`, `gopls`,
+`pyright-langserver`, `clangd`, `bash-language-server`. The matrix that scoped
+this crate targeted 57; the rest are unported, so a file in another language
+gets "no language server is configured" rather than a wrong one.
+
+## Mux (built, not wired)
 
 `mux.rs` (Unix only) brokers one language server per project over a Unix socket,
 keyed by a hash of the exact spawn parameters, so two sessions in the same
 project share one `rust-analyzer` instead of fighting over the index.
+
+**It is not connected.** `LspMux::daemon`/`acquire` have no caller outside
+`mux.rs`'s own tests, and `LspManager` spawns per session instead. Treat the
+mux as an available mechanism, not a current guarantee.
 
 ## Consumers
 

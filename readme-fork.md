@@ -40,13 +40,13 @@ Unstamped builds report `dev`. Two binaries are told apart by this id.
 
 | Crate | Tests | What it is |
 |---|---|---|
-| `crates/pa-lsp` | 143 | LSP client (async-lsp), 57-server table, name_path addressing, symbol layer (overview/find_symbol/references/implementations/replace_symbol_body/safe_delete), SymbolBody, writethrough, inline/deferred diagnostics split, freshness gate, workspace diagnostics, Unix-socket mux |
-| `crates/pa-graph` | 466 | on-disk SQLite code graph + FTS5 + BM25/RRF/MMR search, closure-repair (surface-hash), delta machinery, MinHash+LSH, 11-signal similarity, memory primitives (witness receipts, TARL ledger, ADR store, PDX layout), scoped context shards, read-only Cypher subset, Prometheus metrics, min-cut/condensation/decompiler/beam/SPANN |
-| `crates/pa-edit` | 349 | the edit engine: replace/patch/apply_patch/hashline/sloppy modes, snapshot tags, seen-lines guard, no-op loop limit, streaming session (ported from pi-edit without `unsafe`) |
-| `crates/pa-mem` | 126 | pogocache RAM-layout primitives: sharded map, Robin Hood, 48-bit ptr buckets, entry arena, spinlock, refcount snapshots, block-LZ4 snapshots, build SHA cache; quantization: int8, RaBitQ 1-bit, multi-bit, block-4-bit, matryoshka prefixes, MaxSim |
-| `crates/pa-ast` | 97 | tree-sitter + ast-grep parsing layer (vendored `tree-sitter-go` for Go 1.26 `new(expr)`) |
-| `crates/pa-diff` | 8 | jsdiff-compatible Myers diff, zero dependencies |
-| `crates/pa-jev` | 22 | Jev (TypeSafe System One) decision layer: wire types for the `choice`/`score`/`noul` primitives with tolerant decode, a client with question chunking (<=4 in flight, first-failing chunk aborts siblings), retries and a 10s timeout; the `pa-core::jev` Judge/ChainJudge adds the native-only chain rule, a 5-minute cooldown on account rejections and an in-memory answer cache |
+| `crates/pa-lsp` | 158 | LSP client (async-lsp), 6-server table (rust-analyzer, typescript, gopls, pyright, clangd, bash), name_path addressing, symbol layer (overview/find_symbol/references/implementations/replace_symbol_body/safe_delete), SymbolBody, writethrough, inline/deferred diagnostics split, freshness gate, workspace diagnostics; the Unix-socket mux (`mux.rs`) is built and tested but not wired into the manager |
+| `crates/pa-graph` | 578 | on-disk SQLite code graph + FTS5 + BM25/RRF/MMR search, closure-repair (surface-hash), delta machinery, MinHash+LSH, 11-signal similarity, memory primitives (witness receipts, TARL ledger, ADR store, PDX layout), scoped context shards, read-only Cypher subset, Prometheus metrics, min-cut/condensation/decompiler/beam/SPANN |
+| `crates/pa-edit` | 368 | the edit engine: replace/patch/apply_patch/hashline/sloppy modes, snapshot tags, seen-lines guard, no-op loop limit, streaming session (ported from pi-edit without `unsafe`). The guard machinery is complete, but nothing mints the FIRST tag: `EditStore::record_file` (the reader that would) has no production caller, so the native tool relies on the tag a rejection reports and the seen-lines guard stays dormant |
+| `crates/pa-mem` | 133 | pogocache RAM-layout primitives: sharded map, Robin Hood, 48-bit ptr buckets, entry arena, spinlock, refcount snapshots, block-LZ4 snapshots, build SHA cache; quantization: int8, RaBitQ 1-bit, multi-bit, block-4-bit, matryoshka prefixes, MaxSim |
+| `crates/pa-ast` | 97 | tree-sitter parsing (vendored `tree-sitter-go` for Go 1.26 `new(expr)`) plus an ast-grep structural-search layer (`ops.rs`) that is built and tested but not connected to any tool: 11 of its 13 entry points have no caller outside the crate |
+| `crates/pa-diff` | 12 | jsdiff-compatible Myers diff, zero dependencies |
+| `crates/pa-jev` | 27 | Jev (TypeSafe System One) decision layer: wire types for the `choice`/`score`/`noul` primitives with tolerant decode, a client with question chunking (<=4 in flight, first-failing chunk aborts siblings), retries and a 10s timeout; the `pa-core::jev` Judge/ChainJudge adds the native-only chain rule, a 5-minute cooldown on account rejections and an in-memory answer cache |
 
 ## 4. Engine integrations (fork tools in every session)
 

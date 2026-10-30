@@ -1,17 +1,7 @@
 //! Snapshot-tag mismatch diagnostics.
 
-use std::sync::LazyLock;
-
-use regex::Regex;
-
-use super::{
-    format::HL_FILE_HASH_EXAMPLES,
-    messages::{format_anchored_context, json_quote},
-};
+use super::messages::format_anchored_context;
 use crate::error::EditError;
-
-static LINE_REF_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\s*[>+\-*]*\s*(\d+)(?::.*)?\s*$").expect("valid regex"));
 
 /// Context needed to explain a stale or unrecognized snapshot tag.
 pub struct MismatchDetails {
@@ -26,51 +16,6 @@ pub struct MismatchDetails {
     /// different file in the same session — e.g. a worktree lane that pasted a
     /// parent-checkout tag into its own (correctly) relative header.
     pub tag_origin_paths: Vec<String>,
-}
-
-/// Format the required shape of a tagged line anchor.
-pub fn format_full_anchor_requirement(raw: Option<&str>) -> String {
-    let received = raw.map_or_else(String::new, |value| {
-        format!(" Received {}.", json_quote(value))
-    });
-    format!(
-        "a bare line number from the file plus the section header content-hash tag (for \
-		 example [src/foo.ts#{}] and line \"160\"){received}",
-        HL_FILE_HASH_EXAMPLES[0]
-    )
-}
-
-/// Parse a decorated bare line-number reference.
-pub fn parse_tag(reference: &str) -> Result<u32, EditError> {
-    let Some(captures) = LINE_REF_RE.captures(reference) else {
-        return Err(EditError::parse(format!(
-            "Invalid line reference. Expected {}.",
-            format_full_anchor_requirement(Some(reference))
-        )));
-    };
-    let line = captures[1].parse::<u32>().map_err(|_| {
-        EditError::parse(format!(
-            "Invalid line reference. Expected {}.",
-            format_full_anchor_requirement(Some(reference))
-        ))
-    })?;
-    if line < 1 {
-        return Err(EditError::parse(format!(
-            "Line number must be >= 1, got {line} in \"{reference}\"."
-        )));
-    }
-    Ok(line)
-}
-
-/// Validate that a line reference exists in the target.
-pub fn validate_line_ref(line: u32, file_lines: &[String]) -> Result<(), EditError> {
-    if line < 1 || usize::try_from(line).map_or(true, |line| line > file_lines.len()) {
-        return Err(EditError::matched(format!(
-            "Line {line} does not exist (file has {} lines)",
-            file_lines.len()
-        )));
-    }
-    Ok(())
 }
 
 /// Format the complete model-facing snapshot mismatch diagnostic.
