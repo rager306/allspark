@@ -290,9 +290,7 @@ async fn eviction_shuts_the_server_down_cleanly() {
     // Shut THIS client down and learn how its server ended. A `shutdown`/`exit` handshake
     // ends it with status 0; without one the process dies with its stdin or is killed, and
     // `wait_exit` returns a non-zero status or times out — the defect #46 names.
-    let exited = manager
-        .shutdown_for_and_report(&dir.path().join("a.ts"))
-        .await;
+    let exited = manager.shutdown_for(&dir.path().join("a.ts")).await;
     match exited {
         None => panic!("no live client was registered, so nothing was shut down"),
         Some(None) => panic!("the server did not exit after shutdown (no handshake)"),
@@ -302,8 +300,6 @@ async fn eviction_shuts_the_server_down_cleanly() {
         ),
     }
     // Idempotent: the roster is already empty for this key.
-    let _ = manager
-        .shutdown_for_and_report(&dir.path().join("a.ts"))
-        .await;
+    let _ = manager.shutdown_for(&dir.path().join("a.ts")).await;
     manager.shutdown_all().await;
 }

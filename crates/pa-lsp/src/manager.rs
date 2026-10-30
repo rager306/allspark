@@ -449,27 +449,6 @@ impl LspManager {
         self.clients.read().await.values().next().map(Arc::clone)
     }
 
-    /// Shut the client for `path` down and report how its server exited.
-    ///
-    /// The observable half of review #46: a `shutdown`/`exit` handshake ends the server with
-    /// status 0, while a client dropped without it dies with its stdin or is killed. Returns
-    /// `None` when no client was registered — "never started" and "shut down cleanly" must
-    /// not look the same, which is the shape a shallow test hides in.
-    pub async fn shutdown_for_and_report(
-        &self,
-        path: &Path,
-    ) -> Option<Option<std::process::ExitStatus>> {
-        let server = server_for_path(path)?;
-        let root = canonical_root(path, server).ok()?;
-        let key = (server.name.to_string(), root);
-        let client = {
-            let mut guard = self.clients.write().await;
-            guard.remove(&key)
-        }?;
-        client.shutdown().await;
-        Some(client.wait_exit().await)
-    }
-
     /// The current client roster, ordered by server then root for stable output.
     pub async fn status(&self) -> Vec<ServerStatus> {
         let guard = self.clients.read().await;
@@ -608,13 +587,9 @@ impl LspManager {
     /// `shutdown`/`exit` handshake and no `didClose` for the documents the client opened.
     /// A server that keeps a disk cache or writes a log at exit therefore sees a crash,
     /// not a close (review #46).
-    pub async fn shutdown_for(&self, path: &Path) {
-        let Some(server) = server_for_path(path) else {
-            return;
-        };
-        let Ok(root) = canonical_root(path, server) else {
-            return;
-        };
+    pub async fn shutdown_for(&self, path: &Path) -> Option<Option<std::process::ExitStatus>> {
+        let server = server_for_path(path)?;
+        let root = canonical_root(path, server).ok()?;
         let key = (server.name.to_string(), root);
         // Take the client out under the lock, release it, then shut down: the handshake
         // awaits, and holding the roster write lock across it would stall every other
@@ -622,10 +597,31 @@ impl LspManager {
         let client = {
             let mut guard = self.clients.write().await;
             guard.remove(&key)
-        };
-        if let Some(client) = client {
-            client.shutdown().await;
+        }?;
+        let status = self.shut_down(&client).await;
+        Some(status)
+    }
+
+    /// Run the handshake on `client` and report how its server exited.
+    ///
+    /// Shared by both eviction paths so the "a server that will not exit is a defect"
+    /// rule lives in one place. Returns `None` when the server did not exit within the
+    /// grace period.
+    async fn shut_down(&self, client: &LspClient) -> Option<std::process::ExitStatus> {
+        client.shutdown().await;
+        let status = client.wait_exit().await;
+        match status {
+            Some(status) if status.success() => {}
+            Some(status) => tracing::warn!(
+                target: "pa_lsp",
+                "language server exited with {status} after shutdown; it may not have flushed state"
+            ),
+            None => tracing::warn!(
+                target: "pa_lsp",
+                "language server did not exit within the grace period after shutdown"
+            ),
         }
+        status
     }
 
     /// Shut every client down cleanly, then empty the roster.
@@ -637,7 +633,7 @@ impl LspManager {
             guard.drain().map(|(_, client)| client).collect()
         };
         for client in clients {
-            client.shutdown().await;
+            self.shut_down(&client).await;
         }
     }
 }
