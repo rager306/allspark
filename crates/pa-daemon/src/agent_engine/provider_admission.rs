@@ -1653,7 +1653,9 @@ impl AdmissionClient {
                 if let StreamOutcome::RateLimited(reason) = outcome {
                     command["reason"] = serde_json::json!(reason.as_wire());
                 }
-                let _ = self.call(link, worker_token, command).await;
+                let _ = self
+                    .call_within(link, command, request_budget("settle_stream"))
+                    .await;
             }
         }
     }
@@ -1665,10 +1667,10 @@ impl AdmissionClient {
             AdmissionClient::Local(registry) => registry.release(lease),
             AdmissionClient::Link { link, worker_token } => {
                 let _ = self
-                    .call(
+                    .call_within(
                         link,
-                        worker_token,
                         lease_command(worker_token, "release_stream", lease),
+                        request_budget("release_stream"),
                     )
                     .await;
             }
@@ -1697,7 +1699,23 @@ impl AdmissionClient {
         _worker_token: &str,
         command: serde_json::Value,
     ) -> Option<serde_json::Value> {
-        let response = link.request(command, ADMISSION_REQUEST_BUDGET).await.ok()?;
+        let action = command
+            .get("action")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        self.call_within(link, command, request_budget(&action))
+            .await
+    }
+
+    /// [`Self::call`] with an explicit deadline, for actions that never wait in a queue.
+    async fn call_within(
+        &self,
+        link: &Arc<SupervisorLink>,
+        command: serde_json::Value,
+        budget: Duration,
+    ) -> Option<serde_json::Value> {
+        let response = link.request(command, budget).await.ok()?;
         if !response.success {
             return None;
         }
@@ -1716,6 +1734,32 @@ const LOCAL_HOLDER: &str = "local";
 /// link dead and the lease orphans (finding #4: 30s vs 600s minted
 /// orphans on every deep-queue spawn).
 const ADMISSION_REQUEST_BUDGET: Duration = Duration::from_secs(605);
+
+/// The deadline for a settle/release round trip.
+///
+/// Those actions only mutate counters — there is no queue to wait in — so inheriting the
+/// 605-second acquire budget meant a wedged supervisor link held a worker's settle for ten
+/// minutes while the lease it was settling stayed in flight (review #38). 10 s is ~1000x
+/// the measured round trip and far under any retry deadline. Failure is handled the way
+/// these callers already expect: `call_within` returns `None`, the settle is dropped, and
+/// the supervisor's holder reaping covers the lease.
+const MUTATION_REQUEST_BUDGET: Duration = Duration::from_secs(10);
+
+/// The deadline one admission action gets.
+///
+/// A single owner for the rule: `acquire_stream`/`spawn_gate` may wait in the supervisor's
+/// queue, everything else only mutates counters. Written as a match so a new action must
+/// be classified, and testable without a fake supervisor link (review #38).
+fn request_budget(action: &str) -> Duration {
+    match action {
+        // Only these two may park in the supervisor's FIFO for up to ACQUIRE_BUDGET.
+        "acquire_stream" | "spawn_gate" => ADMISSION_REQUEST_BUDGET,
+        // Settle and release only mutate counters; `snapshot` reads them. An UNKNOWN
+        // action is refused by the supervisor, so waiting ten minutes for that refusal is
+        // pure latency — the short budget is right for it too.
+        _ => MUTATION_REQUEST_BUDGET,
+    }
+}
 
 /// The wire body of one admission request.
 fn admission_command(

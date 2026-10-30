@@ -1700,3 +1700,35 @@ async fn a_full_admission_queue_refuses_instead_of_growing() {
         handle.abort();
     }
 }
+
+/// Review #38: the budget is chosen by ACTION, and only the queueing actions get the long one.
+///
+/// The first version of this test compared the two constants, which is a test of a literal —
+/// it would pass just as happily if `settle` used the acquire budget at runtime. This one
+/// asserts the rule that actually routes: `request_budget(action)`.
+#[test]
+fn only_queueing_actions_get_the_ten_minute_budget() {
+    for action in [
+        "settle_stream",
+        "release_stream",
+        "snapshot",
+        "not_an_action",
+    ] {
+        assert_eq!(
+            request_budget(action),
+            MUTATION_REQUEST_BUDGET,
+            "{action} never waits in a queue, so it must not inherit the acquire budget"
+        );
+    }
+    for action in ["acquire_stream", "spawn_gate"] {
+        assert_eq!(
+            request_budget(action),
+            ADMISSION_REQUEST_BUDGET,
+            "{action} may wait in the supervisor's FIFO, so it needs the full budget"
+        );
+    }
+    assert!(
+        request_budget("settle_stream") * 10 < request_budget("acquire_stream"),
+        "the gap must be an order of magnitude, or the split buys nothing"
+    );
+}
