@@ -978,11 +978,10 @@ mod tests {
     #[tokio::test]
     async fn a_long_read_names_the_rows_it_elided() {
         let dir = tempfile::tempdir().unwrap();
-        let body: String =
-            (1..=READ_MAX_ROWS + 500).fold(String::new(), |mut acc, n| {
-                let _ = std::fmt::Write::write_fmt(&mut acc, format_args!("row{n}\n"));
-                acc
-            });
+        let body: String = (1..=READ_MAX_ROWS + 500).fold(String::new(), |mut acc, n| {
+            let _ = std::fmt::Write::write_fmt(&mut acc, format_args!("row{n}\n"));
+            acc
+        });
         std::fs::write(dir.path().join("big.txt"), &body).unwrap();
         let tool = tool_for(dir.path(), EditMode::Hashline, all_modes());
         let read = call(
