@@ -290,12 +290,6 @@ impl TraceOptions {
         self
     }
 
-    /// Restrict traversal to specific edge types.
-    #[must_use]
-    pub fn with_edge_types(mut self, types: Vec<EdgeType>) -> Self {
-        self.edge_types = types;
-        self
-    }
 
     /// Cap the witness text held at once, or leave it unbounded.
     #[must_use]

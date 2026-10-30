@@ -107,14 +107,6 @@ impl CoherencePolicy {
         Self::default()
     }
 
-    /// Set the intensity weights.
-    #[must_use]
-    pub fn with_weights(mut self, alpha: f64, beta: f64, gamma: f64) -> Self {
-        self.alpha = alpha;
-        self.beta = beta;
-        self.gamma = gamma;
-        self
-    }
 
     /// Set the merge threshold (clamped to `[0, 1]`).
     #[must_use]

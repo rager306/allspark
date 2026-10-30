@@ -98,12 +98,6 @@ impl QualityMonitor {
         Self::default()
     }
 
-    /// Set the recall floor.
-    #[must_use]
-    pub fn with_recall_floor(mut self, floor: f32) -> Self {
-        self.recall_floor = floor;
-        self
-    }
 
     /// The recall floor.
     #[must_use]
