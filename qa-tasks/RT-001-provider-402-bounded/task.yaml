@@ -33,7 +33,11 @@ oracle:
 must_not:
   - tool: bash
     args_regex: (curl|wget|pip install)
-max_repeat_calls: 0
+# The task is about a BOUNDED retry ladder, so identical retries are expected up to
+# the ladder's own budget; beyond that it is a storm. `0` used to mean "disabled" in
+# the runner, which silently removed the loop guard from the task that needs it most
+# (review #52).
+max_repeat_calls: 4
 # Level-2 log invariants (scripts/qa/qa_logs.py). The task's whole point is a
 # BOUNDED retry ladder for a wallet-drain status: the request-timing log makes
 # the ladder observable per request (the transcript only shows the final

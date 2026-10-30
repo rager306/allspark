@@ -395,6 +395,13 @@ elif [[ "$ran" -ne "$units" ]]; then
   echo "tests: $ran of $units units reported a verdict — the fleet lost units"
   grep -E '^FAIL' "$OUT/tests/summary.log" | head -5
   fail=1
+elif [[ "$ran_ok" -eq 0 ]]; then
+  # A degenerate run: every unit skipped. Before this, the line below reported "all N
+  # units green (0 ok, N skipped)", which is the same sentence a healthy run prints
+  # (review #53). A gate whose every unit is skipped has proved nothing, so it must be
+  # RED — the one shape where "green" and "did nothing" were indistinguishable.
+  echo "tests: DEGENERATE — all $units units skipped, 0 ran; the gate proved nothing"
+  fail=1
 else
   echo "tests: all $units units green ($ran_ok ok, $ran_skip skipped)"
 fi

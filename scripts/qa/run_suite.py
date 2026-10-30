@@ -93,6 +93,11 @@ LOG_ENV = {
 # ---------------------------------------------------------------------------
 
 
+# Identical calls beyond this count are a loop. 3 admits a legitimate re-read
+# (retry after a transient failure) and catches a storm; a task may raise or lower
+# it explicitly, but `0` is not "off" — see `max_repeat_calls` (review #52).
+DEFAULT_MAX_REPEAT_CALLS = 3
+
 class MiniYamlError(ValueError):
     pass
 
@@ -424,7 +429,13 @@ class Task:
         self.oracle = spec.get("oracle", {}) or {}
         self.must = spec.get("must", []) or []
         self.must_not = spec.get("must_not", []) or []
-        self.max_repeat = int(spec.get("max_repeat_calls", 0) or 0)
+        # 0 or unset means DEFAULT_MAX_REPEAT_CALLS, never "disabled": an
+        # identical-call loop is the failure mode this guard exists for, and a task
+        # that wrote `0` (meaning "no repeats") silently disabled it (review #52).
+        raw_repeat = spec.get("max_repeat_calls", None)
+        self.max_repeat = (
+            DEFAULT_MAX_REPEAT_CALLS if raw_repeat is None else int(raw_repeat)
+        )
         self.secrets_env = spec.get("secrets_env", {}) or {}
         self.hostile_env = spec.get("hostile_env", {}) or {}
         self.env = spec.get("env", {}) or {}
@@ -1785,6 +1796,11 @@ def main() -> int:
     parser.add_argument("--keep", action="store_true", help="keep trial sandboxes for inspection")
     parser.add_argument("--strict", action="store_true",
                         help="exit 1 when any task fails (without --baseline)")
+    parser.add_argument(
+        "--allow-all-skip",
+        action="store_true",
+        help="exit 0 even when every task was skipped (a lane that cannot run here)",
+    )
     parser.add_argument("--list", action="store_true", help="list tasks and exit")
     args = parser.parse_args()
     if args.trials < 1:
@@ -1956,6 +1972,17 @@ def main() -> int:
         if tripped:
             return 1
     if args.strict and any(t["status"] == "fail" for t in task_results):
+        return 1
+    # A suite where NOTHING ran must not exit 0 (review #54): every task skipped is
+    # the same signal as every unit skipped in the prepush gate — the run proved
+    # nothing, and a green exit is what makes that invisible. `--allow-all-skip`
+    # exists for the deliberate case (a lane that cannot run on this host).
+    ran = [t for t in task_results if t["status"] != "skip"]
+    if not ran and not args.allow_all_skip:
+        print(
+            f"\nsuite: DEGENERATE — all {len(task_results)} task(s) skipped, none ran; "
+            "pass --allow-all-skip to accept this deliberately"
+        )
         return 1
     return 0
 
