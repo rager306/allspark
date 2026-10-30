@@ -17,7 +17,7 @@ static READ_RANGE_ELISION_RE: LazyLock<Regex> = LazyLock::new(|| {
 static READ_SINGLE_ELISION_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*(?:…|\.\.\.)\s*$").expect("valid regex"));
 
-/// Whether a row is a truncation notice emitted by `read`.
+/// Whether a row is a truncation notice emitted by a file-view renderer.
 pub fn is_read_truncation_notice(line: &str) -> bool {
     let trimmed = line.trim();
     let Some(body) = trimmed
@@ -44,7 +44,7 @@ pub fn is_read_truncation_notice(line: &str) -> bool {
     showing_notice || more_notice || elided_notice || oversized_line_notice
 }
 
-/// Whether a row is display-only metadata emitted by `read`.
+/// Whether a row is display-only metadata emitted by a file-view renderer.
 pub fn is_read_metadata_line(line: &str) -> bool {
     is_read_truncation_notice(line)
         || READ_RANGE_ELISION_RE.is_match(line)

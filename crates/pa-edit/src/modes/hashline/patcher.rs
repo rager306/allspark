@@ -71,9 +71,9 @@ pub fn no_change_loop_diagnostic(path: &str, count: u32) -> String {
         "STOP. Edits to {path} have been a byte-identical no-op {count} times in a row — the patch \
 		 body matches the file at the targeted lines and the soft hint did not break the cycle. \
 		 Cease re-issuing this payload. Either the intended change is already on disk (move on), or \
-		 your anchor is wrong (re-read the file with `read` to observe the current line numbers and \
-		 tag, then author a different edit). This exact payload will keep being rejected until it \
-		 changes."
+		 your anchor is wrong (read the file with `bash`, then use the tag and line numbers this \
+		 rejection reports and author a different edit). This exact payload will keep being \
+		 rejected until it changes."
     )
 }
 

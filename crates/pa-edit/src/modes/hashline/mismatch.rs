@@ -34,7 +34,7 @@ pub fn format_full_anchor_requirement(raw: Option<&str>) -> String {
         format!(" Received {}.", json_quote(value))
     });
     format!(
-        "a bare line number from read/search output plus the section header content-hash tag (for \
+        "a bare line number from the file plus the section header content-hash tag (for \
 		 example [src/foo.ts#{}] and line \"160\"){received}",
         HL_FILE_HASH_EXAMPLES[0]
     )
@@ -85,7 +85,8 @@ pub fn format_mismatch_message(details: &MismatchDetails) -> String {
             format!(
                 "Section is bound to #{}, but the current file hashes to #{}. If a prior edit in this \
 				 session modified this file, copy the [path#newhash] header from that edit's \
-				 response; otherwise re-read the file with `read` to refresh the tag before retrying.",
+				 response; otherwise read the file with `bash` and take the tag from the header \
+				 this rejection names (the current file hashes to it).",
                 details.expected_file_hash, details.actual_file_hash
             ),
         ]
@@ -106,8 +107,9 @@ pub fn format_mismatch_message(details: &MismatchDetails) -> String {
             ));
         }
         lines.push(format!(
-            "The current file hashes to #{}. Re-read the file with `read` to copy a current \
-			 [path#tag] header — never invent the tag and never reuse one from a prior session.",
+            "The current file hashes to #{}. Use that tag in a [path#tag] header — never \
+			 invent the tag and never reuse one from a prior session; a header with the current \
+			 tag is accepted without any further read.",
             details.actual_file_hash
         ));
         lines

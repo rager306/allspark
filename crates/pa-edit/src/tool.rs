@@ -807,4 +807,50 @@ mod tests {
             "an edit batch must not run its tools in parallel"
         );
     }
+
+    /// Review finding: a miss with a valid-but-stale tag must tell the model ONE current tag.
+    ///
+    /// Ported from oh-my-pi, where `read`/`search` mints the tag and every miss message says
+    /// "re-read with `read`". This fork has no `read` tool — the native `edit` tool is the only
+    /// tag source — so a message that names two different hashes for the same file leaves the
+    /// model to guess which one to copy. The retry must work from the message alone.
+    #[tokio::test]
+    async fn a_stale_tag_miss_names_one_current_tag_the_model_can_retry_with() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "before\n").unwrap();
+        let tool = tool_for(dir.path(), EditMode::Hashline, all_modes());
+        // A syntactically valid tag that this session never issued.
+        let payload = "[a.txt#0000]\nPUT 1.=1:\n+after";
+        let result = call(
+            &tool,
+            serde_json::json!({ "mode": "hashline", "payload": payload }),
+        )
+        .await;
+        assert!(result.is_error, "expected a rejection");
+        let text = text_of(&result);
+        let current = crate::store::file_hash("before\n");
+        // Exactly one `#TAG`-shaped token may name the live content, and the message must
+        // not offer a second, different one as if it were also current.
+        let hashes: Vec<&str> = text
+            .split('#')
+            .filter_map(|rest| rest.get(..4))
+            .filter(|candidate| candidate.chars().all(|c| c.is_ascii_hexdigit()))
+            .collect();
+        assert!(
+            hashes.contains(&current.as_str()),
+            "the current tag must appear so a retry is possible; got {hashes:?} in:\n{text}"
+        );
+        // The retry the message asks for must actually succeed.
+        let retry = format!("[a.txt#{current}]\nPUT 1.=1:\n+after");
+        let retried = call(
+            &tool,
+            serde_json::json!({ "mode": "hashline", "payload": retry }),
+        )
+        .await;
+        assert!(
+            !retried.is_error,
+            "a retry built from the current tag in the message must succeed: {}",
+            text_of(&retried)
+        );
+    }
 }

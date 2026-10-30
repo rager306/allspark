@@ -403,7 +403,7 @@ fn ir_to_payload_preserves_operation_boundaries_all_and_terminal_newline() {
     );
 }
 
-/// `read` emits three truncation-notice families, and a projection copied into
+/// A file view emits three truncation-notice families, and a projection copied into
 /// an edit body must lose all of them alike. The `[N more lines in ...]` family
 /// used to survive normalization, so the copied row became part of the matched
 /// pattern -- and of the text written back -- instead of being dropped like the
