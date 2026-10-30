@@ -17,7 +17,7 @@
 use std::collections::{HashMap, HashSet};
 
 use regex::Regex;
-use rusqlite::{params, params_from_iter, Connection};
+use rusqlite::{params_from_iter, Connection};
 use serde_json::Value;
 
 use crate::bm25::min_max_normalize;
@@ -410,10 +410,12 @@ pub fn search_report(
     let ids: Vec<i64> = fused.iter().map(|(id, _)| *id).collect();
     let rows = load_rows(conn, &ids)?;
 
+    // Two queries for the whole page instead of two per row (review #26/#59).
+    let degrees_by_id = degrees_batch(conn, &opts.project, &ids)?;
     let mut hits: Vec<SearchHit> = Vec::with_capacity(fused.len());
     for (id, score) in fused {
         let Some(row) = rows.get(&id) else { continue };
-        let (in_degree, out_degree) = degrees(conn, &opts.project, id)?;
+        let (in_degree, out_degree) = degrees_by_id.get(&id).copied().unwrap_or((0, 0));
         hits.push(SearchHit {
             id,
             label: Label::from_str_or_default(&row.label),
@@ -607,23 +609,53 @@ fn load_rows(conn: &Connection, ids: &[i64]) -> Result<HashMap<i64, Row>> {
     Ok(out)
 }
 
-/// In/out edge counts for one node, scoped to its project.
+/// Degrees for many ids in TWO queries, not two per row (review #26/#59).
 ///
-/// The project predicate lets SQLite seek `idx_edges_target`/`idx_edges_source`;
-/// unscoped, each call scans the covering index — measured 8.9 ms per node on the
-/// live store versus 0.045 ms scoped, i.e. 89 ms vs 0.45 ms for ten hits.
-fn degrees(conn: &Connection, project: &str, id: i64) -> Result<(usize, usize)> {
-    let inc: i64 = conn.query_row(
-        "SELECT count(*) FROM edges WHERE project = ?1 AND target = ?2",
-        params![project, id],
-        |r| r.get(0),
-    )?;
-    let out: i64 = conn.query_row(
-        "SELECT count(*) FROM edges WHERE project = ?1 AND source = ?2",
-        params![project, id],
-        |r| r.get(0),
-    )?;
-    Ok((inc as usize, out as usize))
+/// Measured on this repo's live graph (279 685 edges, 200 sampled nodes):
+/// - correlated subselects per id: 261 ms extrapolated for 200 hits
+/// - `LEFT JOIN (SELECT ... GROUP BY)` twice: 3 051 ms — worse, the GROUP BY scans the
+///   whole table before the join filters it
+/// - one indexed `GROUP BY` per direction with `IN (ids)`: **3.6 ms**
+///
+/// Only the last form uses `idx_edges_target` / `idx_edges_source`; the others do a
+/// full pass per direction. Two queries, one per direction, keeps both indexes hot.
+fn degrees_batch(
+    conn: &Connection,
+    project: &str,
+    ids: &[i64],
+) -> Result<HashMap<i64, (usize, usize)>> {
+    let mut out: HashMap<i64, (usize, usize)> = ids.iter().map(|id| (*id, (0, 0))).collect();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let holes: Vec<String> = (2..=ids.len() + 1).map(|i| format!("?{i}")).collect();
+    for (position, column) in [(0usize, "target"), (1usize, "source")] {
+        let sql = format!(
+            "SELECT {column}, count(*) FROM edges WHERE project = ?1 AND {column} IN ({}) \
+             GROUP BY {column}",
+            holes.join(", ")
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut bound: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 1);
+        bound.push(&project);
+        for id in ids {
+            bound.push(id);
+        }
+        let rows = stmt.query_map(bound.as_slice(), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (id, count) = row?;
+            if let Some(slot) = out.get_mut(&id) {
+                if position == 0 {
+                    slot.0 = count as usize;
+                } else {
+                    slot.1 = count as usize;
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Apply MMR diversity reranking, using split-name features as the similarity
@@ -806,6 +838,94 @@ mod tests {
         // least one of the two must have ranked it.
         assert!(widget.channels.name.is_some() || widget.channels.body.is_some());
     }
+
+    /// Review #26/#59: degree work is a function of the PAGE, not of each hit.
+    ///
+    /// Three counts exist by nature: the graph channel ranks by degree inside its own
+    /// FTS query, and the hit loop then needs in and out for the page. The defect was
+    /// that the last two ran PER ROW, so the count grew with the result set. The oracle
+    /// is the SQLite statement hook (not a timer: a timer measures the machine), and the
+    /// property is "the same count for a bigger page", which per-row work cannot satisfy.
+    #[test]
+    fn degree_queries_do_not_grow_with_the_page() {
+        let mut store = open();
+        // The fixture has three nodes; per-row work would show only 3 vs 3. Seed a
+        // dedicated project so a 20-hit page is actually reachable — without that the
+        // test passes on the broken code (measured: it did).
+        for i in 0..30 {
+            store
+                .register_project("big", "/tmp")
+                .or_else(|_| Ok::<(), crate::GraphError>(()))
+                .ok();
+            let node = crate::types::Node {
+                id: 0,
+                project: "big".into(),
+                label: crate::types::Label::Function,
+                name: format!("widget_{i}"),
+                qualified_name: format!("big::widget_{i}"),
+                file_path: "src/big.rs".into(),
+                start_line: 1,
+                end_line: 2,
+                props: serde_json::json!({ "doc": "widget" }),
+            };
+            let id = store.upsert_node(&node).expect("node");
+            store
+                .index_fts(
+                    id,
+                    &format!("widget_{i}"),
+                    &format!("big::widget_{i}"),
+                    &format!("widget {i}"),
+                    "widget",
+                    "Function",
+                )
+                .expect("fts");
+        }
+        let conn = store.connection_mut();
+        // `trace` is deprecated in favour of `trace_v2`, but `trace_v2` takes a plain
+        // `fn` pointer with no closure state, so a counting oracle cannot use it.
+        #[allow(deprecated)]
+        conn.trace(Some(|sql: &str| {
+            let flat: String = sql
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_ascii_uppercase();
+            if flat.contains("COUNT(*) FROM EDGES") {
+                DEGREE_QUERIES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }));
+
+        let count_for = |limit: usize| {
+            DEGREE_QUERIES.store(0, std::sync::atomic::Ordering::SeqCst);
+            let hits = search(
+                conn,
+                "config OR widget OR render",
+                &SearchOptions::new("big").with_limit(limit),
+            )
+            .expect("search");
+            (
+                hits.len(),
+                DEGREE_QUERIES.load(std::sync::atomic::Ordering::SeqCst),
+            )
+        };
+        let (small_hits, small_queries) = count_for(2);
+        let (big_hits, big_queries) = count_for(20);
+        #[allow(deprecated)]
+        conn.trace(None);
+
+        assert!(
+            big_hits > small_hits,
+            "the fixture must return more hits for the bigger limit, or the test proves \
+             nothing: {small_hits} vs {big_hits}"
+        );
+        assert_eq!(
+            big_queries, small_queries,
+            "degree queries grew with the page ({small_queries} for {small_hits} hits, \
+             {big_queries} for {big_hits}): degrees went back to per-row"
+        );
+    }
+
+    static DEGREE_QUERIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
     #[test]
     fn degrees_are_reported() {
