@@ -94,12 +94,15 @@ impl H2Response {
         }
     }
 
-    /// Read the entire body as text (for error responses).
+    /// Read the entire body as text (for error responses), holding a UTF-8 sequence split
+    /// across DATA frames until it completes.
     pub(crate) async fn read_all_text(&mut self) -> Result<String, ProviderError> {
+        let mut utf8 = crate::utils_inner::streaming_utf8::StreamingUtf8::default();
         let mut out = String::new();
         while let Some(chunk) = self.next_bytes().await? {
-            out.push_str(&String::from_utf8_lossy(&chunk));
+            out.push_str(&utf8.decode_chunk(&chunk));
         }
+        out.push_str(&utf8.finish());
         Ok(out)
     }
 
@@ -412,6 +415,31 @@ mod h2_wire_tests {
         }
     }
 
+    /// Serve one h2 response whose body is the concatenation of `parts`, one DATA frame
+    /// each, so a byte sequence can straddle a frame boundary. The stream ends cleanly
+    /// (`END_STREAM` on the final frame).
+    async fn spawn_h2_text_body(parts: Vec<Vec<u8>>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_client_preface(&mut socket).await;
+            socket
+                .write_all(&frame(0x1, 0x4, 1, &response_headers()))
+                .await
+                .unwrap();
+            let last = parts.len() - 1;
+            for (index, part) in parts.iter().enumerate() {
+                let flags = u8::from(index == last);
+                socket.write_all(&frame(0x0, flags, 1, part)).await.unwrap();
+                socket.flush().await.unwrap();
+            }
+            let mut rest = Vec::new();
+            let _ = socket.read_to_end(&mut rest).await;
+        });
+        format!("http://127.0.0.1:{}/model/m/converse-stream", addr.port())
+    }
+
     async fn spawn_h2_mock(action: MockAction) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -543,6 +571,61 @@ mod h2_wire_tests {
             Err(error) => error.to_string(),
         };
         assert_eq!(error, "Protocol error");
+    }
+
+    /// The h2 body reader must yield the same text whatever the frame boundaries: a
+    /// multi-byte character split across two DATA frames decodes whole, one U+FFFD appears
+    /// only for genuinely invalid bytes, and a torn tail appears once at end of stream.
+    ///
+    /// Before the shared decoder, `read_all_text` decoded each frame with
+    /// `String::from_utf8_lossy` on its own, so every split position inside 世/界/🚀
+    /// produced U+FFFD where the character should have been.
+    #[tokio::test]
+    async fn h2_text_survives_every_frame_split() {
+        let text = "世界🚀";
+        let bytes: Vec<u8> = text.as_bytes().to_vec();
+        let expected = String::from_utf8_lossy(&bytes).into_owned();
+        for split in 0..=bytes.len() {
+            let url =
+                spawn_h2_text_body(vec![bytes[..split].to_vec(), bytes[split..].to_vec()]).await;
+            let mut response = send_h2(options(url)).await.unwrap();
+            let whole = response.read_all_text().await.unwrap();
+            assert_eq!(
+                whole, expected,
+                "one U+FFFD at end of stream is the only acceptable difference at split {split}"
+            );
+        }
+    }
+
+    /// A character split across frames completes; a sequence still incomplete at end of
+    /// stream yields exactly one U+FFFD, whatever the frame boundaries.
+    #[tokio::test]
+    async fn h2_text_finishes_a_torn_tail_with_one_replacement_character() {
+        let character = "\u{4F60}".as_bytes();
+        for split in 0..=character.len() {
+            let url = spawn_h2_text_body(vec![b"cut ".to_vec(), character[..split].to_vec()]).await;
+            let mut response = send_h2(options(url)).await.unwrap();
+            let whole = response.read_all_text().await.unwrap();
+            let expected = match split {
+                0 => "cut ",
+                torn if torn < character.len() => "cut \u{FFFD}",
+                _ => "cut \u{4F60}",
+            };
+            assert_eq!(whole, expected, "split {split}");
+        }
+    }
+
+    /// A stray byte followed by a multi-byte character in one frame must not swallow the
+    /// character: it must decode as U+FFFD + the character, not one U+FFFD per byte.
+    #[tokio::test]
+    async fn h2_text_keeps_a_character_that_follows_an_invalid_lead() {
+        // A lone `C3` lead byte, then U+4E16 spanning the frame boundary at its second byte.
+        let bytes = b"\xC3\xE4\xB8\x96".to_vec();
+        let url = spawn_h2_text_body(vec![bytes[..3].to_vec(), bytes[3..].to_vec()]).await;
+        let mut response = send_h2(options(url)).await.unwrap();
+        let whole = response.read_all_text().await.unwrap();
+        assert_eq!(whole, String::from_utf8_lossy(&bytes));
+        assert_eq!(whole, "\u{FFFD}\u{4E16}");
     }
 
     /// A refused connect: the canceled pending stream with the node-style connect cause embedded.

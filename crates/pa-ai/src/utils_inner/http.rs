@@ -61,8 +61,9 @@ pub struct HttpResponse {
     pub headers: std::collections::HashMap<String, String>,
     body: reqwest::Response,
     signal: Option<CancellationToken>,
-    /// Trailing bytes of a UTF-8 sequence split across body chunks, held until the rest arrives.
-    utf8_tail: Vec<u8>,
+    /// Holds the trailing bytes of a UTF-8 sequence split across body chunks until the rest
+    /// arrives, so a character is never decoded per chunk.
+    utf8: crate::utils_inner::streaming_utf8::StreamingUtf8,
     /// The per-chunk idle bound ([`STREAM_IDLE_TIMEOUT`] by default);
     /// crate-internal so tests can shorten it.
     pub(crate) idle_timeout: std::time::Duration,
@@ -114,32 +115,12 @@ impl HttpResponse {
             }
             let chunk = self.next_chunk().await?;
             let text = match chunk {
-                Ok(Some(bytes)) => {
-                    self.utf8_tail.extend_from_slice(&bytes);
-                    match std::str::from_utf8(&self.utf8_tail) {
-                        Ok(text) => {
-                            let text = text.to_string();
-                            self.utf8_tail.clear();
-                            text
-                        }
-                        Err(error) if error.error_len().is_none() => {
-                            let valid_up_to = error.valid_up_to();
-                            let text =
-                                String::from_utf8_lossy(&self.utf8_tail[..valid_up_to]).to_string();
-                            self.utf8_tail.drain(..valid_up_to);
-                            text
-                        }
-                        Err(_) => {
-                            let text = String::from_utf8_lossy(&self.utf8_tail).to_string();
-                            self.utf8_tail.clear();
-                            text
-                        }
-                    }
-                }
-                Ok(None) if self.utf8_tail.is_empty() => return Ok(None),
+                Ok(Some(bytes)) => self.utf8.decode_chunk(&bytes),
                 Ok(None) => {
-                    let text = String::from_utf8_lossy(&self.utf8_tail).to_string();
-                    self.utf8_tail.clear();
+                    let text = self.utf8.finish();
+                    if text.is_empty() {
+                        return Ok(None);
+                    }
                     text
                 }
                 Err(error) => return Err(self.body_error(&error)),
@@ -356,7 +337,7 @@ pub async fn send(request: RequestOptions) -> Result<HttpResponse, ProviderError
         headers,
         body: response,
         signal,
-        utf8_tail: Vec::new(),
+        utf8: crate::utils_inner::streaming_utf8::StreamingUtf8::default(),
         idle_timeout: STREAM_IDLE_TIMEOUT,
         connection: request.connection,
         is_streaming_body: (200..300).contains(&status),
@@ -395,7 +376,7 @@ mod tests {
     use super::*;
 
     /// Serve one plain-text body split across two writes. The second write is held until `hold`
-    /// fires, so the chunk boundary lands where the caller put it.
+    /// fires (a dropped sender releases it), so the chunk boundary lands where the caller put it.
     async fn serve_split_body(
         first: Vec<u8>,
         second: Vec<u8>,
@@ -424,7 +405,7 @@ mod tests {
             );
             socket.write_all(head.as_bytes()).await.unwrap();
             socket.write_all(&first).await.unwrap();
-            hold.await.unwrap();
+            let _ = hold.await;
             socket.write_all(&second).await.unwrap();
         });
         addr
@@ -562,6 +543,34 @@ mod tests {
         assert_eq!(server.request_count(), 1);
         // The signal was never fired: the timeout, not the abort, settled the wait.
         assert!(!signal.is_cancelled());
+    }
+
+    /// A stray byte followed by a multi-byte character in one read must not swallow the
+    /// character. When the bytes that arrived are valid UTF-8 except for an EARLIER invalid
+    /// byte, the old tail logic (accepted whenever the error reported no `error_len`) decoded
+    /// the whole run with `from_utf8_lossy`, turning `C3 E4 B8 96` delivered as `C3 E4 B8` then
+    /// `96` into four U+FFFD rather than U+FFFD + U+4E16.
+    #[tokio::test]
+    async fn next_text_keeps_a_character_that_follows_an_invalid_lead() {
+        // A lone `C3` lead byte (invalid: its continuation never arrives) then U+4E16.
+        let bytes = b"\xC3\xE4\xB8\x96".to_vec();
+        let (hold_tx, hold_rx) = tokio::sync::oneshot::channel();
+        let addr = serve_split_body(bytes[..3].to_vec(), bytes[3..].to_vec(), hold_rx).await;
+        let mut response = send(RequestOptions::new(
+            reqwest::Method::GET,
+            format!("http://{addr}/"),
+        ))
+        .await
+        .unwrap();
+        let mut text = String::new();
+        if let Some(chunk) = response.next_text().await.unwrap() {
+            text.push_str(&chunk);
+            let _ = hold_tx.send(());
+        }
+        while let Some(chunk) = response.next_text().await.unwrap() {
+            text.push_str(&chunk);
+        }
+        assert_eq!(text, String::from_utf8_lossy(&bytes));
     }
 
     /// A body that ends inside a multi-byte character yields the valid text plus exactly one

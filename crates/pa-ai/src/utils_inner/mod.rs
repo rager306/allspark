@@ -13,6 +13,7 @@ pub mod overflow;
 pub mod sanitize_unicode;
 pub mod sse;
 pub mod stream_failure;
+pub(crate) mod streaming_utf8;
 pub mod tls;
 
 pub use stream_failure::ProviderError;
