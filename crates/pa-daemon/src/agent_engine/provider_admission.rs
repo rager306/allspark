@@ -100,6 +100,20 @@ pub const SPAWN_STAGGER_MAX_MS: u64 = 2_000;
 /// The per-provider retry budget (M4, the Google SRE bound): rate-limited
 /// settles beyond 10% of the sliding window trip the provider's breaker.
 /// Integer form: `failures * 10 > samples`.
+/// Most waiters one `(provider, model)` queue may hold.
+///
+/// Unbounded, a provider outage turned every arriving request into a queue entry that
+/// lived for the full `ACQUIRE_BUDGET` (600 s): memory grew with the outage's length,
+/// and when the breaker re-opened the whole queue was dispatched at once as a herd
+/// (review #39).
+///
+/// 256 is deliberately generous — the measured normal case is single digits (nine
+/// parallel subagents against a limit of six leaves three queued) — so it never binds
+/// a healthy burst. Past it a waiter is REFUSED rather than queued: the caller fails
+/// over immediately, which is the same answer the wait budget would have given six
+/// hundred seconds later, minus the memory and the herd.
+pub const MAX_QUEUED_WAITERS: usize = 256;
+
 pub const RETRY_BUDGET_WINDOW: usize = 50;
 pub const RETRY_BUDGET_MIN_SAMPLES: usize = 10;
 
@@ -750,7 +764,7 @@ impl ProviderAdmission {
         state: &mut RegistryState,
         key: &ProviderKey,
         holder: &str,
-    ) -> (oneshot::Receiver<Grant>, Arc<Waiter>) {
+    ) -> Option<(oneshot::Receiver<Grant>, Arc<Waiter>)> {
         let start = self.start;
         let waiter = Arc::new(Waiter {
             holder: holder.to_string(),
@@ -767,6 +781,19 @@ impl ProviderAdmission {
                 consecutive_429: 0,
                 waiters: VecDeque::new(),
             });
+        // A queue past the ceiling refuses: the caller fails over now instead of
+        // holding a slot of memory for up to `ACQUIRE_BUDGET` and joining a herd when
+        // the breaker re-opens (review #39).
+        if entry.waiters.len() >= MAX_QUEUED_WAITERS {
+            tracing::info!(
+                provider = %key.provider,
+                model = %key.model,
+                holder,
+                queued = entry.waiters.len(),
+                "provider admission: queue full, refusing"
+            );
+            return None;
+        }
         entry.waiters.push_back(Arc::clone(&waiter));
         let queued = entry.waiters.len();
         let limit = entry.limit;
@@ -780,7 +807,7 @@ impl ProviderAdmission {
             in_flight,
             "provider admission: queue"
         );
-        (rx, waiter)
+        Some((rx, waiter))
     }
 
     /// The leases on `key` whose holder is provably gone.
@@ -913,7 +940,11 @@ impl ProviderAdmission {
                     }
                     return StreamAdmission::Admitted(lease);
                 }
-                None => (self.enqueue(&mut state, key, holder), is_probe),
+                None => match self.enqueue(&mut state, key, holder) {
+                    Some(queued) => (queued, is_probe),
+                    // The queue is full: fail over now, like a spent wait budget.
+                    None => return StreamAdmission::Refused,
+                },
             }
         };
         let (rx, waiter) = pending;
@@ -1052,7 +1083,9 @@ impl ProviderAdmission {
                 None => self.enqueue(&mut state, key, spawn_id),
             }
         };
-        let (rx, waiter) = pending;
+        // A full queue refuses the spawn the same way a spent budget does: the child
+        // starts unadmitted rather than waiting 600 s for a slot that cannot arrive.
+        let (rx, waiter) = pending?;
         match tokio::time::timeout(budget, rx).await {
             Ok(Ok(grant)) => Some((grant.lease, Duration::from_millis(grant.stagger_ms))),
             Ok(Err(_)) => None,

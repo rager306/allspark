@@ -1646,3 +1646,57 @@ async fn without_a_liveness_source_nothing_is_reclaimed() {
         .await;
     assert!(matches!(second, StreamAdmission::Unadmitted), "{second:?}");
 }
+
+/// Review #39: the FIFO has a ceiling, and reaching it REFUSES instead of growing.
+///
+/// Unbounded, an outage turned every arrival into a 600-second queue entry — memory grew
+/// with the outage, and the re-open dispatched the whole backlog as a herd. The ceiling is
+/// generous (256 vs the measured single digits), so this test fills it deliberately.
+#[tokio::test]
+async fn a_full_admission_queue_refuses_instead_of_growing() {
+    // One slot, so every acquirer after the first parks in the queue.
+    let registry = ProviderAdmission::new(1);
+    let key = key();
+    let _held = admitted(&registry, &key, "slot-holder").await;
+
+    // Fill the queue to the ceiling with waiters that never get a grant.
+    let mut parked = Vec::new();
+    for index in 0..MAX_QUEUED_WAITERS {
+        let registry = Arc::clone(&registry);
+        let key = key.clone();
+        parked.push(tokio::spawn(async move {
+            registry
+                .acquire_stream_within(&key, &format!("waiter-{index}"), Duration::from_secs(60))
+                .await
+        }));
+    }
+    // Wait until they are actually queued: the spawns above are asynchronous.
+    until(
+        || registry.snapshot(&key).queued == MAX_QUEUED_WAITERS,
+        "all waiters park in the FIFO",
+    )
+    .await;
+    assert_eq!(
+        registry.snapshot(&key).queued,
+        MAX_QUEUED_WAITERS,
+        "the fixture must fill the queue, or the ceiling is not exercised"
+    );
+
+    // One more: refused, not queued.
+    let refused = registry
+        .acquire_stream_within(&key, "one-too-many", Duration::from_millis(50))
+        .await;
+    assert_eq!(
+        refused,
+        StreamAdmission::Refused,
+        "a full queue must fail over, not hold another entry"
+    );
+    assert_eq!(
+        registry.snapshot(&key).queued,
+        MAX_QUEUED_WAITERS,
+        "and the queue must not have grown"
+    );
+    for handle in parked {
+        handle.abort();
+    }
+}
