@@ -263,9 +263,49 @@ impl HistogramHandle {
 
 #[derive(Debug)]
 enum Series {
-    Counter { help: String, value: Arc<Counter> },
-    Gauge { help: String, value: Arc<Gauge> },
-    Histogram { help: String, value: Arc<Histogram> },
+    Counter {
+        help: String,
+        value: Arc<Counter>,
+    },
+    Gauge {
+        help: String,
+        value: Arc<Gauge>,
+    },
+    Histogram {
+        help: String,
+        value: Arc<Histogram>,
+    },
+    /// A counter partitioned by labels, keyed by the rendered label set.
+    ///
+    /// Prometheus label names live in the metric NAME (`tool_calls_total{...}`), so a
+    /// per-tool average cannot be expressed as one unlabelled series: the last writer
+    /// would win. This variant keys on the labels instead, which keeps one series per
+    /// (tool, outcome) pair and renders in the standard exposition shape.
+    LabelledCounter {
+        help: String,
+        values: Mutex<BTreeMap<String, Arc<Counter>>>,
+    },
+    /// A histogram partitioned by labels; see [`Series::LabelledCounter`].
+    LabelledHistogram {
+        help: String,
+        bounds: Vec<f64>,
+        values: Mutex<BTreeMap<String, Arc<Histogram>>>,
+    },
+}
+
+/// Render `labels` as a Prometheus label set, escaping the value.
+///
+/// An empty slice renders nothing, so a labelled metric with no labels is a plain one.
+fn render_labels(labels: &[(&str, &str)]) -> String {
+    if labels.is_empty() {
+        return String::new();
+    }
+    let body = labels
+        .iter()
+        .map(|(key, value)| format!("{key}=\"{}\"", escape_help(value)))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{{{body}}}")
 }
 
 /// Overall health status.
@@ -365,6 +405,74 @@ impl MetricsRegistry {
         CounterHandle { inner: value }
     }
 
+    /// A counter partitioned by `labels`; `name` is the metric, not the series.
+    ///
+    /// `labels` are fixed at first call: a later call with a different label set gets
+    /// its own series under the same metric, which is the Prometheus model. The first
+    /// call's labels define the key order for every render.
+    pub fn labelled_counter(
+        &self,
+        name: &str,
+        help: &str,
+        labels: &[(&str, &str)],
+    ) -> CounterHandle {
+        let key = render_labels(labels);
+        let mut series = lock(&self.series);
+        let entry = series
+            .entry(name.to_string())
+            .or_insert_with(|| Series::LabelledCounter {
+                help: help.to_string(),
+                values: Mutex::new(BTreeMap::new()),
+            });
+        match entry {
+            Series::LabelledCounter { values, .. } => {
+                let mut values = lock(values);
+                CounterHandle {
+                    inner: Arc::clone(values.entry(key).or_default()),
+                }
+            }
+            // A different kind under the same name is a programming error; keep the
+            // first registration rather than silently reinterpreting the series.
+            _ => CounterHandle {
+                inner: Arc::new(Counter::default()),
+            },
+        }
+    }
+
+    /// A histogram partitioned by `labels`; see [`Self::labelled_counter`].
+    pub fn labelled_histogram(
+        &self,
+        name: &str,
+        help: &str,
+        bounds: &[f64],
+        labels: &[(&str, &str)],
+    ) -> HistogramHandle {
+        let key = render_labels(labels);
+        let mut series = lock(&self.series);
+        let entry = series
+            .entry(name.to_string())
+            .or_insert_with(|| Series::LabelledHistogram {
+                help: help.to_string(),
+                bounds: bounds.to_vec(),
+                values: Mutex::new(BTreeMap::new()),
+            });
+        match entry {
+            Series::LabelledHistogram { bounds, values, .. } => {
+                let mut values = lock(values);
+                HistogramHandle {
+                    inner: Arc::clone(
+                        values
+                            .entry(key)
+                            .or_insert_with(|| Arc::new(Histogram::new(bounds))),
+                    ),
+                }
+            }
+            _ => HistogramHandle {
+                inner: Arc::new(Histogram::new(bounds)),
+            },
+        }
+    }
+
     /// Register (or fetch) a gauge named `name`.
     pub fn gauge(&self, name: &str, help: &str) -> GaugeHandle {
         let mut series = lock(&self.series);
@@ -407,9 +515,9 @@ impl MetricsRegistry {
     #[must_use]
     pub fn kind(&self, name: &str) -> Option<MetricKind> {
         lock(&self.series).get(name).map(|series| match series {
-            Series::Counter { .. } => MetricKind::Counter,
+            Series::Counter { .. } | Series::LabelledCounter { .. } => MetricKind::Counter,
             Series::Gauge { .. } => MetricKind::Gauge,
-            Series::Histogram { .. } => MetricKind::Histogram,
+            Series::Histogram { .. } | Series::LabelledHistogram { .. } => MetricKind::Histogram,
         })
     }
 
@@ -474,9 +582,13 @@ impl MetricsRegistry {
         let mut out = String::new();
         for (name, metric) in series.iter() {
             let (kind, help) = match metric {
-                Series::Counter { help, .. } => ("counter", help),
+                Series::Counter { help, .. } | Series::LabelledCounter { help, .. } => {
+                    ("counter", help)
+                }
                 Series::Gauge { help, .. } => ("gauge", help),
-                Series::Histogram { help, .. } => ("histogram", help),
+                Series::Histogram { help, .. } | Series::LabelledHistogram { help, .. } => {
+                    ("histogram", help)
+                }
             };
             let _ = writeln!(out, "# HELP {name} {}", escape_help(help));
             let _ = writeln!(out, "# TYPE {name} {kind}");
@@ -486,6 +598,34 @@ impl MetricsRegistry {
                 }
                 Series::Gauge { value, .. } => {
                     let _ = writeln!(out, "{name} {}", format_float(value.get()));
+                }
+                Series::LabelledCounter { values, .. } => {
+                    for (labels, value) in lock(values).iter() {
+                        let _ = writeln!(out, "{name}{labels} {}", format_float(value.get()));
+                    }
+                }
+                Series::LabelledHistogram { bounds, values, .. } => {
+                    for (labels, value) in lock(values).iter() {
+                        let cumulative = value.cumulative_counts();
+                        // A labelled histogram repeats the label set on every line,
+                        // including `le` inside it, which is the exposition shape.
+                        let inner = labels.trim_start_matches('{').trim_end_matches('}');
+                        for (i, bound) in bounds.iter().enumerate() {
+                            let _ = writeln!(
+                                out,
+                                "{name}_bucket{{{inner},le=\"{}\"}} {}",
+                                format_float(*bound),
+                                cumulative.get(i).copied().unwrap_or(0)
+                            );
+                        }
+                        let _ = writeln!(
+                            out,
+                            "{name}_bucket{{{inner},le=\"+Inf\"}} {}",
+                            cumulative.last().copied().unwrap_or(0)
+                        );
+                        let _ = writeln!(out, "{name}_sum{labels} {}", format_float(value.sum()));
+                        let _ = writeln!(out, "{name}_count{labels} {}", value.count());
+                    }
                 }
                 Series::Histogram { value, .. } => {
                     let bounds = value.bounds();

@@ -902,6 +902,30 @@ fn handle_event(
         } => {
             let started_at = state.tool_starts.remove(&tool_call_id);
             let duration_ms = started_at.map_or(0, |start| now.saturating_sub(start));
+            // The same measurement that feeds the session aggregate also feeds the
+            // process-wide registry, so "which tool costs what" is answerable without a
+            // second instrumentation point. Labels are the tool's own name: a per-tool
+            // average is the number a caller can act on, and a category average hides
+            // which of `edit`/`bash` moved it.
+            let metrics = crate::tools::metrics::registry();
+            metrics
+                .labelled_counter(
+                    "tool_calls_total",
+                    "Tool calls by tool name and outcome",
+                    &[
+                        ("tool", tool_name.as_str()),
+                        ("outcome", if is_error { "error" } else { "ok" }),
+                    ],
+                )
+                .inc();
+            metrics
+                .labelled_histogram(
+                    "tool_duration_seconds",
+                    "Tool call wall time by tool name",
+                    &[0.005, 0.05, 0.25, 1.0, 5.0, 30.0, 120.0],
+                    &[("tool", tool_name.as_str())],
+                )
+                .observe(duration_ms as f64 / 1000.0);
             let category = ToolCategory::from_tool_name(&tool_name);
             if let Some(run) = state.active_run.as_mut() {
                 run.tool_call_count += 1;

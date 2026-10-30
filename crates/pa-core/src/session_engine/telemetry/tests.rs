@@ -123,6 +123,37 @@ fn emit(fixture: &Fixture, event: AgentEvent) {
     handle_event(&fixture.client, "interactive", &fixture.state, event);
 }
 
+/// The registry is filled at the event boundary, not by each tool.
+///
+/// A metric that only a unit test calls is a metric nobody scrapes: this drives the real
+/// `ToolExecutionEnd` path and then renders the process-wide registry, so the assertion is
+/// on what a scrape endpoint would return.
+#[tokio::test]
+async fn a_finished_tool_call_lands_in_the_process_metrics() {
+    let fixture = fixture();
+    let (start, end) = tool_execution_event("graph", false);
+    emit(&fixture, start);
+    emit(&fixture, end);
+    let (start, end) = tool_execution_event("edit", true);
+    emit(&fixture, start);
+    emit(&fixture, end);
+
+    let rendered = crate::tools::metrics::registry().render();
+    assert!(
+        rendered.contains("tool_calls_total{tool=\"graph\",outcome=\"ok\"} 1"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("tool_duration_seconds_count{tool=\"graph\"} 1"),
+        "duration is measured in the same place: {rendered}"
+    );
+    // An error is a separate series, not a flag on the same one.
+    assert!(
+        rendered.contains("tool_calls_total{tool=\"edit\",outcome=\"error\"} 1"),
+        "{rendered}"
+    );
+}
+
 fn assistant_message() -> AssistantMessage {
     AssistantMessage {
         content: vec![AssistantContent::Text(TextContent {
