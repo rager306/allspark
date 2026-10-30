@@ -558,50 +558,6 @@ pub struct TelemetrySettings {
     pub local_mirror: Option<bool>,
 }
 
-/// User-declared MCP server (settings `mcpServers` entry).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
-pub enum McpServerConfig {
-    Http {
-        url: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        headers: Option<serde_json::Map<String, serde_json::Value>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        bearer_token_env_var: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        oauth: Option<bool>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        enabled: Option<bool>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        enabled_tools: Option<Vec<String>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        disabled_tools: Option<Vec<String>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        startup_timeout_ms: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        call_timeout_ms: Option<u64>,
-    },
-    Stdio {
-        command: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        args: Option<Vec<String>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        cwd: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        env: Option<serde_json::Map<String, serde_json::Value>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        enabled: Option<bool>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        enabled_tools: Option<Vec<String>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        disabled_tools: Option<Vec<String>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        startup_timeout_ms: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        call_timeout_ms: Option<u64>,
-    },
-}
-
 /// Phase-7 tool-surface profile (fork-only): the active context, the modes
 /// layered on top of it, and a project-local delta. Resolved into a
 /// [`crate::tool_profile::ToolsetLayer`] pipeline at session creation
@@ -782,4 +738,68 @@ pub struct Settings {
     /// Unknown keys survive load/save round-trips (forward compatibility).
     #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An `mcpServers` entry has exactly one type: the engine's
+    /// [`crate::mcp::McpServerConfig`]. A second copy lived in this module and
+    /// had drifted from it on the wire: the copy put `rename_all` on the
+    /// variant names instead of the fields, so a rewritten entry lost
+    /// `bearerTokenEnvVar` and `startupTimeoutMs` (the two keys the MCP engine
+    /// reads). A source pin: the defect is a duplicate declaration, which no
+    /// behavioural test can observe while the copy stays unimported.
+    #[test]
+    fn the_mcp_server_entry_has_one_type() {
+        // The production half only: this test module mentions the name it bans.
+        let source = include_str!("types.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the production half is always present");
+        assert!(
+            !production.contains("enum McpServerConfig"),
+            "settings/types.rs declares a second `mcpServers` type; the engine \
+             parses `crate::mcp::McpServerConfig`"
+        );
+    }
+
+    /// `Settings.mcp_servers` keeps the entry as the user wrote it, and the
+    /// engine's type reads both camelCase keys out of it. This is the guard on
+    /// that field: typing it with a key-renaming type drops a user's bearer
+    /// token and startup timeout silently.
+    #[test]
+    fn mcp_server_entries_reach_the_engine_intact() {
+        let document = serde_json::json!({
+            "mcpServers": {
+                "fixture": {
+                    "type": "http",
+                    "url": "https://fixture.example/mcp",
+                    "bearerTokenEnvVar": "TOK",
+                    "startupTimeoutMs": 5000
+                }
+            }
+        });
+        let settings: Settings = serde_json::from_value(document).unwrap();
+        let entry = settings
+            .mcp_servers
+            .as_ref()
+            .and_then(|servers| servers.get("fixture"))
+            .expect("the entry survives the settings parse");
+        match serde_json::from_value::<crate::mcp::McpServerConfig>(entry.clone()).unwrap() {
+            crate::mcp::McpServerConfig::Http {
+                bearer_token_env_var,
+                startup_timeout_ms,
+                ..
+            } => {
+                assert_eq!(bearer_token_env_var.as_deref(), Some("TOK"));
+                assert_eq!(startup_timeout_ms, Some(5000));
+            }
+            other @ crate::mcp::McpServerConfig::Stdio { .. } => {
+                panic!("expected an http entry, got {other:?}")
+            }
+        }
+    }
 }
