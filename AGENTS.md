@@ -657,8 +657,8 @@ The table summarizes each crate's current direct workspace dependencies:
 | `pa-agent` | Provider-independent agent loop | none |
 | `pa-ai` | Providers, model registry, streaming | `pa-types` |
 | `pa-models` | Live model catalog and transport | `pa-ai`, `pa-types` |
-| `pa-core` | Session engine, tools, skills, kernel, settings | `pa-types`, `pa-ai`, `pa-models`, `pa-agent`, `pa-telemetry` |
-| `pa-daemon` | Supervisor, workers, wire protocol | `pa-types`, `pa-core`, `pa-agent`, `pa-ai`, `pa-telemetry`, `pa-models` |
+| `pa-core` | Session engine, tools, skills, kernel, settings | `pa-types`, `pa-ai`, `pa-models`, `pa-agent`, `pa-telemetry`, `pa-lsp`, `pa-graph`, `pa-jev`, `pa-edit` |
+| `pa-daemon` | Supervisor, workers, wire protocol | `pa-types`, `pa-core`, `pa-agent`, `pa-ai`, `pa-telemetry` |
 | `pa-tui` | Terminal UI, daemon-wire client | `pa-types` |
 | `pa-cli` | `prime-agent` binary, composition root | `pa-types`, `pa-core`, `pa-ai`, `pa-agent`, `pa-daemon`, `pa-tui`, `pa-telemetry` |
 | `pa-perf` | Performance corpora + pty bench harness (dev/CI tooling, never shipped) | `pa-types`, `pa-core`, `pa-daemon` |
