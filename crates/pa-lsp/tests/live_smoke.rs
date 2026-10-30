@@ -236,7 +236,11 @@ async fn eviction_shuts_the_server_down_cleanly() {
     let dir = tempfile::TempDir::new().expect("tempdir");
     std::fs::write(dir.path().join("package.json"), PACKAGE_JSON).expect("package.json");
     std::fs::write(dir.path().join("tsconfig.json"), TSCONFIG).expect("tsconfig.json");
-    std::fs::write(dir.path().join("a.ts"), "const a = 1;\nexport const b = a;\n").expect("a.ts");
+    std::fs::write(
+        dir.path().join("a.ts"),
+        "const a = 1;\nexport const b = a;\n",
+    )
+    .expect("a.ts");
     // `typescript-language-server` resolves tsserver from the workspace's node_modules.
     // Same contract as the other live tests: the caller points PA_LSP_TYPESCRIPT at a
     // `typescript` package directory. Without it the server cannot initialize, so the
