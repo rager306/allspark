@@ -107,7 +107,6 @@ impl CoherencePolicy {
         Self::default()
     }
 
-
     /// Set the merge threshold (clamped to `[0, 1]`).
     #[must_use]
     pub fn with_merge_threshold(mut self, threshold: f32) -> Self {

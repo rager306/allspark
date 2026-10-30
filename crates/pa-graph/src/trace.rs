@@ -290,7 +290,6 @@ impl TraceOptions {
         self
     }
 
-
     /// Cap the witness text held at once, or leave it unbounded.
     #[must_use]
     pub fn with_max_witness_bytes(mut self, ceiling: Option<usize>) -> Self {

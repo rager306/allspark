@@ -1065,7 +1065,6 @@ impl GraphStore {
         Ok(stale.len())
     }
 
-
     /// Write a node's searchable text into the contentless FTS5 table.
     ///
     /// `tokens` is the camelCase-split rendering of the name and qualified

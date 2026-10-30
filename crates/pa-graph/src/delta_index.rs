@@ -98,7 +98,6 @@ impl QualityMonitor {
         Self::default()
     }
 
-
     /// The recall floor.
     #[must_use]
     pub fn recall_floor(&self) -> f32 {
