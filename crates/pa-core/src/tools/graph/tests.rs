@@ -1901,7 +1901,7 @@ async fn a_search_without_knobs_matches_the_store_defaults() {
              - a::parse_config_file (a.rs:3) [Function] score=0.020\n\
              - a::parse_config_path (a.rs:4) [Function] score=0.020\n\
              - a::parse_config_dir (a.rs:5) [Function] score=0.020\n\
-             [graph: fresh | 1 files]",
+             [graph: fresh | 1 files, symbols depth]",
         "the rendered answer drifted"
     );
 }
