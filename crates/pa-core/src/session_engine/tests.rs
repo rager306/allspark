@@ -1692,3 +1692,355 @@ async fn a_model_without_reasoning_skips_the_classification() {
         "no judgment is spent on a model without effort"
     );
 }
+
+// ─────────── review #34: a refused admission never consumes the queued rows ───────────
+
+/// One queued notice row for the admission-refusal tests.
+fn queued_notice_row(marker: &str) -> pa_types::session::CustomMessage {
+    pa_types::session::CustomMessage {
+        custom_type: "state_restore_notice".to_string(),
+        content: pa_types::ai::UserContent::Text(format!("[queued {marker}]")),
+        display: true,
+        details: Some(serde_json::json!({ "marker": marker })),
+        timestamp: 0,
+        rest: serde_json::Map::default(),
+    }
+}
+
+/// The markers still queued for the next admitted turn, in queue order.
+/// Reads the queue without draining it (this module is a child of
+/// `session_engine`, so the private mailbox is in scope).
+fn queued_markers(session: &AgentSession) -> Vec<String> {
+    session
+        .pending_next_turn_rows
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .filter_map(|row| {
+            row.details
+                .as_ref()?
+                .get("marker")?
+                .as_str()
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+/// The image-model router whose decision refuses the batch: the actionable
+/// refusal the admission surfaces when the session model cannot serve the
+/// attached images and no image model is usable. `on_decide` runs inside the
+/// decision, i.e. inside the refused admission's window.
+fn refusing_image_router(
+    on_decide: impl Fn() + Send + Sync + 'static,
+) -> super::image_model_routing::ImageModelRouter {
+    super::image_model_routing::ImageModelRouter {
+        decide: Arc::new(move |_carries_images: bool, _level| {
+            on_decide();
+            Err("no image model is configured".to_string())
+        }),
+        swap_target: Arc::new(|_route| {}),
+    }
+}
+
+/// The same session, with a callback that runs inside the refused decision.
+async fn session_with_refusing_router_observing(
+    provider: Arc<ScriptedProvider>,
+    on_decide: impl Fn() + Send + Sync + 'static,
+) -> (AgentSession, tempfile::TempDir) {
+    let agent = Agent::new(AgentOptions {
+        initial_state: AgentInitialState {
+            model: Some(test_model()),
+            ..Default::default()
+        },
+        stream_fn: Some(provider.stream_fn()),
+        ..Default::default()
+    });
+    let tmp = tempfile::tempdir().unwrap();
+    let mut session = AgentSession::new(
+        Arc::new(agent),
+        SessionManager::in_memory(tmp.path()),
+        vec![],
+    )
+    .await
+    .unwrap();
+    session.set_image_model_router(Some(refusing_image_router(on_decide)));
+    (session, tmp)
+}
+
+/// The refusal that used to eat the queue happens AFTER the rows are taken:
+/// the routing refusal (and any other post-take failure) must give them back
+/// so the next admitted turn still carries the queued context.
+#[tokio::test]
+async fn a_post_take_admission_refusal_keeps_the_queued_next_turn_rows() {
+    let provider = Arc::new(ScriptedProvider::new(test_model()));
+    provider.push_text_turn("unreachable");
+    let (session, _tmp) =
+        session_with_refusing_router_observing(Arc::clone(&provider), || {}).await;
+    session.queue_next_turn_row(queued_notice_row("a"));
+    session.queue_next_turn_row(queued_notice_row("b"));
+
+    let refusal = match session
+        .prompt_with_images(
+            "with an image",
+            vec![pa_agent::types::ImageContent {
+                data: "AAAA".to_string(),
+                mime_type: "image/png".to_string(),
+            }],
+            PromptOptions::default(),
+        )
+        .await
+    {
+        Ok(outcome) => panic!("the routing refusal admitted the turn: {outcome:?}"),
+        Err(error) => error,
+    };
+    assert!(
+        refusal.to_string().contains("image model"),
+        "expected the routing refusal, got {refusal:#}"
+    );
+    assert_eq!(
+        queued_markers(&session),
+        vec!["a".to_string(), "b".to_string()],
+        "a refused admission must not consume the rows queued for the next turn \
+         (review #34: they were drained before the turn was admitted)"
+    );
+    assert!(
+        provider.calls().is_empty(),
+        "the refused turn reached no provider"
+    );
+}
+
+/// The busy-refusal path never admitted a turn: the rows a caller queued for
+/// the NEXT turn must still be there when the next turn actually happens.
+/// Draining them before the busy check lost them outright (review #34).
+#[tokio::test]
+async fn a_busy_refusal_keeps_the_queued_next_turn_rows() {
+    let provider = Arc::new(ScriptedProvider::new(test_model()));
+    provider.push_stalled_turn("streaming");
+    let agent = Agent::new(AgentOptions {
+        initial_state: AgentInitialState {
+            model: Some(test_model()),
+            ..Default::default()
+        },
+        stream_fn: Some(provider.stream_fn()),
+        ..Default::default()
+    });
+    let tmp = tempfile::tempdir().unwrap();
+    let session = Arc::new(
+        AgentSession::new(
+            Arc::new(agent),
+            SessionManager::in_memory(tmp.path()),
+            vec![],
+        )
+        .await
+        .unwrap(),
+    );
+    let prompting = {
+        let session = Arc::clone(&session);
+        tokio::spawn(async move { session.prompt("first", PromptOptions::default()).await })
+    };
+    // Wait for the run to register: `is_streaming` is the busy probe the
+    // admission consults.
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !session.agent().state().await.is_streaming {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the first run registers");
+
+    session.queue_next_turn_row(queued_notice_row("a"));
+    session.queue_next_turn_row(queued_notice_row("b"));
+
+    // The refusal under test: a second prompt with no streaming behavior.
+    // The admission error is `anyhow::Error`, not a `Result` the test can
+    // unwrap a message out of while the session lives on.
+    let refusal = session.prompt("second", PromptOptions::default()).await;
+    let refusal = match refusal {
+        Ok(outcome) => panic!("a busy session refused a plain prompt: {outcome:?} was admitted"),
+        Err(error) => error,
+    };
+    assert!(
+        refusal
+            .to_string()
+            .starts_with("Agent is already processing"),
+        "unexpected refusal: {refusal:#}"
+    );
+    assert_eq!(
+        queued_markers(&session),
+        vec!["a".to_string(), "b".to_string()],
+        "a refused admission must not consume the rows queued for the next turn"
+    );
+
+    session.agent().abort();
+    prompting.await.unwrap().unwrap();
+    session.agent().wait_for_idle().await;
+
+    // And the next admitted turn still carries them, ahead of its own prompt.
+    provider.push_text_turn("after");
+    session
+        .prompt("third", PromptOptions::default())
+        .await
+        .unwrap();
+    session.agent().wait_for_idle().await;
+    // The rows ride the next admitted turn: they land in the loop context
+    // ahead of that turn's own prompt row (this harness leaves the default
+    // `convert_to_llm`, which filters custom rows out of the provider request;
+    // `loop_convert_to_llm` is what carries them — see `messages.rs`).
+    let landed = session.agent().state().await.messages;
+    let markers: Vec<String> = landed
+        .iter()
+        .filter_map(|message| match message {
+            pa_agent::types::AgentMessage::Custom(custom) => custom
+                .payload
+                .get("details")?
+                .get("marker")?
+                .as_str()
+                .map(str::to_string),
+            pa_agent::types::AgentMessage::Standard(_) => None,
+        })
+        .collect();
+    assert_eq!(
+        markers,
+        vec!["a".to_string(), "b".to_string()],
+        "the surviving rows ride the next admitted turn: {landed:?}"
+    );
+    let third_row = landed
+        .iter()
+        .position(|message| match message {
+            pa_agent::types::AgentMessage::Standard(pa_agent::types::Message::User(user)) => {
+                user_text(&pa_agent::types::Message::User(user.clone())) == "third"
+            }
+            _ => false,
+        })
+        .expect("the third turn's own prompt row landed");
+    let last_marker_row = landed
+        .iter()
+        .rposition(|message| matches!(message, pa_agent::types::AgentMessage::Custom(_)))
+        .expect("the queued rows landed");
+    assert!(
+        last_marker_row < third_row,
+        "queued rows ride ahead of the prompt's own user row"
+    );
+    assert_eq!(queued_markers(&session), Vec::<String>::new());
+}
+
+/// The injected hop drains the queue before its routing refusal and before
+/// `Agent::prompt` can refuse a concurrent run: both losses are the same
+/// defect, so this pins the injected path too.
+#[tokio::test]
+async fn an_injected_post_take_refusal_keeps_the_queued_next_turn_rows() {
+    let provider = Arc::new(ScriptedProvider::new(test_model()));
+    provider.push_text_turn("unreachable");
+    let (session, _tmp) =
+        session_with_refusing_router_observing(Arc::clone(&provider), || {}).await;
+    session.queue_next_turn_row(queued_notice_row("a"));
+    session.queue_next_turn_row(queued_notice_row("b"));
+
+    let notice = queued_notice_row("injected");
+    let refusal = match session.prompt_injected_message(&notice).await {
+        Ok(outcome) => panic!("the routing refusal admitted the injected turn: {outcome:?}"),
+        Err(error) => error,
+    };
+    assert!(
+        refusal.to_string().contains("image model"),
+        "expected the routing refusal, got {refusal:#}"
+    );
+    assert_eq!(
+        queued_markers(&session),
+        vec!["a".to_string(), "b".to_string()],
+        "the injected hop's refused admission must not consume the queued rows"
+    );
+    assert!(
+        provider.calls().is_empty(),
+        "the refused injected turn reached no provider"
+    );
+}
+
+/// The next-turn mailbox, as the engine's adopt seam hands it out.
+type NextTurnMailbox = Arc<std::sync::Mutex<Vec<pa_types::session::CustomMessage>>>;
+
+/// A refused admission puts the rows back in FRONT of anything queued while it
+/// ran, so the order the caller saw survives the refusal.
+#[tokio::test]
+async fn a_refusal_restores_the_rows_ahead_of_those_queued_meanwhile() {
+    let provider = Arc::new(ScriptedProvider::new(test_model()));
+    provider.push_text_turn("unreachable");
+    // The mailbox the session queues into, reachable from the decision
+    // callback: a row queued during the refused window must land behind the
+    // restored one, not in front of it.
+    let mailbox: Arc<std::sync::Mutex<Option<NextTurnMailbox>>> = Arc::default();
+    let seam = Arc::clone(&mailbox);
+    let (mut session, _tmp) =
+        session_with_refusing_router_observing(Arc::clone(&provider), move || {
+            if let Some(queue) = seam.lock().unwrap().as_ref() {
+                queue.lock().unwrap().push(queued_notice_row("meanwhile"));
+            }
+        })
+        .await;
+    // Adopt the mailbox the callback pushes into (the engine's own seam for a
+    // queue that outlives the session build).
+    let shared = Arc::new(std::sync::Mutex::new(Vec::new()));
+    session.adopt_next_turn_rows(Arc::clone(&shared));
+    *mailbox.lock().unwrap() = Some(shared);
+    session.queue_next_turn_row(queued_notice_row("before"));
+
+    let refusal = session
+        .prompt_with_images(
+            "with an image",
+            vec![pa_agent::types::ImageContent {
+                data: "AAAA".to_string(),
+                mime_type: "image/png".to_string(),
+            }],
+            PromptOptions::default(),
+        )
+        .await;
+    assert!(refusal.is_err(), "the router refuses every batch");
+    assert_eq!(
+        queued_markers(&session),
+        vec!["before".to_string(), "meanwhile".to_string()],
+        "the restored row precedes the one queued after the refusal"
+    );
+}
+
+/// The deferred first-turn digest has the same hazard: `pending_digest_prompt_row`
+/// consumes the `digest_pending` flag, so a refused turn used to drop the
+/// session's first harness digest outright — not just the queued rows.
+#[tokio::test]
+async fn a_post_take_admission_refusal_rearms_the_first_turn_digest() {
+    let provider = Arc::new(ScriptedProvider::new(test_model()));
+    provider.push_text_turn("unreachable");
+    let harness = crate::session_engine::harness_digest::HarnessDigestContext {
+        global_dir: tempfile::tempdir().unwrap().path().to_path_buf(),
+        local_dir: None,
+        include_ipython: false,
+        include_shell_examples: false,
+        include_refine: false,
+    };
+    let mut session = digest_session_with_harness(Arc::clone(&provider), harness).await;
+    // A cold session defers its first digest to the first admitted turn.
+    assert!(
+        session
+            .digest_pending
+            .load(std::sync::atomic::Ordering::SeqCst),
+        "the deferred digest is pending before any turn"
+    );
+    session.set_image_model_router(Some(refusing_image_router(|| {})));
+
+    let refusal = session
+        .prompt_with_images(
+            "with an image",
+            vec![pa_agent::types::ImageContent {
+                data: "AAAA".to_string(),
+                mime_type: "image/png".to_string(),
+            }],
+            PromptOptions::default(),
+        )
+        .await;
+    assert!(refusal.is_err(), "the router refuses every batch");
+    assert!(
+        session
+            .digest_pending
+            .load(std::sync::atomic::Ordering::SeqCst),
+        "the refused turn never delivered its digest, so the next one still owes it"
+    );
+}

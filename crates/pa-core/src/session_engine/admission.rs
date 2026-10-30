@@ -4,6 +4,14 @@ use super::{
     SessionAgentMessage, SessionSlashCommand, StreamingBehavior,
 };
 
+/// One drained next-turn row beside its loop form: the durable custom row is
+/// what a refused admission puts back, and the loop row is what the turn
+/// carries (and what tells a landed row from one that never ran).
+type NextTurnRow = (
+    pa_types::session::CustomMessage,
+    pa_agent::types::AgentMessage,
+);
+
 impl AgentSession {
     /// Submit a prompt. Session commands (compact/refine/goal/autonomous)
     /// are recognized before admission and never reach the model.
@@ -39,11 +47,7 @@ impl AgentSession {
                 "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message."
             );
         }
-        let mut prompt_messages = Vec::new();
-        if let Some(digest_row) = self.pending_digest_prompt_row().await? {
-            prompt_messages.push(digest_row);
-        }
-        prompt_messages.extend(self.take_next_turn_rows().await);
+        let digest_row = self.pending_digest_prompt_row().await?;
         let custom_row = session_message_to_loop(&SessionAgentMessage::Custom(message.clone()))
             .ok_or_else(|| anyhow::anyhow!("injected custom message conversion failed"))?;
         // The dispatch-time routing fires for every dispatched turn; injected
@@ -51,10 +55,23 @@ impl AgentSession {
         // images ride the row's content and the row runs on the session's
         // model), so a route left by the previous turn clears here.
         self.apply_image_model_routing(&[], &[]).await?;
+        // The queue is read only now that nothing can refuse this turn:
+        // taking the rows before the checks above lost them on every
+        // refusal (review #34).
+        let queued_rows = self.take_queued_next_turn_pairs();
+        let mut prompt_messages = Vec::new();
+        prompt_messages.extend(digest_row.clone());
+        prompt_messages.extend(queued_rows.iter().map(|(_, loop_row)| loop_row.clone()));
         prompt_messages.push(custom_row);
-        self.agent
+        if let Err(error) = self
+            .agent
             .prompt(pa_agent::agent::AgentPromptInput::Messages(prompt_messages))
-            .await?;
+            .await
+        {
+            self.restore_refused_next_turn_rows(queued_rows).await;
+            self.rearm_refused_digest_row(digest_row.as_ref()).await;
+            return Err(error);
+        }
         Ok(PromptOutcome::Prompt)
     }
 
@@ -142,12 +159,14 @@ impl AgentSession {
             self.apply_auto_thinking(&normalized).await;
             // The turn's prompt messages: the deferred first-turn harness
             // digest rides first when one is due, streamed ahead of the user
-            // prompt and carried on `agent_end`.
+            // prompt and carried on `agent_end`. The queue is read only now
+            // that nothing above can refuse the turn: reading it earlier lost
+            // every queued row on a refusal (review #34).
+            let digest_row = self.pending_digest_prompt_row().await?;
+            let queued_rows = self.take_queued_next_turn_pairs();
             let mut prompt_messages = Vec::new();
-            if let Some(digest_row) = self.pending_digest_prompt_row().await? {
-                prompt_messages.push(digest_row);
-            }
-            prompt_messages.extend(self.take_next_turn_rows().await);
+            prompt_messages.extend(digest_row.clone());
+            prompt_messages.extend(queued_rows.iter().map(|(_, loop_row)| loop_row.clone()));
             prompt_messages.push(user_prompt_message(&normalized, &images));
             // Each batched action contributes its user row after the
             // primary, through the same admission normalization (TS
@@ -163,30 +182,22 @@ impl AgentSession {
                 };
                 prompt_messages.push(user_prompt_message(&row_text, &row.images));
             }
-            if options.return_after_accepted {
-                // `returnAfterAccepted`: this prompt never started, so its
-                // route must not survive (the failure path unwinds it like
-                // the plain prompt branch below).
-                if let Err(error) = self
-                    .agent
+            // A refused admission never ran this turn: put its queued rows
+            // back so the next admitted turn still carries them.
+            let admitted = if options.return_after_accepted {
+                self.agent
                     .prompt_until_accepted(pa_agent::agent::AgentPromptInput::Messages(
                         prompt_messages,
                     ))
                     .await
-                {
-                    if !self.agent.state().await.is_streaming {
-                        if let Some(router) = self.image_model_router.as_ref() {
-                            (router.swap_target)(None);
-                            self.agent.set_model_override(None);
-                        }
-                    }
-                    return Err(error);
-                }
-            } else if let Err(error) = self
-                .agent
-                .prompt(pa_agent::agent::AgentPromptInput::Messages(prompt_messages))
-                .await
-            {
+            } else {
+                self.agent
+                    .prompt(pa_agent::agent::AgentPromptInput::Messages(prompt_messages))
+                    .await
+            };
+            if let Err(error) = admitted {
+                self.restore_refused_next_turn_rows(queued_rows).await;
+                self.rearm_refused_digest_row(digest_row.as_ref()).await;
                 // A concurrent admission won the agent's run slot: this
                 // prompt never started, so its route must not survive. The
                 // unwind only happens while NO run streams (the winner keeps
@@ -239,50 +250,95 @@ impl AgentSession {
         self.pending_next_turn_rows = shared;
     }
 
-    /// Drain the queued next-turn rows: the admitting turn owns them; an
-    /// empty take leaves nothing for later turns.
-    pub fn take_next_turn_rows(
-        &self,
-    ) -> impl std::future::Future<Output = Vec<pa_agent::types::AgentMessage>> {
-        std::future::ready({
-            // `drain` removes rows before they are converted, so a row that fails the
-            // conversion used to vanish from BOTH the queue and the turn (review #34):
-            // the user's queued message was gone with no log line and no error.
-            // Keep the unconvertible rows in the queue instead, and say so — a queue
-            // that silently shrinks is worse than one that still holds a row the
-            // converter cannot read, because the next attempt can report it.
-            let mut kept: Vec<pa_types::session::CustomMessage> = Vec::new();
-            let converted: Vec<pa_agent::types::AgentMessage> = {
-                let mut queue = self
-                    .pending_next_turn_rows
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let rows: Vec<pa_types::session::CustomMessage> = queue.drain(..).collect();
-                drop(queue);
-                let mut converted = Vec::with_capacity(rows.len());
-                for row in rows {
-                    if let Some(message) =
-                        session_message_to_loop(&SessionAgentMessage::Custom(row.clone()))
-                    {
-                        converted.push(message);
-                    } else {
-                        tracing::warn!(
-                            custom_type = %row.custom_type,
-                            "next-turn row could not be converted; it stays queued"
-                        );
-                        kept.push(row);
-                    }
+    /// Every queued next-turn row, drained for a turn that WILL be admitted:
+    /// that turn owns them and an empty take leaves nothing for later turns.
+    ///
+    /// Both hops of the admission call this only after nothing can refuse the
+    /// turn any more — reading the queue first lost it on every refusal
+    /// (review #34). Each returned pair keeps the durable row next to its
+    /// loop form so a refusal can put the exact rows back. A row that fails
+    /// the conversion stays queued with a warning rather than vanishing from
+    /// both the queue and the turn.
+    fn take_queued_next_turn_pairs(&self) -> Vec<NextTurnRow> {
+        let mut kept: Vec<pa_types::session::CustomMessage> = Vec::new();
+        let taken: Vec<NextTurnRow> = {
+            let mut queue = self
+                .pending_next_turn_rows
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let rows: Vec<pa_types::session::CustomMessage> = queue.drain(..).collect();
+            drop(queue);
+            let mut taken = Vec::with_capacity(rows.len());
+            for row in rows {
+                if let Some(message) =
+                    session_message_to_loop(&SessionAgentMessage::Custom(row.clone()))
+                {
+                    taken.push((row, message));
+                } else {
+                    tracing::warn!(
+                        custom_type = %row.custom_type,
+                        "next-turn row could not be converted; it stays queued"
+                    );
+                    kept.push(row);
                 }
-                converted
-            };
-            if !kept.is_empty() {
-                let mut queue = self
-                    .pending_next_turn_rows
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                queue.extend(kept);
             }
-            converted
-        })
+            taken
+        };
+        if !kept.is_empty() {
+            let mut queue = self
+                .pending_next_turn_rows
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            queue.extend(kept);
+        }
+        taken
+    }
+
+    /// Re-arm the deferred first-turn digest a refused admission consumed:
+    /// the turn that was supposed to carry it never ran, so the next admitted
+    /// turn still owes the model its harness context. A row the losing attempt
+    /// already landed is not re-armed — it would reach the context twice.
+    ///
+    /// The debt is the `digest_pending` flag, so it is re-armed whether or not
+    /// this turn got as far as rendering a row; the next admitted turn renders
+    /// the digest fresh.
+    async fn rearm_refused_digest_row(&self, row: Option<&pa_agent::types::AgentMessage>) {
+        let landed = match row {
+            Some(row) => self.agent.state().await.messages.contains(row),
+            None => false,
+        };
+        if !landed {
+            self.digest_pending
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// Give a refused admission's rows back, in their original order and in
+    /// front of anything queued meanwhile: the turn those rows were taken for
+    /// never started, so the next admitted turn must see them first.
+    ///
+    /// A row the losing attempt already landed is NOT re-queued: `Agent::prompt`
+    /// can fail after part of the batch reached the loop, and a second copy
+    /// would reach the provider twice.
+    async fn restore_refused_next_turn_rows(&self, rows: Vec<NextTurnRow>) {
+        if rows.is_empty() {
+            return;
+        }
+        let landed = self.agent.state().await.messages;
+        let mut restore: Vec<pa_types::session::CustomMessage> = Vec::with_capacity(rows.len());
+        for (row, loop_row) in rows {
+            if landed.contains(&loop_row) {
+                continue;
+            }
+            restore.push(row);
+        }
+        if restore.is_empty() {
+            return;
+        }
+        let mut queue = self
+            .pending_next_turn_rows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        queue.splice(0..0, restore);
     }
 }
