@@ -26,8 +26,8 @@ async fn typescript_server_reports_type_errors() {
         return;
     }
 
-    let server = pa_lsp::SERVERS
-        .iter()
+    let server = pa_lsp::builtin_servers()
+        .into_iter()
         .find(|server| server.name == "typescript-language-server")
         .expect("typescript-language-server entry");
 
@@ -45,8 +45,8 @@ async fn typescript_server_reports_type_errors() {
     let file = dir.path().join("bad.ts");
     std::fs::write(&file, BROKEN_TS).unwrap();
 
-    let root = pa_lsp::project_root(&file, server);
-    let client = LspClient::spawn(server, &root)
+    let root = pa_lsp::project_root(&file, &server);
+    let client = LspClient::spawn(&server, &root)
         .await
         .expect("spawn typescript-language-server");
 

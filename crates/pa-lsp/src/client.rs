@@ -311,11 +311,11 @@ impl LanguageClient for NotificationRouter {
 pub struct LspClient {
     server: ServerSocket,
     /// The server binary's name, for status/errors.
-    pub name: &'static str,
+    pub name: String,
     /// The project root the server was started for.
     pub root: PathBuf,
     /// The language id used in `didOpen`.
-    language_id: &'static str,
+    language_id: String,
     /// Documents already opened, with their last-sent version.
     open_docs: Mutex<HashMap<String, i32>>,
     /// Server-pushed notifications (diagnostics).
@@ -394,7 +394,7 @@ impl LspClient {
     /// # Errors
     /// Fails when the binary cannot be spawned or the initialize handshake
     /// returns an error.
-    pub async fn spawn(server: &'static ServerConfig, root: &Path) -> anyhow::Result<Arc<Self>> {
+    pub async fn spawn(server: &ServerConfig, root: &Path) -> anyhow::Result<Arc<Self>> {
         let notifications = Arc::new(Mutex::new(ClientNotifications::default()));
         let router_state = Arc::clone(&notifications);
 
@@ -404,9 +404,9 @@ impl LspClient {
             })
         });
 
-        let mut command = tokio::process::Command::new(server.command);
+        let mut command = tokio::process::Command::new(&server.command);
         command
-            .args(server.args)
+            .args(&server.args)
             .current_dir(root)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -449,7 +449,7 @@ impl LspClient {
                 capabilities: client_capabilities(),
                 workspace_folders: Some(vec![WorkspaceFolder {
                     uri: root_uri,
-                    name: server.name.to_string(),
+                    name: server.name.clone(),
                 }]),
                 ..InitializeParams::default()
             })
@@ -461,9 +461,9 @@ impl LspClient {
 
         Ok(Arc::new(Self {
             server: socket,
-            name: server.name,
+            name: server.name.clone(),
             root: root.to_path_buf(),
-            language_id: server.language_id,
+            language_id: server.language_id.clone(),
             open_docs: Mutex::new(HashMap::new()),
             notifications,
             mainloop,
@@ -493,7 +493,7 @@ impl LspClient {
                     .did_open(DidOpenTextDocumentParams {
                         text_document: TextDocumentItem {
                             uri: uri.clone(),
-                            language_id: self.language_id.to_string(),
+                            language_id: self.language_id.clone(),
                             version: 0,
                             text,
                         },

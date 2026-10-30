@@ -312,7 +312,7 @@ impl LspTool {
         // that the empty answer may not be final (the tools report's cold-start
         // finding: a warming gopls and a clean file rendered identically).
         let warmth = client.warmth().await;
-        let mut text = render_diagnostics_header(diagnostics.len(), &path, client.name, &warmth);
+        let mut text = render_diagnostics_header(diagnostics.len(), &path, &client.name, &warmth);
         for (severity, name_path, diag) in &grouped {
             let position = diag.range.start;
             let _ = writeln!(

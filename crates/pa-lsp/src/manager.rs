@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 use crate::client::LspClient;
-use crate::servers::{project_root, server_for_path, ServerConfig};
+use crate::servers::{project_root, ServerConfig};
 
 /// How long a failed server spawn is remembered (oh-my-pi's
 /// `INIT_FAILURE_BACKOFF_MS = 3min`).
@@ -260,6 +260,10 @@ pub struct LspManager {
     /// spawns a server, so a global lock over the roster made every project wait
     /// on whichever language server happened to be starting.
     gate: KeyedGate<(String, PathBuf)>,
+    /// The resolved server table: built-ins with the operator's `lsp.servers`
+    /// overrides applied. Resolved once per manager, because a table that
+    /// changed mid-session would strand the clients already spawned from it.
+    servers: Vec<ServerConfig>,
 }
 
 impl Default for LspManager {
@@ -271,6 +275,7 @@ impl Default for LspManager {
             clock: Arc::new(SystemClock),
             idle: IdleRoster::default(),
             gate: KeyedGate::default(),
+            servers: crate::servers::builtin_servers(),
         }
     }
 }
@@ -281,6 +286,44 @@ impl LspManager {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A manager whose table is the built-ins with `lsp.servers` applied.
+    ///
+    /// Resolved here rather than at each lookup: the setting decides which binary is
+    /// spawned, so reading it per call would let a mid-session settings write strand
+    /// the clients already running under the old command.
+    #[must_use]
+    pub fn with_servers(overrides: Option<&serde_json::Map<String, serde_json::Value>>) -> Self {
+        Self {
+            servers: crate::servers::resolve_servers(overrides),
+            ..Self::default()
+        }
+    }
+
+    /// Replace the resolved table with the built-ins plus `lsp.servers`.
+    ///
+    /// A builder rather than another constructor: the idle-timeout constructor
+    /// already exists, and a caller chains whichever it needs.
+    #[must_use]
+    pub fn with_server_overrides(
+        mut self,
+        overrides: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> Self {
+        self.servers = crate::servers::resolve_servers(overrides);
+        self
+    }
+
+    /// The server that owns `path`, from this manager's resolved table.
+    #[must_use]
+    pub fn server_for(&self, path: &Path) -> Option<ServerConfig> {
+        crate::servers::server_in(&self.servers, path).cloned()
+    }
+
+    /// The resolved table, for `lsp(action="status")`.
+    #[must_use]
+    pub fn servers(&self) -> &[ServerConfig] {
+        &self.servers
     }
 
     /// A manager whose init-failure backoff uses `clock` (tests).
@@ -368,11 +411,11 @@ impl LspManager {
     /// absolute, the spawn/handshake fails, or a recent failure for this
     /// `(server, root)` is still within the backoff window.
     pub async fn ensure_client(&self, path: &Path) -> anyhow::Result<Arc<LspClient>> {
-        let server: &'static ServerConfig = server_for_path(path).ok_or_else(|| {
+        let server = self.server_for(path).ok_or_else(|| {
             anyhow::anyhow!("no language server is configured for `{}`", path.display())
         })?;
-        let root = canonical_root(path, server)?;
-        let key = (server.name.to_string(), root.clone());
+        let root = canonical_root(path, &server)?;
+        let key = (server.name.clone(), root.clone());
 
         if let Some(client) = self.clients.read().await.get(&key).cloned() {
             self.mark_used(&key).await;
@@ -411,7 +454,7 @@ impl LspManager {
                 message
             );
         }
-        match LspClient::spawn(server, &root).await {
+        match LspClient::spawn(&server, &root).await {
             Ok(client) => {
                 // The roster write is brief: insert and release, never across
                 // the spawn.
@@ -467,9 +510,9 @@ impl LspManager {
     /// The names of the servers known to the table, for `status` when nothing
     /// is live yet.
     #[must_use]
-    pub fn known_servers() -> Vec<&'static str> {
-        crate::servers::SERVERS
-            .iter()
+    pub fn known_servers() -> Vec<String> {
+        crate::servers::builtin_servers()
+            .into_iter()
             .map(|server| server.name)
             .collect()
     }
@@ -482,9 +525,9 @@ impl LspManager {
     /// # Errors
     /// Fails for the same reasons as [`LspManager::ensure_client`].
     pub async fn restart(&self, path: &Path) -> anyhow::Result<Arc<LspClient>> {
-        if let Some(server) = server_for_path(path) {
-            if let Ok(root) = canonical_root(path, server) {
-                self.backoff.clear(&(server.name.to_string(), root)).await;
+        if let Some(server) = self.server_for(path) {
+            if let Ok(root) = canonical_root(path, &server) {
+                self.backoff.clear(&(server.name.clone(), root)).await;
             }
         }
         self.shutdown_for(path).await;
@@ -588,9 +631,9 @@ impl LspManager {
     /// A server that keeps a disk cache or writes a log at exit therefore sees a crash,
     /// not a close (review #46).
     pub async fn shutdown_for(&self, path: &Path) -> Option<Option<std::process::ExitStatus>> {
-        let server = server_for_path(path)?;
-        let root = canonical_root(path, server).ok()?;
-        let key = (server.name.to_string(), root);
+        let server = self.server_for(path)?;
+        let root = canonical_root(path, &server).ok()?;
+        let key = (server.name.clone(), root);
         // Take the client out under the lock, release it, then shut down: the handshake
         // awaits, and holding the roster write lock across it would stall every other
         // server's lookup.
@@ -698,7 +741,9 @@ mod tests {
     async fn status_is_empty_before_any_client() {
         let manager = LspManager::new();
         assert_eq!(manager.status().await, Vec::new());
-        assert!(LspManager::known_servers().contains(&"rust-analyzer"));
+        assert!(LspManager::known_servers()
+            .iter()
+            .any(|name| name == "rust-analyzer"));
     }
 
     #[tokio::test]

@@ -77,7 +77,9 @@ pub use render::{
 pub use retriever::{
     batch_symbol_info, group_by_file, InfoResult, InfoTarget, DEFAULT_SYMBOL_INFO_BUDGET,
 };
-pub use servers::{project_root, server_for_path, ServerConfig, SERVERS};
+pub use servers::{
+    builtin_servers, project_root, resolve_servers, server_for_path, server_in, ServerConfig,
+};
 pub use symbol_layer::{
     delete_edit, filter_kinds, find, insert_after_edit, insert_before_edit, kind_from_name,
     kind_name, parse_kinds, replace_body_edit, symbol_bytes, symbol_tree, SymbolEdit, SymbolNode,

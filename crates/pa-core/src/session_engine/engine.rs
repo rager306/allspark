@@ -302,6 +302,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // and the graph store path (`graph.dbPath`, defaulting under agentDir).
     let lsp_enabled = settings.get_lsp_enabled();
     let lsp_idle_timeout = settings.get_lsp_idle_timeout();
+    // `lsp.servers`: per-server overrides. Returned as an owned map so "unset" (use the
+    // built-in table) stays distinguishable from "empty" (the operator overrode all).
+    let lsp_servers = settings.get_lsp_servers();
     let graph_enabled = settings.get_graph_enabled();
     let graph_db_path = settings.get_graph_db_path();
     let graph_auto = settings.get_graph_auto();
@@ -659,6 +662,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         &super::native_tools::NativeToolSettings {
             lsp_enabled,
             lsp_idle_timeout,
+            lsp_servers,
             graph_enabled,
             graph_db_path,
             graph_auto,

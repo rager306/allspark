@@ -20,6 +20,8 @@ use crate::settings::types::GraphAuto;
 pub(crate) struct NativeToolSettings {
     pub lsp_enabled: bool,
     pub lsp_idle_timeout: Option<std::time::Duration>,
+    /// `lsp.servers`: per-server overrides applied to the built-in table.
+    pub lsp_servers: Option<serde_json::Map<String, serde_json::Value>>,
     pub graph_enabled: bool,
     pub graph_db_path: Option<std::path::PathBuf>,
     pub graph_auto: GraphAuto,
@@ -61,12 +63,20 @@ pub(crate) fn register_native_tools(
         // `lsp.idleTimeoutMs`: a bound means an idle client is evicted instead
         // of living until the session ends. Unset keeps the session-long
         // lifetime every build before this had.
-        let manager = Arc::new(match settings.lsp_idle_timeout {
+        // `lsp.servers`: per-server overrides (a different `command`, extra `args`,
+        // more extensions, other root markers). Resolved once here, so the table is
+        // fixed for the session and two files in one project cannot disagree about
+        // which binary serves them.
+        let mut manager = match settings.lsp_idle_timeout {
             Some(idle) => {
                 pa_lsp::LspManager::with_idle_timeout(idle, Arc::new(pa_lsp::SystemClock))
             }
             None => pa_lsp::LspManager::new(),
-        });
+        };
+        if settings.lsp_servers.is_some() {
+            manager = manager.with_server_overrides(settings.lsp_servers.as_ref());
+        }
+        let manager = Arc::new(manager);
         tools.push(Arc::new(pa_lsp::LspTool::new(
             Arc::clone(&manager),
             cwd.to_path_buf(),

@@ -26,9 +26,9 @@ fn live_enabled() -> bool {
     std::env::var_os("PA_LSP_LIVE").is_some()
 }
 
-fn gopls_server() -> &'static pa_lsp::ServerConfig {
-    pa_lsp::SERVERS
-        .iter()
+fn gopls_server() -> pa_lsp::ServerConfig {
+    pa_lsp::builtin_servers()
+        .into_iter()
         .find(|server| server.name == "gopls")
         .expect("gopls entry")
 }
@@ -47,8 +47,8 @@ async fn l10_write_through_syncs_and_notifies() {
     std::fs::write(&file, "package main\n\nfunc main() {}\n").unwrap();
 
     let server = gopls_server();
-    let root = pa_lsp::project_root(&file, server);
-    let client = LspClient::spawn(server, &root).await.expect("spawn gopls");
+    let root = pa_lsp::project_root(&file, &server);
+    let client = LspClient::spawn(&server, &root).await.expect("spawn gopls");
 
     // A sync-only pass: it must re-open the document and notify the save.
     let report = write_through(&client, &file, &WriteThroughOptions::default())
@@ -119,8 +119,8 @@ async fn e6_diagnostics_delta_after_an_edit() {
     std::fs::write(&file, "package main\n\nfunc main() {}\n").unwrap();
 
     let server = gopls_server();
-    let root = pa_lsp::project_root(&file, server);
-    let client = LspClient::spawn(server, &root).await.expect("spawn gopls");
+    let root = pa_lsp::project_root(&file, &server);
+    let client = LspClient::spawn(&server, &root).await.expect("spawn gopls");
     client.ensure_open(&file).await.expect("didOpen");
     // Let the clean publish settle so the snapshot is stable.
     let _ = client
@@ -185,8 +185,8 @@ async fn l13_fresh_published_diagnostics_are_gated() {
     std::fs::write(&file, BROKEN_GO).unwrap();
 
     let server = gopls_server();
-    let root = pa_lsp::project_root(&file, server);
-    let client = LspClient::spawn(server, &root).await.expect("spawn gopls");
+    let root = pa_lsp::project_root(&file, &server);
+    let client = LspClient::spawn(&server, &root).await.expect("spawn gopls");
     client.ensure_open(&file).await.expect("didOpen");
     // Give gopls a moment to publish.
     let _ = client
