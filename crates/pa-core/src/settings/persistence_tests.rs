@@ -37,6 +37,75 @@ fn model_switch_preserves_a_document_that_failed_to_load() {
     }
 }
 
+/// The lenient load's diagnostics reach the manager's error channel (the CLI
+/// prints them as warnings), so a discarded value is never silent - and the
+/// valid siblings it sat next to still take effect.
+#[test]
+fn discarded_settings_values_surface_as_settings_errors() {
+    let (_storage, manager) =
+        fixture(r#"{"lsp":{"enabled":false,"idleTimeoutMs":"soon"},"theme":"prime"}"#);
+    assert!(
+        !manager.get_lsp_enabled(),
+        "the explicit disable survives the typo next to it"
+    );
+    assert_eq!(manager.settings().theme.as_deref(), Some("prime"));
+    assert_eq!(
+        manager
+            .errors()
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "ignored setting `lsp.idleTimeoutMs`: invalid type: string \"soon\", expected u64 \
+             (the value does not match its type, so it reads as unset)"
+        ],
+        "one warning naming the dropped value"
+    );
+}
+
+/// The same defect at the gate that matters: `graph` defaults ON, so a typo in
+/// a sibling field used to switch it back on under an explicit `enabled: false`.
+#[test]
+fn a_typo_in_one_graph_field_never_re_enables_the_tool() {
+    let (_storage, manager) = fixture(r#"{"graph":{"enabled":false,"auto":3}}"#);
+    assert!(
+        !manager.get_graph_enabled(),
+        "an explicit disable is not undone by a typo next to it"
+    );
+    assert_eq!(
+        manager.get_graph_auto(),
+        crate::settings::types::GraphAuto::default(),
+        "the dropped `auto` reads as its default, not as the raw value"
+    );
+}
+
+/// The project scope reports its own dropped values, under its own scope: a
+/// broken project file must not look like a broken global one.
+#[test]
+fn a_project_scope_reports_its_own_dropped_values() {
+    let storage = Arc::new(InMemorySettingsStorage::default());
+    storage
+        .with_lock(SettingsScope::Global, &mut |_| {
+            Some(r#"{"theme":"prime"}"#.to_string())
+        })
+        .unwrap();
+    storage
+        .with_lock(SettingsScope::Project, &mut |_| {
+            Some(r#"{"lsp":{"enabled":false,"idleTimeoutMs":"soon"}}"#.to_string())
+        })
+        .unwrap();
+    let manager = SettingsManager::from_storage(storage);
+    assert!(!manager.get_lsp_enabled());
+    assert_eq!(
+        manager
+            .errors()
+            .iter()
+            .map(|error| (error.scope, error.message.contains("lsp.idleTimeoutMs")))
+            .collect::<Vec<_>>(),
+        vec![(SettingsScope::Project, true)]
+    );
+}
+
 #[test]
 fn chat_detail_save_changes_only_the_requested_setting() {
     let (storage, mut manager) = fixture(r#"{"theme":"light","pluginSetting":{"keep":true}}"#);

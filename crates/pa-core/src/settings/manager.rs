@@ -9,7 +9,7 @@ use anyhow::{anyhow, Context, Result};
 // `pub(super)` so the `manager_parts` submodules inherit the same prelude: they are
 // `impl SettingsManager` blocks moved out of this file, and re-listing a dozen imports in
 // each would drift the moment this file gains one.
-pub(super) use super::load::from_value_lenient;
+pub(super) use super::load::from_value_lenient_reporting;
 pub(super) use super::merge::migrate;
 pub(super) use super::storage::{SettingsScope, SettingsStorage};
 pub(super) use super::types::Settings;
@@ -131,7 +131,24 @@ pub(super) fn load_scope(
         }
         other => other,
     };
-    (from_value_lenient(&migrated), Some(migrated), None)
+    let (settings, ignored) = from_value_lenient_reporting(&migrated);
+    for dropped in ignored {
+        let scope_name = match scope {
+            SettingsScope::Global => "global",
+            SettingsScope::Project => "project",
+        };
+        let message = format!(
+            "ignored setting `{}`: {} (the value does not match its type, so it reads as unset)",
+            dropped.path, dropped.reason
+        );
+        // Two channels, because two kinds of reader: the manager's error list
+        // is what the CLI prints once, and the diagnostic log is what a running
+        // session's operator can find afterwards - the interactive launch path
+        // never drains the list.
+        tracing::warn!("{scope_name} settings: {message}");
+        errors.push(SettingsError { scope, message });
+    }
+    (settings, Some(migrated), None)
 }
 
 #[cfg(test)]
