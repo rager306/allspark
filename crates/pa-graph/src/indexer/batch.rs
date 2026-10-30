@@ -14,7 +14,7 @@ use crate::store::GraphStore;
 use crate::types::IndexReport;
 
 use super::options::IndexOptions;
-use super::walk::{FileWork, discover, read_work, rel_path, skip_reason};
+use super::walk::{discover, read_work, rel_path, skip_reason, FileWork};
 
 /// Source text one batch may hold, in bytes.
 ///

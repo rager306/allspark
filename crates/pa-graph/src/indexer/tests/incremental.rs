@@ -43,18 +43,14 @@ fn modification_is_detected_and_reindexed() {
         .expect("second");
     assert_eq!(report.modified, 1);
     // The old symbols are gone; the new one is present.
-    assert!(
-        store
-            .node_by_qn("p", "lib::only_one")
-            .expect("qn")
-            .is_some()
-    );
-    assert!(
-        store
-            .node_by_qn("p", "lib::parse_config")
-            .expect("qn")
-            .is_none()
-    );
+    assert!(store
+        .node_by_qn("p", "lib::only_one")
+        .expect("qn")
+        .is_some());
+    assert!(store
+        .node_by_qn("p", "lib::parse_config")
+        .expect("qn")
+        .is_none());
 }
 
 #[test]

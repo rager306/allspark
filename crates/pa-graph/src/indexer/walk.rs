@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use ignore::WalkBuilder;
 
-use crate::hash::{FileHash, hash_bytes};
+use crate::hash::{hash_bytes, FileHash};
 use crate::types::FileChange;
 
 use super::options::IndexOptions;

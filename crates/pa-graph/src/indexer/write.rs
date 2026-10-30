@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use serde_json::json;
 
-use crate::coverage::{ParseHealth, classify_source};
+use crate::coverage::{classify_source, ParseHealth};
 use crate::error::Result;
 use crate::extract::{CallSite, ExtractedFile};
 use crate::store::GraphStore;
