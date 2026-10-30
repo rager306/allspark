@@ -320,8 +320,17 @@ pub fn probe_freshness(store: &GraphStore, project: &str, root: &Path) -> Result
 ///
 /// The store records no depth of its own, and adding a column would let the two
 /// disagree. Reading it back from the data cannot: a graph with no symbol nodes
-/// is a skeleton, one with symbols but no edges is a symbols pass, and anything
-/// else is full.
+/// is a skeleton, one with symbols but no RESOLVED edge is a symbols pass, and
+/// anything else is full.
+///
+/// "Resolved" is what [`Depth::resolves_edges`] means, and it is the only
+/// question that answers this: a symbols pass still writes one CONTAINS edge per
+/// symbol (`write_file`), so asking whether *any* edge exists answered `Full`
+/// for every store built at [`Depth::Symbols`] and the status line stopped
+/// naming the depth. The three types in the query are exactly the ones
+/// [`crate::indexer::Resolver`] writes through `record_call_edge` (CALLS, USAGE)
+/// and the pass writes for a resolved import (IMPORTS); CONTAINS is structural
+/// bookkeeping every depth writes.
 ///
 /// # Errors
 /// Propagates SQLite errors.
@@ -330,7 +339,13 @@ pub fn infer_depth(store: &GraphStore, project: &str) -> Result<Depth> {
     if !nodes.iter().any(|n| n.label != crate::types::Label::File) {
         return Ok(Depth::Skeleton);
     }
-    if store.edge_count(project)? == 0 {
+    let resolved: i64 = store.connection().query_row(
+        "SELECT count(*) FROM edges
+         WHERE project = ?1 AND edge_type IN ('CALLS', 'IMPORTS', 'USAGE')",
+        [project],
+        |row| row.get(0),
+    )?;
+    if resolved == 0 {
         return Ok(Depth::Symbols);
     }
     Ok(Depth::Full)
@@ -687,6 +702,83 @@ mod tests {
             report.line().contains("3 unresolved ("),
             "{}",
             report.line()
+        );
+    }
+
+    /// `infer_depth` read "symbols but no edges" as a symbols pass, and a symbols
+    /// pass writes one CONTAINS edge per symbol (`write_file`). So every store
+    /// built at `Depth::Symbols` inferred `Full`, and the status line — the line
+    /// every graph answer carries — never named the depth. An agent was told the
+    /// graph was complete while `trace` and `structure` could not answer at all.
+    ///
+    /// The rule has to ask what the RESOLVER owns, not whether any edge exists:
+    /// CONTAINS is structural bookkeeping that every depth writes.
+    #[test]
+    fn a_symbols_pass_is_reported_as_symbols_depth() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("lib.rs"), "pub fn one() {}\n").expect("lib.rs");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(
+                dir.path(),
+                &IndexOptions::new("p").with_depth(Depth::Symbols),
+            )
+            .expect("symbols");
+        assert_eq!(
+            infer_depth(&store, "p").expect("depth"),
+            Depth::Symbols,
+            "definitions with no resolved edge are a symbols pass"
+        );
+        let report = report(&store, "p", dir.path()).expect("report");
+        assert!(
+            report.line().contains("symbols depth"),
+            "the status line must name the depth: {}",
+            report.line()
+        );
+    }
+
+    /// The rule states a capability, not a run mode: a full pass that resolved
+    /// nothing (no call site, no import) leaves a graph that can answer exactly
+    /// what a symbols pass can, so the status line must say `symbols depth`.
+    /// Nothing gates behaviour on the value, so the label costs a truthful line
+    /// and never a wrong answer.
+    #[test]
+    fn a_full_pass_that_resolved_nothing_reports_the_capability_it_has() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "pub struct Only {\n    pub a: u32,\n}\n",
+        )
+        .expect("lib.rs");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("full");
+        assert_eq!(
+            infer_depth(&store, "p").expect("depth"),
+            Depth::Symbols,
+            "no CALLS, IMPORTS or USAGE edge: `trace` cannot answer"
+        );
+    }
+
+    /// The other direction: a graph that DID resolve a call is full, so the
+    /// narrowed rule cannot collapse every store to `Symbols`.
+    #[test]
+    fn a_store_with_a_resolved_call_is_full_depth() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "pub fn caller() { callee() }\npub fn callee() {}\n",
+        )
+        .expect("lib.rs");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("full");
+        assert_eq!(
+            infer_depth(&store, "p").expect("depth"),
+            Depth::Full,
+            "a resolved CALLS edge is what a full pass buys"
         );
     }
 
