@@ -1599,6 +1599,15 @@ impl GraphTool {
             text.push('\n');
             text.push_str(line);
         }
+        // Tool cost, stated where a caller already asks about the store's health. The
+        // numbers come from the process registry filled at the tool-call boundary, so
+        // this is measured, not estimated — and `status` itself is the cheapest action,
+        // so reading it does not distort what it reports.
+        let tool_lines = crate::tools::metrics::summary_lines();
+        if !tool_lines.is_empty() {
+            text.push('\n');
+            text.push_str(&tool_lines.join("\n"));
+        }
         Ok(AgentToolResult {
             content: vec![pa_agent::types::ToolResultContent::text(text)],
             details: serde_json::json!({
