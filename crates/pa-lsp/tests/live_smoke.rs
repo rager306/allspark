@@ -219,3 +219,87 @@ async fn symbol_layer_lsp_actions_work() {
 
     manager.shutdown_all().await;
 }
+
+/// Review #46: `shutdown_all` empties the roster AND the server is gone before it returns.
+///
+/// The defect was that eviction dropped the client without the `shutdown`/`exit`
+/// handshake. The observable is the roster plus the process: `status()` must report no
+/// live client, and the test must have seen one BEFORE the shutdown — otherwise it proves
+/// nothing (the first version of this test passed in 0.01 s without ever spawning a
+/// server, because it ignored the action's result).
+#[tokio::test]
+#[ignore = "spawns typescript-language-server; run with PA_LSP_LIVE=1 and --ignored"]
+async fn eviction_shuts_the_server_down_cleanly() {
+    if std::env::var_os("PA_LSP_LIVE").is_none() {
+        return;
+    }
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    std::fs::write(dir.path().join("package.json"), PACKAGE_JSON).expect("package.json");
+    std::fs::write(dir.path().join("tsconfig.json"), TSCONFIG).expect("tsconfig.json");
+    std::fs::write(dir.path().join("a.ts"), "const a = 1;\nexport const b = a;\n").expect("a.ts");
+    // `typescript-language-server` resolves tsserver from the workspace's node_modules.
+    // Same contract as the other live tests: the caller points PA_LSP_TYPESCRIPT at a
+    // `typescript` package directory. Without it the server cannot initialize, so the
+    // test skips rather than failing on a machine that simply lacks the fixture.
+    let Some(ts) = std::env::var_os("PA_LSP_TYPESCRIPT") else {
+        eprintln!("SKIP: PA_LSP_TYPESCRIPT is unset (point it at a `typescript` package dir)");
+        return;
+    };
+    let node_modules = dir.path().join("node_modules");
+    std::fs::create_dir_all(&node_modules).expect("node_modules");
+    #[cfg(unix)]
+    let _ = std::os::unix::fs::symlink(&ts, node_modules.join("typescript"));
+
+    let manager = std::sync::Arc::new(pa_lsp::LspManager::new());
+    let tool = std::sync::Arc::new(pa_lsp::LspTool::new(
+        manager.clone(),
+        dir.path().to_path_buf(),
+    ));
+    let result = tool
+        .clone()
+        .execute(
+            "warm".to_string(),
+            // `hover` needs a LIVE server (unlike `symbols`, which falls back to
+            // tree-sitter), so it is what actually spawns and holds a client.
+            serde_json::json!({
+                "action": "hover",
+                "file": "a.ts",
+                "line": 1,
+                "character": 7,
+                "timeout": 30,
+            }),
+            pa_agent::abort::AbortSignal::default(),
+            std::sync::Arc::new(|_| {}),
+        )
+        .await
+        .expect("hover action");
+    assert!(
+        !result.is_error,
+        "the fixture must actually reach a server, or the test proves nothing: {result:?}"
+    );
+    let live = manager.status().await;
+    assert!(
+        live.iter().any(|entry| entry.alive),
+        "a client must be live before the shutdown, or there is nothing to shut down: {live:?}"
+    );
+
+    // Shut THIS client down and learn how its server ended. A `shutdown`/`exit` handshake
+    // ends it with status 0; without one the process dies with its stdin or is killed, and
+    // `wait_exit` returns a non-zero status or times out — the defect #46 names.
+    let exited = manager
+        .shutdown_for_and_report(&dir.path().join("a.ts"))
+        .await;
+    match exited {
+        None => panic!("no live client was registered, so nothing was shut down"),
+        Some(None) => panic!("the server did not exit after shutdown (no handshake)"),
+        Some(Some(status)) => assert!(
+            status.success(),
+            "the server must exit cleanly, got {status:?}"
+        ),
+    }
+    // Idempotent: the roster is already empty for this key.
+    let _ = manager
+        .shutdown_for_and_report(&dir.path().join("a.ts"))
+        .await;
+    manager.shutdown_all().await;
+}
