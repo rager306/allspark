@@ -433,9 +433,11 @@ class Task:
         # identical-call loop is the failure mode this guard exists for, and a task
         # that wrote `0` (meaning "no repeats") silently disabled it (review #52).
         raw_repeat = spec.get("max_repeat_calls", None)
-        self.max_repeat = (
-            DEFAULT_MAX_REPEAT_CALLS if raw_repeat is None else int(raw_repeat)
-        )
+        # The comment above described this rule; the code implemented half of it
+        # (`None` only), so `0` still reached the guard and `if task.max_repeat:`
+        # treated it as "off" — the same defect, one line further down (review #52).
+        repeat = DEFAULT_MAX_REPEAT_CALLS if raw_repeat is None else int(raw_repeat)
+        self.max_repeat = repeat if repeat > 0 else DEFAULT_MAX_REPEAT_CALLS
         self.secrets_env = spec.get("secrets_env", {}) or {}
         self.hostile_env = spec.get("hostile_env", {}) or {}
         self.env = spec.get("env", {}) or {}

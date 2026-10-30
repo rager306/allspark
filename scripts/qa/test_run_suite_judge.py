@@ -69,6 +69,35 @@ class RunnerSecretEvidenceTests(unittest.TestCase):
             with self.subTest(leak_source=leak_source):
                 self.check_contaminated_trial(leak_source, "live")
 
+    def test_max_repeat_calls_zero_means_the_default_not_disabled(self):
+        """Review #52: `0` must never disable the identical-call guard.
+
+        A task that wrote `max_repeat_calls: 0` (meaning "no repeats allowed") used to
+        produce a zero budget, and the guard's `if task.max_repeat:` read that as "off" —
+        so the strictest possible request turned the check off. The rule the comment
+        states (0 or unset means the default) is now the rule the code applies.
+        """
+        cases = {
+            None: run_suite.DEFAULT_MAX_REPEAT_CALLS,
+            0: run_suite.DEFAULT_MAX_REPEAT_CALLS,
+            1: 1,
+            5: 5,
+        }
+        for declared, expected in cases.items():
+            with tempfile.TemporaryDirectory() as tmp:
+                task_dir = Path(tmp) / "task"
+                task_dir.mkdir()
+                body = "id: repeat\nlane: faux\nnetwork: off\nprompt: p\n"
+                if declared is not None:
+                    body += f"max_repeat_calls: {declared}\n"
+                body += ("oracle:\n  type: state\n  spec:\n    - exit_code: 0\n")
+                (task_dir / "task.yaml").write_text(body)
+                (task_dir / "faux-script.json").write_text("[]")
+                task = run_suite.Task(task_dir)
+                self.assertEqual(
+                    task.max_repeat, expected,
+                    f"max_repeat_calls={declared!r} must mean {expected}")
+
     def test_explicit_scripted_fixture_keeps_deterministic_failure(self):
         self.check_contaminated_trial("transcript", "scripted")
 
