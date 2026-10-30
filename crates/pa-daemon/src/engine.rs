@@ -119,6 +119,11 @@ pub trait SessionEngine: Send + Sync {
         let _ = (steering, follow_up);
     }
 
+    /// Switch the provider transport live: the agent carries it from its next
+    /// request on. The persisted setting is what a later session build reads;
+    /// this is the running session's half of the same switch.
+    fn set_transport(&self, _transport: pa_agent::types::Transport) {}
+
     /// Run one side question: a second LLM turn over a clone of the
     /// conversation, excluded from the session history. `signal` aborts;
     /// `sink` receives partial answers.

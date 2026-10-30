@@ -71,14 +71,51 @@ pub enum QueueModeSetting {
     OneAtATime,
 }
 
+/// The preferred provider transport (TS `Transport = "sse" | "websocket" |
+/// "websocket-cached" | "auto"`).
+///
+/// The names are the TS wire names, not a case derivation of the variant
+/// names: `rename_all = "kebab-case"` spells `WebSocket` as `"web-socket"`,
+/// which no peer writes and the settings menu never sends, so the persisted
+/// default was unreadable and every session fell back to `Auto`. The alias
+/// keeps a `"web-socket"` file that an earlier build wrote readable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TransportSetting {
     Auto,
     Sse,
+    #[serde(rename = "websocket", alias = "web-socket")]
     WebSocket,
     #[serde(rename = "websocket-cached")]
     WebSocketCached,
+}
+
+impl TransportSetting {
+    /// The agent-side vocabulary for the same choice: the session hands it to
+    /// `AgentOptions.transport`, which every request of the agent carries.
+    #[must_use]
+    pub fn agent_transport(self) -> pa_agent::types::Transport {
+        match self {
+            TransportSetting::Auto => pa_agent::types::Transport::Auto,
+            TransportSetting::Sse => pa_agent::types::Transport::Sse,
+            TransportSetting::WebSocket => pa_agent::types::Transport::Websocket,
+            TransportSetting::WebSocketCached => pa_agent::types::Transport::WebsocketCached,
+        }
+    }
+}
+
+impl From<pa_types::ai::Transport> for TransportSetting {
+    /// The `set_transport` command's wire value as the persisted setting. Each
+    /// option survives as itself: `websocket-cached` is a distinct choice (the
+    /// Codex continuation), not a spelling of `websocket`.
+    fn from(transport: pa_types::ai::Transport) -> Self {
+        match transport {
+            pa_types::ai::Transport::Auto => TransportSetting::Auto,
+            pa_types::ai::Transport::Sse => TransportSetting::Sse,
+            pa_types::ai::Transport::Websocket => TransportSetting::WebSocket,
+            pa_types::ai::Transport::WebsocketCached => TransportSetting::WebSocketCached,
+        }
+    }
 }
 
 fn deserialize_threshold_percent<'de, D: serde::Deserializer<'de>>(
@@ -764,6 +801,33 @@ mod tests {
             "settings/types.rs declares a second `mcpServers` type; the engine \
              parses `crate::mcp::McpServerConfig`"
         );
+    }
+
+    /// `transport` is persisted and read in the TS wire spelling. `rename_all
+    /// = "kebab-case"` spells the `WebSocket` variant `"web-socket"`, which no
+    /// peer writes: the menu's `"websocket"` choice loaded as unset and the
+    /// setting silently read `auto` for every session.
+    #[test]
+    fn the_transport_setting_uses_the_ts_wire_spelling() {
+        for (value, expected) in [
+            ("sse", TransportSetting::Sse),
+            ("websocket", TransportSetting::WebSocket),
+            ("websocket-cached", TransportSetting::WebSocketCached),
+            ("auto", TransportSetting::Auto),
+        ] {
+            let parsed: TransportSetting =
+                serde_json::from_value(serde_json::Value::String(value.to_string())).unwrap();
+            assert_eq!(parsed, expected, "`{value}` is the TS wire name");
+            assert_eq!(
+                serde_json::to_value(expected).unwrap(),
+                serde_json::Value::String(value.to_string()),
+                "`{value}` must persist as the peer reads it"
+            );
+        }
+        // A file an earlier build wrote stays readable.
+        let legacy: TransportSetting =
+            serde_json::from_value(serde_json::Value::String("web-socket".to_string())).unwrap();
+        assert_eq!(legacy, TransportSetting::WebSocket);
     }
 
     /// `Settings.mcp_servers` keeps the entry as the user wrote it, and the

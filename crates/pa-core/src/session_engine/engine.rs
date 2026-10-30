@@ -301,6 +301,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
 
     let refinement_settings = settings.reopen();
     let service_tier_preference = settings.get_default_service_tier();
+    // Captured before `settings` moves into the resource loader: the preferred
+    // provider transport (`Settings.transport`, `auto` when unset, the TS
+    // `getTransport()` default). Every request of the session carries it.
+    let transport = settings.get_transport().agent_transport();
     // Captured before `settings` moves into the resource loader: the
     // compaction budget and the auto-refine gates.
     let compaction_settings = settings.settings().compaction.clone().unwrap_or_default();
@@ -968,6 +972,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         should_stop_before_turn: config.queued_steering_probe.clone(),
         steering_mode: config.steering_mode,
         follow_up_mode: config.follow_up_mode,
+        transport: Some(transport),
         ..Default::default()
     });
 
@@ -1396,3 +1401,6 @@ mod tests;
 
 #[cfg(test)]
 mod append_system_tests;
+
+#[cfg(test)]
+mod transport_tests;

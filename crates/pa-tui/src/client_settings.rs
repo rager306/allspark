@@ -138,6 +138,13 @@ pub trait ClientSettings: Send + Sync {
     ///
     /// Returns `Err` when the settings store fails.
     fn set_quiet_startup(&self, quiet: bool) -> Result<()>;
+    /// `transport` in wire form (`sse`/`websocket`/`websocket-cached`/`auto`;
+    /// TS `getTransport()`, `auto` when unset) — the settings menu's current
+    /// value for the Transport row. A missing seam answers `auto`, the TS
+    /// default, so the row never claims a choice nobody made.
+    fn transport(&self) -> String {
+        "auto".to_string()
+    }
     /// `idleEvictionMinutes` wire form (a number or `off`).
     fn idle_eviction_minutes(&self) -> String;
     /// Persists the `idleEvictionMinutes` wire form to the global scope.

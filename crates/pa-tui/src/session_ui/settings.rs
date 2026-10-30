@@ -238,6 +238,7 @@ impl SessionUi {
             values.clear_on_shrink = settings.clear_on_shrink();
             values.terminal_progress = settings.show_terminal_progress();
             values.idle_eviction_minutes = settings.idle_eviction_minutes();
+            values.transport = settings.transport();
             values.mermaid = settings.mermaid_rendering_mode();
             values.quiet_startup = settings.quiet_startup();
             values.tree_filter_mode = settings.tree_filter_mode();

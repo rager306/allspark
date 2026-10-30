@@ -1510,4 +1510,14 @@ impl SessionEngine for AgentSessionEngine {
             }
         }
     }
+
+    /// `set_transport`: the live agent asks for the new transport from its next
+    /// request on. A session not built yet reads the persisted setting at
+    /// build, so there is nothing to hand over.
+    fn set_transport(&self, transport: pa_agent::types::Transport) {
+        let agent = self.turn_agent.lock().expect("turn agent lock").clone();
+        if let Some(agent) = agent {
+            agent.set_transport(Some(transport));
+        }
+    }
 }

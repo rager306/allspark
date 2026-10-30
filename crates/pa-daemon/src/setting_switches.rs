@@ -428,8 +428,9 @@ impl Worker {
         response_success(None, "set_service_tier", None)
     }
 
-    /// `set_transport { transport }`: persist the transport setting; the live stream resolves
-    /// transport per request from settings, so the persisted default is the whole switch.
+    /// `set_transport { transport }`: the preferred provider transport. Persisted as the
+    /// default for later sessions, and handed to the live agent, which carries it on
+    /// every request from the next one on.
     pub(crate) fn handle_set_transport(&self, payload: &Value) -> DaemonResponse {
         if let Err(response) = self.require_created("set_transport") {
             return response;
@@ -449,17 +450,15 @@ impl Worker {
         let core = self.core.lock().unwrap();
         let cwd = core.cwd.clone();
         drop(core);
-        let setting = match transport {
-            Transport::Auto => pa_core::settings::TransportSetting::Auto,
-            Transport::Sse => pa_core::settings::TransportSetting::Sse,
-            Transport::Websocket | Transport::WebsocketCached => {
-                pa_core::settings::TransportSetting::WebSocket
-            }
-        };
+        // The setting's own vocabulary goes two places: the file (the default a later
+        // session build reads) and the running agent (which carries it from its next
+        // request on). One conversion, so the two cannot disagree.
+        let setting = pa_core::settings::TransportSetting::from(transport);
         let mut settings = pa_core::settings::SettingsManager::create(&cwd, &self.config.agent_dir);
         if let Err(error) = settings.set_transport(setting) {
             return response_failure(None, "set_transport", &error.to_string(), None);
         }
+        self.engine.set_transport(setting.agent_transport());
         response_success(None, "set_transport", None)
     }
 
@@ -1028,6 +1027,43 @@ mod tests {
             )
             .await;
         assert_eq!(state.data.expect("data")["serviceTier"], json!("default"));
+    }
+
+    /// Every transport choice survives the round trip as itself: `websocket-cached`
+    /// is a distinct option (the Codex continuation), and collapsing it into
+    /// `websocket` returns a value the user never picked.
+    #[tokio::test]
+    async fn set_transport_persists_each_choice_as_itself() {
+        let dir = std::env::temp_dir().join(format!("pa-worker-tr-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("agent")).unwrap();
+        let worker = Arc::new(Worker::new(worker_config(&dir), None));
+        let created = worker
+            .dispatch("create", &json!({ "noSession": true, "cwd": dir }))
+            .await;
+        assert!(created.success);
+        for (wire, expected) in [
+            (
+                "websocket-cached",
+                pa_core::settings::TransportSetting::WebSocketCached,
+            ),
+            ("websocket", pa_core::settings::TransportSetting::WebSocket),
+            ("sse", pa_core::settings::TransportSetting::Sse),
+            ("auto", pa_core::settings::TransportSetting::Auto),
+        ] {
+            let response = worker
+                .dispatch(
+                    "set_transport",
+                    &json!({ "activeSessionId": "switch-session", "transport": wire }),
+                )
+                .await;
+            assert!(response.success, "`{wire}` was refused: {response:?}");
+            let settings = pa_core::settings::SettingsManager::create(&dir, dir.join("agent"));
+            assert_eq!(
+                settings.get_transport(),
+                expected,
+                "`{wire}` must read back as itself"
+            );
+        }
     }
 
     #[tokio::test]

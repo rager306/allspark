@@ -356,7 +356,9 @@ struct AgentInner {
     /// await.
     model_override: Mutex<Option<AgentModelOverride>>,
     session_id: Option<String>,
-    transport: Option<crate::types::Transport>,
+    /// The requested provider transport. A plain mutex like the queue modes: read at
+    /// run-config build, so a live switch applies from the next request.
+    transport: Mutex<Option<crate::types::Transport>>,
     tool_execution: ToolExecutionMode,
     tool_progress: ToolProgressCadence,
 }
@@ -574,7 +576,7 @@ impl AgentInner {
         config.max_tokens = None;
         config.reasoning = reasoning;
         config.session_id.clone_from(&self.session_id);
-        config.transport = self.transport;
+        config.transport = *self.transport.lock().unwrap();
         config.transform_context.clone_from(&self.transform_context);
         config.get_api_key.clone_from(&self.get_api_key);
         config.should_stop_after_turn = should_stop_after_turn;
@@ -813,7 +815,7 @@ impl Agent {
             message_end_transform: Mutex::new(None),
             model_override: Mutex::new(None),
             session_id: options.session_id,
-            transport: options.transport,
+            transport: Mutex::new(options.transport),
             tool_execution: options
                 .tool_execution
                 .unwrap_or(ToolExecutionMode::Parallel),
@@ -989,6 +991,16 @@ impl Agent {
     /// Panics if the `message_end_transform` mutex is poisoned.
     pub fn set_message_end_transform(&self, transform: Option<MessageEndTransformFn>) {
         *self.inner.message_end_transform.lock().unwrap() = transform;
+    }
+
+    /// Set the transport every request asks for, from the next one on (the
+    /// daemon's `set_transport`); `None` leaves the choice to the provider.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `transport` mutex is poisoned.
+    pub fn set_transport(&self, transport: Option<crate::types::Transport>) {
+        *self.inner.transport.lock().unwrap() = transport;
     }
 
     /// # Panics
@@ -1607,6 +1619,77 @@ mod tests {
         assert_eq!(
             mixed, 0,
             "every snapshot carries a consistent (model, level) pair"
+        );
+    }
+
+    /// A transport switched while the agent lives is what the NEXT request asks
+    /// for: the run config is built per run, so `set_transport` is read there and
+    /// not frozen at construction (the daemon's live `set_transport` writes it).
+    #[tokio::test]
+    async fn a_switched_transport_applies_to_the_next_request() {
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let capture = std::sync::Arc::clone(&observed);
+        let stream_fn: crate::stream::StreamFn = std::sync::Arc::new(
+            move |requested: Model,
+                  _context: crate::stream::LlmContext,
+                  options: crate::stream::StreamRequestOptions| {
+                capture.lock().unwrap().push(options.transport);
+                let message = crate::types::AssistantMessage {
+                    content: vec![crate::types::AssistantContent::Text(
+                        crate::types::TextContent {
+                            text: "ok".to_string(),
+                            text_signature: None,
+                        },
+                    )],
+                    api: requested.api,
+                    provider: requested.provider,
+                    model: requested.id,
+                    response_model: None,
+                    response_id: None,
+                    diagnostics: None,
+                    usage: Usage::zero(),
+                    stop_reason: crate::types::StopReason::Stop,
+                    error_message: None,
+                    stop_reason_raw: None,
+                    timestamp: 0,
+                };
+                Box::pin(async move {
+                    let (handle, consumer) = crate::stream::event_stream();
+                    handle.push(crate::stream::AssistantMessageEvent::Done {
+                        reason: crate::types::StopReason::Stop,
+                        message: message.clone(),
+                    });
+                    handle.end(Some(message));
+                    Ok(Box::new(consumer) as Box<dyn crate::stream::ModelStream>)
+                })
+            },
+        );
+        let agent = Agent::new(AgentOptions {
+            initial_state: AgentInitialState {
+                system_prompt: Some("s".to_string()),
+                ..Default::default()
+            },
+            stream_fn: Some(stream_fn),
+            transport: Some(crate::types::Transport::Sse),
+            ..Default::default()
+        });
+        agent
+            .prompt(AgentPromptInput::text("first"))
+            .await
+            .expect("run");
+        agent.wait_for_idle().await;
+        agent.set_transport(Some(crate::types::Transport::WebsocketCached));
+        agent
+            .prompt(AgentPromptInput::text("second"))
+            .await
+            .expect("run");
+        agent.wait_for_idle().await;
+        assert_eq!(
+            *observed.lock().unwrap(),
+            vec![
+                Some(crate::types::Transport::Sse),
+                Some(crate::types::Transport::WebsocketCached),
+            ]
         );
     }
 }

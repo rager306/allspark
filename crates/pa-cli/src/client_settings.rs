@@ -113,6 +113,16 @@ impl ClientSettings for CliClientSettings {
         self.manager().set_theme(theme.to_string())
     }
 
+    fn transport(&self) -> String {
+        // The persisted default in its wire spelling; `auto` when unset. The
+        // row shows what the setting actually says, so `websocket-cached` is
+        // not displayed as `websocket`.
+        serde_json::to_value(self.manager().get_transport())
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_else(|| "auto".to_string())
+    }
+
     fn default_service_tier(&self) -> String {
         // The wire name of the persisted default tier; "default" when
         // unset or unreadable.
