@@ -3,7 +3,7 @@
 //!
 //! `pa-edit` is the Rust port of oh-my-pi's `pi-edit`; it drives every edit
 //! mode (`replace`, `patch`, `apply_patch`, `hashline`, `sloppy`) through one
-//! [`pa_edit::Session`]. This tool exposes that engine as a first-class agent
+//! [`crate::Session`]. This tool exposes that engine as a first-class agent
 //! tool so the model can edit files without the Python `skills/edit` facade.
 //!
 //! The Python facade (`skills/edit`) and the TS-parity `crates/pa-core/src/
@@ -21,7 +21,7 @@
 //!
 //! ## Store lifetime
 //!
-//! [`pa_edit::EditStore`] is `Clone` (it wraps `Arc<Mutex<..>>`), so the tool
+//! [`crate::EditStore`] is `Clone` (it wraps `Arc<Mutex<..>>`), so the tool
 //! holds one shared store and clones it per call. That keeps the seen-line and
 //! no-op-loop guards alive across successive `edit` calls in a session — the
 //! same continuity the TS surface had.
@@ -29,14 +29,14 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use async_trait::async_trait;
-use pa_agent::abort::AbortSignal;
-use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
-use pa_edit::session::SessionConfig;
-use pa_edit::{
+use crate::session::SessionConfig;
+use crate::{
     ApplyRequest, EditMode, EditResult, EditStore, EditWriter, FileOp, PathPolicy, Session,
     WriteRequest, WriteResponse,
 };
+use async_trait::async_trait;
+use pa_agent::abort::AbortSignal;
+use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
 
 /// The modes this tool can drive, in wire order (used for the JSON-schema
 /// enum and the description).
@@ -216,9 +216,9 @@ impl EditHybridTool {
     }
 }
 
-/// Turn an [`pa_edit::ApplyOutcome`] into the agent result: model-facing text
+/// Turn an [`crate::ApplyOutcome`] into the agent result: model-facing text
 /// plus a structured `diffs` detail per file.
-fn outcome_result(outcome: pa_edit::ApplyOutcome) -> AgentToolResult {
+fn outcome_result(outcome: crate::ApplyOutcome) -> AgentToolResult {
     let mut text = outcome.text;
     let mut diffs = Vec::with_capacity(outcome.files.len());
     for file in &outcome.files {
@@ -350,7 +350,7 @@ struct FsWriter {
 impl EditWriter for FsWriter {
     async fn write(&self, request: WriteRequest) -> EditResult<WriteResponse> {
         let write_err = |path: &std::path::Path, err: std::io::Error| {
-            pa_edit::EditError::Writer(format!("write {}: {err}", path.display()))
+            crate::EditError::Writer(format!("write {}: {err}", path.display()))
         };
         match request.op {
             FileOp::Delete => {
@@ -367,9 +367,9 @@ impl EditWriter for FsWriter {
                     if let Some(bytes) = &existing {
                         let text = String::from_utf8_lossy(bytes);
                         if let Some(expected) = &request.expected_hash {
-                            let actual = pa_edit::file_hash(&text);
+                            let actual = crate::file_hash(&text);
                             if &actual != expected {
-                                return Err(pa_edit::EditError::Writer(format!(
+                                return Err(crate::EditError::Writer(format!(
                                     "{} changed since it was read (hash {expected} -> {actual}); \
                                      re-read it and plan the edit again",
                                     request.display
@@ -377,7 +377,7 @@ impl EditWriter for FsWriter {
                             }
                         }
                     } else if request.expected_hash.is_some() {
-                        return Err(pa_edit::EditError::Writer(format!(
+                        return Err(crate::EditError::Writer(format!(
                             "{} no longer exists; the edit was planned against a file that is gone",
                             request.display
                         )));
@@ -472,7 +472,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("a.rs");
         std::fs::write(&path, "pub fn one() {}\n").expect("seed");
-        let planned = pa_edit::file_hash("pub fn one() {}\n");
+        let planned = crate::file_hash("pub fn one() {}\n");
         let writer = FsWriter { lsp: None };
 
         // Someone else edits the file between planning and writing.
@@ -622,7 +622,7 @@ mod tests {
     async fn hashline_round_trip_with_a_live_tag() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "before\n").unwrap();
-        let tag = pa_edit::store::file_hash("before\n");
+        let tag = crate::store::file_hash("before\n");
         let tool = tool_for(dir.path(), EditMode::Hashline, all_modes());
         let payload = format!("[a.txt#{tag}]\nPUT 1.=1:\n+after");
         let result = call(
@@ -685,7 +685,7 @@ mod tests {
         // byte-identical no-op payload for the same file.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "before\n").unwrap();
-        let tag = pa_edit::store::file_hash("before\n");
+        let tag = crate::store::file_hash("before\n");
         let tool = tool_for(dir.path(), EditMode::Hashline, all_modes());
         // A payload that parses but changes nothing (body == existing line).
         let payload = format!("[a.txt#{tag}]\nPUT 1.=1:\n+before");
@@ -795,7 +795,7 @@ mod tests {
     fn the_edit_tool_declares_a_sequential_execution_constraint() {
         let dir = tempfile::tempdir().unwrap();
         let tool = EditHybridTool::new(
-            Arc::new(Mutex::new(pa_edit::EditStore::new())),
+            Arc::new(Mutex::new(crate::EditStore::new())),
             None,
             dir.path().to_path_buf(),
             EditMode::Replace,

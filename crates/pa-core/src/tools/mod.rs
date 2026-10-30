@@ -1,9 +1,6 @@
 //! All modules are `pub(crate)` internals of the tools subsystem; the
 //! crate facade (crate root) re-exports only the public tool surface.
 
-// The native `edit` tool over the pa-edit engine (fork-only; gated by
-// `editHybrid.enabled`, default ON).
-pub(crate) mod edit_hybrid;
 pub(crate) mod golden_replay;
 // The native code-graph tool (fork-only; gated by `graph.enabled`).
 pub(crate) mod graph;

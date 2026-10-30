@@ -669,7 +669,7 @@ Fork-only crates. These carry `// FORK-ONLY` markers and must not be pushed upst
 | --- | --- | --- |
 | `pa-ast` | tree-sitter parsing + ast-grep structural search (ported from oh-my-pi's `pi-ast`) | none |
 | `pa-diff` | Line/word diff primitives shared by the edit engine and the TUI | none |
-| `pa-edit` | Edit engine: `replace`, `patch`, `apply_patch`, `hashline`, `sloppy` + streaming session | `pa-ast`, `pa-diff` |
+| `pa-edit` | Edit engine: `replace`, `patch`, `apply_patch`, `hashline`, `sloppy` + streaming session, and the native `edit` agent tool (`src/tool.rs`) | `pa-agent`, `pa-ast`, `pa-diff`, `pa-lsp`, `pa-types` |
 | `pa-graph` | On-disk SQLite code graph: FTS5 symbol search, RRF hybrid ranking, call/import edges, coverage | `pa-ast` |
 | `pa-jev` | Typed-judgment ("System One") wire types and client: three question primitives, calibrated probabilities | none (own minimal transport, stays a leaf) |
 | `pa-lsp` | Native LSP tool: symbol-aware navigation, diagnostics diff, symbol edits, per-project mux | `pa-agent`, `pa-types`, `pa-ast` |

@@ -1325,7 +1325,7 @@ mod tests {
         // model actually receives on a session with `editHybrid.enabled`. (It priced the bash
         // definition before upstream removed the built-in bash tool as dead code.)
         let tool: std::sync::Arc<dyn pa_agent::types::AgentTool> =
-            std::sync::Arc::new(crate::tools::edit_hybrid::EditHybridTool::new(
+            std::sync::Arc::new(pa_edit::tool::EditHybridTool::new(
                 std::sync::Arc::new(std::sync::Mutex::new(pa_edit::EditStore::new())),
                 None,
                 std::path::PathBuf::from("/tmp"),

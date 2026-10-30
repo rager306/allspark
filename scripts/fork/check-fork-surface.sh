@@ -32,7 +32,6 @@ EXPECTED_NATIVE="edit graph jev lsp"
 INSIDERS=(
   crates/pa-core/src/tools/graph.rs
   crates/pa-core/src/tools/graph_in_flight.rs
-  crates/pa-core/src/tools/edit_hybrid.rs
   crates/pa-core/src/tools/repeat_codec.rs
   crates/pa-core/src/jev
   crates/pa-core/src/session_engine/tool_bridge.rs
@@ -95,7 +94,6 @@ EXPECTED_NATIVE="edit graph jev lsp"
 INSIDERS=(
   crates/pa-core/src/tools/graph.rs
   crates/pa-core/src/tools/graph_in_flight.rs
-  crates/pa-core/src/tools/edit_hybrid.rs
   crates/pa-core/src/tools/repeat_codec.rs
   crates/pa-core/src/jev
   crates/pa-core/src/session_engine/tool_bridge.rs
@@ -174,6 +172,15 @@ for path in "${INSIDERS[@]}"; do
   fi
 done
 [[ $missing -eq 0 ]] && pass "${#INSIDERS[@]} fork-owned paths inside upstream crates present"
+
+# ── 4b. The native edit tool lives in pa-edit, not pa-core ────────────────────
+# Moved 2026-10-30: it depends only on the engine, and keeping it inside pa-core
+# bought nothing but merge surface. It must not drift back.
+if [[ -f crates/pa-edit/src/tool.rs ]] && [[ ! -f crates/pa-core/src/tools/edit_hybrid.rs ]]; then
+  pass "native edit tool lives in pa-edit (fork crate), not pa-core"
+else
+  bad "native edit tool moved back into pa-core (or vanished from pa-edit)"
+fi
 
 # ── 5. The E1 codec export survives (kernel stdout spill) ────────────────────
 # `decode_repeated_output` is the fork's reversible representation for clipped

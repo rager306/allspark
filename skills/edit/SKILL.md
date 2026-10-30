@@ -34,6 +34,20 @@ Or from a shell cell:
 - **A refused edit leaves the file untouched.** Duplicate match, absent match,
   and missing file all fail before any write.
 
-This skill duplicates a slice of the native `pa-edit` engine (the `edit` tool).
-When the two disagree, the engine is the reference: it detects the line ending
-with `detect_line_ending` and writes it back. Keep this skill in step.
+## Three things are called "edit"
+
+The name is shared; the surfaces are not. Pick by where you are:
+
+| surface | how you reach it | what it is |
+|---|---|---|
+| **this skill** | `await edit(path=…, old_str=…, new_str=…)` in a Python cell, or `!edit --path …` in a shell cell | the kernel's one-shot string replace; no modes, no streaming |
+| **the native `edit` tool** | called by the model directly, gated by `editHybrid.enabled` | `pa-edit`'s full engine: `replace`, `patch`, `apply_patch`, `hashline`, `sloppy`; multi-file, atomic, precondition-checked |
+| **the engine** | `pa_edit::Session` (Rust) | what the native tool drives; `pa-edit` crate |
+
+**Prefer the native tool** for anything beyond a single exact replacement — it
+carries modes, file preconditions, and post-write LSP diagnostics. This skill
+exists for the kernel path, where only a one-shot replace is available.
+
+This skill duplicates a slice of the engine. When the two disagree, the engine
+is the reference: it detects the line ending with `detect_line_ending` and
+writes it back. Keep this skill in step.

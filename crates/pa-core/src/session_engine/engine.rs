@@ -800,7 +800,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 .copied()
                 .unwrap_or(pa_edit::EditMode::Replace)
         };
-        tools.push(Arc::new(crate::tools::edit_hybrid::EditHybridTool::new(
+        tools.push(Arc::new(pa_edit::tool::EditHybridTool::new(
             store,
             lsp_manager.clone(),
             cwd.clone(),

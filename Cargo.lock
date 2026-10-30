@@ -2234,11 +2234,15 @@ dependencies = [
 name = "pa-edit"
 version = "0.10.3-beta.1"
 dependencies = [
+ "anyhow",
  "async-trait",
  "globset",
  "ignore",
+ "pa-agent",
  "pa-ast",
  "pa-diff",
+ "pa-lsp",
+ "pa-types",
  "parking_lot",
  "regex",
  "serde",
@@ -2246,6 +2250,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tracing",
  "tree-sitter-lua",
  "unicode-normalization",
  "xxhash-rust",

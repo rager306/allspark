@@ -80,6 +80,12 @@ pub mod session;
 pub mod store;
 pub mod stream_json;
 pub mod text;
+/// The native `edit` tool (fork-only): the agent-tool surface over this engine.
+///
+/// It lives here, not in `pa-core`, because its only dependencies are this engine and
+/// `pa-agent`/`pa-lsp` — `pa-core` never modified it and upstream never touched it, so
+/// keeping it in `pa-core` bought nothing but merge surface.
+pub mod tool;
 
 pub use engine::{
     EditMode, FileOp, FileOpIntent, HeaderKind, Inspection, ModeEngine, PreviewFile, Resolved,

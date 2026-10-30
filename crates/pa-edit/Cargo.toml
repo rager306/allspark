@@ -11,16 +11,24 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+anyhow.workspace = true
 async-trait.workspace = true
 globset.workspace = true
 ignore.workspace = true
+pa-agent = { path = "../pa-agent" }
 pa-ast.workspace = true
 pa-diff.workspace = true
+# The native `edit` tool (fork-only) lives here rather than in pa-core: it is a thin
+# surface over this engine and needs only the LSP manager for post-write diagnostics.
+# `pa-lsp` does not depend on `pa-edit`, so this introduces no cycle.
+pa-lsp = { path = "../pa-lsp" }
+pa-types = { path = "../pa-types" }
 parking_lot.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 unicode-normalization.workspace = true
 xxhash-rust.workspace = true
 
