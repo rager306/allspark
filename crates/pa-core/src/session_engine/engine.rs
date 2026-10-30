@@ -200,11 +200,28 @@ fn mcp_gating_blocking(
 /// Join the host's append-system-prompt sources with any Phase-7 profile
 /// addenda (context first, then modes). Returns the joined prompt (empty when
 /// there is nothing to append).
+/// Join the host's append-system-prompt sources with a profile's addenda.
+///
+/// Both halves are prompt input, and a prompt is model input and cache payload at once
+/// (AGENTS.md: prompt-input caps are part of the contract), so each segment is capped
+/// through the same helper every other prompt file uses. The cap used to stop at the
+/// loader: a `context` or `mode` addendum from settings was pushed and joined without a
+/// ceiling at all (review #36), so a settings document could spend the whole window
+/// before the model read a single instruction.
+///
+/// The marker matters as much as the cap: a silently shortened addendum reads as if the
+/// author wrote it that way.
 fn profile_append_prompt(sources: &[String], addenda: &[String]) -> String {
     sources
         .iter()
         .chain(addenda.iter())
-        .cloned()
+        .map(|segment| {
+            crate::resources::truncate_context_content_marked(
+                segment,
+                crate::resources::MAX_CONTEXT_FILE_BYTES,
+                "PROFILE ADDENDUM",
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n\n")
 }

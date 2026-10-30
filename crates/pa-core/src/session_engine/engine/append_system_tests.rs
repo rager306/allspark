@@ -185,3 +185,36 @@ async fn append_system_preserves_default_system_layers() {
     })
     .await;
 }
+
+/// Review #36: a profile addendum is prompt input and must hit the same cap as every
+/// other prompt file.
+///
+/// The loader capped context files; a `context`/`mode` addendum from settings was joined
+/// with NO ceiling, so a settings document could spend the window before the model read a
+/// single instruction. Two things are asserted: the cap fires, and it SAYS it fired —
+/// a silently shortened addendum reads as if the author wrote it that way.
+#[test]
+fn an_oversized_profile_addendum_is_capped_and_marked() {
+    let huge = "A".repeat(crate::resources::MAX_CONTEXT_FILE_BYTES * 2);
+    let joined = profile_append_prompt(&["HOST_SEGMENT".to_string()], std::slice::from_ref(&huge));
+    assert!(
+        joined.len() < huge.len(),
+        "the cap must shorten the addendum: {} bytes in, {} out",
+        huge.len(),
+        joined.len()
+    );
+    assert!(
+        joined.contains("PROFILE ADDENDUM TRUNCATED"),
+        "truncation must be visible to the model, not only to a log"
+    );
+    // The uncapped half is untouched: the cap is per segment, so one oversized addendum
+    // cannot push out the host's own instructions.
+    assert!(joined.contains("HOST_SEGMENT"));
+}
+
+/// A small addendum passes through byte for byte, with no marker.
+#[test]
+fn a_small_profile_addendum_is_unchanged() {
+    let joined = profile_append_prompt(&[], &["be brief".to_string()]);
+    assert_eq!(joined, "be brief");
+}
