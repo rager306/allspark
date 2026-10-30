@@ -120,6 +120,21 @@ else
   fail=1
 fi
 
+step "fork surface (native tools, fork-owned files)"
+# Cheap, and it is the only detector for the class the v0.10.3-beta.1 merge produced:
+# upstream deleted modules the fork consumed, and nothing went red until a human read
+# `cargo check`. Runs before fmt so a dropped native tool fails in seconds.
+if bash "$ROOT/scripts/fork/check-fork-surface.sh" >"$OUT/fork-surface.log" 2>&1; then
+  grep '^  ok' "$OUT/fork-surface.log" | sed 's/^  ok    /fork: /'
+else
+  # Exit immediately: a broken surface contract makes every later stage
+  # meaningless (clippy on a tree that lost a native tool is wasted minutes), and
+  # the point of this step is to fail in seconds.
+  echo "fork surface: FAILED"; cat "$OUT/fork-surface.log"
+  echo; echo "GATE RED (fork surface). Log: $OUT/fork-surface.log"
+  exit 1
+fi
+
 step "target liveness"
 if check_target_liveness; then
   echo "target: live"
