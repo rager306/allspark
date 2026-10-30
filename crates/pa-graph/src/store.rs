@@ -1065,16 +1065,6 @@ impl GraphStore {
         Ok(stale.len())
     }
 
-    /// Delete a node's FTS row. The table is `contentless_delete=1`, so a
-    /// plain rowid delete is accepted.
-    ///
-    /// # Errors
-    /// Propagates SQLite errors.
-    pub fn delete_fts(&self, node_id: i64) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM symbols_fts WHERE rowid = ?1", params![node_id])?;
-        Ok(())
-    }
 
     /// Write a node's searchable text into the contentless FTS5 table.
     ///

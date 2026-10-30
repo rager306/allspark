@@ -7,7 +7,7 @@
 //! stores one on every `CALLS` edge); risk labels flag edges whose confidence
 //! is low or whose strategy is heuristic.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 
 use rusqlite::Connection;
 use serde_json::Value;
@@ -740,27 +740,6 @@ pub fn data_flow(
         Ok((caller, args))
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-}
-
-/// Degree summary used by the `graph` channel ranking and diagnostics.
-#[must_use]
-pub fn degree_map(store: &GraphStore, project: &str) -> HashMap<i64, (usize, usize)> {
-    let mut out = HashMap::new();
-    let Ok(conn) = Ok::<_, GraphError>(store.connection()) else {
-        return out;
-    };
-    let Ok(mut stmt) = conn.prepare("SELECT id FROM nodes WHERE project = ?1") else {
-        return out;
-    };
-    let Ok(ids) = stmt.query_map([project], |r| r.get::<_, i64>(0)) else {
-        return out;
-    };
-    for id in ids.flatten() {
-        if let Ok((i, o)) = store.degree(id) {
-            out.insert(id, (i, o));
-        }
-    }
-    out
 }
 
 #[cfg(test)]
