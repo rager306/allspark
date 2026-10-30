@@ -30,7 +30,11 @@ bad()  { printf '  FAIL  %s\n' "$*"; fail=1; }
 ENGINE="crates/pa-core/src/session_engine/engine.rs"
 EXPECTED_NATIVE="edit graph jev lsp"
 INSIDERS=(
-  crates/pa-core/src/tools/graph.rs
+  crates/pa-core/src/tools/graph/mod.rs
+  crates/pa-core/src/tools/graph/reports.rs
+  crates/pa-core/src/tools/graph/build.rs
+  crates/pa-core/src/tools/graph/args.rs
+  crates/pa-core/src/tools/graph/tool
   crates/pa-core/src/tools/graph_in_flight.rs
   crates/pa-core/src/tools/repeat_codec.rs
   crates/pa-core/src/jev
@@ -92,7 +96,11 @@ fi
 ENGINE="crates/pa-core/src/session_engine/engine.rs"
 EXPECTED_NATIVE="edit graph jev lsp"
 INSIDERS=(
-  crates/pa-core/src/tools/graph.rs
+  crates/pa-core/src/tools/graph/mod.rs
+  crates/pa-core/src/tools/graph/reports.rs
+  crates/pa-core/src/tools/graph/build.rs
+  crates/pa-core/src/tools/graph/args.rs
+  crates/pa-core/src/tools/graph/tool
   crates/pa-core/src/tools/graph_in_flight.rs
   crates/pa-core/src/tools/repeat_codec.rs
   crates/pa-core/src/jev
