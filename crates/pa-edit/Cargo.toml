@@ -25,7 +25,6 @@ pa-lsp = { path = "../pa-lsp" }
 pa-types = { path = "../pa-types" }
 parking_lot.workspace = true
 regex.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

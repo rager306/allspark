@@ -19,6 +19,8 @@
 //! sorted by `(kind, name, start_line)`) so byte equality of the serialization
 //! is equality of the surface, independent of `serde_json` map ordering.
 
+use crate::json_escape::escape;
+
 use pa_ast::SupportLang;
 use sha2::{Digest, Sha256};
 use tree_sitter::Node;
@@ -136,26 +138,6 @@ fn canonical_json(lang: SupportLang, module: &str, symbols: &[SurfaceSymbol]) ->
         out.push_str("\"}");
     }
     out.push_str("]}");
-    out
-}
-
-/// Minimal JSON string escaping (control chars, `"`, `\`).
-fn escape(value: &str) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(value.len());
-    for c in value.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
     out
 }
 

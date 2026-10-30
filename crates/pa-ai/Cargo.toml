@@ -16,7 +16,6 @@ pa-types = { path = "../pa-types" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
-thiserror = { workspace = true }
 futures = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
@@ -42,7 +41,6 @@ base64 = "0.22"
 sha2 = "0.10"
 hmac = "0.12"
 hex = "0.4"
-rsa = { version = "0.9", features = ["sha2"] }
 url = "2"
 rustls = { version = "0.23", default-features = false, features = [
     "ring",

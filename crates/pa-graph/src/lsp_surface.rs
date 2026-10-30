@@ -17,6 +17,8 @@
 //! JSON is therefore rendered by hand (fixed key order, defs sorted by
 //! `(kind, name, start_line)`) so byte equality is hash equality.
 
+use crate::json_escape::escape;
+
 use std::collections::BTreeSet;
 
 use pa_ast::SupportLang;
@@ -227,25 +229,6 @@ pub fn canonical_defs_json(defs: &[SurfaceDef]) -> String {
         out.push('}');
     }
     out.push(']');
-    out
-}
-
-fn escape(value: &str) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(value.len());
-    for c in value.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
     out
 }
 

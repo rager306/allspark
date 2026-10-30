@@ -52,15 +52,6 @@ pub fn snapshot(diagnostics: &[Diagnostic]) -> HashSet<DiagnosticIdentity> {
 /// The `symbol_of` mapper is supplied by the caller (over
 /// [`crate::symbols::resolve`] / [`crate::symbol_layer`]), keeping this module
 /// free of any symbol source.
-#[must_use]
-pub fn delta_to_symbols<S: std::hash::BuildHasher>(
-    before: &HashSet<DiagnosticIdentity, S>,
-    after: &[Diagnostic],
-    symbol_of: impl Fn(&Diagnostic) -> Option<String>,
-) -> Vec<ledger::OwnedDiagnostic> {
-    ledger::diagnostics_to_symbol(&diagnostics_delta(before, after), symbol_of)
-}
-
 /// The default for E6: post-edit diagnostics are **off** unless a host opts in.
 ///
 /// Serena ships `ENABLE_DIAGNOSTICS_DEFAULT = False` (`lsp_diagnostics.py:211`)

@@ -29,9 +29,6 @@ tracing = { version = "0.1", features = ["attributes"] }
 # so the `stdio`/`client-monitor` features (rustix, waitpid-any) stay off.
 async-lsp = { version = "0.2", default-features = false, features = ["omni-trait", "tracing"] }
 lsp-types = "0.95"
-tower-layer = "0.3"
-tower-service = "0.3"
-pin-project-lite = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

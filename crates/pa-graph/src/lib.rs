@@ -117,6 +117,7 @@ pub mod hash;
 pub mod hybrid;
 pub mod incremental;
 pub mod indexer;
+mod json_escape;
 pub mod lease;
 pub mod lsp_surface;
 pub mod minhash;
