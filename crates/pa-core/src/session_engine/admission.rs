@@ -244,13 +244,45 @@ impl AgentSession {
     pub fn take_next_turn_rows(
         &self,
     ) -> impl std::future::Future<Output = Vec<pa_agent::types::AgentMessage>> {
-        std::future::ready(
-            self.pending_next_turn_rows
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .drain(..)
-                .filter_map(|row| session_message_to_loop(&SessionAgentMessage::Custom(row)))
-                .collect(),
-        )
+        std::future::ready({
+            // `drain` removes rows before they are converted, so a row that fails the
+            // conversion used to vanish from BOTH the queue and the turn (review #34):
+            // the user's queued message was gone with no log line and no error.
+            // Keep the unconvertible rows in the queue instead, and say so — a queue
+            // that silently shrinks is worse than one that still holds a row the
+            // converter cannot read, because the next attempt can report it.
+            let mut kept: Vec<pa_types::session::CustomMessage> = Vec::new();
+            let converted: Vec<pa_agent::types::AgentMessage> = {
+                let mut queue = self
+                    .pending_next_turn_rows
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let rows: Vec<pa_types::session::CustomMessage> = queue.drain(..).collect();
+                drop(queue);
+                let mut converted = Vec::with_capacity(rows.len());
+                for row in rows {
+                    if let Some(message) =
+                        session_message_to_loop(&SessionAgentMessage::Custom(row.clone()))
+                    {
+                        converted.push(message);
+                    } else {
+                        tracing::warn!(
+                            custom_type = %row.custom_type,
+                            "next-turn row could not be converted; it stays queued"
+                        );
+                        kept.push(row);
+                    }
+                }
+                converted
+            };
+            if !kept.is_empty() {
+                let mut queue = self
+                    .pending_next_turn_rows
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                queue.extend(kept);
+            }
+            converted
+        })
     }
 }

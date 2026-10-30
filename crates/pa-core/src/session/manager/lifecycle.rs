@@ -322,8 +322,9 @@ impl SessionManager {
                 let explicit_path = path;
                 self.new_session(&NewSessionOptions::default());
                 self.session_file = Some(explicit_path);
-                self.rewrite_file();
-                self.flushed = true;
+                // `flushed` only when the write landed: a failed rewrite leaves the
+                // old file and must not be recorded as persisted (review #33).
+                self.flushed = self.rewrite_file();
                 return;
             }
             let header_id = entries.iter().find_map(|entry| match entry {
@@ -341,11 +342,16 @@ impl SessionManager {
                 }
             }
             self.file_entries = entries;
-            if should_rewrite {
-                self.rewrite_file();
-            }
+            let rewrote = if should_rewrite {
+                self.rewrite_file()
+            } else {
+                true
+            };
             self.build_index();
-            self.flushed = true;
+            // A migration rewrite that failed leaves the file at the OLD version; the
+            // index is still built from memory, but `flushed` must not claim the disk
+            // matches it.
+            self.flushed = rewrote;
         } else {
             let explicit_path = self.session_file.clone();
             self.new_session(&NewSessionOptions::default());
@@ -484,7 +490,7 @@ impl SessionManager {
         self.file_entries = vec![header];
         self.file_entries.extend(rest);
         self.has_assistant_entry = has_assistant;
-        self.rewrite_file();
+        let _ = self.rewrite_file();
         self.flushed = true;
         target
     }

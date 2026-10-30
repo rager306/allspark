@@ -47,9 +47,21 @@ impl SessionManager {
         }
     }
 
-    pub(super) fn rewrite_file(&mut self) {
-        if let Err(error) = self.try_rewrite_file() {
-            tracing::error!(%error, "session rewrite failed");
+    /// Rewrite the session file, reporting whether it landed.
+    ///
+    /// Callers used to set `flushed = true` unconditionally after this, so a failed
+    /// rewrite marked the session as persisted while the file held the OLD content —
+    /// the next append then landed on a stale base, and the loss was attributed to
+    /// whatever read the file next (review #33). The bool is the caller's signal that
+    /// `flushed` may be set.
+    #[must_use]
+    pub(super) fn rewrite_file(&mut self) -> bool {
+        match self.try_rewrite_file() {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::error!(%error, "session rewrite failed; the file keeps its previous content");
+                false
+            }
         }
     }
 
