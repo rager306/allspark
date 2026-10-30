@@ -974,6 +974,13 @@ impl LspClient {
         path: &Path,
         timeout: Duration,
     ) -> Option<(Vec<lsp_types::Diagnostic>, u64)> {
+        // The server only publishes for documents it knows about: without `didOpen` the
+        // file is a stranger to the project and NOTHING is ever published, so waiting
+        // would burn the whole budget and then report "no diagnostics" — a false clean
+        // bill of health. Every other request path opens first; this one must too.
+        if self.ensure_open(path).await.is_err() {
+            return None;
+        }
         await_diagnostics(DiagnosticsWaiter::new(timeout), || {
             self.published_diagnostics(path)
         })
@@ -1237,6 +1244,32 @@ impl LspClient {
     }
 
     /// Whether the underlying process is still alive.
+    /// Wait for the server process to exit and report its status.
+    ///
+    /// The observable half of a clean shutdown: a `shutdown`/`exit` handshake makes the
+    /// server exit with status 0, while a client dropped without it leaves the process to
+    /// die with its stdin (or to be killed). `None` means it did not exit within the grace
+    /// period.
+    pub async fn wait_exit(&self) -> Option<std::process::ExitStatus> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            {
+                let mut child = self
+                    .child
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Ok(Some(status)) = child.try_wait() {
+                    return Some(status);
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Whether the server process is still running.
     pub fn is_alive(&self) -> bool {
         let mut child = self
             .child
