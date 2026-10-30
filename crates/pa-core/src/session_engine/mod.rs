@@ -61,6 +61,7 @@ pub mod turn_boundary;
 
 mod admission;
 mod compaction_arms;
+mod native_tools;
 mod wiring;
 
 use std::sync::Arc;

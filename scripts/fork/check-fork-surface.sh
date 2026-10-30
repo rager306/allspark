@@ -27,7 +27,10 @@ pass() { printf '  ok    %s\n' "$*"; }
 bad()  { printf '  FAIL  %s\n' "$*"; fail=1; }
 
 # ── Facts the checks assert (also read by --self-test) ─────────────────────
-ENGINE="crates/pa-core/src/session_engine/engine.rs"
+# The roster moved out of `engine.rs` on 2026-10-30: registration lives in its own
+# module, which is the whole point of the split (upstream edits engine.rs ~29 times
+# per 100 commits). The guard follows the fact, not the old path.
+ENGINE="crates/pa-core/src/session_engine/native_tools.rs"
 EXPECTED_NATIVE="edit graph jev lsp"
 INSIDERS=(
   crates/pa-core/src/tools/graph/mod.rs
@@ -61,9 +64,9 @@ if [[ "${BASH_SOURCE[0]:-}" == "$0" && "${1:-}" == "--self-test" ]]; then
   # gates nothing.
   tmp=$(mktemp -d)
   trap 'rm -rf "$tmp"' EXIT
-  mkdir -p "$tmp/crates/pa-core/src/session_engine" "$tmp/crates/pa-core/src/tools" \
+  mkdir -p "$tmp/$(dirname "$ENGINE")" "$tmp/crates/pa-core/src/tools" \
            "$tmp/crates/pa-cli" "$tmp/crates/pa-core/src/jev"
-  cp "$ENGINE" "$tmp/crates/pa-core/src/session_engine/engine.rs" 2>/dev/null
+  cp "$ENGINE" "$tmp/$ENGINE" 2>/dev/null
   cp crates/pa-core/src/lib.rs "$tmp/crates/pa-core/src/lib.rs" 2>/dev/null
   cp crates/pa-cli/Cargo.toml "$tmp/crates/pa-cli/Cargo.toml" 2>/dev/null
   for c in pa-ast pa-diff pa-edit pa-graph pa-jev pa-lsp pa-mem; do
@@ -93,7 +96,10 @@ if [[ "${BASH_SOURCE[0]:-}" == "$0" && "${1:-}" == "--self-test" ]]; then
 fi
 
 # ── Declarations used by both the checks and the self-test ──────────────────
-ENGINE="crates/pa-core/src/session_engine/engine.rs"
+# The roster moved out of `engine.rs` on 2026-10-30: registration lives in its own
+# module, which is the whole point of the split (upstream edits engine.rs ~29 times
+# per 100 commits). The guard follows the fact, not the old path.
+ENGINE="crates/pa-core/src/session_engine/native_tools.rs"
 EXPECTED_NATIVE="edit graph jev lsp"
 INSIDERS=(
   crates/pa-core/src/tools/graph/mod.rs
@@ -145,7 +151,7 @@ fi
 # the active profile), but a name with no `tools.push` in the same file is a
 # prompt entry for a tool the agent cannot call.
 if [[ -f $ENGINE ]]; then
-  pushes=$(rg --color=never -c 'tools\.push\(Arc::new' "$ENGINE" 2>/dev/null || echo 0)
+  pushes=$(rg --color=never -c 'tools\.push\(Arc::new|tools\.push\(Arc::new\(' "$ENGINE" 2>/dev/null || echo 0)
   names=$(rg --color=never -c 'native_tool_names\.push' "$ENGINE" 2>/dev/null || echo 0)
   if [[ $names -le $pushes ]]; then
     pass "every native name has a tools.push ($names names / $pushes pushes)"
