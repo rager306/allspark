@@ -519,6 +519,13 @@ cleanup becomes another run's missing directory.
 - Anything a *system* tool spawns (a compiler cache daemon, a package manager) stays in its own
   `~/.cache` home, outside the repo and outside `target/`.
 - Cleanup is `rm -rf .tmp` — one path, inside the tree, nothing outside it.
+- Compound Engineering review runs keep their run directories inside this repo:
+  create the ce-code-review run dir under `.tmp/ce-review/<run-id>/`, never
+  `/tmp/compound-engineering-*/` (the skill's Stage 1c default). When a run
+  finishes, archive the finished directory (report.md, review.json,
+  metadata.json, synthesized-findings.json, stages.jsonl, reviewer artifacts)
+  to `.research/review-runs/<run-id>/` before the session ends — `.tmp/` is
+  disposable scratch, `.research/` persists.
 
 ## Merge gates
 
@@ -684,7 +691,11 @@ Layering rules:
   reverse edges. The leaf crates are peers; add only the dependencies needed for their work.
   Shared wire/domain vocabulary belongs in `pa-types`, not in a higher crate or a duplicate.
 - `pa-tui` renders from wire types and events; it does not link the session engine.
-- `pa-cli` is a composition root: it wires crates together and contains no business logic.
+- `pa-cli` is a composition root: it wires crates together. It is **not** wiring-only —
+  the print-family runtime (headless engine assembly, model/session selection, and the
+  prompt driver), `daemon_discovery/` and `update_flow/` live there because they are the
+  transport of an in-process run, while the mechanisms they drive stay in `pa-core`.
+  `crates/pa-cli/src/lib.rs` states the boundary; keep the two in step (review #30).
 
 ## Reliability model
 

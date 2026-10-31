@@ -31,3 +31,6 @@ verus/toolchain/
 # regenerated per run and never committed.
 verus/mirrors/target/
 verus/mirrors/Cargo.lock
+
+# Compound Engineering local scratch (skills that keep local scratch)
+.context/compound-engineering/

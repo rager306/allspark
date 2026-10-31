@@ -44,7 +44,7 @@ either changes.
 - Workspace dependencies flow one way, from the composition root (`pa-cli`) toward lower crates. Flag cycles, reverse edges, or new edges that contradict the Crates table in AGENTS.md.
 - `pa-types` is the only shared vocabulary crate: flag domain types duplicated into or re-exported from higher crates.
 - A new dependency (workspace edge or third-party crate) is an architectural change: flag it unless the PR states why existing crates cannot host the functionality, commits the regenerated `Cargo.lock` in the same change, and keeps `make deny` clean.
-- Flag cross-crate `pub use`/re-exports that widen the public API surface. `pa-tui` renders from wire types and must not link the session engine (its only workspace dependency is `pa-types`); `pa-cli` wires crates and contains no business logic.
+- Flag cross-crate `pub use`/re-exports that widen the public API surface. `pa-tui` renders from wire types and must not link the session engine (its only workspace dependency is `pa-types`); `pa-cli` wires crates but is not wiring-only (its print-family runtime, `daemon_discovery/` and `update_flow/` are transport; `crates/pa-cli/src/lib.rs` states the boundary)
 
 ## Change hygiene
 
