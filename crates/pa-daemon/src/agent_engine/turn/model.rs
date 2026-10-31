@@ -1,9 +1,9 @@
 //! The model-turn runner: the streaming run over the built session agent,
 //! the retry/failover policy application, and the quota-park mid-run arm.
 use super::{
-    aborted_message, drop_trailing_assistant, json_round_trip, map_thinking_level,
-    retry_event_to_engine_event, AgentSessionEngine, EngineEvent, ProviderTarget, StopReason,
-    TurnAdmission, TurnOnce, TurnPrompt, TurnResult,
+    aborted_message, drop_trailing_assistant, map_thinking_level, retry_event_to_engine_event,
+    to_agent_model, AgentSessionEngine, EngineEvent, ProviderTarget, StopReason, TurnAdmission,
+    TurnOnce, TurnPrompt, TurnResult,
 };
 
 impl AgentSessionEngine {
@@ -229,10 +229,11 @@ impl AgentSessionEngine {
                         let Some(agent) = agent_weak.upgrade() else {
                             return Ok(());
                         };
-                        let model = json_round_trip(&primary.model)
-                            .ok_or_else(|| anyhow::anyhow!("model conversion failed"))?;
                         agent
-                            .set_model_and_thinking_level(model, primary.thinking_level)
+                            .set_model_and_thinking_level(
+                                to_agent_model(&primary.model),
+                                primary.thinking_level,
+                            )
                             .await;
                         if let Some(core) = core {
                             core.update_model_facts(&primary.model);
@@ -285,8 +286,7 @@ impl AgentSessionEngine {
                 else {
                     return Ok(None);
                 };
-                let agent_model = json_round_trip(&primary_model)
-                    .ok_or_else(|| anyhow::anyhow!("model conversion failed"))?;
+                let agent_model = to_agent_model(&primary_model);
                 {
                     // The restore serializes with `/reload`'s
                     // live-input refresh: without this fence a
@@ -535,8 +535,7 @@ impl AgentSessionEngine {
                     }
                     let next = next.clone();
                     async move {
-                        let agent_model = json_round_trip(&next)
-                            .ok_or_else(|| anyhow::anyhow!("model conversion failed"))?;
+                        let agent_model = to_agent_model(&next);
                         // Clamp the level to the switched-to model (TS
                         // `clampThinkingLevel`); the primary restores with
                         // the primary.

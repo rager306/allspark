@@ -44,18 +44,9 @@ impl AgentSession {
             return Ok(());
         };
         (router.swap_target)(Some(resolved));
-        // The conversion failure happens AFTER the swap armed the routed target:
-        // unwind the route so the failed turn does not leave it serving the next batch.
-        let Some(agent_model) =
-            crate::session_engine::provider_adapter::json_round_trip(&resolved.model)
-        else {
-            (router.swap_target)(None);
-            self.agent.set_model_override(None);
-            return Err(anyhow::anyhow!("model conversion failed"));
-        };
         self.agent
             .set_model_override(Some(pa_agent::agent::AgentModelOverride {
-                model: agent_model,
+                model: crate::session_engine::provider_adapter::to_agent_model(&resolved.model),
                 thinking_level: crate::session_engine::provider_adapter::map_thinking_level(
                     resolved.thinking_level,
                 ),
@@ -223,5 +214,95 @@ impl AgentSession {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pa_agent::agent::{Agent, AgentInitialState, AgentOptions};
+    use pa_agent::scripted::ScriptedProvider;
+    use std::sync::Arc;
+
+    fn scripted_model() -> pa_agent::types::Model {
+        serde_json::from_value(serde_json::json!({
+            "id": "session", "name": "Session", "api": "openai-completions",
+            "provider": "test", "baseUrl": "http://session.invalid", "reasoning": false,
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 1000, "maxTokens": 100
+        }))
+        .unwrap()
+    }
+
+    /// The routed endpoint as the registry holds it: the wire type spells the
+    /// endpoint `baseUrl`, the loop's `Model` spells it `base_url` with no
+    /// rename between them.
+    fn routed_image_model() -> pa_types::ai::Model {
+        serde_json::from_value(serde_json::json!({
+            "id": "vision", "name": "Vision", "api": "mock-battery",
+            "provider": "battery", "baseUrl": "http://127.0.0.1:9", "reasoning": false,
+            "input": ["text", "image"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 1000, "maxTokens": 100
+        }))
+        .unwrap()
+    }
+
+    async fn session_with_image_route() -> AgentSession {
+        let provider = Arc::new(ScriptedProvider::new(scripted_model()));
+        provider.push_text_turn("unreachable");
+        let agent = Agent::new(AgentOptions {
+            initial_state: AgentInitialState {
+                model: Some(scripted_model()),
+                ..Default::default()
+            },
+            stream_fn: Some(provider.stream_fn()),
+            ..Default::default()
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = AgentSession::new(
+            Arc::new(agent),
+            crate::session::manager::SessionManager::in_memory(tmp.path()),
+            vec![],
+        )
+        .await
+        .unwrap();
+        let routed = routed_image_model();
+        session.set_image_model_router(Some(image_model_routing::ImageModelRouter {
+            decide: Arc::new(move |_carries_images: bool, _level| {
+                Ok(Some(crate::models::ResolvedImageModel {
+                    model: routed.clone(),
+                    thinking_level: pa_types::ai::ModelThinkingLevel::Off,
+                    service_tier: None,
+                }))
+            }),
+            swap_target: Arc::new(|_route| {}),
+        }));
+        session
+    }
+
+    /// The image-route override is the model the routed request goes to: the
+    /// loop reads `base_url` off it, so a wire-shape round-trip (which fills
+    /// the loop's `#[serde(default)]` empty string for `baseUrl`) sent every
+    /// routed image turn to no endpoint at all.
+    #[tokio::test]
+    async fn the_image_route_override_carries_the_routed_base_url() {
+        let session = session_with_image_route().await;
+        session
+            .apply_image_model_routing(
+                &[pa_agent::types::ImageContent {
+                    data: "AAAA".to_string(),
+                    mime_type: "image/png".to_string(),
+                }],
+                &[],
+            )
+            .await
+            .unwrap();
+        let overridden = session.agent().model_override().expect("an armed override");
+        assert_eq!(overridden.model.id, "vision");
+        assert_eq!(
+            overridden.model.base_url, "http://127.0.0.1:9",
+            "the routed endpoint must survive the projection into the loop's model"
+        );
     }
 }

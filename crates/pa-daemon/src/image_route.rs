@@ -5,7 +5,7 @@
 //! downgrades the images.
 
 use pa_core::session_engine::provider_adapter::{
-    json_round_trip, map_thinking_level, ProviderTarget,
+    map_thinking_level, to_agent_model, ProviderTarget,
 };
 
 use crate::agent_engine::AgentSessionEngine;
@@ -116,25 +116,25 @@ impl AgentSessionEngine {
             None => None,
         };
         let armed = match route {
-            Some(resolved) => {
-                let agent_model = json_round_trip(&resolved.model)
-                    .ok_or_else(|| "model conversion failed".to_string())?;
-                Some(ImageRoute {
-                    target: ProviderTarget {
-                        service_tier: resolved.service_tier,
-                        api_key: self.resolve_request_api_key(&resolved.model),
-                        model: resolved.model.clone(),
-                        headers: self.resolve_request_key_and_headers(&resolved.model).1,
-                    },
-                    agent_override: pa_agent::agent::AgentModelOverride {
-                        thinking_level: map_thinking_level(resolved.thinking_level),
-                        model: agent_model,
-                    },
-                    // Captured at the first swap in
-                    // [`Self::apply_armed_image_route`].
-                    session_target: None,
-                })
-            }
+            Some(resolved) => Some(ImageRoute {
+                target: ProviderTarget {
+                    service_tier: resolved.service_tier,
+                    api_key: self.resolve_request_api_key(&resolved.model),
+                    model: resolved.model.clone(),
+                    headers: self.resolve_request_key_and_headers(&resolved.model).1,
+                },
+                agent_override: pa_agent::agent::AgentModelOverride {
+                    thinking_level: map_thinking_level(resolved.thinking_level),
+                    // The route is the model the request goes to: the loop
+                    // reads `base_url` off this copy, so it must be the
+                    // projected descriptor, never a wire-shape round-trip
+                    // (which drops `baseUrl` into the empty default).
+                    model: to_agent_model(&resolved.model),
+                },
+                // Captured at the first swap in
+                // [`Self::apply_armed_image_route`].
+                session_target: None,
+            }),
             None => None,
         };
         *self
@@ -465,6 +465,29 @@ mod tests {
             restored.model.id, "mock-vision",
             "the no-argument form keeps its meaning"
         );
+    }
+
+    /// The armed override is the model the routed run serves on: the loop
+    /// sends the request to `base_url` off this copy, so a wire-shape
+    /// round-trip through the loop's model type (which spells the endpoint
+    /// `base_url` where the ai-side wire spells it `baseUrl`) armed an empty
+    /// endpoint and the image turn left for nowhere.
+    #[test]
+    fn the_armed_image_route_carries_the_routed_base_url() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let engine = image_route_engine(
+            dir.path(),
+            &serde_json::json!({ "imageModel": "battery/mock-vision" }),
+        );
+        engine
+            .arm_image_turn_route(true)
+            .expect("the fixture must arm a route, or the test proves nothing");
+        let route = engine.armed_image_route().expect("an armed route");
+        assert_eq!(
+            route.agent_override.model.base_url, "http://127.0.0.1:9",
+            "the routed endpoint must survive the projection into the loop's model"
+        );
+        assert_eq!(route.agent_override.model.id, "mock-vision");
     }
 
     #[test]
