@@ -344,7 +344,14 @@ mod tests {
             &CancelToken::new(),
         )
         .expect("child takes the lease");
-        std::fs::write(dir.join("ready"), format!("{}\n", std::process::id())).expect("ready");
+        // Publish the pid through a rename: the parent polls `ready.exists()`,
+        // and a plain `write` makes the path visible before its bytes land, so a
+        // reader could parse an empty file (`ParseIntError { kind: Empty }`).
+        // A rename publishes the name and its contents in one step.
+        let ready = dir.join("ready");
+        let staged = dir.join("ready.publishing");
+        std::fs::write(&staged, format!("{}\n", std::process::id())).expect("ready");
+        std::fs::rename(&staged, &ready).expect("publish ready");
         let deadline = Instant::now() + Duration::from_secs(60);
         while !dir.join("release").exists() {
             assert!(
