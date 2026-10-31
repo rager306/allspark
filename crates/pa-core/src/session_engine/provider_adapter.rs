@@ -1,7 +1,11 @@
 //! Real-provider stream adapter: pa-ai completion streaming bridged into
-//! the pa-agent loop's `StreamFn`/`ModelStream`, crossing the crate
-//! boundary by wire-shape (JSON) round-trip; shared by pa-cli and
+//! the pa-agent loop's `StreamFn`/`ModelStream`; shared by pa-cli and
 //! pa-daemon.
+//!
+//! Messages and stream events cross the crate boundary by wire shape (their
+//! serialized JSON is the shared vocabulary). The model descriptor does not:
+//! it crosses field by field through [`to_agent_model`], so a field the loop
+//! needs cannot be dropped by a serde default.
 
 use std::sync::Arc;
 
@@ -58,19 +62,67 @@ pub fn model_thinking_level(level: ThinkingLevel) -> pa_types::ai::ModelThinking
     }
 }
 
-/// Adapt the loop-level payload hook to the pa-ai hook shape. A failed
-/// round-trip keeps the payload unchanged — hooks never fail the request.
+/// The loop's descriptor for a provider model: pa-ai's [`Model`] projected
+/// field by field onto the ten fields the agent loop reads.
+///
+/// The projection is explicit rather than a wire-shape round-trip for two
+/// reasons. A field cannot arrive through serde's `#[serde(default)]` as a
+/// zero value, which is how the round-trip dropped `base_url` silently (the
+/// loop spells it `base_url`, the wire spells it `baseUrl`). And the loss is
+/// legible here: a field added to [`pa_types::ai::Model`] leaves this function
+/// compiling, so its fate is a decision the author writes down, not a default
+/// nobody sees.
+///
+/// Five pa-ai fields are deliberately not projected. The loop reads none of
+/// them, and the provider transport reads them from the pa-ai `Model` it
+/// already holds, not from the loop's copy:
+///
+/// - `thinking_level_map`: the transport maps the requested level; the loop
+///   carries only the [`ThinkingLevel`] it was asked for.
+/// - `input`: image routing decides on the pa-ai model before the turn.
+/// - `featured`: model-picker ordering, presentation only.
+/// - `headers`: the auth-resolved request headers ride
+///   [`ProviderTarget::headers`] and `StreamRequestOptions::headers`.
+/// - `compat`: provider-wire overrides, applied inside the provider.
+///
+/// The reverse direction, [`super::factory_host::agent_model_to_ai_model`],
+/// restores the other ten fields and fills these five back with defaults for
+/// the same reason; that function points here so the two cannot drift apart
+/// unnoticed.
+#[must_use]
+pub(crate) fn to_agent_model(model: &Model) -> AgentModel {
+    AgentModel {
+        id: model.id.clone(),
+        name: model.name.clone(),
+        api: model.api.clone(),
+        provider: model.provider.clone(),
+        base_url: model.base_url.clone(),
+        reasoning: model.reasoning,
+        cost: pa_agent::types::UsageCost {
+            input: model.cost.input.as_f64(),
+            output: model.cost.output.as_f64(),
+            cache_read: model.cost.cache_read.as_f64(),
+            cache_write: model.cost.cache_write.as_f64(),
+            // The rate card has no total of its own; a request's cost is
+            // priced per call (`pa_ai::models::calculate_cost`) and lands on
+            // the loop's `Usage`, not on the model descriptor.
+            total: 0.0,
+        },
+        context_window: model.context_window,
+        max_tokens: model.max_tokens,
+        max_tokens_explicit: model.max_tokens_explicit,
+    }
+}
+
+/// Adapt the loop-level payload hook to the pa-ai hook shape; the hook sees
+/// the loop's own model descriptor.
 fn agent_payload_hook_to_ai(hook: pa_agent::stream::OnPayloadHook) -> pa_ai::types::OnPayloadHook {
     std::sync::Arc::new(move |payload: serde_json::Value, model: &Model| {
-        match json_round_trip::<_, pa_agent::types::Model>(model) {
-            Some(agent_model) => hook(payload, &agent_model),
-            None => Some(payload),
-        }
+        hook(payload, &to_agent_model(model))
     })
 }
 
-/// Adapt the loop-level response hook to the pa-ai hook shape; a failed
-/// round-trip drops the hook call (advisory, never fatal).
+/// Adapt the loop-level response hook to the pa-ai hook shape.
 fn agent_response_hook_to_ai(
     hook: pa_agent::stream::OnResponseHook,
 ) -> pa_ai::types::OnResponseHook {
@@ -80,9 +132,7 @@ fn agent_response_hook_to_ai(
                 status: response.status,
                 headers: response.headers,
             };
-            if let Some(agent_model) = json_round_trip::<_, pa_agent::types::Model>(model) {
-                hook(agent_response, &agent_model);
-            }
+            hook(agent_response, &to_agent_model(model));
         },
     )
 }
@@ -537,6 +587,120 @@ mod tests {
             vec![Some(pa_types::ai::Transport::Sse), None]
         );
         registration.unregister();
+    }
+
+    /// Every field of both descriptors populated, on one pa-ai `Model`: the
+    /// probe the two projection tests below assert against.
+    fn all_fields_model() -> Model {
+        Model {
+            id: "probe/model".into(),
+            name: "Probe Model".into(),
+            api: "openai-completions".into(),
+            provider: "probe".into(),
+            base_url: "https://probe.invalid/v1".into(),
+            reasoning: true,
+            thinking_level_map: Some(std::collections::BTreeMap::from([(
+                pa_types::ai::ModelThinkingLevel::High,
+                Some("high".to_string()),
+            )])),
+            input: vec![
+                pa_types::ai::ModelInput::Text,
+                pa_types::ai::ModelInput::Image,
+            ],
+            cost: pa_types::ai::ModelCost {
+                input: pa_types::JsNumber::from(1.5),
+                output: pa_types::JsNumber::from(9.0),
+                cache_read: pa_types::JsNumber::from(0.5),
+                cache_write: pa_types::JsNumber::from(2.0),
+            },
+            context_window: 200_000,
+            max_tokens: 64_000,
+            max_tokens_explicit: true,
+            featured: Some(true),
+            headers: Some(std::collections::BTreeMap::from([(
+                "x-probe".to_string(),
+                "1".to_string(),
+            )])),
+            compat: Some(pa_types::ai::ModelCompat {
+                raw: serde_json::Map::from_iter([(
+                    "sendSessionIdHeader".to_string(),
+                    serde_json::Value::Bool(true),
+                )]),
+            }),
+        }
+    }
+
+    /// The hooks' descriptor must carry every field the loop reads. The JSON
+    /// round-trip this replaced dropped `base_url` silently: the loop spells
+    /// the field `base_url`, the wire spells it `baseUrl`, and serde fell
+    /// back to the `#[serde(default)]` empty string — so a hook asking the
+    /// loop's model where the provider lives saw no URL at all.
+    #[test]
+    fn the_agent_model_projection_carries_every_loop_field() {
+        let model = all_fields_model();
+        assert_eq!(
+            to_agent_model(&model),
+            AgentModel {
+                id: "probe/model".into(),
+                name: "Probe Model".into(),
+                api: "openai-completions".into(),
+                provider: "probe".into(),
+                base_url: "https://probe.invalid/v1".into(),
+                reasoning: true,
+                cost: pa_agent::types::UsageCost {
+                    input: 1.5,
+                    output: 9.0,
+                    cache_read: 0.5,
+                    cache_write: 2.0,
+                    total: 0.0,
+                },
+                context_window: 200_000,
+                max_tokens: 64_000,
+                max_tokens_explicit: true,
+            }
+        );
+    }
+
+    /// The loss across the projection is a decision, not an accident: exactly
+    /// these pa-ai fields never reach the loop, because the loop reads none of
+    /// them (the provider transport reads them from the pa-ai `Model` it
+    /// already holds). A field added to `pa_types::ai::Model` shows up here as
+    /// an unclassified key and fails the test, so a field the loop comes to
+    /// need cannot be dropped silently.
+    #[test]
+    fn the_projection_drops_only_the_provider_only_fields() {
+        const DROPPED_BY_DESIGN: [&str; 5] =
+            ["compat", "featured", "headers", "input", "thinkingLevelMap"];
+
+        fn wire_keys(value: &serde_json::Value) -> Vec<String> {
+            let mut keys: Vec<String> = value
+                .as_object()
+                .expect("a model serializes to a JSON object")
+                .keys()
+                .cloned()
+                .collect();
+            keys.sort();
+            keys
+        }
+
+        let model = all_fields_model();
+        let ai = wire_keys(&serde_json::to_value(&model).unwrap());
+        // The loop descriptor carries no serde rename for the base URL, so its
+        // wire key is `base_url` where pa-ai writes `baseUrl`: compare the two
+        // sides by meaning, not by spelling.
+        let agent: Vec<String> = wire_keys(&serde_json::to_value(to_agent_model(&model)).unwrap())
+            .into_iter()
+            .map(|key| match key.as_str() {
+                "base_url" => "baseUrl".to_string(),
+                _ => key,
+            })
+            .collect();
+        let dropped: Vec<&str> = ai
+            .iter()
+            .filter(|key| !agent.contains(key))
+            .map(String::as_str)
+            .collect();
+        assert_eq!(dropped, DROPPED_BY_DESIGN);
     }
 
     #[test]

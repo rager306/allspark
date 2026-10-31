@@ -309,13 +309,16 @@ impl FactoryHost {
 }
 
 /// The ai-side view of the session's agent-side model descriptor, for the
-/// preflight's allowlist and auth checks only. The two `Model`s do not
-/// share a wire shape (the agent side serializes `base_url`, never carries
-/// `input`), and the descriptor is lossy by design (no input modalities,
-/// thinking-level map, featured flag, request headers, or compat
-/// overrides), so full resolution stays with the catalog and the spawn
-/// path (the #3184 `provider_adapter::agent_model_to_ai_model` field
-/// mapping).
+/// preflight's allowlist and auth checks only.
+///
+/// This is the inverse of
+/// [`crate::session_engine::provider_adapter::to_agent_model`], and the two
+/// belong together on purpose: that function's doc comment owns the list of
+/// pa-ai fields the loop never carries (`thinking_level_map`, `input`,
+/// `featured`, `headers`, `compat`), and they come back as defaults here. A
+/// change to either direction means editing that one list. The descriptor is
+/// lossy by design, so full resolution stays with the catalog and the spawn
+/// path.
 fn agent_model_to_ai_model(model: &pa_agent::types::Model) -> AiModel {
     AiModel {
         id: model.id.clone(),
