@@ -1,4 +1,4 @@
-//! ACP stdio mode served over a daemon session; see `daemon.rs`.
+//! ACP stdio mode served over a daemon session; see `daemon/`.
 
 mod config_options;
 pub mod daemon;
