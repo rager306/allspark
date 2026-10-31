@@ -12,6 +12,9 @@ use crate::print_runtime::{
     RunOptions,
 };
 
+use super::engine::headless_embedding_fields;
+use super::selection::{builtin_tools, resolve_thinking_level};
+
 /// The parsed `PRIME_AGENT_FAUX_SCRIPT` (the whole-process verification
 /// seam; never set by the product): `None` on a live run, an error when
 /// the script does not parse.
@@ -111,7 +114,7 @@ pub(crate) async fn build_faux_engine_with(
             Some(pa_core::session_engine::provider_adapter::map_thinking_level(overrides.thinking))
         }
         HeadlessEmbedding::Root { .. } | HeadlessEmbedding::Rpc => {
-            Some(super::resolve_thinking_level(config, &model))
+            Some(resolve_thinking_level(config, &model))
         }
     };
     let agent_model = json_round_trip(&model).ok_or("model conversion failed")?;
@@ -132,7 +135,7 @@ pub(crate) async fn build_faux_engine_with(
         bash_wake,
         rpc_bash_wake,
         on_late_sent_agent_message,
-    } = super::headless_embedding_fields(embedding);
+    } = headless_embedding_fields(embedding);
     let engine = pa_core::session_engine::engine::create_session(
         pa_core::session_engine::engine::SessionEngineConfig {
             on_late_sent_agent_message,
@@ -148,7 +151,7 @@ pub(crate) async fn build_faux_engine_with(
             model: Some(agent_model),
             thinking_level,
             stream_fn: Some(stream_fn),
-            tools: super::builtin_tools(&config.cwd),
+            tools: builtin_tools(&config.cwd),
             custom_system_prompt: config.system_prompt.clone(),
             prompt_guidelines: config.append_system_prompt.clone(),
             generic_mcp_servers: vec![],

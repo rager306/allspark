@@ -1,4 +1,4 @@
-use super::select_model;
+use super::selection::select_model;
 use crate::mode::RuntimeConfig;
 use pa_core::auth::{AuthStorage, AuthStorageData, NoOAuth};
 use pa_core::models::ModelRegistry;
