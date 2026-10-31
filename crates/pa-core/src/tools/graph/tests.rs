@@ -994,6 +994,60 @@ async fn an_unknown_parameter_is_an_error_naming_it() {
     }
 }
 
+/// The action list the model reads must be the SAME list as the one the tool
+/// dispatches, in all three places it appears: the JSON-schema `enum`, the
+/// prose `description`, and the unknown-action error.
+///
+/// Review #24: the error carried a hand-written second list that had drifted —
+/// it named no `context`, `impact` or `explain_change` while all three worked.
+/// The error now derives from `ACCEPTED_PARAMS`, but the schema `enum` stayed a
+/// second hand-written list beside it, and the prose never gained `pattern`, so
+/// the model was never told about a working action. Red-first: the description
+/// names no `pattern` on the unfixed tree, and the two lists disagree.
+#[test]
+fn every_action_the_tool_serves_is_named_in_the_schema_the_error_and_the_description() {
+    let schema = params_schema();
+    let advertised: Vec<&str> = schema["properties"]["action"]["enum"]
+        .as_array()
+        .expect("the action enum")
+        .iter()
+        .map(|value| value.as_str().expect("a string action"))
+        .collect();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tool = tool(dir.path());
+    let error = tool
+        .dispatch(&serde_json::json!({ "action": "nope" }))
+        .unwrap_err()
+        .to_string();
+    let description = tool.description();
+
+    let mut drift = Vec::new();
+    // One source: the schema advertises exactly the actions the parameter table
+    // lists, in that order. Two hand-written lists agree only until one is edited.
+    let from_table: Vec<&str> = ACCEPTED_PARAMS.iter().map(|(name, _)| *name).collect();
+    if advertised != from_table {
+        drift.push(format!(
+            "the schema enum {advertised:?} is a second list beside ACCEPTED_PARAMS \
+             {from_table:?}; it must be derived from it"
+        ));
+    }
+    for action in &advertised {
+        if !error.contains(action) {
+            drift.push(format!(
+                "the unknown-action error does not name {action:?}, so a caller that sent \
+                 a valid action cannot see that it is valid"
+            ));
+        }
+        if !description.contains(&format!("{action} (")) {
+            drift.push(format!(
+                "the description the model reads never names {action:?} with what it does, \
+                 so the model has no reason to try it"
+            ));
+        }
+    }
+    assert!(drift.is_empty(), "{}", drift.join("\n"));
+}
+
 /// The two depths are different parameters now, and the index one still
 /// accepts its legacy spelling.
 ///
@@ -2737,6 +2791,65 @@ async fn explain_change_answers_all_four_parts_in_one_call() {
     assert!(
         text_of(&result).contains("Not covered:"),
         "and printed, not only in JSON: {}",
+        text_of(&result)
+    );
+}
+
+/// `explain_change`'s two ADR stages must apply the SAME scope rule.
+///
+/// The list stage keeps a decision whose `project` is this project OR the global
+/// bucket (the legacy/global rows are shared vocabulary, and `action_adr`'s
+/// `id` read accepts them for exactly that reason). The verification stage then
+/// re-read the row through `get_adr_in_project`, which requires an EXACT project
+/// match, so a global decision that names the changed file was silently dropped
+/// — the filter that admitted it and the check that kept it disagreed. Red-first:
+/// on the unfixed tree the global decision is absent from `decisions`.
+#[tokio::test]
+async fn explain_change_keeps_a_global_decision_that_names_the_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("lib.rs"),
+        "pub fn changed() -> u32 { 1 }\npub fn caller() -> u32 { changed() }\n",
+    )
+    .unwrap();
+    let tool = tool(dir.path());
+    tool.dispatch(&serde_json::json!({ "action": "index" }))
+        .expect("index");
+    // Installed-wide decision: an empty `project` is the global bucket.
+    tool.with_read(|store| {
+        pa_graph::adr::AdrStore::new(store.connection())
+            .map_err(|err| anyhow::anyhow!("adr store: {err}"))?
+            .record_adr(&pa_graph::adr::Adr {
+                id: 0,
+                title: "every service keeps one counter in lib.rs".to_string(),
+                status: pa_graph::adr::AdrStatus::Accepted,
+                context: "`lib.rs` is the only place a counter lives.".to_string(),
+                decision: "Do not fork it.".to_string(),
+                consequences: "A change to lib.rs touches every service.".to_string(),
+                supersedes: None,
+                project: String::new(),
+            })
+            .map_err(|err| anyhow::anyhow!("record: {err}"))
+    })
+    .expect("record the global decision");
+
+    let result = tool
+        .dispatch(&serde_json::json!({
+            "action": "explain_change",
+            "symbol": "changed",
+            "depth": 2,
+        }))
+        .expect("explain_change");
+    let decisions = result.details["decisions"]
+        .as_array()
+        .expect("decisions")
+        .clone();
+    assert!(
+        decisions.iter().any(|decision| decision["title"]
+            == serde_json::json!("every service keeps one counter in lib.rs")),
+        "a GLOBAL decision that names the changed file must be listed beside the \
+         project's own: the list stage admits the global bucket, so the \
+         verification stage must not drop it. decisions={decisions:?} text={}",
         text_of(&result)
     );
 }

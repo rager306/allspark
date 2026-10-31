@@ -172,7 +172,9 @@ impl AgentTool for GraphTool {
          impact (what a change reaches, with unresolved and guessed mentions counted \
          as candidates), explain_change (impact + decision + test files in one answer), \
          forget (drop THIS project's rows from the store; the key is the resolved \
-         project name, so a same-named tree elsewhere is untouched). \
+         project name, so a same-named tree elsewhere is untouched), pattern \
+         (structural search in ast-grep syntax, the one shape the text query \
+         cannot express: `$A` binds any node). \
          Each action reads only its own parameters: \
          an unknown or misspelt one is an error naming the accepted set, never \
          a silent default."
@@ -243,6 +245,16 @@ impl AgentTool for GraphTool {
     }
 }
 
+/// The action names, derived from [`ACCEPTED_PARAMS`] rather than repeated.
+///
+/// The schema's `enum` and the unknown-action error are the same list as the
+/// parameter table: a second hand-written copy agreed with the first only until
+/// one of them was edited, which is how the error text drifted twice (review
+/// #24) and how the schema kept a stale order beside it.
+pub(crate) fn action_names() -> Vec<&'static str> {
+    ACCEPTED_PARAMS.iter().map(|(name, _)| *name).collect()
+}
+
 /// The tool's JSON-Schema parameters.
 #[must_use]
 pub fn params_schema() -> serde_json::Value {
@@ -251,23 +263,7 @@ pub fn params_schema() -> serde_json::Value {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": [
-                    "index",
-                    "reindex",
-                    "search",
-                    "trace",
-                    "impact",
-                    "explain_change",
-                    "architecture",
-                    "coverage",
-                    "changes",
-                    "status",
-                    "verify",
-                    "adr",
-                    "context",
-                    "forget",
-                    "pattern"
-                ],
+                "enum": action_names(),
                 "description": "The graph operation to run. `context` assembles a bounded evidence pack for a question: ranked symbols with their CURRENT line placement (flagged when the index disagrees with the file), the call links between symbols that are both in the pack, and the graph's own coverage. Prefer it over search+trace+open when you need several related facts at once."
             },
             "path": {

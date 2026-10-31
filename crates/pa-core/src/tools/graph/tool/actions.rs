@@ -1018,9 +1018,19 @@ impl GraphTool {
                 .map(|node| node.file_path)
             });
 
-        // Which candidate decisions really name the changed file, decided in ONE pass over
-        // the ADR rows rather than one store open per candidate.
-        let verified_decisions: Vec<i64> = match &changed_file {
+        // Which decisions really name the changed file: ONE query, ONE store read, and
+        // the scope filter decides in memory (review #65).
+        //
+        // The candidate query already returns the full row, so the verification stage that
+        // re-read each candidate through `get_adr_in_project` was an N+1 of SELECTs over
+        // rows it held: measured with 1/5/20 matching candidates it issued 2/6/21 SELECTs
+        // where 1 answers the question.
+        //
+        // It also read the scope rule differently from the list stage beside it: this
+        // project's decisions OR the shared global bucket (an empty `project`, which
+        // `action_adr`'s `id` read accepts for the same reason). Requiring an exact project
+        // match dropped every global decision that named the file.
+        let decisions: Vec<RelevantDecision> = match &changed_file {
             Some(file) => self.with_read(|store| {
                 let adrs = pa_graph::adr::AdrStore::new(store.connection())
                     .map_err(|err| anyhow::anyhow!("adr store: {err}"))?;
@@ -1028,59 +1038,31 @@ impl GraphTool {
                 let candidates = adrs
                     .query_adr(&pa_graph::adr::AdrQuery::new().with_text(file_name))
                     .map_err(|err| anyhow::anyhow!("adr query: {err}"))?;
-                let mut verified = Vec::new();
-                for candidate in candidates {
-                    let Some(full) = adrs
-                        .get_adr_in_project(candidate.id, &project)
-                        .map_err(|err| anyhow::anyhow!("get adr: {err}"))?
-                    else {
-                        continue;
-                    };
-                    let prose = format!(
-                        "{}\n{}\n{}\n{}",
-                        full.title, full.context, full.decision, full.consequences
-                    );
-                    if pa_graph::adr::code_refs_in(&prose)
-                        .iter()
-                        .any(|r| file.ends_with(r.as_str()) || r.ends_with(file))
-                    {
-                        verified.push(candidate.id);
-                    }
-                }
-                verified.sort_unstable();
-                Ok(verified)
+                // `query_adr` returns newest first; the order is kept, so this reads like
+                // the `adr` list action.
+                let found: Vec<RelevantDecision> = candidates
+                    .into_iter()
+                    .filter(|adr| adr.project == project || adr.project.is_empty())
+                    // Keep only decisions that really NAME the file: the query matched on
+                    // the bare file name, and prose that mentions it in passing is not a
+                    // decision about it.
+                    .filter(|adr| {
+                        let prose = format!(
+                            "{}\n{}\n{}\n{}",
+                            adr.title, adr.context, adr.decision, adr.consequences
+                        );
+                        pa_graph::adr::code_refs_in(&prose)
+                            .iter()
+                            .any(|reference| file.ends_with(reference) || reference.ends_with(file))
+                    })
+                    .map(|adr| RelevantDecision {
+                        id: adr.id,
+                        title: adr.title,
+                        status: adr.status.as_str().to_string(),
+                    })
+                    .collect();
+                Ok(found)
             })?,
-            None => Vec::new(),
-        };
-        let decisions = match &changed_file {
-            Some(file) => self
-                .with_read(|store| {
-                    let adrs = pa_graph::adr::AdrStore::new(store.connection())
-                        .map_err(|err| anyhow::anyhow!("adr store: {err}"))?;
-                    let file_name = file.rsplit('/').next().unwrap_or(file);
-                    let found = adrs
-                        .query_adr(&pa_graph::adr::AdrQuery::new().with_text(file_name))
-                        .map_err(|err| anyhow::anyhow!("adr query: {err}"))?;
-                    Ok(found
-                        .into_iter()
-                        .filter(|adr| adr.project == project || adr.project.is_empty())
-                        .map(|adr| RelevantDecision {
-                            id: adr.id,
-                            title: adr.title,
-                            status: adr.status.as_str().to_string(),
-                        })
-                        .collect::<Vec<_>>())
-                })?
-                .into_iter()
-                // One read for ALL candidates (review #65): the predicate reopened the ADR
-                // store once per decision, so a project with twenty matching ADRs did twenty
-                // full store opens to answer one question.
-                .filter(|decision| {
-                    verified_decisions
-                        .binary_search_by_key(&decision.id, |id| *id)
-                        .is_ok()
-                })
-                .collect::<Vec<_>>(),
             None => Vec::new(),
         };
 

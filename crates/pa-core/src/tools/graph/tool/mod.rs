@@ -9,7 +9,7 @@ use crate::jev::graph_rerank::GraphReranker;
 use crate::tools::graph::args::{cold_build_note, root_is_stale};
 use crate::tools::graph::build::{project_key_in, project_name};
 use crate::tools::graph::tool::schema::{
-    accepted_params, params_schema, reject_unknown_params, ACCEPTED_PARAMS,
+    accepted_params, action_names, params_schema, reject_unknown_params,
 };
 use pa_agent::types::AgentToolResult;
 use pa_graph::{GraphStore, IndexOptions};
@@ -392,11 +392,11 @@ impl GraphTool {
             other => {
                 // Derived, never hand-listed: this text had drifted twice — it named no
                 // `context`, `impact` or `explain_change` while all three worked, because a
-                // second copy of the action list has no way to stay true.
-                let accepted: Vec<&str> = ACCEPTED_PARAMS.iter().map(|(name, _)| *name).collect();
+                // second copy of the action list has no way to stay true. The schema's
+                // `enum` and this message now read the same list.
                 anyhow::bail!(
                     "unknown graph action {other:?}: expected one of {}",
-                    accepted.join(", ")
+                    action_names().join(", ")
                 )
             }
         }
