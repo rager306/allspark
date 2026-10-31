@@ -324,16 +324,43 @@ run_unit() {
       cargo nextest run --locked --no-tests=warn --color never -p "$pkg" --test "$name" >"$log" 2>&1
     fi
     local status=$?
+    # Exit 0 alone does NOT mean the unit passed: `--no-tests=warn` turns "nothing ran"
+    # into exit 0, so nextest's `Starting 0 tests` line is what says the unit had tests
+    # to run. Review #53: `pa-jev#test:live_subq` and `pa-core#test:jev_live_eval` hold
+    # one `#[ignore]`d test each, exited 0, printed `ok`, and the summary counted them
+    # as green — a gate certifying a unit it never executed. Exit 4 stays the belt for
+    # an older nextest without `--no-tests`. `grep`, not `rg`: a missing matcher must
+    # not be able to answer "this unit was tested" for every unit.
+    if [[ $status -eq 0 || $status -eq 4 ]] \
+      && grep -qF -- 'Starting 0 tests' "$log"; then
+      # A skip with its reason: every test `#[ignore]`d is untested, and so is a target
+      # that lost the tests it used to have.
+      if grep -qE '\([0-9]+\ tests?\ skipped\)' "$log"; then
+        echo "skip $pkg $kind $name  (every test is #[ignore]d)"
+      else
+        echo "skip $pkg $kind $name  (the target lists no tests)"
+      fi
+      return 0
+    fi
     if [[ $status -eq 0 ]]; then
       ok=1
-    elif [[ $status -eq 4 ]] && rg -q --fixed-strings 'Starting 0 tests' "$log"; then
-      # Belt for an older nextest without `--no-tests`: an empty unit is reported,
-      # never silently green, because a file that LOST its tests must stay visible.
-      echo "skip $pkg $kind $name  (every test is #[ignore]d)"
-      return 0
     fi
   else
     cargo test --locked -p "$pkg" "${args[@]}" >"$log" 2>&1 && ok=1
+    # The same rule on the cargo-test path, so "nothing executed" is a skip whichever
+    # runner produced it: `0 passed; 0 failed; N ignored` is "the tests exist and every
+    # one was skipped", and `0 passed; 0 failed; 0 ignored` is a target with nothing to
+    # run. Both exit 0, and exit 0 is where the gate used to stop asking.
+    if [[ $ok -eq 1 ]] \
+      && ! grep -qE 'test result: ok\. [1-9][0-9]* passed' "$log" \
+      && grep -qE '^test result: ok\. 0 passed; 0 failed;' "$log"; then
+      if grep -qE '^test result: ok\. 0 passed; 0 failed; [1-9][0-9]* ignored' "$log"; then
+        echo "skip $pkg $kind $name  (every test is #[ignore]d)"
+      else
+        echo "skip $pkg $kind $name  (the target lists no tests)"
+      fi
+      return 0
+    fi
   fi
   if [[ $ok -eq 1 ]]; then
     echo "ok   $pkg $kind $name"
@@ -403,7 +430,17 @@ elif [[ "$ran_ok" -eq 0 ]]; then
   echo "tests: DEGENERATE — all $units units skipped, 0 ran; the gate proved nothing"
   fail=1
 else
-  echo "tests: all $units units green ($ran_ok ok, $ran_skip skipped)"
+  # "all N units green" was the same sentence for a healthy run and for one where units
+  # never executed a test (review #53). A skip is not a failure — an all-`#[ignore]`d
+  # live-smoke unit is legitimately untested — but it must not read as tested, so the
+  # counts are printed, and the units whose tests EXIST and were skipped are named: those
+  # are the ones a reader would otherwise believe were executed.
+  ran_no_tests=$(grep -c '^skip .*(the target lists no tests)' "$OUT/tests/summary.log" || true)
+  echo "tests: $units of $units units accounted for ($ran_ok ok, $ran_skip skipped:" \
+       "$ran_no_tests with no tests to run)"
+  if [[ "$ran_skip" -gt "$ran_no_tests" ]]; then
+    grep -v '(the target lists no tests)' "$OUT/tests/summary.log" | grep '^skip '
+  fi
 fi
 
 if [[ $fail -ne 0 ]]; then
