@@ -1,4 +1,5 @@
-//! Registration of the fork's four gated native tools (`lsp`, `graph`, `edit`, `jev`).
+//! Registration of the fork's gated native tools (`lsp`, `graph`, `edit`, `jev`,
+//! `schedule`).
 //!
 //! Extracted from `engine.rs`, where 200 lines of tool wiring sat inside the session
 //! constructor: upstream edits that file ~29 times per 100 commits, and every merge
@@ -32,6 +33,12 @@ pub(crate) struct NativeToolSettings {
     pub edit_hybrid_enabled: bool,
     pub edit_hybrid_default_mode: Option<String>,
     pub edit_hybrid_allow_modes: Vec<String>,
+    /// The `schedule` tool's store + identity + wake. `None` means the tool is
+    /// absent, for either reason: `[schedule] enabled` is off (its default),
+    /// or the embedding wired no cron scheduler (print/RPC) and could not
+    /// honour a schedule it accepted. Resolved by the caller, like `jev_judge`
+    /// — one field, one decision, no gate the caller cannot see.
+    pub schedule_target: Option<crate::tools::schedule::ScheduleTarget>,
 }
 
 /// What the engine must keep after registration.
@@ -239,6 +246,15 @@ pub(crate) fn register_native_tools(
             )));
             native_tool_names.push("jev".to_string());
         }
+    }
+    // FORK-ONLY (fork: schedule): the agent's durable scheduling surface. The
+    // caller supplies a target only when the tool can be honoured (gate on AND
+    // a scheduler wired); a tool without a store would accept a schedule it
+    // cannot fire, which is worse than its absence -- the model would report
+    // durable work that never happens.
+    if let Some(target) = settings.schedule_target.clone() {
+        tools.push(Arc::new(crate::tools::schedule::ScheduleTool::new(target)));
+        native_tool_names.push("schedule".to_string());
     }
     NativeTools {
         lsp_manager,

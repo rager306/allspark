@@ -344,7 +344,8 @@ fn native_tools_section(tools: &[&str]) -> String {
     let has_graph = tools.contains(&"graph");
     let has_edit = tools.contains(&"edit");
     let has_jev = tools.contains(&"jev");
-    if !has_lsp && !has_graph && !has_edit && !has_jev {
+    let has_schedule = tools.contains(&"schedule");
+    if !has_lsp && !has_graph && !has_edit && !has_jev && !has_schedule {
         return String::new();
     }
     // Hybrid of two reference prompts, adapted to this fork's tools: Serena's
@@ -414,6 +415,17 @@ fn native_tools_section(tools: &[&str]) -> String {
              `check` a yes/no probability, `ask` an explicit choice/score/noul question. One call \
              replaces a whole model round-trip for a gray-zone judgment; NOT for arithmetic or \
              lookups."
+                .to_string(),
+        );
+    }
+    if has_schedule {
+        lines.push(
+            "- `schedule`: durable scheduled prompts — `add` (schedule + prompt), `list`, \
+             `cancel` (id). A scheduled job survives the turn, the worker and a daemon restart, \
+             and its prompt arrives as a new turn; a job bound to this session stops when the \
+             session is killed. Use it for work the user wants to happen later or repeatedly. \
+             NEVER simulate a recurring task with in-session polling (`bash` sleeping, a loop \
+             in `python_repl`): it dies with the session and the user never sees the work."
                 .to_string(),
         );
     }
@@ -905,7 +917,7 @@ mod tests {
     /// that owns it, so the prompt cannot drift from the real surface.
     #[test]
     fn native_tools_section_names_real_actions() {
-        let section = native_tools_section(&["edit", "graph", "jev", "lsp"]);
+        let section = native_tools_section(&["edit", "graph", "jev", "lsp", "schedule"]);
         // pa-lsp's action enum (crates/pa-lsp/src/types.rs).
         for action in [
             "status",
@@ -963,6 +975,30 @@ mod tests {
         for mode in ["replace", "patch", "apply_patch", "hashline", "sloppy"] {
             assert!(section.contains(mode), "edit mode {mode:?} undocumented");
         }
+        // The `schedule` tool's dispatch table
+        // (crates/pa-core/src/tools/schedule.rs).
+        for action in ["add", "list", "cancel"] {
+            assert!(
+                section.contains(action),
+                "schedule action {action:?} undocumented"
+            );
+        }
+    }
+
+    /// The `schedule` tool's line belongs to its own gate: a roster without it
+    /// must not advertise durable scheduling, and a roster with only it still
+    /// renders the section (the tool is otherwise absent from the prompt).
+    #[test]
+    fn the_schedule_line_follows_its_gate() {
+        let with = native_tools_section(&["bash", "schedule"]);
+        assert!(with.contains("- `schedule`:"), "missing the line:\n{with}");
+        assert!(with.contains("NEVER simulate a recurring task"));
+        let without = native_tools_section(&["bash", "edit", "lsp", "graph", "jev"]);
+        assert!(
+            !without.contains("- `schedule`:"),
+            "leaked schedule into:\n{without}"
+        );
+        assert!(!without.contains("durable scheduled prompts"));
     }
 
     /// The tail is ordered by volatility, ending with the date alone.

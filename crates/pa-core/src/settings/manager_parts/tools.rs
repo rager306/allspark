@@ -119,6 +119,22 @@ impl SettingsManager {
         Some(std::path::PathBuf::from(raw))
     }
 
+    /// The agent-facing `schedule` tool's gate: unset means OFF.
+    ///
+    /// The other fork tools default ON because they only read or edit the
+    /// working tree. This one is the only tool that writes to the user's
+    /// DURABLE cron catalog — the same store `schedule add` writes — so an
+    /// agent may create work that outlives its session without being asked.
+    /// Opt-in keeps that decision with the operator.
+    #[must_use]
+    pub fn get_schedule_enabled(&self) -> bool {
+        self.merged
+            .schedule
+            .as_ref()
+            .and_then(|schedule| schedule.enabled)
+            .unwrap_or(false)
+    }
+
     /// The native `edit` tool's gate: unset means ON.
     #[must_use]
     pub fn get_edit_hybrid_enabled(&self) -> bool {

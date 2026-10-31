@@ -347,6 +347,16 @@ pub struct EditHybridSettings {
     pub allow_modes: Option<Vec<String>>,
 }
 
+/// The agent-facing `schedule` tool's gate (fork-only). `enabled` unset reads
+/// as `false`: unlike the lsp/graph/edit tools, this one widens what an agent
+/// may do to the user's DURABLE job catalog (a job outlives the turn, the
+/// worker and a daemon restart), so it is opt-in.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduleSettings {
+    pub enabled: Option<bool>,
+}
+
 /// [FORK-ONLY] The model router's gate and mode (`[routing]`): whether the
 /// per-turn chooser runs at all, and how far it may act. The router owns
 /// no state of its own; it orders the provider ladder the failover driver
@@ -703,6 +713,8 @@ pub struct Settings {
     pub graph: Option<GraphSettings>,
     /// Native `edit` tool settings (fork-only; `enabled` defaults on).
     pub edit_hybrid: Option<EditHybridSettings>,
+    /// Agent-facing `schedule` tool settings (fork-only; `enabled` defaults off).
+    pub schedule: Option<ScheduleSettings>,
     /// Tool-surface profile (fork-only; Phase 7 config isolation).
     pub tool_profile: Option<ToolProfileSettings>,
     /// Typed-decision (judgment) layer settings (fork-only; `enabled`

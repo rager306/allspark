@@ -82,6 +82,42 @@ impl SessionRuntime {
         self.cron_store.as_ref()
     }
 
+    /// The `schedule` tool's target for this session: the same store, the same
+    /// identity and the same post-mutation wake the kernel's `rlm_heartbeat.*`
+    /// handlers use.
+    ///
+    /// Sharing the seam is the point. A tool-created job is one more row in the
+    /// catalog the user's `schedule` command reads, and a job created after the
+    /// scheduler armed its timer must re-arm it (`wake`) or it never fires —
+    /// the regressions the kernel path already carries tests for. A
+    /// scheduler-less embedding (print/RPC) gets `None` and registers no tool,
+    /// exactly as it registers no `rlm_heartbeat.*` handler.
+    #[must_use]
+    pub fn schedule_target(&self) -> Option<crate::tools::schedule::ScheduleTarget> {
+        let store = Arc::clone(self.cron_store.as_ref()?);
+        let wake = self.cron_mutation_hook.clone().map(|hook| {
+            std::sync::Arc::new(move |job: crate::cron::AgentCronJob, drop_queued: bool| {
+                let hook = Arc::clone(&hook);
+                let future: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+                    Box::pin(async move {
+                        hook(super::host_requests::RlmHeartbeatMutation { job, drop_queued }).await;
+                    });
+                future
+            }) as crate::tools::schedule::ScheduleWake
+        });
+        Some(crate::tools::schedule::ScheduleTarget {
+            store,
+            binding: crate::tools::schedule::ScheduleBinding {
+                active_session_id: self.active_session_id.clone(),
+                session_id: self.binding.session_id.clone(),
+                session_file: self.binding.session_file.clone(),
+                cwd: self.binding.cwd.clone(),
+                artifact_dir: artifact_dir(&self.binding.session_file),
+            },
+            wake,
+        })
+    }
+
     /// Register the `goal.*` and `rlm_heartbeat.*` handlers onto a handler
     /// map; the heartbeat handlers register only on a runtime that serves
     /// them (embeddings with cron wiring).
@@ -185,6 +221,16 @@ impl SessionRuntime {
             );
         }
     }
+}
+
+/// The session's artifact directory, derived from its durable file exactly as
+/// the daemon derives it (`dirname(dirname(file))/session-artifacts/<stem>`):
+/// one rule, so a tool write and a worker write cannot land in two partitions.
+fn artifact_dir(session_file: &str) -> Option<std::path::PathBuf> {
+    if session_file.is_empty() {
+        return None;
+    }
+    super::harness_digest::session_artifact_dir_for_log(std::path::Path::new(session_file))
 }
 
 fn host_ok(response: &GoalHostResponse) -> anyhow::Result<Value> {

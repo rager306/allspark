@@ -334,6 +334,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let edit_hybrid_enabled = settings.get_edit_hybrid_enabled();
     let edit_hybrid_default_mode = settings.get_edit_hybrid_default_mode();
     let edit_hybrid_allow_modes = settings.get_edit_hybrid_allow_modes();
+    // The agent-facing `schedule` tool's gate (`[schedule] enabled`; default
+    // OFF). Read here with the other native-tool gates, before `settings` moves
+    // into the resource loader.
+    let schedule_enabled = settings.get_schedule_enabled();
     // FORK-ONLY (fork: jev): the typed-decision layer's gates, captured
     // before `settings` moves into the resource loader (`[jev]` defaults
     // OFF; nothing below runs in the default path).
@@ -693,6 +697,12 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             edit_hybrid_enabled,
             edit_hybrid_default_mode,
             edit_hybrid_allow_modes,
+            // `schedule.enabled` AND a scheduler the tool can reach: an
+            // embedding without one (print/RPC) registers nothing, exactly as
+            // it registers no `rlm_heartbeat.*` handler.
+            schedule_target: schedule_enabled
+                .then(|| wiring.runtime.schedule_target())
+                .flatten(),
         },
         jev_judge.as_ref(),
     );

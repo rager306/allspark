@@ -523,6 +523,68 @@ fn cron_wiring(dir: &std::path::Path) -> KernelCronWiring {
     }
 }
 
+/// The daemon worker's shape: a scheduler-applied wake behind the store, so a
+/// job created after the timer armed can re-arm it (the same hook
+/// `ScheduledJobs::mutation_hook` installs).
+fn cron_wiring_with_wake(
+    dir: &std::path::Path,
+    wakes: &Arc<std::sync::atomic::AtomicUsize>,
+) -> KernelCronWiring {
+    let wakes = Arc::clone(wakes);
+    KernelCronWiring {
+        store: std::sync::Arc::new(crate::cron::store::AgentCronJobStore::new(
+            dir.join("jobs.json"),
+        )),
+        binding: None,
+        mutation_hook: Some(std::sync::Arc::new(move |_mutation| {
+            let wakes = Arc::clone(&wakes);
+            Box::pin(async move {
+                wakes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }) as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        })),
+    }
+}
+
+/// Build an engine whose agent dir already carries `settings.json` content.
+async fn engine_over_with_settings(
+    settings_json: Option<serde_json::Value>,
+    cron_store: Option<KernelCronWiring>,
+) -> (SessionEngine, tempfile::TempDir) {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent_dir = tmp.path().join("agent");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    if let Some(settings) = settings_json {
+        std::fs::write(agent_dir.join("settings.json"), settings.to_string()).unwrap();
+    }
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let model = pa_agent::types::Model {
+        id: "m".into(),
+        name: "m".into(),
+        api: "test".into(),
+        provider: "test".into(),
+        base_url: "http://localhost".into(),
+        reasoning: false,
+        cost: pa_agent::types::UsageCost::default(),
+        context_window: 1_000,
+        max_tokens: 100,
+        max_tokens_explicit: false,
+    };
+    let provider = Arc::new(ScriptedProvider::new(model.clone()));
+    let engine = create_session(SessionEngineConfig {
+        cron_store,
+        cwd,
+        agent_dir,
+        model: Some(model),
+        stream_fn: Some(provider.stream_fn()),
+        daemonless: true,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    (engine, tmp)
+}
+
 async fn engine_over(
     extra_host_handlers: Option<crate::kernel::shared::HostRequestHandlers>,
     cron_store: Option<KernelCronWiring>,
@@ -630,6 +692,130 @@ async fn model_visible_skills_follow_the_embedding_wiring() {
             );
         }
     }
+}
+
+fn tool_text(result: &pa_agent::types::AgentToolResult) -> String {
+    match &result.content[0] {
+        pa_agent::types::ToolResultContent::Text(text) => text.text.clone(),
+        pa_agent::types::ToolResultContent::Image(_) => panic!("expected text content"),
+    }
+}
+
+/// The agent's durable scheduling surface (review #29): with
+/// `[schedule] enabled` and a wired scheduler, the roster carries a
+/// `schedule` tool, and the tool it carries really creates a job in the same
+/// store the user's `schedule list` reads.
+///
+/// Without this, the only scheduling primitive an agent had was the
+/// session-scoped heartbeat: `crates/pa-cli/src/command_registry.rs` gives the
+/// HUMAN `schedule <list|add|cancel>` over a store that survives restarts, and
+/// an agent asked to watch something overnight had no way to reach it.
+#[tokio::test]
+async fn the_schedule_tool_creates_a_durable_job_its_list_shows() {
+    let dir = tempfile::tempdir().unwrap();
+    let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (engine, _tmp) = engine_over_with_settings(
+        Some(serde_json::json!({ "schedule": { "enabled": true } })),
+        Some(cron_wiring_with_wake(dir.path(), &wakes)),
+    )
+    .await;
+    let tools = engine.session.agent().state().await.tools.clone();
+    let Some(schedule) = tools.iter().find(|tool| tool.name() == "schedule").cloned() else {
+        let names: Vec<&str> = tools.iter().map(|tool| tool.name()).collect();
+        panic!("no `schedule` tool in the roster: {names:?}");
+    };
+    assert!(
+        engine.system_prompt.contains("- `schedule`:"),
+        "the prompt must advertise a tool the roster carries"
+    );
+
+    let created = schedule
+        .clone()
+        .execute(
+            "call-1".to_string(),
+            serde_json::json!({
+                "action": "add",
+                "schedule": "every 30m",
+                "prompt": "check the build",
+                "label": "build watch",
+            }),
+            pa_agent::abort::AbortSignal::never(),
+            std::sync::Arc::new(|_update| {}),
+        )
+        .await
+        .expect("add a schedule");
+    assert!(!created.is_error, "{created:?}");
+    let created_text = tool_text(&created);
+    assert!(created_text.contains("check the build"), "{created_text}");
+    assert!(created_text.contains("every 30m"), "{created_text}");
+    // The create re-armed the scheduler: a job born after the timer armed
+    // never fires otherwise.
+    assert_eq!(
+        wakes.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the create must wake the scheduler"
+    );
+
+    let listed = schedule
+        .clone()
+        .execute(
+            "call-2".to_string(),
+            serde_json::json!({ "action": "list" }),
+            pa_agent::abort::AbortSignal::never(),
+            std::sync::Arc::new(|_update| {}),
+        )
+        .await
+        .expect("list schedules");
+    let listed_text = tool_text(&listed);
+    assert!(listed_text.contains("build watch"), "{listed_text}");
+    assert!(listed_text.contains("check the build"), "{listed_text}");
+    // The listing is a read: it must not re-arm anything.
+    assert_eq!(
+        wakes.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a catalog read mutates nothing"
+    );
+}
+
+/// The gate is off by default, and off means the tool is absent from BOTH the
+/// roster and the prompt: an agent must not be promised a surface it lacks.
+#[tokio::test]
+async fn the_schedule_tool_is_absent_until_its_gate_is_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    for settings in [
+        None,
+        Some(serde_json::json!({ "schedule": { "enabled": false } })),
+    ] {
+        let (engine, _tmp) =
+            engine_over_with_settings(settings, Some(cron_wiring_with_wake(dir.path(), &wakes)))
+                .await;
+        let tools = engine.session.agent().state().await.tools.clone();
+        assert!(
+            !tools.iter().any(|tool| tool.name() == "schedule"),
+            "the default gate is off"
+        );
+        assert!(!engine.system_prompt.contains("- `schedule`:"));
+    }
+}
+
+/// A scheduler-less embedding (print/RPC) cannot honour a schedule, so the
+/// gate alone must not install the tool: accepting a job nothing can fire is
+/// worse than having no tool, because the model reports durable work that
+/// never happens.
+#[tokio::test]
+async fn the_schedule_tool_requires_a_wired_scheduler() {
+    let (engine, _tmp) = engine_over_with_settings(
+        Some(serde_json::json!({ "schedule": { "enabled": true } })),
+        None,
+    )
+    .await;
+    let tools = engine.session.agent().state().await.tools.clone();
+    assert!(
+        !tools.iter().any(|tool| tool.name() == "schedule"),
+        "no store means no tool"
+    );
+    assert!(!engine.system_prompt.contains("- `schedule`:"));
 }
 
 /// A receipt that landed after its cell's tool result persists as a

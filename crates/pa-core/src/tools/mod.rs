@@ -12,4 +12,6 @@ pub(crate) mod metrics;
 pub(crate) mod path_utils;
 pub(crate) mod render_utils;
 pub(crate) mod repeat_codec;
+// The agent-facing `schedule` tool (fork-only; gated by `schedule.enabled`).
+pub(crate) mod schedule;
 pub(crate) mod tool_definition;
