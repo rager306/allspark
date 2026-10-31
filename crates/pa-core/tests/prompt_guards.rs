@@ -163,6 +163,9 @@ const INTERNAL_HOST_REQUESTS: &[&str] = &[
     "bash.consumed",
     // The factory module reports run milestones; the model never calls it.
     "factory.progress",
+    // The durable record of a run's START (never a model-visible notice): the
+    // runtime writes it after a restart so the session can answer for the run.
+    "factory.run.started",
 ];
 
 /// Map one registered host-request type to the prompt token that documents
@@ -184,14 +187,55 @@ fn prompt_token_for_host_request(request: &str) -> Option<String> {
     )
 }
 
-/// Kernel-side programmatic tools implemented by the vendored `prime-agent-runtime` package
-/// (generic MCP calls). Update together with the runtime sidecar.
-const KERNEL_LOCAL_TOKENS: &[&str] = &[
-    "mcp.list_tools",
-    "mcp.call_tool",
-    "mcp.search_tools",
-    "mcp.describe_tool",
+/// The vendored kernel runtime's MCP module: the `mcp` object every REPL binds.
+fn runtime_mcp_module() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("workspace root")
+        .join("prime-agent-runtime/src/rlm/mcp.py")
+}
+
+/// Kernel MCP entry points that are NOT model-facing, each with the reason it
+/// stays out of the prompt. A name here is a waiver from documentation, so the
+/// reason is required and the name must still exist in the module.
+const MCP_HOST_ONLY: &[(&str, &str)] = &[
+    (
+        "status",
+        "the daemon's connections view; `list_tools` is the model's stricter contract",
+    ),
+    (
+        "close",
+        "terminal: a closed registry refuses all later work, and the runtime calls it at host shutdown",
+    ),
 ];
+
+/// Kernel-side programmatic tools implemented by the vendored `prime-agent-runtime`
+/// package (generic MCP calls), as prompt tokens.
+///
+/// Derived from the runtime source rather than listed here: a hardcoded list only
+/// pins the functions somebody remembered, so a new `mcp.*` entry point landed
+/// undocumented and the guard stayed green. A function this module defines must
+/// either be documented or carry a `MCP_HOST_ONLY` waiver.
+fn kernel_mcp_tokens() -> BTreeSet<String> {
+    let source = std::fs::read_to_string(runtime_mcp_module()).expect("read rlm/mcp.py");
+    source
+        .lines()
+        .filter_map(|line| {
+            let signature = line
+                .strip_prefix("async def ")
+                .or_else(|| line.strip_prefix("def "))?;
+            let name = signature
+                .split(['(', ':'])
+                .next()
+                .unwrap_or_default()
+                .trim();
+            (!name.is_empty() && !name.starts_with('_')).then(|| name.to_string())
+        })
+        .filter(|name| !MCP_HOST_ONLY.iter().any(|(hidden, _)| hidden == name))
+        .map(|name| format!("mcp.{name}"))
+        .collect()
+}
 
 /// The harness-state API of the vendored runtime (`rlm.harness` CRUD and
 /// `rlm.get_harness_state`). Update together with the runtime sidecar.
@@ -502,7 +546,8 @@ fn allowed_surface_tokens() -> BTreeSet<String> {
             allowed.insert(format!("{import}.{function}"));
         }
     }
-    for token in KERNEL_LOCAL_TOKENS.iter().chain(HARNESS_TOKENS) {
+    allowed.extend(kernel_mcp_tokens());
+    for token in HARNESS_TOKENS {
         allowed.insert(token.to_string());
     }
     allowed
@@ -526,7 +571,8 @@ fn required_surface_tokens() -> BTreeSet<String> {
             required.insert(format!("{import}.{function}"));
         }
     }
-    for token in KERNEL_LOCAL_TOKENS.iter().chain(HARNESS_TOKENS) {
+    required.extend(kernel_mcp_tokens());
+    for token in HARNESS_TOKENS {
         required.insert(token.to_string());
     }
     required
@@ -557,6 +603,29 @@ fn documented_surface_tokens() -> BTreeSet<String> {
         }
     }
     documented
+}
+
+/// The MCP waivers stay honest in both directions: a waived name the runtime no
+/// longer defines is a stale exemption, and a waived name the prompt documents
+/// anyway means the prompt and the waiver disagree about who the surface is for.
+#[test]
+fn mcp_documentation_waivers_stay_honest() {
+    let source = std::fs::read_to_string(runtime_mcp_module()).expect("read rlm/mcp.py");
+    let documented = documented_surface_tokens();
+    for (name, reason) in MCP_HOST_ONLY {
+        assert!(
+            !reason.is_empty(),
+            "MCP_HOST_ONLY waives {name} from documentation without a reason"
+        );
+        assert!(
+            source.contains(&format!("def {name}(")),
+            "MCP_HOST_ONLY waives {name}, which the runtime no longer defines"
+        );
+        assert!(
+            !documented.contains(&format!("mcp.{name}")),
+            "{name} is waived as host-only but the prompt documents it; drop one of the two"
+        );
+    }
 }
 
 #[test]

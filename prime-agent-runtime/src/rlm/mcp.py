@@ -5,6 +5,11 @@ Two surfaces, one module:
 - Dispatch: ``list_tools(connection)`` / ``call_tool(connection, tool, arguments)``
   open a configured MCP server (host-resolved via ``mcp.config``), discover its
   tools, and call them. Adding a service is data, not a new Python module.
+  A cached generation is reused until its resolved config changes; ``reload``
+  drops it by hand, which is the recovery for a server whose transport died
+  under a still-cached session and for a credential rotated since the last
+  open. Re-read edited settings needs no ``reload``: every dispatch re-reads
+  ``mcp.config`` and reopens on any difference.
 - Discovery: ``list_plugins`` / ``search_plugins`` (host-owned catalog),
   ``list_connections`` (the user's actual connections), ``search_tools`` /
   ``describe_tool`` (live tool metadata). Inventory calls are bounded and never
@@ -12,7 +17,12 @@ Two surfaces, one module:
   unmodified.
 - Host view: ``status(servers, timeout_ms)`` feeds the daemon's MCP
   connections view (one bounded per-server listing, errors reported per
-  server).
+  server). Not a model-facing call: ``list_tools`` is the stricter contract
+  (it raises instead of reporting per-server errors), and the host owns the
+  timeout budget.
+- Lifecycle: ``close`` shuts the registry down for the kernel's remaining
+  lifetime and is called by the runtime at host shutdown, never by an agent:
+  a closed registry refuses all later work.
 """
 
 from __future__ import annotations
@@ -678,12 +688,25 @@ async def call_tool(server: str, tool: str, arguments: dict[str, Any] | None = N
 
 
 async def reload(server: str | None = None) -> None:
+    """Drop a cached MCP connection (one server, or all of them when omitted).
+
+    The next call reopens it from freshly resolved config. Edited settings need
+    no reload — every dispatch re-reads `mcp.config` and reopens on any change —
+    so this is the manual recovery for a connection whose transport died under
+    a still-cached session, or for a credential replaced since the last open.
+    """
     if server is not None:
         _validate_name(server, "server")
     await _dispatch(lambda: _registry.reload(server), timeout=_SHUTDOWN_TIMEOUT + 1)
 
 
 async def close() -> None:
+    """Shut this kernel's MCP registry down; every later call raises.
+
+    The runtime calls this at host shutdown. An agent has no reason to: the
+    registry is never reopened, so closing it ends MCP access for the kernel's
+    remaining lifetime.
+    """
     await _dispatch(_registry.shutdown, timeout=_SHUTDOWN_TIMEOUT + 1)
 
 

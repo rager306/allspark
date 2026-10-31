@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import hashlib
 import io
@@ -7,6 +8,7 @@ import json
 import os
 import sys
 import traceback
+import signal
 import socket
 import subprocess
 import tempfile
@@ -878,6 +880,94 @@ class McpRegistryTest(unittest.TestCase):
                 self.assertEqual(mcp._registry._generations, {})
 
         run(scenario())
+
+
+class McpSurfaceDeclarationTest(unittest.TestCase):
+    """`help(mcp)` is how an agent inspects the pre-imported module, so every
+    entry point has to be visible in one of the two places the module declares
+    itself: `__all__` and the module docstring. `reload` and `close` were
+    exported and documented nowhere, which left the only recovery for a wedged
+    MCP session undiscoverable."""
+
+    def module_level_functions(self):
+        """Top-level, non-private functions the module defines itself."""
+        tree = ast.parse(Path(mcp.__file__).read_text())
+        return [
+            node.name
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and not node.name.startswith("_")
+        ]
+
+    def test_a_public_function_is_either_exported_or_documented(self):
+        doc = mcp.__doc__ or ""
+        undeclared = [name for name in self.module_level_functions() if name not in mcp.__all__ and name not in doc]
+        self.assertEqual(
+            undeclared,
+            [],
+            "declare every module-level function in __all__ or the module docstring",
+        )
+
+    def test_every_exported_function_is_documented(self):
+        doc = mcp.__doc__ or ""
+        exported = [
+            name
+            for name in mcp.__all__
+            if callable(getattr(mcp, name, None)) and not isinstance(getattr(mcp, name), type)
+        ]
+        self.assertEqual([name for name in exported if name not in doc], [])
+
+
+class McpReloadRecoveryTest(unittest.TestCase):
+    """`reload` is a recovery path, not a config-refresh step: every dispatch
+    re-reads `mcp.config` and reopens a changed server, so a reload only matters
+    when a cached connection is dead or its credential rotated. The dead case is
+    hard to diagnose unaided: the cached tool listing keeps answering after the
+    child dies, so `list_tools` reports a healthy server while every call fails."""
+
+    def setUp(self):
+        self.registry = mcp._registry
+        self.configure = mcp._config
+        mcp._registry = mcp._Registry()
+
+    def tearDown(self):
+        try:
+            run(mcp.close())
+        except (RuntimeError, OSError):
+            pass
+        mcp._registry = self.registry
+        mcp._config = self.configure
+
+    def test_reload_reopens_a_connection_whose_child_died(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "stdio_server.py"
+            pid_file = Path(tmp) / "stdio.pid"
+            fixture.write_text(_STDIO_FIXTURE)
+            config = {
+                "type": "stdio",
+                "command": sys.executable,
+                "args": [str(fixture)],
+                "cwd": str(fixture.parent),
+                "env": {"FIXTURE_PID_FILE": {"env": "MCP_SURFACE_TEST_PID_FILE"}},
+            }
+            os.environ["MCP_SURFACE_TEST_PID_FILE"] = str(pid_file)
+
+            async def scenario():
+                await mcp.list_tools("svc")
+                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+                await asyncio.sleep(0.4)
+                self.assertEqual([tool["name"] for tool in await mcp.list_tools("svc")], ["fixture/raw.tool"])
+                with self.assertRaises(Exception):
+                    await mcp.call_tool("svc", "fixture/raw.tool", {})
+                await mcp.reload("svc")
+                self.assertEqual([tool["name"] for tool in await mcp.list_tools("svc")], ["fixture/raw.tool"])
+                return await mcp.call_tool("svc", "fixture/raw.tool", {})
+
+            try:
+                with mock.patch.object(mcp, "_config", new=mock.AsyncMock(return_value=config)):
+                    self.assertIsNotNone(run(scenario()))
+            finally:
+                os.environ.pop("MCP_SURFACE_TEST_PID_FILE", None)
 
 
 

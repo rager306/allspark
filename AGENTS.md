@@ -640,7 +640,7 @@ written and no upstream socket is contacted.
   (`jev.enabled`, default off). They are additive — the three above stay the base surface —
   and `/session` prints a "Native tools:" row listing the ones actually registered, so the
   prompt and the roster cannot silently disagree (`readme-fork.md` §4).
-- RLM kernel API in the persistent Python REPL: `rlm.spawn/find_models/collect/list_subagents/delete_subagent/create_session/progress_note`, `rlm.harness` CRUD, `agent_message.send`, `agent_observe`, `compact`, `goal`, `refine`, `attach_image`, skills (markdown + Python) per the skill contract in the base system prompt.
+- RLM kernel API in the persistent Python REPL: `rlm.spawn/find_models/collect/list_subagents/delete_subagent/create_session/progress_note/rename`, `rlm.persistent_shells` (the re-attach path for `bash(persistent=True)` handles after a restart), `rlm.harness` CRUD, `rlm_heartbeat.create/list/update/delete`, `agent_message.send`, `agent_observe`, `mcp.*` (the generic MCP client), `compact`, `goal`, `refine`, `attach_image`, skills (markdown + Python) per the skill contract in the base system prompt.
 - System prompt structure: layered — cache-stable static layer files (core harness description with the full API surface, mandatory usage rules, opinionated guidelines, per-model additions from the model-prompts TOML rule map) followed by one dynamic tail (packages, project context, skills inventory, MCP servers, environment, session role); the harness digest stays a separate `[harness-digest]` user message. `prime-agent prompt` dumps the assembled prompt with its layer breakdown.
 - CLI shape: `prime-agent` with the same commands/flags as the TS product; headless modes (RPC/daemon/session-worker) with identical behavior.
 

@@ -174,6 +174,7 @@ prime-agent has support for programmatic tools that are defined in the MCP forma
 - `mcp.list_connections() -> list[dict]`: the user's current connections (the dispatch ids)
 - `mcp.search_tools(query: str, connection_id: str | None = None, limit: int = 20) -> dict`: search live tool names/descriptions and report the search scope
 - `mcp.describe_tool(connection_id: str, tool: str) -> dict`: one live tool's name, description, and inputSchema
+- `mcp.reload(server: str | None = None) -> None`: drop a cached connection (one server, or all when omitted) so the next call reopens it. Edited settings need no reload — every call re-reads the server config — so use it when a cached connection is dead (the tool list still answers, but every call fails) or its credential was replaced
 
 ## Skills
 
