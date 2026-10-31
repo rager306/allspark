@@ -1,19 +1,18 @@
 //! Writing one file's contribution: its nodes, FTS rows, CONTAINS/CALLS/USAGE
 //! edges, coverage notes, and hash.
 
-use std::collections::HashMap;
-
 use serde_json::json;
 
-use crate::coverage::{classify_source, ParseHealth};
+use crate::coverage::{classify_source, ParseHealth, KIND_SKIPPED};
 use crate::error::Result;
 use crate::extract::{CallSite, ExtractedFile};
 use crate::store::GraphStore;
 use crate::tokenize::split_for_fts;
 use crate::types::{CallSiteVerdict, CallStrategy, EdgeType, IndexReport, Label, Node};
 
+use super::options::Depth;
 use super::resolver::Resolver;
-use super::walk::FileWork;
+use super::walk::{module_of, FileWork};
 
 impl GraphStore {
     /// # Errors
@@ -152,41 +151,84 @@ impl GraphStore {
         self.insert_edge(project, source, source, EdgeType::Uses, &props)
     }
 
-    /// Write a file's definitions and CONTAINS edges, resolving nothing.
+    /// Write one file's whole contribution to the graph, as ONE unit of work.
     ///
-    /// This is the `symbols` depth: `search` and the architecture views work,
-    /// `trace` and `structure` stay empty because no CALLS or IMPORTS edge
-    /// exists yet.
+    /// The caller runs this inside [`GraphStore::with_transaction`], so the
+    /// clear of the previous revision and the write of the new one commit or
+    /// roll back together. Nothing here may write a fact the caller would have
+    /// to undo if the commit fails: the returned [`FileWrite`] carries what the
+    /// pass must remember (node id, call sites, imports), and the caller records
+    /// that only after the commit succeeds.
+    ///
+    /// `report` is the exception: a rolled-back attempt leaves its counts behind.
+    /// That is deliberate — the report says what the pass DID, and a file whose
+    /// rewrite failed did not contribute nodes.
     ///
     /// # Errors
     /// Propagates SQLite errors.
-    pub(crate) fn write_symbols_only(
+    pub(crate) fn rewrite_file(
         &self,
         project: &str,
         work: &FileWork,
-        extracted: &ExtractedFile,
+        depth: Depth,
         report: &mut IndexReport,
-        file_node_ids: &mut HashMap<String, i64>,
-    ) -> Result<()> {
-        let (nodes, file_id) = self.write_file(project, &work.rel, extracted)?;
-        report.nodes += nodes;
-        if let Some(id) = file_id {
-            file_node_ids.insert(work.rel.clone(), id);
+    ) -> Result<FileWrite> {
+        let rel = work.rel.as_str();
+        // Keep this file's nodes (stable ids) so CALLS edges from unchanged
+        // files survive the re-parse; only its FTS rows and outgoing edges are
+        // dropped. Stale symbols go once extraction has run (see
+        // `delete_file_nodes_not_in` below).
+        self.clear_file_for_reparse(project, rel)?;
+        // Re-record this file's coverage from scratch so a file that now parses
+        // cleanly stops being reported as `parse_partial`.
+        self.clear_file_coverage(project, rel)?;
+        let Some(lang) = pa_ast::SupportLang::from_path(&work.abs) else {
+            self.record_coverage(project, rel, KIND_SKIPPED, "unsupported language")?;
+            report.skipped += 1;
+            return Ok(FileWrite::default());
+        };
+        if depth == Depth::Skeleton {
+            report.nodes += 1;
+            self.write_skeleton_file(project, work)?;
+            return Ok(FileWrite::default());
         }
-        self.put_file_hash(project, &work.rel, &work.hash)?;
-        Ok(())
+        let module = module_of(rel);
+        let extracted = crate::extract::extract(&work.source, lang, &module);
+        if !depth.resolves_edges() {
+            let (nodes, file_id) = self.write_file(project, rel, &extracted)?;
+            report.nodes += nodes;
+            self.put_file_hash(project, rel, &work.hash)?;
+            return Ok(FileWrite {
+                file_id,
+                ..FileWrite::default()
+            });
+        }
+
+        self.account_parse_health(project, work, lang, &extracted, report)?;
+        let (nodes, file_id) = self.write_file(project, rel, &extracted)?;
+        self.drop_stale_symbols(project, rel, &extracted)?;
+        let surface = crate::surface::surface_of(&work.source, lang, &module);
+        self.put_file_surface(
+            project,
+            rel,
+            &surface.surface_sha,
+            &surface.body_sha,
+            &surface.surface_json,
+        )?;
+        report.nodes += nodes;
+        self.put_file_hash(project, rel, &work.hash)?;
+        Ok(FileWrite {
+            file_id,
+            calls: extracted.calls,
+            imports: extracted.imports,
+        })
     }
 
     /// Write one file node without parsing: the skeleton depth's whole job.
     ///
     /// # Errors
     /// Propagates SQLite errors.
-    pub(crate) fn write_skeleton_file(
-        &self,
-        project: &str,
-        work: &FileWork,
-        report: &mut IndexReport,
-    ) -> Result<()> {
+    fn write_skeleton_file(&self, project: &str, work: &FileWork) -> Result<()> {
         let file_node = Node {
             id: 0,
             project: project.to_string(),
@@ -199,7 +241,6 @@ impl GraphStore {
             props: json!({ "kind": "file", "size": work.source.len() }),
         };
         self.upsert_node(&file_node)?;
-        report.nodes += 1;
         self.put_file_hash(project, &work.rel, &work.hash)?;
         Ok(())
     }
@@ -265,5 +306,68 @@ impl GraphStore {
             nodes += 1;
         }
         Ok((nodes, Some(file_id)))
+    }
+}
+
+/// What one file's rewrite produced, handed back to the pass.
+///
+/// Collected inside the per-file transaction but recorded only after it commits,
+/// so a rolled-back revision cannot leave a node id or a pending call site in
+/// the pass's own state.
+#[derive(Debug, Default)]
+pub(crate) struct FileWrite {
+    pub(crate) file_id: Option<i64>,
+    pub(crate) calls: Vec<CallSite>,
+    pub(crate) imports: Vec<crate::extract::ImportDef>,
+}
+
+#[cfg(test)]
+mod measurement {
+    //! The before/after numbers in the commit that added the write transaction.
+    //!
+    //! Ignored by default: it indexes a real tree from disk, so it is a harness,
+    //! not a test. Run it with
+    //! `PA_GRAPH_BENCH_ROOT=<tree> cargo test -p pa-graph --lib \
+    //!  indexer::write::measurement -- --ignored --nocapture`.
+
+    use super::super::options::IndexOptions;
+    use crate::store::GraphStore;
+    use std::time::Instant;
+
+    fn root() -> std::path::PathBuf {
+        std::path::PathBuf::from(
+            std::env::var("PA_GRAPH_BENCH_ROOT").unwrap_or_else(|_| "crates".to_string()),
+        )
+    }
+
+    fn rounds() -> usize {
+        std::env::var("PA_GRAPH_BENCH_ROUNDS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(3)
+    }
+
+    /// One whole pass over `root`, timed, on a fresh store each round.
+    #[test]
+    #[ignore = "measurement harness: indexes a real tree, run with --ignored --nocapture"]
+    fn a_full_pass_over_a_real_tree() {
+        for round in 0..rounds() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let mut store = GraphStore::open(dir.path().join("graph.db")).expect("store");
+            let started = Instant::now();
+            let report = store
+                .index_project(
+                    root(),
+                    &IndexOptions::new("bench").with_respect_gitignore(true),
+                )
+                .expect("index");
+            println!(
+                "round {round}: {:?} for {} files ({} nodes, {} edges)",
+                started.elapsed(),
+                report.parsed,
+                report.store_nodes,
+                report.edges
+            );
+        }
     }
 }

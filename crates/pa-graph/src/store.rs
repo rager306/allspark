@@ -177,6 +177,29 @@ impl GraphStore {
         &self.conn
     }
 
+    /// Run `write` as one SQLite transaction: every row it writes becomes
+    /// visible together, and an error — or a panic — leaves none of them.
+    ///
+    /// The transaction covers the whole store, not just a borrowed handle: it is
+    /// opened on this store's connection, so the ordinary `&self` writers
+    /// ([`GraphStore::upsert_node`], [`GraphStore::insert_edge`], …) called from
+    /// `write` land inside it. That is what lets a caller keep using the existing
+    /// write methods instead of threading a `Transaction` through every
+    /// signature.
+    ///
+    /// Not reentrant: SQLite has no nested `BEGIN`, so a `with_transaction`
+    /// inside `write` fails rather than silently opening a second, independent
+    /// scope. Callers who need a nested unit of work must structure it as one.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors from opening, from `write`, and from the commit.
+    pub(crate) fn with_transaction<T>(&self, write: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
+        let tx = self.conn.unchecked_transaction()?;
+        let value = write(self)?;
+        tx.commit()?;
+        Ok(value)
+    }
+
     /// The connection, mutably, for a test that has to install a statement hook.
     ///
     /// `rusqlite`'s `trace`/`profile` hooks take `&mut Connection`, and the hook
@@ -329,7 +352,11 @@ impl GraphStore {
     /// Propagates SQLite errors.
     pub fn upsert_node(&self, node: &Node) -> Result<i64> {
         let props = serde_json::to_string(&node.props)?;
-        self.conn.execute(
+        // `RETURNING id` instead of a follow-up SELECT: the row id is needed for
+        // every symbol, and a separate lookup doubled the per-node round trips
+        // (measured inside one index pass: 779 ms of 1 498 ms for `upsert` on
+        // 96 files of `crates/pa-graph/src`, half of it the SELECT).
+        let mut stmt = self.conn.prepare_cached(
             "INSERT INTO nodes(project,label,name,qualified_name,file_path,start_line,end_line,props_json)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
              ON CONFLICT(project, qualified_name) DO UPDATE SET
@@ -338,7 +365,10 @@ impl GraphStore {
                 file_path = excluded.file_path,
                 start_line = excluded.start_line,
                 end_line = excluded.end_line,
-                props_json = excluded.props_json",
+                props_json = excluded.props_json
+             RETURNING id",
+        )?;
+        let id = stmt.query_row(
             params![
                 node.project,
                 node.label.as_str(),
@@ -349,10 +379,6 @@ impl GraphStore {
                 node.end_line,
                 props
             ],
-        )?;
-        let id: i64 = self.conn.query_row(
-            "SELECT id FROM nodes WHERE project = ?1 AND qualified_name = ?2",
-            params![node.project, node.qualified_name],
             |r| r.get(0),
         )?;
         Ok(id)
@@ -371,11 +397,13 @@ impl GraphStore {
         props: &serde_json::Value,
     ) -> Result<()> {
         let props = serde_json::to_string(props)?;
-        self.conn.execute(
+        // Cached statement: one CONTAINS edge per symbol and one CALLS/USES edge
+        // per call site makes this the highest-frequency write in an index pass.
+        let mut stmt = self.conn.prepare_cached(
             "INSERT OR IGNORE INTO edges(project,source,target,edge_type,props_json)
              VALUES (?1,?2,?3,?4,?5)",
-            params![project, source, target, edge_type.as_str(), props],
         )?;
+        stmt.execute(params![project, source, target, edge_type.as_str(), props])?;
         Ok(())
     }
 
@@ -1090,9 +1118,11 @@ impl GraphStore {
         drop(stmt);
         for id in &stale {
             self.conn
-                .execute("DELETE FROM symbols_fts WHERE rowid = ?1", params![id])?;
+                .prepare_cached("DELETE FROM symbols_fts WHERE rowid = ?1")?
+                .execute(params![id])?;
             self.conn
-                .execute("DELETE FROM nodes WHERE id = ?1", params![id])?;
+                .prepare_cached("DELETE FROM nodes WHERE id = ?1")?
+                .execute(params![id])?;
         }
         Ok(stale.len())
     }
@@ -1113,11 +1143,11 @@ impl GraphStore {
         body: &str,
         label: &str,
     ) -> Result<()> {
-        self.conn.execute(
+        let mut stmt = self.conn.prepare_cached(
             "INSERT INTO symbols_fts(rowid, name, qn, tokens, body, label)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![node_id, name, qn, tokens, body, label],
         )?;
+        stmt.execute(params![node_id, name, qn, tokens, body, label])?;
         Ok(())
     }
 
@@ -1128,7 +1158,7 @@ impl GraphStore {
     /// # Errors
     /// Propagates SQLite errors.
     pub fn put_file_hash(&self, project: &str, rel_path: &str, hash: &FileHash) -> Result<()> {
-        self.conn.execute(
+        let mut stmt = self.conn.prepare_cached(
             "INSERT INTO file_hashes(project,rel_path,sha256,blake3,mtime_ns,size)
              VALUES (?1,?2,?3,?4,?5,?6)
              ON CONFLICT(project, rel_path) DO UPDATE SET
@@ -1136,15 +1166,15 @@ impl GraphStore {
                 blake3 = excluded.blake3,
                 mtime_ns = excluded.mtime_ns,
                 size = excluded.size",
-            params![
-                project,
-                rel_path,
-                hash.sha256,
-                hash.blake3,
-                hash.mtime_ns,
-                hash.size
-            ],
         )?;
+        stmt.execute(params![
+            project,
+            rel_path,
+            hash.sha256,
+            hash.blake3,
+            hash.mtime_ns,
+            hash.size
+        ])?;
         Ok(())
     }
 

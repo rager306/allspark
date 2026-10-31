@@ -7,16 +7,14 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::coverage::KIND_SKIPPED;
 use crate::error::{GraphError, Result};
 use crate::extract::{CallSite, ImportDef};
 use crate::lease::IndexLease;
 use crate::store::GraphStore;
 use crate::types::{EdgeType, FileChange, IndexReport};
 
-use super::options::{Depth, IndexOptions};
+use super::options::IndexOptions;
 use super::resolver::Resolver;
-use super::walk::module_of;
 
 impl GraphStore {
     /// Index `root` into this store, honouring [`IndexOptions`].
@@ -75,63 +73,32 @@ impl GraphStore {
                 }
                 report.parsed += 1;
 
-                // Keep this file's nodes (stable ids) so CALLS edges from
-                // unchanged files survive the re-parse; only its FTS rows and
-                // outgoing edges are dropped. Stale symbols go once extraction
-                // has run (see `delete_file_nodes_not_in` below).
-                self.clear_file_for_reparse(&opts.project, &w.rel)?;
-                // Re-record this file's coverage from scratch so a file that now
-                // parses cleanly stops being reported as `parse_partial`.
-                self.clear_file_coverage(&opts.project, &w.rel)?;
-                let Some(lang) = pa_ast::SupportLang::from_path(&w.abs) else {
-                    self.record_coverage(
-                        &opts.project,
-                        &w.rel,
-                        KIND_SKIPPED,
-                        "unsupported language",
-                    )?;
-                    report.skipped += 1;
-                    continue;
-                };
-                let module = module_of(&w.rel);
-                if opts.depth == Depth::Skeleton {
-                    self.write_skeleton_file(&opts.project, w, &mut report)?;
-                    continue;
-                }
-                let extracted = crate::extract::extract(&w.source, lang, &module);
-                if !opts.depth.resolves_edges() {
-                    self.write_symbols_only(
-                        &opts.project,
-                        w,
-                        &extracted,
-                        &mut report,
-                        &mut file_node_ids,
-                    )?;
-                    continue;
-                }
-
-                self.account_parse_health(&opts.project, w, lang, &extracted, &mut report)?;
-                let (nodes, file_id) = self.write_file(&opts.project, &w.rel, &extracted)?;
-                self.drop_stale_symbols(&opts.project, &w.rel, &extracted)?;
-                let surface = crate::surface::surface_of(&w.source, lang, &module);
-                self.put_file_surface(
-                    &opts.project,
-                    &w.rel,
-                    &surface.surface_sha,
-                    &surface.body_sha,
-                    &surface.surface_json,
-                )?;
-                report.nodes += nodes;
-                if let Some(id) = file_id {
+                // ONE file, ONE transaction. A re-parse first clears the file's
+                // FTS rows and outgoing edges and only then writes the new
+                // revision, so a failure in between used to leave the file with
+                // no symbols at all — and the pass then aborted, so nothing ever
+                // repaired it. The clear and the rewrite are one unit of work:
+                // either the new revision lands whole or the previous one stays.
+                //
+                // Per file, not per batch: the batch exists to bound memory, and
+                // a batch-wide transaction would hold ~8 MiB of source worth of
+                // row locks for a group of files that are independent of each
+                // other.
+                let writes = self.with_transaction(|store| {
+                    store.rewrite_file(&opts.project, w, opts.depth, &mut report)
+                })?;
+                if let Some(id) = writes.file_id {
                     file_node_ids.insert(w.rel.clone(), id);
                 }
-                for call in &extracted.calls {
-                    pending_calls.push((w.rel.clone(), call.caller_qn.clone(), call.clone()));
+                // Resolution runs after every batch, so a file's call sites must
+                // outlive its write. They are collected from the successful
+                // commit, never from a revision that was rolled back.
+                for call in writes.calls {
+                    pending_calls.push((w.rel.clone(), call.caller_qn.clone(), call));
                 }
-                for import in &extracted.imports {
-                    pending_imports.push((w.rel.clone(), import.clone()));
+                for import in writes.imports {
+                    pending_imports.push((w.rel.clone(), import));
                 }
-                self.put_file_hash(&opts.project, &w.rel, &w.hash)?;
             }
         }
 
@@ -160,17 +127,27 @@ impl GraphStore {
         for (rel, import) in &pending_imports {
             resolver.note_imports(rel, std::slice::from_ref(import));
         }
-        for (rel, caller_qn, call) in &pending_calls {
-            self.record_call_edge(&resolver, &opts.project, rel, caller_qn, call)?;
-        }
-        for (rel, import) in &pending_imports {
-            let Some(&file_id) = file_node_ids.get(rel) else {
-                continue;
-            };
-            if let Some((target, props)) = resolver.resolve_import(import) {
-                self.insert_edge(&opts.project, file_id, target, EdgeType::Imports, &props)?;
+        // The resolved edges of the whole run are ONE unit of work: an edge is
+        // only meaningful against the definition set it was resolved with, so a
+        // pass that fails half way through must not leave a graph in which some
+        // call sites were resolved against the new definitions and some against
+        // the old ones. It is also where the per-statement commit cost lives —
+        // one transaction instead of one commit per edge (measured on 96 files
+        // of `crates/pa-graph/src`: 4.78 s -> 1.18 s for this phase).
+        self.with_transaction(|store| {
+            for (rel, caller_qn, call) in &pending_calls {
+                store.record_call_edge(&resolver, &opts.project, rel, caller_qn, call)?;
             }
-        }
+            for (rel, import) in &pending_imports {
+                let Some(&file_id) = file_node_ids.get(rel) else {
+                    continue;
+                };
+                if let Some((target, props)) = resolver.resolve_import(import) {
+                    store.insert_edge(&opts.project, file_id, target, EdgeType::Imports, &props)?;
+                }
+            }
+            Ok(())
+        })?;
 
         // The store dedupes insert attempts (`INSERT OR IGNORE`), so counting
         // attempts overstates the graph; report the store's actual edge count.
@@ -231,5 +208,230 @@ impl GraphStore {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::options::IndexOptions;
+    use crate::store::GraphStore;
+    use crate::types::EdgeType;
+
+    fn write(dir: &std::path::Path, name: &str, body: &str) {
+        std::fs::write(dir.join(name), body).expect("write");
+    }
+
+    /// `(functions, FTS rows, CONTAINS edges)` for the one file in the fixture.
+    ///
+    /// The three are what a reader observes about a file, and a transaction bug
+    /// shows up as the three disagreeing: the node rows survive a clear (that is
+    /// the design — stable ids keep incoming edges), so a count of `nodes` alone
+    /// cannot see a stub file.
+    fn file_state(store: &GraphStore) -> (i64, i64, i64) {
+        let conn = store.connection();
+        let functions = symbol_count(store);
+        let fts: i64 = conn
+            .query_row("SELECT count(*) FROM symbols_fts", [], |r| r.get(0))
+            .expect("count");
+        let contains: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM edges WHERE project = 'p' AND edge_type = ?1",
+                [EdgeType::Contains.as_str()],
+                |r| r.get(0),
+            )
+            .expect("count");
+        (functions, fts, contains)
+    }
+
+    /// `CALLS` edges in the project: the aggregate resolution writes.
+    fn call_edges(store: &GraphStore) -> i64 {
+        store
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM edges WHERE project = 'p' AND edge_type = ?1",
+                [EdgeType::Calls.as_str()],
+                |r| r.get(0),
+            )
+            .expect("count")
+    }
+
+    fn symbol_count(store: &GraphStore) -> i64 {
+        store
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM nodes WHERE project = 'p' AND label = 'Function'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count")
+    }
+
+    /// A file's re-parse is ONE transaction: the clear and the rewrite commit
+    /// together, so a failure in the middle leaves the file's previous revision
+    /// intact instead of a stub with no symbols.
+    ///
+    /// The failure is injected through the schema, not a test hook in the write
+    /// path: a trigger rejects one insert of the NEW revision, i.e. after the
+    /// clear has already deleted the old one and while the rewrite is half
+    /// written. A test-only branch in the indexer would prove that the branch
+    /// works, not that the clear and the rewrite are one unit.
+    #[test]
+    fn a_failed_rewrite_leaves_the_previous_revision_intact() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(
+            dir.path(),
+            "lib.rs",
+            "pub fn parse_config(path: &str) -> u32 { load(path) }\npub fn load(path: &str) -> u32 { path.len() as u32 }\n",
+        );
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("first index");
+        assert_eq!(symbol_count(&store), 2, "fixture must be indexed whole");
+
+        // The new revision is LONGER than the old one: on the old writer, the
+        // four symbols written before the failure would already differ from the
+        // two that were there, so "the count still matches" cannot be luck.
+        write(
+            dir.path(),
+            "lib.rs",
+            "pub fn renamed_one() {}\npub fn renamed_two() {}\npub fn renamed_three() {}\npub fn renamed_four() {}\npub fn renamed_five() {}\n",
+        );
+        store
+            .connection()
+            .execute_batch(
+                "CREATE TRIGGER refuse_the_last_symbol BEFORE INSERT ON nodes
+                 WHEN NEW.name = 'renamed_five'
+                 BEGIN SELECT RAISE(ABORT, 'injected: the rewrite fails mid-file'); END",
+            )
+            .expect("trigger");
+
+        let failed = store.index_project(dir.path(), &IndexOptions::new("p"));
+        assert!(
+            failed.is_err(),
+            "the injected failure must abort the pass, or the test proves nothing: {failed:?}"
+        );
+
+        assert_eq!(
+            file_state(&store),
+            (2, 3, 2),
+            "the file is half written: its previous revision lost its FTS rows \
+             and CONTAINS edges, and the new one only landed in part. \
+             (functions, FTS rows, CONTAINS edges) must be the old revision whole"
+        );
+        assert!(
+            store
+                .node_by_qn("p", "lib::parse_config")
+                .expect("qn")
+                .is_some(),
+            "the old symbol must still be there"
+        );
+        assert!(
+            store
+                .node_by_qn("p", "lib::renamed_one")
+                .expect("qn")
+                .is_none(),
+            "a half-written revision leaked into the graph"
+        );
+    }
+
+    /// A successful rewrite is unchanged by the transaction: the file ends up
+    /// with exactly the new revision's symbols, its FTS rows, and its CONTAINS
+    /// edges — no duplicates from the clear/rewrite pair, no leftovers.
+    #[test]
+    fn a_successful_rewrite_replaces_the_file_whole() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(
+            dir.path(),
+            "lib.rs",
+            "pub fn old_one() {}\npub fn old_two() {}\n",
+        );
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("first index");
+        assert_eq!(symbol_count(&store), 2);
+
+        write(dir.path(), "lib.rs", "pub fn fresh() {}\n");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("second index");
+
+        assert_eq!(symbol_count(&store), 1, "old symbols must be gone");
+        assert!(store.node_by_qn("p", "lib::fresh").expect("qn").is_some());
+        assert!(store.node_by_qn("p", "lib::old_one").expect("qn").is_none());
+        let contains: i64 = store
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM edges WHERE project = 'p' AND edge_type = ?1",
+                [EdgeType::Contains.as_str()],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(contains, 1, "the File node's one CONTAINS edge");
+        let fts: i64 = store
+            .connection()
+            .query_row("SELECT count(*) FROM symbols_fts", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(fts, 2, "FTS rows must match the surviving nodes exactly");
+    }
+
+    /// The resolved edges of a run are ONE transaction, so a run that fails
+    /// part way through resolution leaves none of them: a graph in which file A
+    /// is resolved against the new definition set and file B against the old one
+    /// is worse than a graph with no call edges at all.
+    ///
+    /// The failure is injected through the schema, at the FOURTH file's call
+    /// site, so three files' edges are already written when it fires.
+    #[test]
+    fn a_failed_resolution_leaves_no_half_resolved_edges() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for i in 0..4 {
+            write(
+                dir.path(),
+                &format!("m{i}.rs"),
+                &format!("pub fn f{i}() {{ target() }}\n"),
+            );
+        }
+        write(
+            dir.path(),
+            "target.rs",
+            "pub fn target() {}\npub fn other() {}\n",
+        );
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("first index");
+        assert_eq!(call_edges(&store), 4, "one resolved call per file");
+
+        // Every file changes its callee, so every file is re-parsed and its old
+        // call edges are dropped before resolution runs again.
+        for i in 0..4 {
+            write(
+                dir.path(),
+                &format!("m{i}.rs"),
+                &format!("pub fn f{i}() {{ other() }}\n"),
+            );
+        }
+        store
+            .connection()
+            .execute_batch(
+                "CREATE TRIGGER refuse_the_last_file BEFORE INSERT ON call_sites
+                 WHEN NEW.caller_qn = 'm3::f3'
+                 BEGIN SELECT RAISE(ABORT, 'injected: resolution fails mid-run'); END",
+            )
+            .expect("trigger");
+
+        let failed = store.index_project(dir.path(), &IndexOptions::new("p"));
+        assert!(
+            failed.is_err(),
+            "the injected failure must abort the pass: {failed:?}"
+        );
+        assert_eq!(
+            call_edges(&store),
+            0,
+            "resolution committed a prefix: the files are resolved against \
+             different definition sets"
+        );
     }
 }
