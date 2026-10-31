@@ -68,7 +68,7 @@ The following programmatic tools are available in the REPL for subagent manageme
   - `name: str`
   - `selector: str`: the exact string to spawn the model
 
-The following programmatic tools are available in the REPL for a2a communication:
+The following programmatic tools are available in the REPL only in a session that has an agent family: a daemon-backed session, or a print session with inline subagents. A session with no family (the in-process RPC session has no parent, no siblings, no children, and no daemon link) installs neither these nor the `agent-message`/`agent-observe` skills, so do single-session work there:
 
 - `agent_message.send(message: str, *, receiver_role: Literal["parent", "sibling", "child"], receiver_name: str | None) -> dict`: send a message to the receiver; returns a receipt with the message id and a delivery status (delivered or queued); all root sessions are siblings; `send("all", broadcast_message)` broadcasts to the family roster and returns `{receipts: [...]}`
 - `agent_observe.list_agents() -> dict`: list nuclear family

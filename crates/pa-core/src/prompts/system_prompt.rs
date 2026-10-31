@@ -1112,4 +1112,60 @@ mod tests {
             "the cached prefix cannot be the whole prompt"
         );
     }
+
+    /// The core layer's a2a block: its introducing paragraph and the tool
+    /// bullets under it, up to the next `## ` heading.
+    fn a2a_block_in_core_layer() -> String {
+        let lines: Vec<&str> = layers::CORE_LAYER.lines().collect();
+        let bullet = lines
+            .iter()
+            .position(|line| line.starts_with("- `agent_message.send("))
+            .expect("the core layer documents agent_message.send");
+        // The block opens at the paragraph above the first a2a bullet (the
+        // preceding run of non-blank lines) and runs to the next heading.
+        let mut start = bullet;
+        while start > 0 && lines[start - 1].is_empty() {
+            start -= 1;
+        }
+        while start > 0 && !lines[start - 1].is_empty() {
+            start -= 1;
+        }
+        lines[start..]
+            .iter()
+            .take_while(|line| !line.starts_with("## "))
+            .copied()
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The static core layer's a2a block states the condition it depends on.
+    ///
+    /// `agent_message.send` and `agent_observe.*` are host-request-backed, so
+    /// a session installs them only when it has an agent family: a
+    /// daemon-backed session, or a print host with inline subagents. The
+    /// in-process RPC embedding installs neither the handlers nor the two
+    /// skills. The layer is the cache-stable prefix and cannot vary per
+    /// session, so the block must state the condition instead of promising the
+    /// surface everywhere — otherwise the prompt contradicts itself, offering
+    /// the tools in one layer and cancelling them in the notice appended after
+    /// it.
+    ///
+    /// The assertion is the invariant, not the wording: the paragraph
+    /// introducing the bullets has to be conditional on the agent family. It
+    /// does not pin which session kinds are named, so the layer can add or drop
+    /// an example without re-billing the cache prefix for a test's sake.
+    #[test]
+    fn the_a2a_block_states_the_session_condition() {
+        let block = a2a_block_in_core_layer();
+        let premise = block
+            .lines()
+            .take_while(|line| !line.trim_start().starts_with("- `"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            premise.contains("only in a session") && premise.contains("agent family"),
+            "the a2a block must state that the surface is conditional on an agent \
+             family: {premise:?}"
+        );
+    }
 }
