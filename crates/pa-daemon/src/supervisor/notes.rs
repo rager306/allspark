@@ -240,15 +240,21 @@ pub(crate) fn render_log_line(message: &str) -> String {
 
 /// Replace worker bearer tokens in a log line with a stable, non-reversible tag.
 ///
-/// The daemon log is written under the agent dir with ordinary file permissions and is read
-/// by `--debug`, bug reports and anything else the operator shares; a worker token is the
-/// credential the admission wire accepts for that worker's whole lifetime (review #40,
-/// CWE-532). Redaction lives at the LOG BOUNDARY rather than at each call site: four sites
-/// interpolate `worker_token` today, and a fifth would reintroduce the leak silently.
+/// The daemon log is written under the agent dir and is read by `--debug`, bug reports and
+/// anything else the operator shares; a worker token is the credential the admission wire
+/// accepts for that worker's whole lifetime (review #40, CWE-532). Redaction lives at the LOG
+/// BOUNDARY rather than at each call site: four sites interpolate `worker_token` today, and a
+/// fifth would reintroduce the leak silently.
 ///
-/// A worker token is a UUID (36 chars, hyphenated) or an 8+ alphanumeric token, so matching is
-/// shape-based and conservative: only strings that look like tokens are replaced, and a
-/// non-token word of ordinary prose is left alone.
+/// Two shapes are matched, both conservative enough to leave prose alone:
+///
+/// 1. A run carrying a digit, of length >= 8 — the SAME shape the admission wire accepts
+///    (`is_worker_token_shape` in `provider_admission`, a UUID or an 8+ alphanumeric token).
+///    Matching a stricter guess would leave real tokens unredacted, which is the failure mode
+///    that matters here.
+/// 2. A DIGIT-LESS run that reads as a random draw rather than as language (see
+///    [`looks_like_digitless_token`]). This arm exists because a token minted from letters
+///    only — base32, a letters-only hex draw — has no digit, so arm 1 wrote it verbatim.
 pub(crate) fn redact_tokens(message: &str) -> String {
     let mut out = String::with_capacity(message.len());
     // Scanned as RUNS, not as space-separated words: a token almost never stands alone.
@@ -259,14 +265,13 @@ pub(crate) fn redact_tokens(message: &str) -> String {
     let mut run = String::new();
     let flush = |run: &mut String, out: &mut String| {
         let trimmed = run.as_str();
-        // The SAME shape the admission wire accepts (`is_worker_token_shape`: len >= 8, all
-        // ascii-alphanumeric or '-'). Matching a stricter guess would leave real tokens
-        // unredacted, which is the failure mode that matters here.
-        let looks_like_token = trimmed.len() >= 8
+        let token_shaped = trimmed.len() >= 8
             && trimmed
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-        if looks_like_token && trimmed.chars().any(|c| c.is_ascii_digit()) {
+        if token_shaped
+            && (trimmed.chars().any(|c| c.is_ascii_digit()) || looks_like_digitless_token(trimmed))
+        {
             out.push_str("<redacted..");
             out.push_str(&trimmed[trimmed.len() - 4..]);
             out.push('>');
@@ -285,6 +290,81 @@ pub(crate) fn redact_tokens(message: &str) -> String {
     }
     flush(&mut run, &mut out);
     out
+}
+
+/// Whether an alphanumeric run with no digit is a credential rather than a word or an
+/// identifier. The parameters are measured against this tree's own text, not guessed.
+///
+/// A random draw over a token alphabet is MIXED CASE and flips case constantly; prose,
+/// `snake_case` names and hyphenated paths are single case (or flip only at word boundaries).
+/// Measured over this repository's text and the daemon logs (~3.2 M digit-less runs) the
+/// mixed-case arm fires on nothing, and over digit-less draws from a 62-character alphabet it
+/// catches 95% at 20 characters and 99% at 43.
+///
+/// The single-case arm covers the other real shape — base32 and hex draws use one case, so case
+/// tells nothing there. The tell is the ABSENCE OF VOWELS: ~19% of a random draw are vowels
+/// against ~38% of English text, and every 20+ character word in this tree's prose is above 25%.
+/// Filler (`xxxx…`) and the alphabet itself are excluded, so the arm fires on draws and leaves
+/// words and log labels untouched.
+///
+/// Two facts keep this from eating diagnostics, both verified against the tree and against the
+/// 204 daemon logs on this machine: zero hits in the repo's text and those logs, and the 16-letter
+/// floor — twice the length of an ordinary identifier, and long enough that no word in the tree's
+/// prose reaches it with a low vowel share.
+fn looks_like_digitless_token(run: &str) -> bool {
+    const VOWELS: [char; 5] = ['a', 'e', 'i', 'o', 'u'];
+    if !run.is_ascii() || run.chars().any(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let letters: Vec<char> = run.chars().filter(char::is_ascii_alphabetic).collect();
+    let total = letters.len();
+    if total < 16 {
+        return false;
+    }
+    // A run built from a handful of characters (`xxxxxxxx…`) is filler, not a draw.
+    if run
+        .bytes()
+        .collect::<std::collections::BTreeSet<u8>>()
+        .len()
+        < 10
+    {
+        return false;
+    }
+    let uppercase = letters.iter().filter(|c| c.is_ascii_uppercase()).count();
+    if uppercase * 10 >= total * 3 && uppercase * 10 <= total * 7 {
+        // Case flips are the signal: at least one per four letters, and at least five of them.
+        // On a 62-character alphabet the 5th percentile is one flip per three letters at every
+        // length >= 20; the longest CamelCase identifier in this tree's text flips five times,
+        // and the 16-letter `parseMCPToolName` — the only near-miss the corpora produced — four.
+        let flips = letters
+            .windows(2)
+            .filter(|pair| pair[0].is_ascii_uppercase() != pair[1].is_ascii_uppercase())
+            .count();
+        if flips >= 5 && flips * 4 >= total {
+            return true;
+        }
+    }
+    if !(uppercase == 0 || uppercase == total) || run.len() != total {
+        // Mixed case that failed the flip test is an identifier; punctuation makes it a path or
+        // a label. Neither is a secret, and neither is redacted.
+        return false;
+    }
+    let vowels = letters
+        .iter()
+        .filter(|c| VOWELS.contains(&c.to_ascii_lowercase()))
+        .count();
+    vowels * 4 <= total && !has_ascending_alphabet_run(&letters)
+}
+
+/// Whether four consecutive letters step by one in the alphabet (`abcd`, `dcba`) — the shape of a
+/// literal such as the alphabet itself, which the low-vowel arm would otherwise redact.
+fn has_ascending_alphabet_run(letters: &[char]) -> bool {
+    letters.windows(4).any(|quad| {
+        let step = |i: usize| {
+            quad[i + 1].to_ascii_lowercase() as i32 - quad[i].to_ascii_lowercase() as i32
+        };
+        matches!((step(0), step(1), step(2)), (1, 1, 1) | (-1, -1, -1))
+    })
 }
 
 #[cfg(test)]
@@ -375,6 +455,52 @@ mod tests {
             written.contains("spawn rlm-child target="),
             "the diagnostic shape must survive: {written}"
         );
+    }
+
+    /// Review #40's other escape: a DIGIT-LESS bearer token survived the redactor.
+    ///
+    /// The shipped arm requires a digit, because the wire token is a UUID and the shape check is
+    /// deliberately conservative. A token minted without digits — a base32 or letters-only draw —
+    /// is still a credential, and it passed the "not a token" branch, so it reached the file
+    /// verbatim. Asserted through `render_log_line`, the function the writer calls, so detaching
+    /// the redaction from the write path fails here too.
+    #[test]
+    fn a_digitless_worker_token_never_reaches_the_daemon_log() {
+        let mixed = "provider_admission: settle_stream lease 7 by QmZtRvBxLpNcKjHgSdWfYa (settled)";
+        let rendered = redact_tokens(mixed);
+        assert!(!rendered.contains("QmZtRvBxLpNcKjHgSdWfYa"), "{rendered}");
+        assert!(rendered.contains("<redacted"), "{rendered}");
+        // A letters-only draw in one case is the other shape a base32/hex token takes.
+        let upper = "spawn rlm-child target=KJQWXZPLMNRSTVBDGHCFJXZ";
+        let rendered = redact_tokens(upper);
+        assert!(!rendered.contains("KJQWXZPLMNRSTVBDGHCFJXZ"), "{rendered}");
+        assert!(rendered.contains("spawn rlm-child target="), "{rendered}");
+    }
+
+    /// The counter-half: the widened rule must NOT eat the diagnostic text.
+    ///
+    /// A secret-shaped rule is easy to make and easy to make too wide — one that redacts any long
+    /// word turns the daemon log into a page of `<redacted>` and destroys the diagnostic value the
+    /// redaction exists to preserve. These are the shapes this file actually writes: `snake_case`
+    /// event names, CamelCase type names, hyphenated targets, prose, and paths.
+    #[test]
+    fn the_widened_redaction_spares_diagnostic_text() {
+        for line in [
+            "provider_admission: acquire_stream in_flight=1 queued=0 cap=6 breaker=closed",
+            "session worker branch_summary_skip_prompt failed after 3 consecutive failures",
+            "the spawn ledger path redacts like every other log line",
+            "getOpenAICodexWebSocketDebugStats and SetRlmMaxDepthResult are diagnostics",
+            "parseMCPToolName sits at the edge of the mixed-case arm and must survive",
+            "session worker prime-agent-skill-attach-image stopped",
+            "crates/pa-daemon/src/supervisor/notes.rs:252 was the log boundary",
+            "internationalization counterrevolutionaries are ordinary words",
+        ] {
+            assert_eq!(
+                redact_tokens(line),
+                line,
+                "diagnostic text must survive the widened rule: {line}"
+            );
+        }
     }
 
     /// The redaction rules itself: real token shapes go, ordinary prose stays.

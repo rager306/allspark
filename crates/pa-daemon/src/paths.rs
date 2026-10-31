@@ -152,7 +152,15 @@ impl RotatingLog {
                     .append(true)
                     .open(&self.path)
                 {
-                    Ok(reopened) => file = reopened,
+                    Ok(reopened) => {
+                        // The rename moved the RESTRICTED file to `log.1`, and this reopen created
+                        // a fresh one with the default mode — so the live log was world-readable
+                        // from the first post-rotation line while its predecessor stayed 0600.
+                        // That is #40's leak one rename later; restrict the reopened file too, so
+                        // every creation path (first write and rotation) sets the mode.
+                        let _ = pa_core::platform::perms::restrict_file(&self.path);
+                        file = reopened;
+                    }
                     Err(_) => return,
                 }
             }
@@ -278,5 +286,44 @@ mod tests {
         // not the upstream dir either.
         assert!(!is_upstream_ts_daemon_socket(Path::new("/tmp")));
         assert!(!is_upstream_ts_daemon_socket(Path::new("daemon.sock")));
+    }
+
+    /// Review #40's rotation hole: the file created by the ROTATION reopen
+    /// carried the default mode, not the restricted one.
+    ///
+    /// `append` restricted the file it opened, then renamed it away and opened a
+    /// NEW file for the post-rotation line — and that second open had no
+    /// `restrict_file`, so the live log came back world-readable (0644) for the
+    /// rest of its life while its rotated predecessor stayed 0600. The leak is
+    /// exactly the one the first fix was written for, reintroduced one rename
+    /// later, so the mode must be set on the reopened handle, not only on the
+    /// creation path.
+    #[cfg(unix)]
+    #[test]
+    fn the_log_file_created_by_rotation_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().expect("dir");
+        let path = dir.path().join("daemon.log");
+        // A ceiling under one line's length, so the first append rotates: it
+        // creates the file, renames it to the generation, then reopens a fresh
+        // file for the line it is holding.
+        let log = RotatingLog {
+            path: path.clone(),
+            max_bytes: 16,
+        };
+        log.append("provider admission: settle_stream");
+        assert!(
+            path.with_extension("log.1").exists(),
+            "the append rotated the log"
+        );
+        let mode = std::fs::metadata(&path)
+            .expect("log file")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "the post-rotation log file must be owner-read/write only, got {mode:o}"
+        );
     }
 }
