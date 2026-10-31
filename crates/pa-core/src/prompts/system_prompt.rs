@@ -1138,6 +1138,60 @@ mod tests {
             .join("\n")
     }
 
+    /// The core layer's Subagents section: its introducing paragraph and the
+    /// bullets under it, up to the next `## ` heading.
+    fn subagents_section_in_core_layer() -> String {
+        let lines: Vec<&str> = layers::CORE_LAYER.lines().collect();
+        let heading = lines
+            .iter()
+            .position(|line| line.trim_end() == "## Subagents")
+            .expect("the core layer has a Subagents section");
+        lines[heading + 1..]
+            .iter()
+            .take_while(|line| !line.starts_with("## "))
+            .copied()
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The core layer's Subagents section states the condition its tree claim
+    /// depends on.
+    ///
+    /// The section opens by promising a tree of agents, and everything under
+    /// it — the `rlm.spawn` surface, the parent/sibling/child view — exists
+    /// only where the session has an agent family: a daemon-backed session, or
+    /// a print session with inline subagents. The in-process RPC embedding has
+    /// no family at all, and its engine appends `RPC_NO_FAMILY_NOTICE` after
+    /// this layer. The layer is the cache-stable prefix and cannot vary per
+    /// session, so the tree sentence must name the condition instead of
+    /// promising a tree everywhere — otherwise the prompt contradicts itself,
+    /// offering a family in one segment and cancelling it in the next.
+    ///
+    /// The assertion is the invariant, not the wording: whichever sentence
+    /// introduces the tree has to carry the condition. It does not pin the
+    /// phrasing or which session kinds are named, so the layer can add or drop
+    /// an example without re-billing the cache prefix for a test's sake.
+    #[test]
+    fn the_subagent_section_states_the_session_condition() {
+        let section = subagents_section_in_core_layer();
+        let premise = section
+            .lines()
+            .take_while(|line| !line.trim_start().starts_with("- `"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let tree_sentence = premise
+            .split(". ")
+            .find(|sentence| sentence.contains("tree of agents"))
+            .unwrap_or_else(|| {
+                panic!("the subagents premise introduces the agent tree: {premise:?}")
+            });
+        assert!(
+            tree_sentence.contains("agent family"),
+            "the tree claim must name the agent-family condition it depends on: \
+             {tree_sentence:?}"
+        );
+    }
+
     /// The static core layer's a2a block states the condition it depends on.
     ///
     /// `agent_message.send` and `agent_observe.*` are host-request-backed, so
