@@ -3,10 +3,34 @@
 The `prime-agent` binary.
 
 ## Scope
-Argument parsing matching the TS CLI exactly, mode selection (interactive/headless/json/daemon subcommands), binary wiring of crates into processes, exit codes and user-facing errors. The daemon-forensics CLI (`incident.rs`, TS `src/cli/incident.ts`): the `prime-agent incident` timeline command — log-source discovery (agent.jsonl plus its `.old` rotation, falling back to the newest per-daemon log), `--since`/`--until` window and `--session` filter parsing, and the report rendering; the shared classifier lives in pa-types (`pa_types::incident`) and the agents-view notice in pa-tui. Client-side MCP auth flows (`mcp_login.rs`): the `/mcp login`/`/mcp logout` hook the TUI calls — the TS interactive client's placement — resolving a server (settings `mcpServers` + the builtin catalog), running the pa-core OAuth login on the suspended terminal, and persisting through the shared auth store. The same placement serves the TUI's client-command hooks: provider auth (`provider_login.rs` — the `/login`/`/logout` catalog, the API-key store, the MCP device flow, the Prime Inference terminal login (`prime_inference_login.rs` — the API-key flow: prime-cli credential reuse, the paste prompt with the whoami access check, the numbered team selector); the subscription OAuth and the Prime browser challenge stay unported and report it), trace-sharing state (`client_traces.rs` — the settings flag writes and the credential resolution `/traces` shows; the upload subsystem stays unported), and the `/update` runner (`client_update.rs` — the out-of-band installer funnel with the output captured, the same body `prime-agent update` runs; `installer_update.rs` is that CLI command's own driver, `--check` included), plus the TS-parity staged update flow (`update_flow/`, `self_update.rs` — the `package update` self target's body, kept for the TS-parity package corpus).
+Argument parsing matching the TS CLI exactly, mode selection (interactive/headless/json/daemon subcommands), binary wiring of crates into processes, exit codes and user-facing errors.
+
+Beyond that wiring, this crate owns the headless print runtime (`print_runtime/`,
+`print_boundary.rs` + `print_boundary/`, `print_goal.rs`, `print_rlm.rs`,
+`print_autonomous.rs`, `print_session_command.rs`, `headless_autonomous.rs`), the daemon socket census
+(`daemon_discovery/`), and the staged-update coordinator (`update_flow/`). None
+of the three is wiring; the per-area sections below say what each does.
+
+The daemon-forensics CLI (`incident/`, TS `src/cli/incident.ts`): the `prime-agent incident` timeline command — log-source discovery (agent.jsonl plus its `.old` rotation, falling back to the newest per-daemon log), `--since`/`--until` window and `--session` filter parsing, and the report rendering; the shared classifier lives in pa-types (`pa_types::incident`) and the agents-view notice in pa-tui. Client-side MCP auth flows (`mcp_login.rs`): the `/mcp login`/`/mcp logout` hook the TUI calls — the TS interactive client's placement — resolving a server (settings `mcpServers` + the builtin catalog), running the pa-core OAuth login on the suspended terminal, and persisting through the shared auth store. The same placement serves the TUI's client-command hooks: provider auth (`provider_login.rs` — the `/login`/`/logout` catalog, the API-key store, the MCP device flow, the Prime Inference terminal login (`prime_inference_login.rs` — the API-key flow: prime-cli credential reuse, the paste prompt with the whoami access check, the numbered team selector); the subscription OAuth and the Prime browser challenge stay unported and report it), trace-sharing state (`client_traces.rs` — the settings flag writes and the credential resolution `/traces` shows; the upload subsystem stays unported), and the `/update` runner (`client_update.rs` — the out-of-band installer funnel with the output captured, the same body `prime-agent update` runs; `installer_update.rs` is that CLI command's own driver, `--check` included), plus the TS-parity staged update flow (`update_flow/`, `self_update.rs` — the `package update` self target's body, kept for the TS-parity package corpus).
 
 ## Non-goals
-No business logic; it composes pa-daemon, pa-core, pa-tui, pa-ai via their public APIs only.
+- **No second implementation of a `pa-core` mechanism.** The print runtime calls
+  the session engine, the compaction runs (`AgentSession::compact`,
+  `auto_compaction_due`), the goal state machine (`goal_driver`,
+  `goal_boundary`), and the session-command executor; it does not reimplement
+  them. A behaviour that belongs to the product (session, tools, prompts) lives
+  in `pa-core`; a behaviour that belongs to the terminal lives in `pa-tui`.
+- **No daemon supervision.** The supervisor, its workers, and their wire
+  protocol are `pa-daemon`'s. This crate starts a supervisor and talks to it.
+- **No rendering.** TUI state and frames are `pa-tui`'s.
+
+Known duplication, stated so it is not mistaken for a boundary that holds: the
+turn-boundary *orchestration* exists twice, once per transport — this crate's
+`print_boundary/` for the in-process print run, and `pa-daemon`'s
+`crates/pa-daemon/src/overflow_compaction.rs` +
+`crates/pa-daemon/src/auto_compaction.rs` for the worker. Both drive the
+same `pa-core` primitives, and both arms are covered by that side's own tests;
+unifying them is an architectural change, not a doc fix.
 
 ## Public API
 The `prime-agent` executable surface (flags, subcommands, exit codes). Internal lib types `pub(crate)`, plus the daemon wiring (`interactive_mode::{ensure_daemon_running, ensure_daemon_running_with, resolve_socket_path}`) exported for the integration verifier.

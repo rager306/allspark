@@ -1,10 +1,28 @@
 //! The `prime-agent` binary: argument parsing, the interactive and print
 //! entrypoints, and the composition root that wires every other crate together.
 //!
-//! This crate holds no business logic by design. A behaviour that belongs to
-//! the product lives in `pa-core` (session engine, tools, prompts); a behaviour
-//! that belongs to the terminal lives in `pa-tui`. What stays here is wiring:
-//! config resolution, mode selection, and the process lifecycle.
+//! This is not a wiring-only crate. Three areas beside the wiring are the
+//! binary's own:
+//!
+//! - the headless print runtime: the engine assembly and session/model
+//!   selection (`print_runtime/`), the turn boundary with its overflow and
+//!   compaction arms (`print_boundary.rs`), the in-run goal and autonomous
+//!   continuation loops (`print_goal.rs`, `print_autonomous.rs`), the
+//!   daemonless inline subagent host behind `rlm.spawn` (`print_rlm.rs`), and
+//!   the prompt-executed session commands (`print_session_command.rs`). These
+//!   are the transport an in-process run drives `pa-core`'s engine through;
+//!   the mechanisms they call (the engine, the compaction runs, the goal state
+//!   machine, the session-command executor) live in `pa-core`;
+//! - `daemon_discovery/`: the socket census and reap/shutdown planners, whose
+//!   containment rule only the CLI applies;
+//! - `update_flow/`: the staged-update coordinator, which re-runs this binary
+//!   from the candidate release directory.
+//!
+//! The rest is argument parsing, config resolution, mode selection, command
+//! routing, and the process lifecycle, plus the TS-parity surfaces the binary
+//! owns directly: the command table and help, the daemon and client auth
+//! flows, settings and traces, the incident timeline, and the packaged layout.
+//! The README's Scope lists each.
 
 // large_futures: stack futures on hot paths by design.
 // too_many_lines: style gate only (the harness fns are intentionally linear).
