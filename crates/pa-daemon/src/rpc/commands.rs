@@ -8,7 +8,6 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use pa_core::autonomous::AutonomousRuntimeState;
-use pa_core::session_engine::provider_adapter::json_round_trip;
 
 use pa_types::goal::GoalState;
 
@@ -278,6 +277,53 @@ async fn new_session(state: &Arc<RpcState>, payload: &Value) -> Result<ResponseD
     Ok(ResponseData::Present(json!({ "cancelled": false })))
 }
 
+/// The ai-side descriptor for the loop's model, as `get_state` answers it.
+///
+/// The projection is explicit and total, not a wire round-trip: the loop's
+/// [`pa_agent::types::Model`] carries `base_url` where the wire spells
+/// `baseUrl`, and its `UsageCost` carries a `total` the ai-side rate card
+/// ([`pa_types::ai::ModelCost`]) has no field for, so a JSON round-trip
+/// deserialized to `None` and the whole `model` key vanished from the
+/// answer — the TUI reads `state["model"]` and saw neither provider nor id.
+///
+/// `cost.total` reads `0.0` for the reason
+/// [`pa_core::session_engine::provider_adapter::to_agent_model`] documents
+/// on the way in: a rate card has no total of its own, and a request's cost
+/// is priced per call and lands on the loop's `Usage`, not on the descriptor.
+/// The five provider-only fields (`thinking_level_map`, `input`, `featured`,
+/// `headers`, `compat`) come back empty: the loop never carries them, and
+/// the full catalog entry is what the daemon already holds in
+/// `RpcEngineHandle::model` — this answer describes the model the session
+/// RUNS, which is the loop's copy.
+///
+/// This is the exact inverse of `to_agent_model` and duplicates
+/// `factory_host::agent_model_to_ai_model`, which is private. Merging the
+/// two (making that one `pub` beside `to_agent_model`) is the follow-up.
+fn agent_model_to_ai_model(model: &pa_agent::types::Model) -> pa_types::ai::Model {
+    pa_types::ai::Model {
+        id: model.id.clone(),
+        name: model.name.clone(),
+        api: model.api.clone(),
+        provider: model.provider.clone(),
+        base_url: model.base_url.clone(),
+        reasoning: model.reasoning,
+        thinking_level_map: None,
+        input: Vec::new(),
+        cost: pa_types::ai::ModelCost {
+            input: model.cost.input.into(),
+            output: model.cost.output.into(),
+            cache_read: model.cost.cache_read.into(),
+            cache_write: model.cost.cache_write.into(),
+        },
+        context_window: model.context_window,
+        max_tokens: model.max_tokens,
+        max_tokens_explicit: model.max_tokens_explicit,
+        featured: None,
+        headers: None,
+        compat: None,
+    }
+}
+
 async fn get_state(state: &Arc<RpcState>) -> Result<ResponseData, String> {
     let handle = state.session.handle().await;
     let engine = &handle.engine;
@@ -287,9 +333,11 @@ async fn get_state(state: &Arc<RpcState>) -> Result<ResponseData, String> {
     let manager = persistence.lock().await;
 
     let mut object = serde_json::Map::new();
-    if let Some(model) = json_round_trip(&agent_state.model) {
-        object.insert("model".to_string(), model);
-    }
+    object.insert(
+        "model".to_string(),
+        serde_json::to_value(agent_model_to_ai_model(&agent_state.model))
+            .expect("a model descriptor serializes"),
+    );
     object.insert(
         "thinkingLevel".to_string(),
         serde_json::to_value(agent_state.thinking_level).unwrap_or(json!("off")),
@@ -558,4 +606,163 @@ async fn set_auto_retry(state: &Arc<RpcState>, payload: &Value) -> Result<Respon
         .set_retry_enabled(enabled)
         .map_err(|error| error.to_string())?;
     Ok(ResponseData::Absent)
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    //! The model-conversion handlers over a live `RpcState`: `get_state` reads the loop's model
+    //! descriptor and `set_model` writes it, and both cross the projection under test.
+
+    use super::*;
+
+    /// The models.json custom provider the handlers' registry resolves: a literal API key (no
+    /// auth store needed) and an endpoint no built-in provider owns.
+    pub(crate) const TEST_BASE_URL: &str = "http://127.0.0.1:9";
+    pub(crate) const TEST_PROVIDER: &str = "battery";
+    pub(crate) const TEST_MODEL_ID: &str = "mock-1";
+
+    fn write_models_json(agent_dir: &std::path::Path) {
+        let models = format!(
+            r#"{{"providers":{{"{TEST_PROVIDER}":{{"api":"openai-completions",
+            "baseUrl":"{TEST_BASE_URL}","apiKey":"sk-battery","models":[{{
+            "id":"{TEST_MODEL_ID}","name":"Mock 1","api":"openai-completions",
+            "contextWindow":128000,"maxTokens":4096}}]}}}}}}"#
+        );
+        std::fs::write(agent_dir.join("models.json"), models).unwrap();
+    }
+
+    /// The session's stream seam: a provider call fails, because no conversion test runs a turn.
+    fn unused_stream_fn() -> pa_agent::stream::StreamFn {
+        std::sync::Arc::new(|_model, _context, _options| {
+            Box::pin(async {
+                Err(anyhow::anyhow!(
+                    "no provider serves the RPC conversion tests"
+                ))
+            })
+        })
+    }
+
+    /// The catalog entry the tests resolve: the custom provider's one model.
+    pub(crate) fn test_model() -> pa_types::ai::Model {
+        pa_types::ai::Model {
+            id: TEST_MODEL_ID.to_string(),
+            name: "Mock 1".to_string(),
+            api: "openai-completions".to_string(),
+            provider: TEST_PROVIDER.to_string(),
+            base_url: TEST_BASE_URL.to_string(),
+            reasoning: false,
+            thinking_level_map: None,
+            input: vec![pa_types::ai::ModelInput::Text],
+            cost: pa_types::ai::ModelCost {
+                input: pa_types::JsNumber::from(0.0),
+                output: pa_types::JsNumber::from(0.0),
+                cache_read: pa_types::JsNumber::from(0.0),
+                cache_write: pa_types::JsNumber::from(0.0),
+            },
+            context_window: 128_000,
+            max_tokens: 4_096,
+            max_tokens_explicit: true,
+            featured: None,
+            headers: None,
+            compat: None,
+        }
+    }
+
+    /// A live RPC state over one in-memory session whose loop model came from the catalog entry.
+    pub(crate) async fn test_state(dir: &std::path::Path) -> Arc<RpcState> {
+        let agent_dir = dir.join("agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        write_models_json(&agent_dir);
+        let model = test_model();
+        let engine = pa_core::session_engine::engine::create_session(
+            pa_core::session_engine::engine::SessionEngineConfig {
+                cwd: dir.to_path_buf(),
+                agent_dir: agent_dir.clone(),
+                model: Some(pa_core::session_engine::provider_adapter::to_agent_model(
+                    &model,
+                )),
+                stream_fn: Some(unused_stream_fn()),
+                session_manager: Some(pa_core::session::manager::SessionManager::in_memory(dir)),
+                daemonless: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("the test session assembles");
+        let goal = engine.goal_state().await;
+        let writer = LineWriter::spawn();
+        let session = Arc::new(
+            RpcSession::adopt(
+                super::super::session::RpcEngineHandle {
+                    engine: Arc::new(engine),
+                    model,
+                    api_key: None,
+                    provider_target: Arc::new(std::sync::RwLock::new(None)),
+                    bash_wake: Arc::new(tokio::sync::Notify::new()),
+                    session_lease: None,
+                },
+                None,
+                writer.clone(),
+            )
+            .await,
+        );
+        Arc::new(RpcState {
+            session,
+            writer,
+            cwd: dir.to_path_buf(),
+            agent_dir,
+            compacting: Arc::new(AtomicUsize::new(0)),
+            autonomous: Arc::new(tokio::sync::Mutex::new(
+                pa_core::autonomous::create_autonomous_runtime_state(None, None),
+            )),
+            last_goal: Arc::new(tokio::sync::Mutex::new(goal)),
+            queue_pump: Arc::new(tokio::sync::Mutex::new(())),
+            pump_suspended: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            model_ops: Arc::new(tokio::sync::Mutex::new(())),
+            session_ops: Arc::new(tokio::sync::Mutex::new(())),
+        })
+    }
+
+    /// `get_state` answers the session's model with the provider, id, and endpoint the session
+    /// runs on: the TUI reads `state["model"]` for the tray label and the reasoning suffix, so an
+    /// absent key leaves it with neither. The conversion used to be a JSON round-trip of the loop
+    /// descriptor, whose `cost` carries a `total` the ai-side rate card has no field for — the
+    /// deserialize failed and the key was dropped from the answer entirely.
+    #[tokio::test]
+    async fn get_state_answers_the_session_model() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let state = test_state(dir.path()).await;
+        let ResponseData::Present(value) = get_state(&state).await.expect("get_state answers")
+        else {
+            panic!("get_state answers with a body");
+        };
+        let model = value
+            .get("model")
+            .unwrap_or_else(|| panic!("the state carries the model: {value}"));
+        // The RPC contract types this field as `pa_types::ai::Model`: a client decoding it
+        // strictly must succeed, which is what the loop-shaped answer failed.
+        let decoded: pa_types::ai::Model = serde_json::from_value(model.clone())
+            .expect("the answer's model decodes as the ai model");
+        assert_eq!(decoded.provider, TEST_PROVIDER);
+        assert_eq!(decoded.id, TEST_MODEL_ID);
+        assert_eq!(decoded.base_url, TEST_BASE_URL);
+        assert_eq!(
+            model.get("provider").and_then(Value::as_str),
+            Some(TEST_PROVIDER)
+        );
+        assert_eq!(model.get("id").and_then(Value::as_str), Some(TEST_MODEL_ID));
+        assert_eq!(
+            model.get("baseUrl").and_then(Value::as_str),
+            Some(TEST_BASE_URL)
+        );
+        assert_eq!(model.get("reasoning").and_then(Value::as_bool), Some(false));
+        assert_eq!(
+            model.get("contextWindow").and_then(Value::as_u64),
+            Some(128_000)
+        );
+        assert!(
+            model.get("cost").is_some_and(Value::is_object),
+            "the rate card rides the model: {model}"
+        );
+    }
 }

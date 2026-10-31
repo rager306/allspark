@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use pa_core::session_engine::provider_adapter::{json_round_trip, ProviderTarget};
+use pa_core::session_engine::provider_adapter::{to_agent_model, ProviderTarget};
 use pa_types::ai::{Model, ModelThinkingLevel};
 
 use super::commands::RpcState;
@@ -90,9 +90,13 @@ async fn apply_model_selection(
             .write()
             .map_err(|error| error.to_string())? = Some(provider_target);
         let agent = handle.engine.session.agent();
-        let agent_model: pa_agent::types::Model =
-            json_round_trip(model).ok_or_else(|| "model conversion failed".to_string())?;
-        agent.set_model(agent_model).await;
+        // The loop's own projection, never a wire round-trip: the wire spells
+        // `baseUrl` where the loop descriptor spells `base_url`, so a round-trip
+        // defaulted the field and every turn after the switch served an empty
+        // base URL (a models.json custom provider's endpoint was resolved by the
+        // registry, installed on the live target, and dropped between that and
+        // the loop the request actually goes through).
+        agent.set_model(to_agent_model(model)).await;
         // TS `_getThinkingLevelForModelSwitch`: keep the level when the
         // new model supports it, else clamp.
         let current = agent.state().await.thinking_level;
@@ -334,4 +338,38 @@ pub(crate) async fn set_queue_mode(
             .map_err(|error| error.to_string())?;
     }
     Ok(ResponseData::Absent)
+}
+
+#[cfg(test)]
+mod tests {
+    //! The `set_model` switch's model conversion: the loop must receive the catalog entry's
+    //! endpoint, not a wire round-trip's default.
+
+    use super::*;
+    use crate::rpc::commands::tests::{test_state, TEST_BASE_URL, TEST_MODEL_ID, TEST_PROVIDER};
+
+    /// A `set_model` switch installs the resolved catalog model on the loop, endpoint included:
+    /// the wire shape spells the field `baseUrl` and the loop descriptor spells `base_url`, so a
+    /// JSON round-trip defaulted the endpoint to the empty string and every turn after the switch
+    /// served an empty base URL (a custom models.json provider's endpoint was lost).
+    #[tokio::test]
+    async fn set_model_hands_the_loop_the_resolved_base_url() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let state = test_state(dir.path()).await;
+        let response = set_model(
+            &state,
+            &json!({ "provider": TEST_PROVIDER, "modelId": TEST_MODEL_ID }),
+        )
+        .await
+        .expect("the switch resolves the catalog model");
+        assert!(matches!(response, ResponseData::Present(_)));
+        let handle = state.session.handle().await;
+        let live = handle.engine.session.agent().state().await.model;
+        assert_eq!(
+            live.base_url, TEST_BASE_URL,
+            "the loop model keeps the catalog entry's endpoint"
+        );
+        assert_eq!(live.provider, TEST_PROVIDER);
+        assert_eq!(live.id, TEST_MODEL_ID);
+    }
 }
