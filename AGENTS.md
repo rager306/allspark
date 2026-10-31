@@ -633,11 +633,14 @@ written and no upstream socket is contacted.
 ## Surface contract (must not change)
 
 - Tools exposed to the model: `bash`, `edit`, `python_repl` (internal helpers: `rename`,
-  `stdout`) are the three every session has. The fork also registers four native top-level
+  `stdout`) are the three every session has. The fork also registers five native top-level
   tools, each behind its own settings gate and each documented in a dynamic prompt section
   that renders only when the tool is present: `lsp` (`lsp.enabled`, default on), `graph`
-  (`graph.enabled`, default on), `edit` hybrid (`editHybrid.enabled`, `FORK.md` §4) and `jev`
-  (`jev.enabled`, default off). They are additive — the three above stay the base surface —
+  (`graph.enabled`, default on), `edit` hybrid (`editHybrid.enabled`, `FORK.md` §4), `jev`
+  (`jev.enabled`, default off) and `schedule` (`schedule.enabled`, default off; it also
+  requires a wired cron scheduler, so print/RPC sessions never register it — it creates
+  durable jobs in the same store the `schedule` command reads). They are additive — the
+  three above stay the base surface —
   and `/session` prints a "Native tools:" row listing the ones actually registered, so the
   prompt and the roster cannot silently disagree (`readme-fork.md` §4).
 - RLM kernel API in the persistent Python REPL: `rlm.spawn/find_models/collect/list_subagents/delete_subagent/create_session/progress_note/rename`, `rlm.persistent_shells` (the re-attach path for `bash(persistent=True)` handles after a restart), `rlm.harness` CRUD, `rlm_heartbeat.create/list/update/delete`, `agent_message.send`, `agent_observe`, `mcp.*` (the generic MCP client), `compact`, `goal`, `refine`, `attach_image`, skills (markdown + Python) per the skill contract in the base system prompt.
