@@ -72,3 +72,18 @@ splice immediately.
 the 2026-10-24 recovery of `installer_stop_gate.rs` lost only self-written code, but the
 rule (never `checkout --`, `stash`, `reset --hard`) exists because the next file might
 not be yours alone.
+
+## 6. Reading a red suite as a code failure when the disk was full
+
+**Seen:** once (2026-10-31). `cargo test -p pa-graph --lib` reported 102 failures in 0.5 s
+across unrelated modules (`coverage`, `deps`, `schema`, `scoped_context`). Every one was
+`tempfile` raising `StorageFull`; the root filesystem was at 100 % because another agent
+had left dozens of `/tmp/rev3*` checkouts behind. Nothing in the crate had regressed — the
+same suite was green minutes earlier and green again after the space came back.
+
+**Caught by:** reading one panic message instead of the failure count.
+
+**Rule:** a suite that fails wholesale in under a second is an environment failure, not a
+product one. Read the first panic; if it mentions the disk, check `df -h /` before
+touching code. Freeing someone else's scratch is not yours to do — say so and wait, or
+move your own run under `TMPDIR=<repo>/.tmp` as the gate does.
