@@ -265,30 +265,33 @@ impl GraphStore {
             end_line: 0,
             props: json!({ "kind": "file" }),
         };
-        let file_id = self.upsert_node(&file_node)?;
-        self.index_fts(
-            file_id,
-            rel,
-            &file_node.qualified_name,
-            &split_for_fts(rel),
-            "",
-            "File",
-        )?;
+        // One statement for the whole file: the file node and every symbol it
+        // defines. The per-symbol `upsert_node` was the write path's dominant
+        // cost, 223 ms against 105 ms for the same rows batched (paired harness,
+        // see `measurement::batched_write_against_per_symbol_write`). FTS rows
+        // and CONTAINS edges stay per symbol: measured, batching them into one
+        // `json_each` insert changed nothing, so they keep the simpler form.
+        let file_qn = file_node.qualified_name.clone();
+        let mut rows: Vec<Node> = Vec::with_capacity(extracted.symbols.len() + 1);
+        rows.push(file_node);
+        rows.extend(extracted.symbols.iter().map(|sym| Node {
+            id: 0,
+            project: project.to_string(),
+            label: sym.label,
+            name: sym.name.clone(),
+            qualified_name: sym.qualified_name.clone(),
+            file_path: rel.to_string(),
+            start_line: sym.start_line,
+            end_line: sym.end_line,
+            props: json!({ "doc": sym.doc }),
+        }));
+        let ids = self.upsert_nodes(project, &rows)?;
+        let file_id = ids[file_qn.as_str()];
+        self.index_fts(file_id, rel, &file_qn, &split_for_fts(rel), "", "File")?;
 
         let mut nodes = 1;
         for sym in &extracted.symbols {
-            let node = Node {
-                id: 0,
-                project: project.to_string(),
-                label: sym.label,
-                name: sym.name.clone(),
-                qualified_name: sym.qualified_name.clone(),
-                file_path: rel.to_string(),
-                start_line: sym.start_line,
-                end_line: sym.end_line,
-                props: json!({ "doc": sym.doc }),
-            };
-            let id = self.upsert_node(&node)?;
+            let id = ids[sym.qualified_name.as_str()];
             let tokens = format!(
                 "{} {}",
                 split_for_fts(&sym.name),
@@ -322,13 +325,177 @@ pub(crate) struct FileWrite {
 }
 
 #[cfg(test)]
+mod batching_tests {
+    //! What the batched node write must not change: one statement per file, the
+    //! same ids a re-parse keeps, and the same FTS/CONTAINS targets.
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use crate::extract::{ExtractedFile, SymbolDef};
+    use crate::store::GraphStore;
+    use crate::types::{EdgeType, Label};
+
+    static NODE_STATEMENTS: AtomicUsize = AtomicUsize::new(0);
+
+    #[allow(clippy::needless_pass_by_value)] // `trace_v2` takes a plain `fn`
+    fn count_node_writes(event: rusqlite::trace::TraceEvent<'_>) {
+        if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event {
+            if sql.contains("INTO nodes(") {
+                NODE_STATEMENTS.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    fn symbol(name: &str) -> SymbolDef {
+        SymbolDef {
+            label: Label::Function,
+            name: name.to_string(),
+            qualified_name: format!("p::a.rs::{name}"),
+            start_line: 1,
+            end_line: 2,
+            doc: format!("{name} doc"),
+        }
+    }
+
+    fn extracted(docs: &[&str]) -> ExtractedFile {
+        ExtractedFile {
+            symbols: docs.iter().map(|name| symbol(name)).collect(),
+            calls: Vec::new(),
+            imports: Vec::new(),
+        }
+    }
+
+    /// The whole file's nodes leave in ONE statement.
+    ///
+    /// The pass extracted N symbols and issued N+1 upserts; each one is a round
+    /// trip to SQLite and a `serde_json` render of that node's props. The count
+    /// is the observable the batching exists for — the rows themselves are
+    /// unchanged, which the next two tests and
+    /// `reindex_and_full_index_agree_on_the_same_tree` check.
+    #[test]
+    fn a_files_nodes_are_written_in_one_statement() {
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .register_project("p", "/tmp/batching")
+            .expect("project");
+        let file = extracted(&["one", "two", "three", "four", "five"]);
+
+        NODE_STATEMENTS.store(0, Ordering::Relaxed);
+        store.connection_mut().trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(count_node_writes),
+        );
+        let (written, file_id) = store.write_file("p", "a.rs", &file).expect("write");
+        let statements = NODE_STATEMENTS.swap(0, Ordering::Relaxed);
+        store
+            .connection_mut()
+            .trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT, None);
+
+        assert_eq!(written, 6, "one file node plus five symbols");
+        assert_eq!(
+            statements, 1,
+            "six nodes must leave in one statement, not one per node"
+        );
+        assert!(file_id.is_some());
+    }
+
+    /// A re-parse keeps every symbol's id and refreshes its row in place.
+    ///
+    /// Ids are what incoming CALLS edges from other files point at, so a rewrite
+    /// that renumbered symbols would silently drop those edges.
+    #[test]
+    fn re_writing_a_file_keeps_every_node_id_and_refreshes_its_row() {
+        let store = GraphStore::open_in_memory().expect("store");
+        store
+            .register_project("p", "/tmp/batching")
+            .expect("project");
+        let first = extracted(&["one", "two", "three"]);
+        store.write_file("p", "a.rs", &first).expect("first write");
+        let before = store.all_nodes("p").expect("nodes");
+
+        let mut second = extracted(&["one", "two", "three"]);
+        second.symbols[1].end_line = 99;
+        second.symbols[1].doc = "rewritten".to_string();
+        store
+            .write_file("p", "a.rs", &second)
+            .expect("second write");
+        let after = store.all_nodes("p").expect("nodes");
+
+        assert_eq!(before.len(), after.len(), "no duplicate rows");
+        let ids = |nodes: &[crate::types::Node]| {
+            nodes
+                .iter()
+                .map(|n| (n.qualified_name.clone(), n.id))
+                .collect::<std::collections::HashMap<_, _>>()
+        };
+        assert_eq!(ids(&before), ids(&after), "ids must survive a rewrite");
+
+        let two = store
+            .node_by_qn("p", "p::a.rs::two")
+            .expect("query")
+            .expect("two");
+        assert_eq!(two.end_line, 99);
+        assert_eq!(two.prop_str("doc"), Some("rewritten"));
+    }
+
+    /// Each symbol's FTS row and CONTAINS edge hang off the id the batch
+    /// returned for that symbol, not off a neighbour's.
+    #[test]
+    fn fts_rows_and_contains_edges_target_the_symbols_own_ids() {
+        let store = GraphStore::open_in_memory().expect("store");
+        store
+            .register_project("p", "/tmp/batching")
+            .expect("project");
+        let file = extracted(&["alpha", "beta", "gamma"]);
+        let (_, file_id) = store.write_file("p", "a.rs", &file).expect("write");
+        let file_id = file_id.expect("file id");
+
+        let edges = store
+            .out_edges(file_id, Some(EdgeType::Contains))
+            .expect("edges");
+        assert_eq!(edges.len(), 3, "one CONTAINS edge per symbol");
+        let indexed: Vec<(i64, String)> = store
+            .all_nodes("p")
+            .expect("nodes")
+            .into_iter()
+            .filter(|n| n.qualified_name != "p::a.rs::__file__")
+            .map(|n| (n.id, n.qualified_name))
+            .collect();
+        let mut targets: Vec<i64> = edges.iter().map(|e| e.target).collect();
+        targets.sort_unstable();
+        let mut expected: Vec<i64> = indexed.iter().map(|(id, _)| *id).collect();
+        expected.sort_unstable();
+        assert_eq!(targets, expected, "every symbol is contained exactly once");
+
+        for (id, qn) in indexed {
+            let in_fts: i64 = store
+                .connection()
+                .query_row(
+                    "SELECT count(*) FROM symbols_fts WHERE rowid = ?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
+                .expect("fts count");
+            assert_eq!(in_fts, 1, "{qn} has no FTS row at its own id {id}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod measurement {
-    //! The before/after numbers in the commit that added the write transaction.
+    //! The before/after numbers in the commits that added the write transaction
+    //! and the batched node upsert.
     //!
-    //! Ignored by default: it indexes a real tree from disk, so it is a harness,
-    //! not a test. Run it with
+    //! Ignored by default: these index a real tree from disk, so they are a
+    //! harness, not tests. Run with
     //! `PA_GRAPH_BENCH_ROOT=<tree> cargo test -p pa-graph --lib \
-    //!  indexer::write::measurement -- --ignored --nocapture`.
+    //!  --release indexer::write::measurement -- --ignored --nocapture`.
+    //!
+    //! `batched_write_against_per_symbol_write` is the one to trust: both sides
+    //! run in the same binary, over the same extracted symbols, inside the same
+    //! transaction, so a shared and busy tree cannot move one side alone. On a
+    //! frozen copy of `crates/pa-graph/src` (96 files, 2 154 symbols, release,
+    //! 7 rounds) it measured 105-146 ms batched against 223-330 ms per symbol.
 
     use super::super::options::IndexOptions;
     use crate::store::GraphStore;
@@ -345,6 +512,146 @@ mod measurement {
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(3)
+    }
+
+    /// The write path as it was before batching, kept here as the comparison
+    /// side of the harness — not as production code.
+    ///
+    /// Three statements per symbol: the node upsert, its FTS row, and the
+    /// CONTAINS edge, exactly what `write_file` used to issue.
+    fn write_one_symbol_at_a_time(
+        store: &GraphStore,
+        project: &str,
+        rel: &str,
+        extracted: &crate::extract::ExtractedFile,
+    ) -> crate::error::Result<()> {
+        use crate::tokenize::split_for_fts;
+        use crate::types::{EdgeType, Label, Node};
+
+        let file_node = Node {
+            id: 0,
+            project: project.to_string(),
+            label: Label::File,
+            name: rel.to_string(),
+            qualified_name: format!("{project}::{rel}::__file__"),
+            file_path: rel.to_string(),
+            start_line: 0,
+            end_line: 0,
+            props: serde_json::json!({ "kind": "file" }),
+        };
+        let file_id = store.upsert_node(&file_node)?;
+        store.index_fts(
+            file_id,
+            rel,
+            &file_node.qualified_name,
+            &split_for_fts(rel),
+            "",
+            "File",
+        )?;
+        for sym in &extracted.symbols {
+            let node = Node {
+                id: 0,
+                project: project.to_string(),
+                label: sym.label,
+                name: sym.name.clone(),
+                qualified_name: sym.qualified_name.clone(),
+                file_path: rel.to_string(),
+                start_line: sym.start_line,
+                end_line: sym.end_line,
+                props: serde_json::json!({ "doc": sym.doc }),
+            };
+            let id = store.upsert_node(&node)?;
+            let tokens = format!(
+                "{} {}",
+                split_for_fts(&sym.name),
+                split_for_fts(&sym.qualified_name)
+            );
+            store.index_fts(
+                id,
+                &sym.name,
+                &sym.qualified_name,
+                &tokens,
+                &sym.doc,
+                sym.label.as_str(),
+            )?;
+            store.insert_edge(
+                project,
+                file_id,
+                id,
+                EdgeType::Contains,
+                &serde_json::json!({}),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The batched `write_file` against the per-symbol loop it replaced, on the
+    /// same extracted symbols inside the same transaction — the harness the
+    /// commit quotes.
+    ///
+    /// Same binary, same input, only the write path differs, so a busy tree or
+    /// a noisy machine cannot move one side without the other. The per-symbol
+    /// side is spelled out here from the store's public API, which is what the
+    /// shipped loop did: `upsert_node`, `index_fts`, `insert_edge`, three round
+    /// trips per symbol.
+    #[test]
+    #[ignore = "measurement harness: paired write-path comparison, run with --ignored --nocapture"]
+    fn batched_write_against_per_symbol_write() {
+        use crate::extract::ExtractedFile;
+        let root = root();
+        let mut works: Vec<(String, ExtractedFile)> = Vec::new();
+        for abs in super::super::walk::discover(&root, &IndexOptions::new("bench")) {
+            let Some(lang) = pa_ast::SupportLang::from_path(&abs) else {
+                continue;
+            };
+            let Ok(source) = std::fs::read_to_string(&abs) else {
+                continue;
+            };
+            let rel = super::super::walk::rel_path(&root, &abs);
+            let module = super::super::walk::module_of(&rel);
+            works.push((rel, crate::extract::extract(&source, lang, &module)));
+        }
+        let symbols: usize = works.iter().map(|(_, e)| e.symbols.len()).sum();
+        println!("{} files, {symbols} symbols", works.len());
+
+        for round in 0..rounds() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let batched_store = GraphStore::open(dir.path().join("graph.db")).expect("store");
+            batched_store
+                .register_project("bench", "/tmp/bench")
+                .expect("project");
+            let t = Instant::now();
+            batched_store
+                .with_transaction(|_| {
+                    for (rel, extracted) in &works {
+                        let _ = batched_store.write_file("bench", rel, extracted)?;
+                    }
+                    Ok(())
+                })
+                .expect("batched");
+            let batched = t.elapsed();
+
+            let dir = tempfile::tempdir().expect("tempdir");
+            let per_symbol = GraphStore::open(dir.path().join("graph.db")).expect("store");
+            per_symbol
+                .register_project("bench", "/tmp/bench")
+                .expect("project");
+            let t = Instant::now();
+            per_symbol
+                .with_transaction(|_| {
+                    for (rel, extracted) in &works {
+                        write_one_symbol_at_a_time(&per_symbol, "bench", rel, extracted)?;
+                    }
+                    Ok(())
+                })
+                .expect("per-symbol");
+            let one_by_one = t.elapsed();
+
+            println!(
+                "round {round}: batched {batched:?} vs per-symbol {one_by_one:?} for {} rows",
+                symbols + works.len()
+            );
+        }
     }
 
     /// One whole pass over `root`, timed, on a fresh store each round.
