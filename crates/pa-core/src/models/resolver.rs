@@ -3,8 +3,6 @@
 use pa_agent::types::ThinkingLevel;
 use pa_types::ai::Model;
 
-use super::prime_inference::is_private_prime_inference_model;
-
 pub const PRIME_INFERENCE_DEFAULT_MODEL_ID: &str = "z-ai/glm-5.3";
 
 pub fn default_model_per_provider(provider: &str) -> Option<&'static str> {
@@ -142,18 +140,11 @@ pub fn build_fallback_model(
         return None;
     }
     // Private ids must inherit a private-route template.
-    let template = if is_private_prime_inference_model(&Model {
-        id: model_id.to_string(),
-        provider: provider.to_string(),
-        ..wire_skeleton()
-    }) {
-        provider_models.iter().copied().find(|model| {
-            is_private_prime_inference_model(&Model {
-                id: model.id.clone(),
-                provider: model.provider.clone(),
-                ..wire_skeleton()
-            })
-        })?
+    let template = if is_private_prime_inference_reference(provider, model_id) {
+        provider_models
+            .iter()
+            .copied()
+            .find(|model| is_private_prime_inference_reference(&model.provider, &model.id))?
     } else {
         let default_id = default_model_per_provider(provider)?;
         provider_models
@@ -166,17 +157,6 @@ pub fn build_fallback_model(
     model.id = model_id.to_string();
     model.name = model_id.to_string();
     Some(model)
-}
-
-fn wire_skeleton() -> Model {
-    serde_json::from_value(serde_json::json!({
-        "id": "", "name": "", "api": "openai-completions", "provider": "",
-        "baseUrl": "", "reasoning": false, "input": [], "cost": {
-            "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0
-        },
-        "contextWindow": 0, "maxTokens": 0
-    }))
-    .expect("skeleton model serializes")
 }
 
 /// Preferred default: prime-inference glm-5.3 first, then per-provider defaults.
@@ -680,13 +660,10 @@ pub fn find_initial_model(options: &InitialModelOptions<'_>) -> Option<Model> {
         .or_else(|| options.available_models.first().cloned())
 }
 
-/// The private-model predicate without a full `Model` value (TS
-/// `isPrivatePrimeInferenceModel({ provider, id })`).
-#[must_use]
-pub(super) fn is_private_prime_inference_reference(provider: &str, model_id: &str) -> bool {
-    provider == "prime-inference"
-        && super::prime_inference::is_private_prime_inference_model_id(model_id)
-}
+/// The private-model predicate for callers holding only `(provider, id)` — the rule itself
+/// lives in [`super::prime_inference::is_private_prime_inference_reference`], so the string
+/// path and the `Model` path cannot answer differently (review #21).
+pub(super) use super::prime_inference::is_private_prime_inference_reference;
 
 #[cfg(test)]
 mod tests {
