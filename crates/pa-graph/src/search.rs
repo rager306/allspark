@@ -359,6 +359,8 @@ pub fn search_report(
     } else {
         fts_channel(conn, query, "body", opts, pool)?
     };
+    // The graph channel ranks by degree inside its own query, and that degree ordering is
+    // the channel's whole contribution to the fusion: it stays.
     let graph_channel = graph_channel(conn, query, opts, pool)?;
 
     let mut channels: Vec<(Vec<i64>, f32)> = vec![
@@ -366,6 +368,9 @@ pub fn search_report(
         (body_channel.clone(), opts.weights[1]),
         (graph_channel.clone(), opts.weights[2]),
     ];
+    // A dense channel is the only producer of ids that need not name a row: the three
+    // FTS channels join `nodes`, so their ids always do.
+    let mut dense_channel = false;
     if let Some(embedder) = &opts.embedder {
         let mut ids: Vec<i64> = name_channel
             .iter()
@@ -378,69 +383,138 @@ pub fn search_report(
         let dense = embedder.rank(query, &ids);
         if !dense.is_empty() {
             channels.push((dense, 1.0));
+            dense_channel = true;
         }
     }
 
-    let fused = rrf_fuse_weighted(&channels);
-
-    // Regex is a *filter*, not a ranker: drop non-matching candidates.
-    let fused: Vec<(i64, f32)> = match &regex {
-        None => fused,
-        Some(re) => {
-            let rows = load_rows(conn, &fused.iter().map(|(id, _)| *id).collect::<Vec<_>>())?;
-            fused
-                .into_iter()
-                .filter(|(id, _)| {
-                    rows.get(id).is_some_and(|r| {
-                        re.is_match(&r.name)
-                            || re.is_match(&r.qualified_name)
-                            || re.is_match(&r.file_path)
-                    })
-                })
-                .collect()
-        }
-    };
+    let page = ranked_page(conn, opts, &channels, regex.as_ref(), dense_channel)?;
 
     let rank_maps = RankMaps {
         name: index_ranks(&name_channel),
         body: index_ranks(&body_channel),
         graph: index_ranks(&graph_channel),
     };
-
-    let ids: Vec<i64> = fused.iter().map(|(id, _)| *id).collect();
-    let rows = load_rows(conn, &ids)?;
-
-    // Two queries for the whole page instead of two per row (review #26/#59).
-    let degrees_by_id = degrees_batch(conn, &opts.project, &ids)?;
-    let mut hits: Vec<SearchHit> = Vec::with_capacity(fused.len());
-    for (id, score) in fused {
-        let Some(row) = rows.get(&id) else { continue };
-        let (in_degree, out_degree) = degrees_by_id.get(&id).copied().unwrap_or((0, 0));
-        hits.push(SearchHit {
-            id,
+    let mut hits: Vec<SearchHit> = page
+        .entries
+        .into_iter()
+        .map(|(row, score)| SearchHit {
+            id: row.id,
             label: Label::from_str_or_default(&row.label),
-            name: row.name.clone(),
-            qualified_name: row.qualified_name.clone(),
-            file_path: row.file_path.clone(),
+            name: row.name,
+            qualified_name: row.qualified_name,
+            file_path: row.file_path,
             start_line: row.start_line as u32,
             end_line: row.end_line as u32,
             score,
-            in_degree,
-            out_degree,
+            // Degrees are display-only: they never order a hit, so they are counted
+            // after the last cut, for the page that survives it (review #26).
+            in_degree: 0,
+            out_degree: 0,
             channels: ChannelRanks {
-                name: rank_maps.name.get(&id).copied(),
-                body: rank_maps.body.get(&id).copied(),
-                graph: rank_maps.graph.get(&id).copied(),
+                name: rank_maps.name.get(&row.id).copied(),
+                body: rank_maps.body.get(&row.id).copied(),
+                graph: rank_maps.graph.get(&row.id).copied(),
             },
-        });
-    }
+        })
+        .collect();
 
     if let Some(lambda) = opts.mmr_lambda {
         hits = apply_mmr(hits, opts.limit, lambda);
-    } else {
-        hits.truncate(opts.limit);
     }
+
+    // Two queries for the whole page instead of two per row, and only for the rows that
+    // survive the cut.
+    let page_ids: Vec<i64> = hits.iter().map(|hit| hit.id).collect();
+    let degrees_by_id = degrees_batch(conn, &opts.project, &page_ids)?;
+    for hit in &mut hits {
+        let (in_degree, out_degree) = degrees_by_id.get(&hit.id).copied().unwrap_or((0, 0));
+        hit.in_degree = in_degree;
+        hit.out_degree = out_degree;
+    }
+
     Ok((hits, report))
+}
+
+/// The rows a search will report, in page order, each with its fused score.
+struct Page {
+    /// `(row, fused score)`, best first.
+    entries: Vec<(Row, f32)>,
+}
+
+/// Fuse the channels, filter, and cut to the page — the half of `search_report` that
+/// decides WHICH rows are reported, before any of them is decorated.
+///
+/// The order of the stages is the point (review #26/#59). A row is loaded once, and only
+/// for what survives: the candidate set is materialised only when something before the
+/// cut needs a row (a regex, or a dense channel whose ids may name none), and otherwise
+/// the page is cut first and loaded once.
+fn ranked_page(
+    conn: &Connection,
+    opts: &SearchOptions,
+    channels: &[(Vec<i64>, f32)],
+    regex: Option<&Regex>,
+    dense_channel: bool,
+) -> Result<Page> {
+    let fused = rrf_fuse_weighted(channels);
+
+    // Candidate rows are materialised ONCE (review #59): a regex needs `name`,
+    // `qualified_name` and `file_path`, and the page needs the same columns, so the
+    // filter's map is the page's map instead of a second read of the same ids.
+    let candidate_rows = if regex.is_some() || dense_channel {
+        Some(load_rows(conn, &ids_of(&fused))?)
+    } else {
+        None
+    };
+
+    // A dense id with no row cannot be a hit, and must not take a page slot a real hit
+    // would have had. Only the dense path can produce one, so only it pays for the check.
+    let mut fused = fused;
+    if dense_channel {
+        if let Some(rows) = &candidate_rows {
+            fused.retain(|(id, _)| rows.contains_key(id));
+        }
+    }
+
+    // Regex is a *filter*, not a ranker: drop non-matching candidates.
+    let fused: Vec<(i64, f32)> = match (regex, &candidate_rows) {
+        (Some(re), Some(rows)) => fused
+            .into_iter()
+            .filter(|(id, _)| {
+                rows.get(id).is_some_and(|r| {
+                    re.is_match(&r.name)
+                        || re.is_match(&r.qualified_name)
+                        || re.is_match(&r.file_path)
+                })
+            })
+            .collect(),
+        _ => fused,
+    };
+
+    // The page is cut before any per-row work: fusion order and scores decide who is on
+    // it, and neither needs a row. MMR is the one exception — it reranks the candidate
+    // set on name features — so it takes the rows of every candidate.
+    let hits: Vec<(i64, f32)> = if opts.mmr_lambda.is_some() {
+        fused
+    } else {
+        fused.into_iter().take(opts.limit).collect()
+    };
+
+    let mut rows = match candidate_rows {
+        Some(rows) => rows,
+        None => load_rows(conn, &ids_of(&hits))?,
+    };
+    // An id whose row is gone is not a hit: `search` has always dropped those, and the
+    // page inherits that tolerance rather than asserting rows every id.
+    let entries = hits
+        .into_iter()
+        .filter_map(|(id, score)| rows.remove(&id).map(|row| (row, score)))
+        .collect();
+    Ok(Page { entries })
+}
+
+/// The ids of a ranked list, in rank order.
+fn ids_of(ranked: &[(i64, f32)]) -> Vec<i64> {
+    ranked.iter().map(|(id, _)| *id).collect()
 }
 
 struct RankMaps {
@@ -480,8 +554,11 @@ fn fts_channel(
     let limit_idx = params.len() + 1;
     params.push(Value::from(i64::try_from(pool).unwrap_or(i64::MAX)));
 
+    // Only the id is read: the row projection happens once, for the page, after the
+    // fusion and the cut (`load_rows`). Fetching six string columns per candidate here
+    // copied them for every row the cut discards (review #25's shape, in this query).
     let sql = format!(
-        "SELECT n.id,n.label,n.name,n.qualified_name,n.file_path,n.start_line,n.end_line
+        "SELECT n.id
          FROM symbols_fts f
          JOIN nodes n ON n.id = f.rowid
          WHERE f.symbols_fts MATCH ?1 AND n.project = ?2 {label_sql} {filter_sql}
@@ -839,79 +916,161 @@ mod tests {
         assert!(widget.channels.name.is_some() || widget.channels.body.is_some());
     }
 
-    /// Review #26/#59: degree work is a function of the PAGE, not of each hit.
-    ///
-    /// Three counts exist by nature: the graph channel ranks by degree inside its own
-    /// FTS query, and the hit loop then needs in and out for the page. The defect was
-    /// that the last two ran PER ROW, so the count grew with the result set. The oracle
-    /// is the SQLite statement hook (not a timer: a timer measures the machine), and the
-    /// property is "the same count for a bigger page", which per-row work cannot satisfy.
-    #[test]
-    fn degree_queries_do_not_grow_with_the_page() {
-        let mut store = open();
-        // The fixture has three nodes; per-row work would show only 3 vs 3. Seed a
-        // dedicated project so a 20-hit page is actually reachable — without that the
-        // test passes on the broken code (measured: it did).
-        for i in 0..30 {
+    /// Seed a dedicated `big` project so a 20-hit page is reachable at all: the
+    /// three-node fixture is too small to show page-scaling work (it made an earlier
+    /// version of these tests pass on the broken code).
+    fn seed_wide(store: &mut GraphStore, count: usize) {
+        for i in 0..count {
             store
                 .register_project("big", "/tmp")
                 .or_else(|_| Ok::<(), crate::GraphError>(()))
                 .ok();
-            let node = crate::types::Node {
+            let name = format!("widget_{i}");
+            let node = Node {
                 id: 0,
                 project: "big".into(),
-                label: crate::types::Label::Function,
-                name: format!("widget_{i}"),
-                qualified_name: format!("big::widget_{i}"),
+                label: Label::Function,
+                name: name.clone(),
+                qualified_name: format!("big::{name}"),
                 file_path: "src/big.rs".into(),
                 start_line: 1,
                 end_line: 2,
-                props: serde_json::json!({ "doc": "widget" }),
+                props: json!({ "doc": "widget" }),
             };
             let id = store.upsert_node(&node).expect("node");
             store
                 .index_fts(
                     id,
-                    &format!("widget_{i}"),
-                    &format!("big::widget_{i}"),
+                    &name,
+                    &format!("big::{name}"),
                     &format!("widget {i}"),
                     "widget",
                     "Function",
                 )
                 .expect("fts");
         }
+    }
+
+    /// Statements recorded by the statement hook, and the lock that serialises the
+    /// tests sharing it (rusqlite's `trace` hook is a plain `fn` pointer, so it has no
+    /// closure state to carry its own sink).
+    static RECORDED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    static HOOK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// What SQL one `search` call issued, as far as the two review findings care.
+    #[derive(Debug, Default, PartialEq, Eq)]
+    struct Tallies {
+        /// Statements projecting rows out of `nodes`.
+        node_reads: usize,
+        /// Most ids any one of those bound.
+        node_ids: usize,
+        /// Statements counting edges for the page (`COUNT(*) FROM EDGES`).
+        degree_reads: usize,
+        /// Most ids any one of those bound.
+        degree_ids: usize,
+        /// FTS channel statements that also projected the row columns.
+        fts_row_projections: usize,
+    }
+
+    /// Classify the statements the hook recorded.
+    fn tallies_of(statements: &[String]) -> Tallies {
+        let mut tallies = Tallies::default();
+        for sql in statements {
+            let upper = sql.to_ascii_uppercase();
+            let ids = bound_ids(sql);
+            if upper.contains("FROM NODES") && upper.contains("SELECT ID,") {
+                tallies.node_reads += 1;
+                tallies.node_ids = tallies.node_ids.max(ids);
+            }
+            if upper.contains("COUNT(*) FROM EDGES") {
+                tallies.degree_reads += 1;
+                tallies.degree_ids = tallies.degree_ids.max(ids);
+            }
+            if upper.contains("FROM SYMBOLS_FTS")
+                && (upper.contains("N.NAME") || upper.contains("N.FILE_PATH"))
+            {
+                tallies.fts_row_projections += 1;
+            }
+        }
+        tallies
+    }
+
+    /// How many ids a statement's `IN (...)` list binds.
+    ///
+    /// The legacy `trace` hook reports the statement with its parameters EXPANDED
+    /// (`IN (12, 13, 14)`), so the ids are the list's items; a `?`-placeholder form is
+    /// counted the same way, because a placeholder is one item too.
+    fn bound_ids(sql: &str) -> usize {
+        let Some((_, rest)) = sql.split_once(" IN (") else {
+            return 0;
+        };
+        let Some((inner, _)) = rest.split_once(')') else {
+            return 0;
+        };
+        inner
+            .split(',')
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .count()
+    }
+
+    /// Run `run` with a statement hook installed and classify what it issued.
+    ///
+    /// The hook is a plain `fn` pointer (rusqlite's `trace` takes no closure state),
+    /// so its output goes through a static buffer and a lock serialises the tests
+    /// that share it.
+    fn count_statements(
+        store: &mut GraphStore,
+        run: impl FnOnce(&rusqlite::Connection),
+    ) -> Tallies {
+        let _serialised = HOOK_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        RECORDED.lock().expect("recorded").clear();
         let conn = store.connection_mut();
-        // `trace` is deprecated in favour of `trace_v2`, but `trace_v2` takes a plain
-        // `fn` pointer with no closure state, so a counting oracle cannot use it.
         #[allow(deprecated)]
         conn.trace(Some(|sql: &str| {
-            let flat: String = sql
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ")
-                .to_ascii_uppercase();
-            if flat.contains("COUNT(*) FROM EDGES") {
-                DEGREE_QUERIES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let flat: String = sql.split_whitespace().collect::<Vec<_>>().join(" ");
+            // FTS5's own index probes are the virtual table's business, not the query
+            // builder's: `--`-prefixed statements are emitted by the extension.
+            if !flat.starts_with("--") {
+                RECORDED.lock().expect("recorded").push(flat);
             }
         }));
-
-        let count_for = |limit: usize| {
-            DEGREE_QUERIES.store(0, std::sync::atomic::Ordering::SeqCst);
-            let hits = search(
-                conn,
-                "config OR widget OR render",
-                &SearchOptions::new("big").with_limit(limit),
-            )
-            .expect("search");
-            (
-                hits.len(),
-                DEGREE_QUERIES.load(std::sync::atomic::Ordering::SeqCst),
-            )
-        };
-        let (small_hits, small_queries) = count_for(2);
-        let (big_hits, big_queries) = count_for(20);
+        run(conn);
         #[allow(deprecated)]
         conn.trace(None);
+        let statements = RECORDED.lock().expect("recorded").clone();
+        tallies_of(&statements)
+    }
+
+    /// Review #26: degree counts are a function of the PAGE, and only of the rows
+    /// that survive the cut.
+    ///
+    /// Before the fix both counts were computed for every fused candidate — 152 ids
+    /// for a 20-hit page on this repo's graph — and the surplus was thrown away by
+    /// the truncate. The oracle reads the SQL rather than a clock, so the property is
+    /// "no degree statement binds more ids than the page has rows", which pool-sized
+    /// work cannot satisfy.
+    #[test]
+    fn degrees_are_counted_for_the_page_and_not_for_the_candidate_pool() {
+        let mut store = open();
+        seed_wide(&mut store, 30);
+        let mut run = |limit: usize| {
+            let mut hits = 0;
+            let tallies = count_statements(&mut store, |conn| {
+                hits = search(
+                    conn,
+                    "config OR widget OR render",
+                    &SearchOptions::new("big").with_limit(limit),
+                )
+                .expect("search")
+                .len();
+            });
+            (hits, tallies)
+        };
+        let (small_hits, small) = run(2);
+        let (big_hits, big) = run(20);
 
         assert!(
             big_hits > small_hits,
@@ -919,13 +1078,83 @@ mod tests {
              nothing: {small_hits} vs {big_hits}"
         );
         assert_eq!(
-            big_queries, small_queries,
-            "degree queries grew with the page ({small_queries} for {small_hits} hits, \
-             {big_queries} for {big_hits}): degrees went back to per-row"
+            big.degree_reads, small.degree_reads,
+            "degree queries grew with the page: {small:?} vs {big:?}"
+        );
+        assert!(
+            big.degree_ids <= big_hits,
+            "degrees were counted for {} ids to return {big_hits} hits: {big:?}",
+            big.degree_ids
+        );
+        assert!(
+            small.degree_ids <= small_hits,
+            "degrees were counted for {} ids to return {small_hits} hits: {small:?}",
+            small.degree_ids
+        );
+        // The same cut governs the row read: nothing before it looks at a row, so the
+        // page's rows are the only rows the query needs (review #25's shape).
+        assert!(
+            big.node_ids <= big_hits,
+            "rows were loaded for {} ids to return {big_hits} hits: {big:?}",
+            big.node_ids
         );
     }
 
-    static DEGREE_QUERIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    /// The row columns are read by `load_rows` and by nothing else.
+    ///
+    /// Both FTS channels rank and return ids; the six string columns they used to
+    /// project were copied for every candidate and then read from `load_rows` anyway.
+    /// Measured on this repo's graph (59 813 nodes): a 1 000-row pool went 6.8 ms ->
+    /// 5.1 ms per channel once the projection was the id alone.
+    #[test]
+    fn the_channels_project_ids_and_not_rows() {
+        let mut store = open();
+        seed_wide(&mut store, 30);
+        let tallies = count_statements(&mut store, |conn| {
+            search(
+                conn,
+                "config OR widget OR render",
+                &SearchOptions::new("big").with_limit(20),
+            )
+            .expect("search");
+        });
+        assert!(
+            tallies.fts_row_projections == 0,
+            "an FTS channel re-projected the row columns instead of the id: {tallies:?}"
+        );
+    }
+
+    /// Review #59: a regex-filtered search materialises the candidate rows once.
+    ///
+    /// The regex needs `name`/`qualified_name`/`file_path` and the page needs the same
+    /// columns, so the filter loaded them and then the page loaded them again. The
+    /// oracle is the number of `nodes` reads: the filter's map must be the page's map.
+    #[test]
+    fn a_regex_search_reads_the_candidate_rows_once() {
+        let mut store = open();
+        seed_wide(&mut store, 30);
+        let mut hits = 0;
+        let tallies = count_statements(&mut store, |conn| {
+            let opts = SearchOptions::new("big")
+                .with_limit(20)
+                .with_regex("^widget_1");
+            hits = search(conn, "config OR widget OR render", &opts)
+                .expect("search")
+                .len();
+        });
+        assert!(hits > 1, "the regex must keep more than one hit: {hits}");
+        assert_eq!(
+            tallies.node_reads, 1,
+            "the regex filter re-materialised the candidate rows: {tallies:?}"
+        );
+        // The pool is `limit * candidate_multiplier`; a second load would add the
+        // surviving page's ids on top of the pool the filter already had.
+        assert!(
+            tallies.node_ids <= 20 * 4,
+            "read {} candidate ids for a pool of 80: {tallies:?}",
+            tallies.node_ids
+        );
+    }
 
     #[test]
     fn degrees_are_reported() {
