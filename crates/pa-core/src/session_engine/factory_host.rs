@@ -319,7 +319,17 @@ impl FactoryHost {
 /// change to either direction means editing that one list. The descriptor is
 /// lossy by design, so full resolution stays with the catalog and the spawn
 /// path.
-fn agent_model_to_ai_model(model: &pa_agent::types::Model) -> AiModel {
+/// Project the loop's model descriptor back onto the wire shape.
+///
+/// The inverse of [`crate::session_engine::provider_adapter::to_agent_model`],
+/// and the counterpart that keeps both directions in one place: the fields the
+/// wire type carries but the loop does not read (`thinking_level_map`, `input`,
+/// `featured`, `headers`, `compat`) come back empty, and `cost.total` comes back
+/// zero — the rate card has no total of its own (`to_agent_model` documents the
+/// same loss from the other side). A caller that needs full resolution asks the
+/// catalog; this projection restores the identity fields and the endpoint.
+#[must_use]
+pub fn agent_model_to_ai_model(model: &pa_agent::types::Model) -> AiModel {
     AiModel {
         id: model.id.clone(),
         name: model.name.clone(),

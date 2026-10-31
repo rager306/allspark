@@ -293,37 +293,6 @@ async fn new_session(state: &Arc<RpcState>, payload: &Value) -> Result<ResponseD
 /// The five provider-only fields (`thinking_level_map`, `input`, `featured`,
 /// `headers`, `compat`) come back empty: the loop never carries them, and
 /// the full catalog entry is what the daemon already holds in
-/// `RpcEngineHandle::model` — this answer describes the model the session
-/// RUNS, which is the loop's copy.
-///
-/// This is the exact inverse of `to_agent_model` and duplicates
-/// `factory_host::agent_model_to_ai_model`, which is private. Merging the
-/// two (making that one `pub` beside `to_agent_model`) is the follow-up.
-fn agent_model_to_ai_model(model: &pa_agent::types::Model) -> pa_types::ai::Model {
-    pa_types::ai::Model {
-        id: model.id.clone(),
-        name: model.name.clone(),
-        api: model.api.clone(),
-        provider: model.provider.clone(),
-        base_url: model.base_url.clone(),
-        reasoning: model.reasoning,
-        thinking_level_map: None,
-        input: Vec::new(),
-        cost: pa_types::ai::ModelCost {
-            input: model.cost.input.into(),
-            output: model.cost.output.into(),
-            cache_read: model.cost.cache_read.into(),
-            cache_write: model.cost.cache_write.into(),
-        },
-        context_window: model.context_window,
-        max_tokens: model.max_tokens,
-        max_tokens_explicit: model.max_tokens_explicit,
-        featured: None,
-        headers: None,
-        compat: None,
-    }
-}
-
 async fn get_state(state: &Arc<RpcState>) -> Result<ResponseData, String> {
     let handle = state.session.handle().await;
     let engine = &handle.engine;
@@ -335,8 +304,10 @@ async fn get_state(state: &Arc<RpcState>) -> Result<ResponseData, String> {
     let mut object = serde_json::Map::new();
     object.insert(
         "model".to_string(),
-        serde_json::to_value(agent_model_to_ai_model(&agent_state.model))
-            .expect("a model descriptor serializes"),
+        serde_json::to_value(
+            pa_core::session_engine::factory_host::agent_model_to_ai_model(&agent_state.model),
+        )
+        .expect("a model descriptor serializes"),
     );
     object.insert(
         "thinkingLevel".to_string(),
