@@ -463,6 +463,29 @@ pub(crate) async fn build_engine(
     execution_mode: &str,
     embedding: &HeadlessEmbedding,
 ) -> Result<HeadlessEngine, String> {
+    // The RPC embedding tells the session what its prompt cannot deliver
+    // (review #31); the other headless embeddings keep the CLI's guidelines.
+    let rpc_options = matches!(embedding, HeadlessEmbedding::Rpc).then(|| {
+        let mut options = options.clone();
+        // `load_resources` only discovers `APPEND_SYSTEM.md` when the
+        // explicit source list is EMPTY, so the notice cannot simply be
+        // pushed: the RPC path must name the discovered file itself or it
+        // would silently drop the user's appended prompt.
+        let mut sources = if options.config.append_system_prompt.is_empty() {
+            pa_core::resources::discover_append_system_prompt_file(
+                &options.config.cwd,
+                &options.config.agent_dir,
+            )
+            .map(|path| vec![path.display().to_string()])
+            .unwrap_or_default()
+        } else {
+            options.config.append_system_prompt.clone()
+        };
+        sources.push(RPC_NO_FAMILY_NOTICE.to_string());
+        options.config.append_system_prompt = sources;
+        options
+    });
+    let options = rpc_options.as_ref().unwrap_or(options);
     match faux {
         Some(script) => {
             build_faux_engine_with(options, script, session_manager, execution_mode, embedding)
@@ -473,6 +496,17 @@ pub(crate) async fn build_engine(
         }
     }
 }
+
+/// The RPC embedding's missing family surface (review #31). The static core
+/// layer advertises `agent_message.send` and `agent_observe.*` in every
+/// session, but the in-process RPC transport installs no family host
+/// handlers — no parent, no siblings, no children, and no daemon link — so
+/// the `agent-message`/`agent-observe` skills never register and their
+/// kernel host requests are absent. The dynamic session-role block already
+/// names the other daemonless gaps (`rlm.spawn`, heartbeats); without this
+/// line nothing tells the model the family surface is gone too, and it
+/// plans coordination it cannot run.
+const RPC_NO_FAMILY_NOTICE: &str = "## Session limits\n\nThis RPC session has no agent family: no parent, no siblings, no children, and no daemon link. `agent_message.send`, `agent_observe.*`, and the `agent-message`/`agent-observe` skills are not installed here, even though the harness description lists them. Do not plan multi-agent coordination in this session — it is single-session work.";
 
 /// The faux-script verification seam (`PRIME_AGENT_FAUX_SCRIPT`; never
 /// set by the product): the script env parse, the per-child queues, and
@@ -1807,6 +1841,105 @@ async fn run_prompts_and_emit(
 
 #[cfg(test)]
 mod tests {
+
+    fn rpc_run_options(home: &std::path::Path) -> crate::mode::RunOptions {
+        crate::mode::RunOptions {
+            app_mode: crate::mode::AppMode::Rpc,
+            config: crate::mode::RuntimeConfig {
+                cwd: home.join("project"),
+                agent_dir: home.join("agent"),
+                ..Default::default()
+            },
+            session: crate::mode::SessionOptions::default(),
+            messages: Vec::new(),
+            file_args: Vec::new(),
+            daemon_socket: None,
+            list_models: None,
+            initial_message: None,
+            initial_images: Vec::new(),
+            verbose: false,
+            offline: true,
+            agents_view_requested: false,
+            attach_agent: None,
+        }
+    }
+
+    /// The RPC embedding is single-shot (in-process, no daemon link): its
+    /// session has no agent family, so the messaging skills are not wired.
+    /// The static core layer names `agent_message.send`/`agent_observe.*`
+    /// regardless, so the RPC assembly must say the family surface is
+    /// missing — otherwise the model plans coordination it cannot run
+    /// (review #31).
+    #[tokio::test]
+    async fn rpc_engine_prompt_discloses_the_missing_agent_family() {
+        let directory = tempfile::tempdir().unwrap();
+        let cli_options = rpc_run_options(directory.path());
+        std::fs::create_dir_all(&cli_options.config.cwd).unwrap();
+        std::fs::create_dir_all(&cli_options.config.agent_dir).unwrap();
+        let script = serde_json::json!({ "responses": ["unused"] });
+        let headless = super::build_engine(
+            &cli_options,
+            Some(&script),
+            None,
+            "rpc",
+            &super::HeadlessEmbedding::Rpc,
+        )
+        .await
+        .unwrap();
+        let prompt = &headless.engine.system_prompt;
+        assert!(
+            prompt.contains("agent_message.send"),
+            "the static layer advertises agent_message.send in every session: {prompt}"
+        );
+        assert!(
+            !prompt.contains("<name>agent-message</name>"),
+            "the RPC embedding installs no messaging skills: {prompt}"
+        );
+        assert!(
+            prompt.contains("has no agent family"),
+            "the RPC prompt must name the missing family surface the static \
+             layer still advertises: {prompt}"
+        );
+        headless.engine.dispose_kernel().await;
+    }
+
+    /// The RPC notice must not cost the user their `APPEND_SYSTEM.md`:
+    /// resource loading only discovers that file when the explicit source
+    /// list is EMPTY, so a path that only appends the notice silently drops
+    /// it from every RPC session.
+    #[tokio::test]
+    async fn rpc_notice_keeps_the_discovered_append_prompt() {
+        let directory = tempfile::tempdir().unwrap();
+        let cli_options = rpc_run_options(directory.path());
+        std::fs::create_dir_all(&cli_options.config.cwd).unwrap();
+        std::fs::create_dir_all(&cli_options.config.agent_dir).unwrap();
+        let append_dir = cli_options
+            .config
+            .cwd
+            .join(pa_core::settings::CONFIG_DIR_NAME);
+        std::fs::create_dir_all(&append_dir).unwrap();
+        std::fs::write(append_dir.join("APPEND_SYSTEM.md"), "PROJECT APPEND MARKER").unwrap();
+        let script = serde_json::json!({ "responses": ["unused"] });
+        let headless = super::build_engine(
+            &cli_options,
+            Some(&script),
+            None,
+            "rpc",
+            &super::HeadlessEmbedding::Rpc,
+        )
+        .await
+        .unwrap();
+        let prompt = &headless.engine.system_prompt;
+        assert!(
+            prompt.contains("PROJECT APPEND MARKER"),
+            "the discovered APPEND_SYSTEM.md still reaches the RPC prompt: {prompt}"
+        );
+        assert!(
+            prompt.contains("has no agent family"),
+            "and the notice rides beside it: {prompt}"
+        );
+        headless.engine.dispose_kernel().await;
+    }
 
     /// Runtime cancellation unblocks a pending writer; ownership must remain
     /// held until that blocking writer finishes, even on errors or unwinding.
