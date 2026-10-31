@@ -578,3 +578,34 @@ class RlmCollectTest(unittest.TestCase):
         with patch.object(rlm_module, "host_request", host_request):
             with self.assertRaisesRegex(RuntimeError, "invalid status"):
                 asyncio.run(rlm_module.rlm.collect())
+
+    def test_the_namespace_the_repl_binds_exposes_every_documented_member(self) -> None:
+        """The product REPL binds `rlm` to `rlm_module.rlm`, not to the module.
+
+        `crates/pa-core/src/kernel/bootstrap/runtime_code.rs` runs
+        `rlm = _prime_agent_rlm_module.rlm`, so a cell that types
+        `rlm.<member>` reaches `_RLMNamespace`, and a module-level export is
+        unreachable from there. AGENTS.md documents `rlm.persistent_shells`
+        among the REPL API, so that name has to resolve on the namespace.
+        """
+        namespace = rlm_module.rlm
+        documented = [
+            "spawn",
+            "create_session",
+            "find_models",
+            "list_subagents",
+            "progress_note",
+            "delete_subagent",
+            "rename",
+            "collect",
+            "factory",
+            "harness",
+            "get_harness_state",
+            "persistent_shells",
+        ]
+        missing = [name for name in documented if not hasattr(namespace, name)]
+        self.assertEqual(missing, [], f"the REPL's `rlm` binding lacks {missing}")
+
+    def test_persistent_shells_is_callable_from_the_namespace(self) -> None:
+        shells = rlm_module.rlm.persistent_shells()
+        self.assertIsInstance(shells, list)

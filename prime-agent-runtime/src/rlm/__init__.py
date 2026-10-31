@@ -634,6 +634,12 @@ class _RLMFactoryNamespace:
 class _RLMNamespace:
     harness = _harness_state
     get_harness_state = staticmethod(get_harness_state)
+    # The re-attach path for `bash(persistent=True)` handles after a restart.
+    # The product REPL binds `rlm` to this namespace, not to the module
+    # (crates/pa-core/src/kernel/bootstrap/runtime_code.rs), so the module-level
+    # export alone is unreachable from a cell: the contract names
+    # `rlm.persistent_shells` (AGENTS.md), and that is what a cell types.
+    persistent_shells = staticmethod(persistent_shells)
 
     async def spawn(
         self,
