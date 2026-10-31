@@ -31,7 +31,7 @@ bad()  { printf '  FAIL  %s\n' "$*"; fail=1; }
 # module, which is the whole point of the split (upstream edits engine.rs ~29 times
 # per 100 commits). The guard follows the fact, not the old path.
 ENGINE="crates/pa-core/src/session_engine/native_tools.rs"
-EXPECTED_NATIVE="edit graph jev lsp"
+EXPECTED_NATIVE="edit graph jev lsp schedule"
 INSIDERS=(
   crates/pa-core/src/tools/graph/mod.rs
   crates/pa-core/src/tools/graph/reports.rs
@@ -100,7 +100,7 @@ fi
 # module, which is the whole point of the split (upstream edits engine.rs ~29 times
 # per 100 commits). The guard follows the fact, not the old path.
 ENGINE="crates/pa-core/src/session_engine/native_tools.rs"
-EXPECTED_NATIVE="edit graph jev lsp"
+EXPECTED_NATIVE="edit graph jev lsp schedule"
 INSIDERS=(
   crates/pa-core/src/tools/graph/mod.rs
   crates/pa-core/src/tools/graph/reports.rs
