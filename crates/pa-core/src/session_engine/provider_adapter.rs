@@ -85,12 +85,16 @@ pub fn model_thinking_level(level: ThinkingLevel) -> pa_types::ai::ModelThinking
 ///   [`ProviderTarget::headers`] and `StreamRequestOptions::headers`.
 /// - `compat`: provider-wire overrides, applied inside the provider.
 ///
-/// The reverse direction, [`super::factory_host::agent_model_to_ai_model`],
-/// restores the other ten fields and fills these five back with defaults for
-/// the same reason; that function points here so the two cannot drift apart
-/// unnoticed.
+/// The reverse direction, `factory_host::agent_model_to_ai_model`, restores
+/// the other ten fields and fills these five back with defaults for the same
+/// reason; that function points here so the two cannot drift apart unnoticed.
+///
+/// Public so every host that builds a loop session — the daemon worker and
+/// pa-cli's headless print/RPC builders — converts through this one
+/// projection instead of a wire-shape round-trip of its own, which is how
+/// `base_url` went missing in the first place.
 #[must_use]
-pub(crate) fn to_agent_model(model: &Model) -> AgentModel {
+pub fn to_agent_model(model: &Model) -> AgentModel {
     AgentModel {
         id: model.id.clone(),
         name: model.name.clone(),

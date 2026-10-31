@@ -4,7 +4,7 @@
 //! product.
 
 use pa_core::session_engine::provider_adapter::{
-    json_round_trip, switchable_stream_fn, ProviderTarget,
+    switchable_stream_fn, to_agent_model, ProviderTarget,
 };
 
 use crate::print_runtime::{
@@ -117,7 +117,9 @@ pub(crate) async fn build_faux_engine_with(
             Some(resolve_thinking_level(config, &model))
         }
     };
-    let agent_model = json_round_trip(&model).ok_or("model conversion failed")?;
+    // The same field-by-field projection the real-provider builder uses: a
+    // scripted session's model must not differ from a live one's.
+    let agent_model = to_agent_model(&model);
     let provider_target: ProviderTargetSlot =
         std::sync::Arc::new(std::sync::RwLock::new(Some(ProviderTarget {
             api_key: None,

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use pa_agent::stream::{LlmContext, StreamFn, StreamRequestOptions};
 use pa_agent::types::Model as AgentModel;
 use pa_core::session_engine::provider_adapter::{
-    json_round_trip, stream_once, switchable_stream_fn, ProviderTarget,
+    stream_once, switchable_stream_fn, to_agent_model, ProviderTarget,
 };
 use pa_types::ai::Model;
 use tokio::sync::Notify;
@@ -276,7 +276,10 @@ pub(crate) async fn build_headless_engine_with(
             service_tier: None,
             headers: resolved.headers.clone(),
         })));
-    let agent_model: AgentModel = json_round_trip(&model).ok_or("model conversion failed")?;
+    // Field-by-field, never a wire-shape round-trip: the loop spells the
+    // endpoint `base_url` where pa-ai writes `baseUrl`, and a serde default
+    // would fill the mismatch with an empty string.
+    let agent_model: AgentModel = to_agent_model(&model);
 
     // Children serve their own provider target (the route-authoritative
     // stream would serve the parent's model, and children have no
@@ -632,5 +635,115 @@ pub(super) fn headless_image_model_router(
     pa_core::session_engine::image_model_routing::ImageModelRouter {
         decide,
         swap_target,
+    }
+}
+
+#[cfg(test)]
+mod model_projection_tests {
+    //! The headless engine hands the loop its model descriptor in
+    //! `build_headless_engine_with`. The JSON round-trip that used to sit
+    //! there dropped `base_url`: pa-ai writes the wire key `baseUrl`, the
+    //! loop reads `base_url`, and serde's `#[serde(default)]` filled the
+    //! mismatch with an empty string — so the provider endpoint reached
+    //! neither the loop's `on_payload` hooks nor the daemon's `rpc get_state`
+    //! row, which projects the loop's model back out.
+
+    use super::super::ChildLane;
+    use super::*;
+
+    fn probe_model() -> Model {
+        Model {
+            id: "probe/model".into(),
+            name: "Probe Model".into(),
+            api: "openai-completions".into(),
+            provider: "probe".into(),
+            base_url: "https://probe.invalid/v1".into(),
+            reasoning: true,
+            thinking_level_map: None,
+            input: vec![pa_types::ai::ModelInput::Text],
+            cost: pa_types::ai::ModelCost {
+                input: 1.5.into(),
+                output: 9.0.into(),
+                cache_read: 0.5.into(),
+                cache_write: 2.0.into(),
+            },
+            context_window: 200_000,
+            max_tokens: 64_000,
+            max_tokens_explicit: true,
+            featured: None,
+            headers: None,
+            compat: None,
+        }
+    }
+
+    /// A spawned child embedding prewarms no Python kernel, so this build
+    /// needs neither the network nor a kernel: it reaches the model
+    /// conversion and stops there.
+    #[tokio::test]
+    async fn a_headless_child_build_hands_the_loop_the_provider_base_url() {
+        let directory = tempfile::tempdir().unwrap();
+        let options = crate::mode::RunOptions {
+            app_mode: crate::mode::AppMode::Rpc,
+            config: crate::mode::RuntimeConfig {
+                cwd: directory.path().join("project"),
+                agent_dir: directory.path().join("agent"),
+                ..Default::default()
+            },
+            session: crate::mode::SessionOptions::default(),
+            messages: Vec::new(),
+            file_args: Vec::new(),
+            daemon_socket: None,
+            list_models: None,
+            initial_message: None,
+            initial_images: Vec::new(),
+            verbose: false,
+            offline: true,
+            agents_view_requested: false,
+            attach_agent: None,
+        };
+        std::fs::create_dir_all(&options.config.cwd).unwrap();
+        std::fs::create_dir_all(&options.config.agent_dir).unwrap();
+        let session_manager =
+            pa_core::session::manager::SessionManager::in_memory(&options.config.cwd);
+        let node = crate::print_rlm::root_node(&options, &session_manager, None);
+        let embedding = HeadlessEmbedding::Child(Box::new(ChildEngineOverrides {
+            node,
+            lane: ChildLane::Real(Box::new(probe_model())),
+            thinking: pa_types::ai::ModelThinkingLevel::Medium,
+            semantic_parent_session_id: None,
+            spawned_by_request_id: None,
+        }));
+        let headless = build_engine(
+            &options,
+            None,
+            Some(session_manager),
+            "subagent",
+            &embedding,
+        )
+        .await
+        .unwrap();
+        let state = headless.engine.session.agent().state().await;
+        assert_eq!(
+            state.model,
+            AgentModel {
+                id: "probe/model".into(),
+                name: "Probe Model".into(),
+                api: "openai-completions".into(),
+                provider: "probe".into(),
+                base_url: "https://probe.invalid/v1".into(),
+                reasoning: true,
+                cost: pa_agent::types::UsageCost {
+                    input: 1.5,
+                    output: 9.0,
+                    cache_read: 0.5,
+                    cache_write: 2.0,
+                    total: 0.0,
+                },
+                context_window: 200_000,
+                max_tokens: 64_000,
+                max_tokens_explicit: true,
+            }
+        );
+        headless.engine.dispose_kernel().await;
     }
 }
