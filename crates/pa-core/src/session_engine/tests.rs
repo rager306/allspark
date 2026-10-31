@@ -2044,3 +2044,111 @@ async fn a_post_take_admission_refusal_rearms_the_first_turn_digest() {
         "the refused turn never delivered its digest, so the next one still owes it"
     );
 }
+
+/// Review #34 (restoration bound): the landed probe compared each drained row
+/// with the WHOLE agent history, so a row equal to one an EARLIER turn already
+/// committed counted as "landed by this attempt" and never went back to the
+/// queue. The rows are templated notices (`state_restore_notice`,
+/// skills-unavailable, goal continuation, boot notices), so a text collision
+/// across turns is real, not hypothetical: the same notice queued twice would
+/// be delivered once.
+///
+/// The refusal is a listener that fails on one row of the batch:
+/// `Agent::prompt` fails after part of the batch reached the loop — exactly the
+/// case the landed check exists for.
+#[tokio::test]
+async fn a_refusal_restores_the_rows_this_attempt_never_carried() {
+    let provider = Arc::new(ScriptedProvider::new(test_model()));
+    provider.push_text_turn("first answer");
+    let agent = Agent::new(AgentOptions {
+        initial_state: AgentInitialState {
+            model: Some(test_model()),
+            ..Default::default()
+        },
+        stream_fn: Some(provider.stream_fn()),
+        ..Default::default()
+    });
+    let tmp = tempfile::tempdir().unwrap();
+    let session = AgentSession::new(
+        Arc::new(agent),
+        SessionManager::in_memory(tmp.path()),
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    // Turn one carries the notice, so an identical copy sits in the history.
+    session.queue_next_turn_row(queued_notice_row("dup"));
+    session
+        .prompt("first", PromptOptions::default())
+        .await
+        .unwrap();
+    session.agent().wait_for_idle().await;
+    assert_eq!(queued_markers(&session), Vec::<String>::new());
+
+    // Turn two queues the same templated notice again, behind another row, and
+    // fails once that other row reached the loop.
+    session.queue_next_turn_row(queued_notice_row("b"));
+    session.queue_next_turn_row(queued_notice_row("dup"));
+    let landed_row = session_message_to_loop(&SessionAgentMessage::Custom(queued_notice_row("b")))
+        .expect("the queued row converts to its loop form");
+    let listener = session
+        .agent()
+        .subscribe(move |event, _signal| {
+            let landed_row = landed_row.clone();
+            Box::pin(async move {
+                if matches!(&event, AgentEvent::MessageEnd { message } if message == &landed_row) {
+                    anyhow::bail!("a listener refused the row");
+                }
+                Ok(())
+            })
+        })
+        .await;
+
+    let refusal = session.prompt("second", PromptOptions::default()).await;
+    listener.unsubscribe().await;
+    assert!(
+        refusal.is_err(),
+        "the failing listener must fail the admitted turn"
+    );
+    let history = session.agent().state().await.messages;
+    assert!(
+        history.contains(
+            &session_message_to_loop(&SessionAgentMessage::Custom(queued_notice_row("b")))
+                .expect("the queued row converts to its loop form")
+        ),
+        "the row ahead of the failure reached the loop: {history:?}"
+    );
+    assert_eq!(
+        queued_markers(&session),
+        vec!["dup".to_string()],
+        "the row this attempt never carried goes back to the queue even though an \
+         identical row from an earlier turn is in the history (review #34: the \
+         landed probe read the whole transcript)"
+    );
+
+    // The restored row still reaches the model on the next admitted turn.
+    provider.push_text_turn("third answer");
+    session
+        .prompt("third", PromptOptions::default())
+        .await
+        .unwrap();
+    session.agent().wait_for_idle().await;
+    let delivered = session
+        .agent()
+        .state()
+        .await
+        .messages
+        .iter()
+        .filter(|message| {
+            matches!(message, AgentMessage::Custom(custom)
+                if custom.payload.get("details")
+                    .and_then(|details| details.get("marker"))
+                    .and_then(serde_json::Value::as_str) == Some("dup"))
+        })
+        .count();
+    assert_eq!(
+        delivered, 2,
+        "the restored notice is delivered by the next turn, beside the earlier copy"
+    );
+}

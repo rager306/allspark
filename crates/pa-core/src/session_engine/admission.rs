@@ -63,13 +63,19 @@ impl AgentSession {
         prompt_messages.extend(digest_row.clone());
         prompt_messages.extend(queued_rows.iter().map(|(_, loop_row)| loop_row.clone()));
         prompt_messages.push(custom_row);
+        // What the transcript held BEFORE this attempt: a refusal puts back
+        // only the rows that appeared after it, so a row equal to one an
+        // earlier turn committed is not mistaken for one this attempt landed.
+        let history_len = self.agent.state().await.messages.len();
         if let Err(error) = self
             .agent
             .prompt(pa_agent::agent::AgentPromptInput::Messages(prompt_messages))
             .await
         {
-            self.restore_refused_next_turn_rows(queued_rows).await;
-            self.rearm_refused_digest_row(digest_row.as_ref()).await;
+            self.restore_refused_next_turn_rows(queued_rows, history_len)
+                .await;
+            self.rearm_refused_digest_row(digest_row.as_ref(), history_len)
+                .await;
             return Err(error);
         }
         Ok(PromptOutcome::Prompt)
@@ -182,6 +188,11 @@ impl AgentSession {
                 };
                 prompt_messages.push(user_prompt_message(&row_text, &row.images));
             }
+            // The transcript's length BEFORE this attempt: a refusal puts back
+            // only the rows that appeared after it. Comparing with the whole
+            // history dropped a row equal to one an earlier turn committed —
+            // the notices are templated, so the collision is real (review #34).
+            let history_len = self.agent.state().await.messages.len();
             // A refused admission never ran this turn: put its queued rows
             // back so the next admitted turn still carries them.
             let admitted = if options.return_after_accepted {
@@ -196,8 +207,10 @@ impl AgentSession {
                     .await
             };
             if let Err(error) = admitted {
-                self.restore_refused_next_turn_rows(queued_rows).await;
-                self.rearm_refused_digest_row(digest_row.as_ref()).await;
+                self.restore_refused_next_turn_rows(queued_rows, history_len)
+                    .await;
+                self.rearm_refused_digest_row(digest_row.as_ref(), history_len)
+                    .await;
                 // A concurrent admission won the agent's run slot: this
                 // prompt never started, so its route must not survive. The
                 // unwind only happens while NO run streams (the winner keeps
@@ -302,9 +315,22 @@ impl AgentSession {
     /// The debt is the `digest_pending` flag, so it is re-armed whether or not
     /// this turn got as far as rendering a row; the next admitted turn renders
     /// the digest fresh.
-    async fn rearm_refused_digest_row(&self, row: Option<&pa_agent::types::AgentMessage>) {
+    ///
+    /// `history_len` is the transcript length before the refused attempt: only
+    /// a row past that boundary counts as landed by THIS turn.
+    async fn rearm_refused_digest_row(
+        &self,
+        row: Option<&pa_agent::types::AgentMessage>,
+        history_len: usize,
+    ) {
         let landed = match row {
-            Some(row) => self.agent.state().await.messages.contains(row),
+            Some(row) => self
+                .agent
+                .state()
+                .await
+                .messages
+                .get(history_len..)
+                .is_some_and(|landed| landed.contains(row)),
             None => false,
         };
         if !landed {
@@ -319,12 +345,16 @@ impl AgentSession {
     ///
     /// A row the losing attempt already landed is NOT re-queued: `Agent::prompt`
     /// can fail after part of the batch reached the loop, and a second copy
-    /// would reach the provider twice.
-    async fn restore_refused_next_turn_rows(&self, rows: Vec<NextTurnRow>) {
+    /// would reach the provider twice. Only the transcript PAST `history_len`
+    /// (its length before the attempt) counts as landed: the rows are templated
+    /// notices, so a row equal to one an earlier turn committed would otherwise
+    /// be dropped as if this attempt had carried it (review #34).
+    async fn restore_refused_next_turn_rows(&self, rows: Vec<NextTurnRow>, history_len: usize) {
         if rows.is_empty() {
             return;
         }
         let landed = self.agent.state().await.messages;
+        let landed = landed.get(history_len..).unwrap_or_default();
         let mut restore: Vec<pa_types::session::CustomMessage> = Vec::with_capacity(rows.len());
         for (row, loop_row) in rows {
             if landed.contains(&loop_row) {
