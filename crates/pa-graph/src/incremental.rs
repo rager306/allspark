@@ -435,59 +435,86 @@ impl GraphStore {
         Ok(repaired)
     }
 
-    /// Re-parse one file **in place**: preserve node ids, refresh FTS rows,
-    /// drop symbols that disappeared, and remove stale resolved edges so they
-    /// can be recomputed. Returns the file's call sites and imports.
+    /// Re-parse one file **in place**, as ONE unit of work: preserve node ids,
+    /// refresh FTS rows, drop symbols that disappeared, and remove stale
+    /// resolved edges so they can be recomputed. Returns the file's call sites
+    /// and imports.
+    ///
+    /// The clear steps and the rewrite commit or roll back together, exactly
+    /// like the full indexer's per-file rewrite ([`GraphStore::rewrite_file`]
+    /// under [`GraphStore::with_transaction`]). Without the transaction a
+    /// failure between the clears and the rewrite left the file with no FTS
+    /// rows, no outgoing edges and NO call sites while its old symbol nodes
+    /// stayed — and the pass then aborted, so nothing repaired it (the same
+    /// defect `a_failed_rewrite_leaves_the_previous_revision_intact` covers on
+    /// the full path).
+    ///
+    /// Per file, not per run: the files are independent of each other, and a
+    /// run-wide transaction would hold every file's row locks until the end,
+    /// including across the re-resolution phase that follows. Since this opens
+    /// the transaction itself and SQLite has no nested `BEGIN`, the caller must
+    /// not already be inside one — the classification and closure steps above it
+    /// are not, and re-resolution runs after it.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors, and the file's previous revision stays intact.
     fn reindex_file_in_place(
         &self,
         project: &str,
         t: &Target,
     ) -> Result<(Vec<CallSite>, Vec<ImportDef>)> {
         let extracted = crate::extract::extract(&t.source, t.lang, &t.module);
-        // 1. Drop this file's FTS rows (the table is contentless; nodes stay).
-        self.clear_file_fts(project, &t.rel)?;
-        // 2. Drop resolved edges originating here; they are re-resolved below.
-        //
-        // USES goes too: an unresolved fact belongs to its CALL SITE, and the
-        // call site lives in this file. Without the delete a body-only edit
-        // that swaps `missing_old()` for `missing_new()` kept the old callee's
-        // fact forever — the fresh row conflicts with the surviving self-loop's
-        // UNIQUE (source, target, type) and is silently ignored — so the graph
-        // answered questions about a call site that no longer exists (the
-        // lightweight-graph review, §3.1; reproduced by
-        // `probe_missing_old_replaced_by_missing_new`).
-        self.delete_outgoing_edges(
-            project,
-            &t.rel,
-            &[EdgeType::Calls, EdgeType::Imports, EdgeType::Uses],
-        )?;
-        // The per-site rows go with the edges they describe: a call site that
-        // left the file must not survive as a row the aggregates no longer
-        // back. `edges` deletes by `source`; `call_sites` keys on the file, so
-        // a symbol that disappeared takes its sites with it here.
-        self.clear_call_sites(project, &t.rel)?;
-        // 3. Upsert the File node, symbol nodes, FTS rows, CONTAINS edges.
-        self.write_file(project, &t.rel, &extracted)?;
-        // 4. Remove symbols that no longer exist (cascades their edges).
-        let mut keep: Vec<String> = Vec::with_capacity(extracted.symbols.len() + 1);
-        keep.push(format!("{project}::{}::__file__", t.rel));
-        keep.extend(extracted.symbols.iter().map(|s| s.qualified_name.clone()));
-        self.delete_file_nodes_not_in(project, &t.rel, &keep)?;
-        // 5. Record the (possibly unchanged) surface and the content hash so
-        //    the next run classifies this file correctly.
-        let surface = surface_of(&t.source, t.lang, &t.module);
-        self.put_file_surface(
-            project,
-            &t.rel,
-            &surface.surface_sha,
-            &surface.body_sha,
-            &surface.surface_json,
-        )?;
-        // The hash travels WITH the parsed bytes (see `Target::hash`): the disk
-        // is not read a second time, so the stored hash can never describe a
-        // newer revision than the symbols it indexes.
-        self.put_file_hash(project, &t.rel, &t.hash)?;
-        Ok((extracted.calls, extracted.imports))
+        // The returned call sites leave `with_transaction` only once the commit
+        // succeeded: a rolled-back revision contributes nothing to the caller's
+        // `pending_calls`/`pending_imports`, which are re-resolved afterwards.
+        self.with_transaction(move |store| {
+            // 1. Drop this file's FTS rows (the table is contentless; nodes stay).
+            store.clear_file_fts(project, &t.rel)?;
+            // 2. Drop resolved edges originating here; they are re-resolved below.
+            //
+            // USES goes too: an unresolved fact belongs to its CALL SITE, and the
+            // call site lives in this file. Without the delete a body-only edit
+            // that swaps `missing_old()` for `missing_new()` kept the old callee's
+            // fact forever — the fresh row conflicts with the surviving self-loop's
+            // UNIQUE (source, target, type) and is silently ignored — so the graph
+            // answered questions about a call site that no longer exists (the
+            // lightweight-graph review, §3.1; reproduced by
+            // `probe_missing_old_replaced_by_missing_new`).
+            store.delete_outgoing_edges(
+                project,
+                &t.rel,
+                &[EdgeType::Calls, EdgeType::Imports, EdgeType::Uses],
+            )?;
+            // The per-site rows go with the edges they describe: a call site that
+            // left the file must not survive as a row the aggregates no longer
+            // back. `edges` deletes by `source`; `call_sites` keys on the file, so
+            // a symbol that disappeared takes its sites with it here.
+            store.clear_call_sites(project, &t.rel)?;
+            // 3. Upsert the File node, symbol nodes, FTS rows, CONTAINS edges.
+            store.write_file(project, &t.rel, &extracted)?;
+            // 4. Remove symbols that no longer exist (cascades their edges).
+            let mut keep: Vec<String> = Vec::with_capacity(extracted.symbols.len() + 1);
+            keep.push(format!("{project}::{}::__file__", t.rel));
+            keep.extend(extracted.symbols.iter().map(|s| s.qualified_name.clone()));
+            store.delete_file_nodes_not_in(project, &t.rel, &keep)?;
+            // 5. Record the (possibly unchanged) surface and the content hash so
+            //    the next run classifies this file correctly.
+            let surface = surface_of(&t.source, t.lang, &t.module);
+            store.put_file_surface(
+                project,
+                &t.rel,
+                &surface.surface_sha,
+                &surface.body_sha,
+                &surface.surface_json,
+            )?;
+            // The hash travels WITH the parsed bytes (see `Target::hash`): the disk
+            // is not read a second time, so the stored hash can never describe a
+            // newer revision than the symbols it indexes.
+            store.put_file_hash(project, &t.rel, &t.hash)?;
+            // Moving, not cloning: the closure owns the parse, so the call
+            // sites leave it once, after the commit.
+            Ok((extracted.calls, extracted.imports))
+        })
     }
 }
 
@@ -1137,6 +1164,119 @@ mod tests {
 
     type EdgeFacts = Vec<(String, String, String)>;
     type Occurrences = Vec<(String, usize)>;
+
+    /// `(functions, FTS rows, CONTAINS edges)` for the project: the three
+    /// numbers a re-parse of `lib.rs` moves, so a half-written file shows up as
+    /// a mix of the two revisions.
+    fn file_state(store: &GraphStore) -> (i64, i64, i64) {
+        let conn = store.connection();
+        let functions: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM nodes WHERE project = 'p' AND label = 'Function'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        let fts: i64 = conn
+            .query_row("SELECT count(*) FROM symbols_fts", [], |r| r.get(0))
+            .expect("count");
+        let contains: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM edges WHERE project = 'p' AND edge_type = ?1",
+                [EdgeType::Contains.as_str()],
+                |r| r.get(0),
+            )
+            .expect("count");
+        (functions, fts, contains)
+    }
+
+    /// An incremental re-parse is ONE transaction, exactly like the full
+    /// indexer's per-file rewrite: the clear steps and the rewrite commit
+    /// together, so a failure in the middle leaves the previous revision whole
+    /// instead of a file with no FTS rows and no outgoing edges.
+    ///
+    /// The failure is injected through the schema, not a test hook in the write
+    /// path: a trigger rejects one insert of the NEW revision, i.e. after the
+    /// clear steps already deleted the old file's FTS rows, edges and call
+    /// sites and while the rewrite is half written. A test-only branch in the
+    /// rewriter would prove that the branch works, not that the sequence is one
+    /// unit of work.
+    #[test]
+    fn a_failed_incremental_reparse_leaves_the_previous_revision_intact() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(
+            dir.path(),
+            "lib.rs",
+            "pub fn parse_config(path: &str) -> u32 { load(path) }\npub fn load(path: &str) -> u32 { path.len() as u32 }\n",
+        );
+        let mut store = GraphStore::open_in_memory().expect("store");
+        index(&mut store, dir.path());
+        assert_eq!(
+            file_state(&store),
+            (2, 3, 2),
+            "fixture must be indexed whole: two functions, FTS rows for the file \
+             and both symbols, one CONTAINS edge each"
+        );
+        let before = store
+            .file_hash("p", "lib.rs")
+            .expect("hash")
+            .expect("hash row");
+
+        // The new revision is LONGER than the old one, so a partially written
+        // file cannot coincidentally match the old revision's counts.
+        write(
+            dir.path(),
+            "lib.rs",
+            "pub fn renamed_one() {}\npub fn renamed_two() {}\npub fn renamed_three() {}\npub fn renamed_four() {}\npub fn renamed_five() {}\n",
+        );
+        store
+            .connection()
+            .execute_batch(
+                "CREATE TRIGGER refuse_the_last_symbol BEFORE INSERT ON nodes
+                 WHEN NEW.name = 'renamed_five'
+                 BEGIN SELECT RAISE(ABORT, 'injected: the re-parse fails mid-file'); END",
+            )
+            .expect("trigger");
+
+        let failed = store.reindex_incremental(dir.path(), &IndexOptions::new("p"));
+        assert!(
+            failed.is_err(),
+            "the injected failure must abort the reindex, or the test proves nothing: {failed:?}"
+        );
+
+        assert_eq!(
+            file_state(&store),
+            (2, 3, 2),
+            "the file is half re-indexed: its previous revision lost its FTS rows \
+             and CONTAINS edges (functions, FTS rows, CONTAINS edges) must be the \
+             old revision whole"
+        );
+        assert!(
+            store
+                .node_by_qn("p", "lib::parse_config")
+                .expect("qn")
+                .is_some(),
+            "the old symbol must still be there"
+        );
+        assert!(
+            store
+                .node_by_qn("p", "lib::renamed_one")
+                .expect("qn")
+                .is_none(),
+            "a half-written revision leaked into the graph"
+        );
+        // The hash row is the last write of the sequence, so a rollback has to
+        // take it back too: a stored NEW hash over the OLD nodes makes the next
+        // run skip the file as unchanged and the stub survives forever.
+        let stored = store
+            .file_hash("p", "lib.rs")
+            .expect("hash")
+            .expect("hash row");
+        assert_eq!(
+            stored.sha256, before.sha256,
+            "the stored hash must still describe the revision the nodes came from"
+        );
+    }
 
     /// §4.3 (audit): the stored hash must be the one that travelled WITH the
     /// parsed bytes. The old code re-read the file at write time, so a change
