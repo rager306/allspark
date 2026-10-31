@@ -157,10 +157,30 @@ fn legacy_read_session_info(path: &Path) -> Option<SessionInfo> {
     })
 }
 
-fn test_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("session-info-fold-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&dir).unwrap();
-    dir
+/// A scratch directory that deletes itself.
+///
+/// `tempfile::TempDir` owns the cleanup; the `Deref<Target = Path>` lets every
+/// call site keep treating it as a path (`&dir`, `dir.join(..)`). Before this
+/// the suite created a `session-info-fold-<uuid>` directory per test and never
+/// removed it: 239 of them had accumulated in `$TMPDIR` over five days.
+struct TestDir(tempfile::TempDir);
+
+impl std::ops::Deref for TestDir {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        self.0.path()
+    }
+}
+
+impl AsRef<Path> for TestDir {
+    fn as_ref(&self) -> &Path {
+        self.0.path()
+    }
+}
+
+fn test_dir() -> TestDir {
+    TestDir(tempfile::TempDir::new().expect("scratch dir"))
 }
 
 fn append_rows(path: &Path, rows: &[Value]) {
