@@ -64,15 +64,15 @@ pub(crate) async fn build_engine(
 }
 
 /// The RPC embedding's missing family surface (review #31). The static core
-/// layer advertises `agent_message.send` and `agent_observe.*` in every
-/// session, but the in-process RPC transport installs no family host
-/// handlers — no parent, no siblings, no children, and no daemon link — so
-/// the `agent-message`/`agent-observe` skills never register and their
-/// kernel host requests are absent. The dynamic session-role block already
-/// names the other daemonless gaps (`rlm.spawn`, heartbeats); without this
-/// line nothing tells the model the family surface is gone too, and it
-/// plans coordination it cannot run.
-const RPC_NO_FAMILY_NOTICE: &str = "## Session limits\n\nThis RPC session has no agent family: no parent, no siblings, no children, and no daemon link. `agent_message.send`, `agent_observe.*`, and the `agent-message`/`agent-observe` skills are not installed here, even though the harness description lists them. Do not plan multi-agent coordination in this session — it is single-session work.";
+/// layer states the surface unconditionally in a session that has an agent
+/// family, and this transport installs no family host handlers — no parent,
+/// no siblings, no children, and no daemon link — so the
+/// `agent-message`/`agent-observe` skills never register and their kernel
+/// host requests are absent. The dynamic session-role block already names
+/// the other daemonless gaps (`rlm.spawn`, heartbeats); this line states the
+/// family gap for the session at hand, so the model does not plan
+/// coordination it cannot run.
+const RPC_NO_FAMILY_NOTICE: &str = "## Session limits\n\nThis RPC session has no agent family: no parent, no siblings, no children, and no daemon link. `agent_message.send`, `agent_observe.*`, and the `agent-message`/`agent-observe` skills are not installed here. Do not plan multi-agent coordination in this session — it is single-session work.";
 
 /// The switchable provider target the session's stream reads per call
 /// (shared with the RPC mode, whose picker model switches swap it live).
