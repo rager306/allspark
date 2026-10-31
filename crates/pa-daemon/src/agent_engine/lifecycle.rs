@@ -994,8 +994,12 @@ impl AgentSessionEngine {
     }
 
     async fn build_session(&self, model: &Model) -> anyhow::Result<CoreSessionEngine> {
-        let agent_model =
-            json_round_trip(model).ok_or_else(|| anyhow::anyhow!("model conversion failed"))?;
+        // The loop's own projection, never a JSON round-trip: the wire shape
+        // spells `baseUrl` and the loop's descriptor spells `base_url`, so a
+        // round-trip silently defaults the field and the session serves an
+        // empty base URL (the resolved provider endpoint is lost between the
+        // registry and the request).
+        let agent_model = pa_core::session_engine::provider_adapter::to_agent_model(model);
         // The live queue-delivery modes: read under a scoped lock (a std
         // guard must never ride the awaits below).
         let (steering_mode, follow_up_mode) = {

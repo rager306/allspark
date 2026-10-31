@@ -68,6 +68,52 @@ fn write_thinking_pair_models_json(agent_dir: &std::path::Path, base_url: &str) 
     .unwrap();
 }
 
+/// The build's model projection keeps the resolved `base_url`: the daemon
+/// worker used to hand the loop a JSON round-trip of `pa_types::ai::Model`,
+/// whose `baseUrl` key the loop's `snake_case` model never spells, so every
+/// daemon-built session served an empty base URL and a custom provider's
+/// endpoint was lost between the registry and the request.
+#[test]
+fn the_built_session_serves_the_resolved_base_url() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let agent_dir = dir.path().join("agent");
+    write_custom_provider_models_json(&agent_dir, "http://127.0.0.1:9");
+    let engine = AgentSessionEngine::new(AgentEngineConfig {
+        cwd: dir.path().to_path_buf(),
+        agent_dir,
+        provider: Some("battery".to_string()),
+        model: Some("mock-1".to_string()),
+        api_key: None,
+        thinking: None,
+        session_dir: None,
+        session_file: None,
+        faux_script: None,
+        supervisor_link: None,
+        telemetry_disabled: Some(true),
+        cron_store: None,
+        queued_steering_probe: None,
+        admission: crate::agent_engine::provider_admission::AdmissionClient::Disabled,
+    })
+    .unwrap();
+    let model = engine.resolve_model().expect("resolves mock-1");
+    assert_eq!(model.base_url, "http://127.0.0.1:9");
+    engine
+        .ensure_core_session(&model)
+        .expect("the session builds");
+    let built_base_url = {
+        let session = engine.session.blocking_lock();
+        let core = session.as_deref().expect("the built session");
+        let state = engine
+            .runtime
+            .block_on(async { core.session.agent().state().await });
+        state.model.base_url
+    };
+    assert_eq!(
+        built_base_url, "http://127.0.0.1:9",
+        "the built loop model kept the resolved base URL"
+    );
+}
+
 #[test]
 fn create_config_flags_reach_the_engine_model_resolution() {
     let dir = tempfile::TempDir::new().unwrap();
