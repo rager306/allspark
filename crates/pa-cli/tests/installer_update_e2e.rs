@@ -87,7 +87,7 @@ fn serve_at(path: &'static str, body: &'static str) -> String {
 /// One sandbox: a HOME with the session store the update must preserve,
 /// and the install prefix the launcher lands under.
 struct Sandbox {
-    root: PathBuf,
+    root: tempfile::TempDir,
     session_file: PathBuf,
     session_bytes: Vec<u8>,
     prefix: PathBuf,
@@ -95,20 +95,22 @@ struct Sandbox {
 
 impl Sandbox {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "pa-update-e2e-{}-{}",
-            std::process::id(),
-            uuid_probe()
-        ));
-        std::fs::create_dir_all(&root).expect("sandbox root");
-        let home = root.join("home");
+        // A `TempDir` owns the removal, so a run that fails mid-test (or panics)
+        // still leaves the disk as it found it. The sandbox is ~312 MB, and a bare
+        // `temp_dir()` join left one behind per run: nine had accumulated before
+        // this was noticed, from runs whose processes were long gone.
+        let root = tempfile::Builder::new()
+            .prefix("pa-update-e2e-")
+            .tempdir()
+            .expect("sandbox root");
+        let home = root.path().join("home");
         let session_file = home.join(".prime/agent/sessions/session.jsonl");
         std::fs::create_dir_all(session_file.parent().expect("session dir")).expect("session dir");
         let session_bytes =
             b"{\"type\":\"user_message\",\"content\":\"the session the update must preserve\"}\n"
                 .to_vec();
         std::fs::write(&session_file, &session_bytes).expect("write session file");
-        let prefix = root.join("prefix/.local");
+        let prefix = root.path().join("prefix/.local");
         std::fs::create_dir_all(&prefix).expect("prefix");
         Self {
             root,
@@ -146,7 +148,7 @@ fn prime_agent(args: &[&str], sandbox: &Sandbox) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
     command
         .args(args)
-        .env("HOME", sandbox.root.join("home"))
+        .env("HOME", sandbox.root.path().join("home"))
         .env_remove(ENV_INSTALLER_URL)
         .env(ENV_PREFIX, &sandbox.prefix)
         // The mock installer is served over plain loopback HTTP: the funnel's
@@ -156,7 +158,7 @@ fn prime_agent(args: &[&str], sandbox: &Sandbox) -> Command {
         .env("PRIME_AGENT_ALLOW_HTTP", "1")
         .env(
             "PRIME_AGENT_CODING_AGENT_DIR",
-            sandbox.root.join("home/.prime/agent"),
+            sandbox.root.path().join("home/.prime/agent"),
         );
     command
 }
@@ -178,7 +180,7 @@ fn update_runs_the_downloaded_installer_and_preserves_the_session_store() {
         "the success line names the new build:\n{stdout}"
     );
     assert!(
-        stdout.contains("restart prime-agent to run the new build"),
+        stdout.contains("restart allspark to run the new build"),
         "the success line carries the restart hint:\n{stdout}"
     );
     let launcher = sandbox.prefix.join("bin/prime-agent");
@@ -273,7 +275,7 @@ fn a_failing_installer_keeps_the_previous_install() {
 /// never touches the network, the machine's daemons, or a global npm
 /// package.
 fn installer_env(command: &mut Command, sandbox: &Sandbox) {
-    let shims = sandbox.root.join("shims");
+    let shims = sandbox.root.path().join("shims");
     std::fs::create_dir_all(&shims).expect("shims dir");
     let python = [
         "/usr/bin/python3",
@@ -297,12 +299,12 @@ fn installer_env(command: &mut Command, sandbox: &Sandbox) {
     )
     .expect("npm shim");
     make_executable(&npm);
-    let tmp = sandbox.root.join("tmp");
+    let tmp = sandbox.root.path().join("tmp");
     std::fs::create_dir_all(&tmp).expect("tmp dir");
     command
         .env_clear()
         .env("PATH", format!("{}:/usr/bin:/bin", shims.display()))
-        .env("HOME", sandbox.root.join("home"))
+        .env("HOME", sandbox.root.path().join("home"))
         .env("TMPDIR", tmp)
         .env(ENV_PREFIX, &sandbox.prefix)
         .current_dir(&sandbox.root);
@@ -321,7 +323,7 @@ fn copy_installed_build(destination: &Path) {
 
 /// A release archive whose payload is a script answering `version`.
 fn fake_release(sandbox: &Sandbox, version: &str) -> PathBuf {
-    let payload = sandbox.root.join(format!("payload-{version}"));
+    let payload = sandbox.root.path().join(format!("payload-{version}"));
     std::fs::create_dir_all(&payload).expect("payload dir");
     let binary = payload.join("prime-agent");
     std::fs::write(&binary, format!("#!/bin/sh\necho {version}\n")).expect("payload binary");
@@ -329,6 +331,7 @@ fn fake_release(sandbox: &Sandbox, version: &str) -> PathBuf {
     let platform = pa_core::update::install::current_platform_alias();
     let archive = sandbox
         .root
+        .path()
         .join(format!("prime-agent-{version}-{platform}.tar.gz"));
     let status = Command::new("tar")
         .arg("-czf")
@@ -485,7 +488,7 @@ fn rollback_check_answers_synchronously_without_touching_the_payload() {
         "the source names the kept generation: {source}"
     );
     assert_eq!(live_version(&sandbox), "1.0.0", "the check touched nothing");
-    let leftovers: Vec<String> = std::fs::read_dir(sandbox.root.join("tmp"))
+    let leftovers: Vec<String> = std::fs::read_dir(sandbox.root.path().join("tmp"))
         .expect("tmp dir")
         .filter_map(std::result::Result::ok)
         .filter_map(|entry| entry.file_name().into_string().ok())
@@ -515,13 +518,14 @@ fn update_archive_refuses_a_misnamed_payload_version() {
     )
     .expect("install marker");
     let platform = pa_core::update::install::current_platform_alias();
-    let payload_dir = sandbox.root.join("payload-misnamed");
+    let payload_dir = sandbox.root.path().join("payload-misnamed");
     std::fs::create_dir_all(&payload_dir).expect("payload dir");
     let payload = payload_dir.join("prime-agent");
     std::fs::write(&payload, "#!/bin/sh\necho 0.9.7\n").expect("payload binary");
     make_executable(&payload);
     let archive = sandbox
         .root
+        .path()
         .join(format!("prime-agent-9.9.9-{platform}.tar.gz"));
     let status = Command::new("tar")
         .arg("-czf")
@@ -714,7 +718,10 @@ fn archive_check_answers_synchronously_without_publishing() {
 /// A release archive whose payload answers `reported` under the archive
 /// name `named` (the mis-naming fixture for the check-mode test).
 fn fake_release_payload(sandbox: &Sandbox, named: &str, reported: &str) -> PathBuf {
-    let payload = sandbox.root.join(format!("payload-mismatch-{named}"));
+    let payload = sandbox
+        .root
+        .path()
+        .join(format!("payload-mismatch-{named}"));
     std::fs::create_dir_all(&payload).expect("payload dir");
     let binary = payload.join("prime-agent");
     std::fs::write(&binary, format!("#!/bin/sh\necho {reported}\n")).expect("payload binary");
@@ -722,6 +729,7 @@ fn fake_release_payload(sandbox: &Sandbox, named: &str, reported: &str) -> PathB
     let platform = pa_core::update::install::current_platform_alias();
     let archive = sandbox
         .root
+        .path()
         .join(format!("prime-agent-{named}-{platform}.tar.gz"));
     let status = Command::new("tar")
         .arg("-czf")
