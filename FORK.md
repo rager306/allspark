@@ -11,15 +11,15 @@ Rust under `src/`, recursively, tests inside `src/` included:
 
 | crate | lines | purpose |
 | --- | ---: | --- |
-| `pa-graph` | 30,969 | on-disk SQLite code graph: FTS5 search, call/import edges, coverage |
-| `pa-edit` | 25,444 | the `edit` engine: replace / patch / apply_patch / hashline / sloppy |
-| `pa-lsp` | 9,024 | native LSP tool: symbol navigation, diagnostics, symbol-level edits |
+| `pa-graph` | 35,793 | on-disk SQLite code graph: FTS5 search, call/import edges, coverage |
+| `pa-edit` | 27,095 | the `edit` engine: replace / patch / apply_patch / hashline / sloppy |
+| `pa-lsp` | 9,854 | native LSP tool: symbol navigation, diagnostics, symbol-level edits |
 | `pa-ast` | 5,798 | tree-sitter + ast-grep parsing, used by `pa-graph`, `pa-lsp`, `pa-edit` |
-| `pa-mem` | 5,661 | RAM layout primitives ported safely from pogocache (sharded maps, snapshots) |
-| `pa-jev` | 1,325 | typed-judgment wire types and client (`choice` / `score` / `noul`) |
-| `pa-diff` | 1,110 | Myers line/word diff, dependency-free; `pa-edit` renders previews with it |
+| `pa-mem` | 5,809 | RAM layout primitives ported safely from pogocache (sharded maps, snapshots) |
+| `pa-jev` | 1,608 | typed-judgment wire types and client (`choice` / `score` / `noul`) |
+| `pa-diff` | 1,220 | Myers line/word diff, dependency-free; `pa-edit` renders previews with it |
 
-79,331 lines in total. Beyond these crates the fork adds providers, `debugLog`, tool-surface
+87,177 lines in total. Beyond these crates the fork adds providers, `debugLog`, tool-surface
 profiles and rate-limit-aware admission; `readme-fork.md` covers that.
 
 ## Where the work lives

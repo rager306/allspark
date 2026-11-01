@@ -7,8 +7,11 @@ Every contributor (human or agent) must read this before working on this repo.
 
 - This tree is the **allspark fork** of `PrimeIntellect-ai/prime-agent`; root `README.md` is
   **upstream's text** and does not describe the fork — read `FORK.md` first.
-- Seven fork-only crates, all `// FORK-ONLY`, never pushed upstream: `pa-graph` 30,969 lines,
-  `pa-edit` 25,444, `pa-lsp` 9,024, `pa-ast` 5,798, `pa-mem` 5,661, `pa-jev` 1,325, `pa-diff` 1,110.
+- Seven fork-only crates, all `// FORK-ONLY`, never pushed upstream. Current `src/**/*.rs` sizes
+  (`find crates/<name>/src -name '*.rs' | xargs cat | wc -l`): `pa-graph` 35,793 lines,
+  `pa-edit` 27,095, `pa-lsp` 9,854, `pa-mem` 5,809, `pa-ast` 5,798, `pa-jev` 1,608,
+  `pa-diff` 1,220. Recount before quoting: these drift with every merge, and a stale number in
+  this line has already been re-copied into two other documents.
 - Docs: `FORK.md` (map) → `readme-fork.md` (deep) → `CHANGELOG-FORK.md` (releases);
   `docs/fork-identity.md` (isolation), `.research/INDEX.md` (research).
 
