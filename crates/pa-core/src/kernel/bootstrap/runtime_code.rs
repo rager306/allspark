@@ -53,7 +53,46 @@ const RLM_BOOTSTRAP_RUNTIME_TAIL_CODE: &str = r#"
 except Exception as _prime_agent_rlm_error:
     _PRIME_AGENT_RLM_IMPORT_ERROR = str(_prime_agent_rlm_error)
 
+    class _PrimeAgentMissingRlmMember:
+        """A non-callable `rlm` member (`harness`, `factory`) in a degraded kernel.
+
+        Reaching any attribute of one (`rlm.harness.create_memory`) raises the
+        uninstalled-runtime diagnostic, so a contract name that exists in a
+        healthy kernel does not degrade to an AttributeError that reads as a
+        bug in the agent's own code.
+        """
+
+        def __init__(self, owner, name):
+            self._prime_agent_owner = owner
+            self._prime_agent_name = name
+
+        def _raise_missing(self):
+            self._prime_agent_owner._raise_missing()
+
+        def __getattr__(self, name):
+            if name.startswith("__") and name.endswith("__"):
+                # Reflection machinery probes dunders on every value it
+                # formats; answering those with the runtime diagnostic would
+                # break the printer instead of the cell.
+                raise AttributeError(name)
+            self._raise_missing()
+
+        def __call__(self, *args, **kwargs):
+            self._raise_missing()
+
+        def __repr__(self):
+            return f"<prime-agent-runtime not installed: rlm.{self._prime_agent_name}>"
+
     class _PrimeAgentMissingRlm:
+        """The whole `rlm` contract (AGENTS.md "Surface contract") in a kernel
+        without prime-agent-runtime: every member names the missing runtime
+        instead of raising AttributeError.
+        """
+
+        def __init__(self):
+            self.harness = _PrimeAgentMissingRlmMember(self, "harness")
+            self.factory = _PrimeAgentMissingRlmMember(self, "factory")
+
         def _raise_missing(self):
             raise RuntimeError(
                 "prime-agent-runtime is not installed in this kernel. "
@@ -68,6 +107,9 @@ except Exception as _prime_agent_rlm_error:
         async def find_models(self, query="", limit=8):
             self._raise_missing()
 
+        async def collect(self, targets=None, *, timeout_ms=0):
+            self._raise_missing()
+
         async def create_session(self, prompt, **kwargs):
             self._raise_missing()
 
@@ -75,6 +117,18 @@ except Exception as _prime_agent_rlm_error:
             self._raise_missing()
 
         async def delete_subagent(self, target):
+            self._raise_missing()
+
+        async def progress_note(self, message):
+            self._raise_missing()
+
+        async def rename(self, new_name, *, session_id=None):
+            self._raise_missing()
+
+        def get_harness_state(self, state_dir=None, *, global_=False, **kwargs):
+            self._raise_missing()
+
+        def persistent_shells(self):
             self._raise_missing()
 
     rlm = _PrimeAgentMissingRlm()
@@ -196,6 +250,7 @@ if _PRIME_AGENT_SKILL_IMPORT_ERRORS:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
     use std::path::PathBuf;
 
     #[test]
@@ -203,6 +258,208 @@ mod tests {
         let code = build_rlm_bootstrap_code(&[], false);
         assert!(code.contains("import rlm as _prime_agent_rlm_module"));
         assert!(!code.contains("_PrimeAgentUnavailableSkill"));
+    }
+
+    /// Marks the probe's JSON report on the probe process's stdout.
+    const DEGRADED_PROBE_MARKER: &str = "__PRIME_AGENT_DEGRADED_PROBE__";
+
+    /// Every reachable `rlm` member a cell can touch in a degraded kernel:
+    /// `(name, is async call, the expression a cell would write)`.
+    const DEGRADED_PROBE_ENTRIES: [(&str, bool, &str); 14] = [
+        ("spawn", true, r#"rlm.spawn("task", name="child")"#),
+        ("find_models", true, "rlm.find_models()"),
+        ("collect", true, "rlm.collect()"),
+        ("create_session", true, r#"rlm.create_session("task")"#),
+        ("list_subagents", true, "rlm.list_subagents()"),
+        ("delete_subagent", true, r#"rlm.delete_subagent("child")"#),
+        ("progress_note", true, r#"rlm.progress_note("note")"#),
+        ("rename", true, r#"rlm.rename("renamed")"#),
+        ("get_harness_state", false, "rlm.get_harness_state()"),
+        ("persistent_shells", false, "rlm.persistent_shells()"),
+        (
+            "harness.create_memory",
+            false,
+            r#"rlm.harness.create_memory("title", "body")"#,
+        ),
+        ("factory.run", false, r#"rlm.factory.run("review-sweep")"#),
+        ("factory.help", false, "rlm.factory.help()"),
+        ("bash", false, r#"bash("echo hi")"#),
+    ];
+
+    /// The probe run inside the degraded kernel: it touches every entry and
+    /// reports `{name: [exception type, message]}`.
+    const DEGRADED_PROBE_BODY: &str = r#"
+import asyncio as _prime_agent_probe_asyncio
+import json as _prime_agent_probe_json
+
+
+async def _prime_agent_probe_one(awaits, expr):
+    value = eval(expr, globals())
+    if awaits:
+        await value
+
+
+async def _prime_agent_probe_all():
+    outcomes = {}
+    for name, awaits, expr in _PROBE_ENTRIES:
+        try:
+            await _prime_agent_probe_one(awaits, expr)
+        except BaseException as error:
+            outcomes[name] = [type(error).__name__, str(error)]
+        else:
+            outcomes[name] = ["NO_ERROR", ""]
+    # A member proxy must stay quiet under reflection: a repr or a `hasattr`
+    # that raises the diagnostic breaks the tool that was merely looking at
+    # the value.
+    try:
+        assert repr(rlm.harness) == "<prime-agent-runtime not installed: rlm.harness>"
+        assert not hasattr(rlm.harness, "__iter__")
+    except BaseException as error:
+        outcomes["__reflection__"] = [type(error).__name__, str(error)]
+    else:
+        outcomes["__reflection__"] = ["OK", ""]
+    print(_PROBE_MARKER + _prime_agent_probe_json.dumps(outcomes))
+
+
+_prime_agent_probe_asyncio.run(_prime_agent_probe_all())
+"#;
+
+    /// Run the real bootstrap with `rlm` unimportable and report, per contract
+    /// member, the exception a cell sees. `-E -S` keep the probe honest: no
+    /// `PYTHONPATH` and no site-packages, so no `rlm` installed on this machine
+    /// can rescue the import the bootstrap is written to survive.
+    fn probe_degraded_kernel(python: &str) -> serde_json::Map<String, serde_json::Value> {
+        // Python literals, not JSON: the bootstrap cell's globals carry no
+        // `json` import this early, and `True`/`False` keep the table readable.
+        let mut entries = String::new();
+        for (name, awaits, expr) in DEGRADED_PROBE_ENTRIES {
+            let awaits = if awaits { "True" } else { "False" };
+            let _ = writeln!(entries, "({name:?}, {awaits}, {expr:?}),");
+        }
+        let script = format!(
+            "{bootstrap}\n\n_PROBE_MARKER = {marker:?}\n_PROBE_ENTRIES = [\n{entries}]\n{DEGRADED_PROBE_BODY}",
+            bootstrap = build_rlm_bootstrap_code(&[], false),
+            marker = DEGRADED_PROBE_MARKER,
+        );
+        let output = std::process::Command::new(python)
+            .arg("-E")
+            .arg("-S")
+            .arg("-c")
+            .arg(&script)
+            .output()
+            .expect("run the degraded-kernel probe");
+        assert!(
+            output.status.success(),
+            "the probe must survive the degraded bootstrap: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let at = stdout
+            .find(DEGRADED_PROBE_MARKER)
+            .unwrap_or_else(|| panic!("no probe report in {stdout}"));
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
+            stdout[at + DEGRADED_PROBE_MARKER.len()..].trim(),
+        )
+        .expect("the probe report is JSON")
+    }
+
+    /// Every name the surface contract promises on `rlm` names the missing
+    /// runtime in a degraded kernel. The assertion is on the exception type:
+    /// an `AttributeError` here is the defect — it reads as a bug in the
+    /// agent's own code, so the agent hunts its cell instead of its kernel.
+    #[test]
+    fn degraded_kernel_names_the_missing_runtime_for_every_contract_member() {
+        let Some(python) = ["python3", "python"].into_iter().find(|python| {
+            std::process::Command::new(python)
+                .arg("-c")
+                .arg("")
+                .output()
+                .is_ok()
+        }) else {
+            eprintln!("no python on PATH; skipping the degraded-kernel probe");
+            return;
+        };
+        let report = probe_degraded_kernel(python);
+        for (name, _, _) in DEGRADED_PROBE_ENTRIES {
+            let outcome = report
+                .get(name)
+                .unwrap_or_else(|| panic!("the probe reported nothing for {name}: {report:?}"));
+            let reported = outcome.as_array().expect("a [type, message] pair");
+            let kind = reported[0].as_str().unwrap_or_default();
+            let message = reported[1].as_str().unwrap_or_default();
+            assert_eq!(
+                kind, "RuntimeError",
+                "rlm.{name} must name the missing runtime: {message}"
+            );
+            assert!(
+                message.contains("prime-agent-runtime is not installed"),
+                "rlm.{name} must say what is missing: {message}"
+            );
+        }
+        let reflection = &report["__reflection__"];
+        assert_eq!(
+            reflection[0], "OK",
+            "rlm.harness must survive repr() and hasattr() probing: {reflection:?}"
+        );
+    }
+
+    /// The stub stands in for the runtime's `_RLMNamespace`, so every member
+    /// that namespace exposes must appear in it. `collect`, `progress_note`,
+    /// `rename`, `get_harness_state`, `harness`, `factory`, and
+    /// `persistent_shells` went missing exactly this way, and a member added to
+    /// the runtime later would go missing the same way without this check.
+    #[test]
+    fn degraded_stub_covers_the_runtime_namespace() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../prime-agent-runtime/src/rlm/__init__.py");
+        let Ok(source) = std::fs::read_to_string(&path) else {
+            eprintln!("no runtime source at {}; skipping", path.display());
+            return;
+        };
+        let class_at = source
+            .find("class _RLMNamespace:")
+            .expect("the runtime namespace");
+        let body = &source[class_at..];
+        let body = &body[..body
+            .find("\nrlm = _RLMNamespace()")
+            .expect("the namespace instance")];
+        let mut members: Vec<&str> = Vec::new();
+        for line in body.lines() {
+            let Some(rest) = line.strip_prefix("    ") else {
+                continue;
+            };
+            if rest.starts_with(' ') || rest.starts_with('#') {
+                continue;
+            }
+            let name = rest.split_once("def ").map_or_else(
+                || rest.split_once(" = ").map(|(name, _)| name),
+                |(_, signature)| signature.split('(').next(),
+            );
+            let Some(name) = name.map(str::trim) else {
+                continue;
+            };
+            if name.starts_with("__") || name == "self" {
+                continue;
+            }
+            members.push(name);
+        }
+        assert!(
+            members.len() >= 10,
+            "the namespace parse must find the real API: {members:?}"
+        );
+        let code = build_rlm_bootstrap_code(&[], false);
+        let uncovered: Vec<&&str> = members
+            .iter()
+            .filter(|member| {
+                !code.contains(&format!("def {member}("))
+                    && !code.contains(&format!("self.{member} = "))
+            })
+            .collect();
+        assert!(
+            uncovered.is_empty(),
+            "the degraded stub must cover these rlm members; a name the runtime \
+             exposes cannot degrade to AttributeError: {uncovered:?}"
+        );
     }
 
     #[test]
