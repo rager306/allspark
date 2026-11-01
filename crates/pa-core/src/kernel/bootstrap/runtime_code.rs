@@ -132,6 +132,10 @@ except Exception as _prime_agent_rlm_error:
             self._raise_missing()
 
     rlm = _PrimeAgentMissingRlm()
+    # `mcp` is bound inside the try, so a degraded kernel must bind it too:
+    # otherwise `mcp.list_tools(...)` raises NameError, which names neither the
+    # missing runtime nor what to do about it.
+    mcp = _PrimeAgentMissingRlmMember(rlm, "mcp")
 
     def bash(command, yield_after=None, persistent=False):
         rlm._raise_missing()
@@ -265,7 +269,7 @@ mod tests {
 
     /// Every reachable `rlm` member a cell can touch in a degraded kernel:
     /// `(name, is async call, the expression a cell would write)`.
-    const DEGRADED_PROBE_ENTRIES: [(&str, bool, &str); 14] = [
+    const DEGRADED_PROBE_ENTRIES: [(&str, bool, &str); 15] = [
         ("spawn", true, r#"rlm.spawn("task", name="child")"#),
         ("find_models", true, "rlm.find_models()"),
         ("collect", true, "rlm.collect()"),
@@ -283,6 +287,7 @@ mod tests {
         ),
         ("factory.run", false, r#"rlm.factory.run("review-sweep")"#),
         ("factory.help", false, "rlm.factory.help()"),
+        ("mcp.list_tools", false, r#"mcp.list_tools("server")"#),
         ("bash", false, r#"bash("echo hi")"#),
     ];
 
