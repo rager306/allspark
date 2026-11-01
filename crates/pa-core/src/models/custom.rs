@@ -278,9 +278,16 @@ fn compat_from_value(value: Option<&serde_json::Value>) -> Option<ModelCompat> {
 }
 
 /// Compat merge: override fields win; nested routing objects merge.
+///
+/// An absent override answers the base unchanged (TS `mergeCompat`:
+/// `if (!overrideCompat) return baseCompat`). Without that arm every merge
+/// against a model that had no `compat` of its own erased the base — a
+/// `modelOverrides` entry retuning `maxTokens` stripped the compat block.
 #[must_use]
 pub fn merge_compat(base: Option<&ModelCompat>, over: Option<ModelCompat>) -> Option<ModelCompat> {
-    let over = over?;
+    let Some(over) = over else {
+        return base.cloned();
+    };
     let mut merged = base.map(|compat| compat.raw.clone()).unwrap_or_default();
     for (key, value) in over.raw {
         // Routing sub-objects merge instead of replacing.
@@ -348,12 +355,12 @@ pub fn apply_model_override(model: &Model, over: &ModelOverride) -> Model {
             cache_write: JsNumber::from(cost.cache_write.unwrap_or(base.cache_write.0)),
         };
     }
-    if over.compat.is_some() || result.compat.is_some() {
-        result.compat = merge_compat(
-            result.compat.as_ref(),
-            compat_from_value(over.compat.as_ref()),
-        );
-    }
+    // TS `mergeCompat` answers the BASE when the override carries no `compat`, so a
+    // `modelOverrides` entry that only retunes `maxTokens` keeps the model's compat.
+    result.compat = merge_compat(
+        result.compat.as_ref(),
+        compat_from_value(over.compat.as_ref()),
+    );
     if let Some(headers) = &over.headers {
         let mut merged = result.headers.clone().unwrap_or_default();
         for (key, value) in headers {
@@ -406,6 +413,9 @@ pub fn load_custom_models(
             continue;
         }
         let defaults = built_in_defaults(provider_name);
+        // TS `loadCustomModels`: `mergeCompat(providerConfig.compat, modelDef.compat)`
+        // — the model's keys win, the provider's block is the base.
+        let provider_compat = compat_from_value(provider_config.compat.as_ref());
         for model_def in model_defs {
             let api = model_def
                 .api
@@ -419,7 +429,10 @@ pub fn load_custom_models(
                 .or_else(|| provider_config.base_url.clone())
                 .or_else(|| defaults.as_ref().map(|(_, url)| url.clone()));
             let Some(base_url) = base_url else { continue };
-            let compat = merge_compat(None, compat_from_value(provider_config.compat.as_ref()));
+            let compat = merge_compat(
+                provider_compat.as_ref(),
+                compat_from_value(model_def.compat.as_ref()),
+            );
             result.models.push(Model {
                 id: model_def.id.clone(),
                 name: model_def
@@ -599,6 +612,95 @@ mod tests {
         // An override that does not touch maxTokens leaves the flag alone.
         let untouched = apply_model_override(&base, &ModelOverride::default());
         assert!(!untouched.max_tokens_explicit);
+    }
+
+    /// TS `loadCustomModels` (`model-registry.ts:801`): the model's own `compat`
+    /// merges OVER the provider's, so a `compat` written on a MODEL definition
+    /// reaches the model. The definition field was parsed and then dropped — only
+    /// the provider-level object was read — so a per-model override configured
+    /// nothing and every provider sharing that block inherited the provider's
+    /// settings alone.
+    #[test]
+    fn a_model_definition_compat_merges_over_the_provider_compat() {
+        let result = load_custom_models(
+            r#"{ "providers": { "battery": {
+                "baseUrl": "http://127.0.0.1:9",
+                "apiKey": "sk-local",
+                "api": "openai-completions",
+                "compat": {
+                    "supportsStore": false,
+                    "maxTokensField": "max_tokens",
+                    "openRouterRouting": { "only": ["a"] }
+                },
+                "models": [
+                    { "id": "plain" },
+                    { "id": "tuned", "compat": {
+                        "maxTokensField": "max_completion_tokens",
+                        "openRouterRouting": { "order": ["b"] }
+                    } }
+                ]
+            } } }"#,
+            &|_| false,
+            &|_| None,
+        );
+        assert!(result.error.is_none(), "{:?}", result.error);
+        let compat_of = |id: &str| {
+            let model = result
+                .models
+                .iter()
+                .find(|model| model.id == id)
+                .expect("the definition produced a model");
+            serde_json::to_value(model.compat.as_ref().expect("compat reaches the model"))
+                .expect("compat serializes")
+        };
+        // No model-level `compat`: the provider's object is the model's, unchanged.
+        assert_eq!(
+            compat_of("plain"),
+            serde_json::json!({
+                "supportsStore": false,
+                "maxTokensField": "max_tokens",
+                "openRouterRouting": { "only": ["a"] }
+            })
+        );
+        // The model's keys win, the provider's survive, and the routing
+        // sub-object merges instead of replacing.
+        assert_eq!(
+            compat_of("tuned"),
+            serde_json::json!({
+                "supportsStore": false,
+                "maxTokensField": "max_completion_tokens",
+                "openRouterRouting": { "only": ["a"], "order": ["b"] }
+            })
+        );
+    }
+
+    /// TS `applyModelOverride` (`model-registry.ts:359`): `mergeCompat(model.compat,
+    /// override.compat)`, and TS `mergeCompat` returns the BASE when the override has
+    /// no `compat`. Without that arm an override that sets any other field (`maxTokens`
+    /// in `755-configured-max-tokens.test.ts`) silently strips the model's whole compat
+    /// object — the model then sends requests the provider rejects.
+    #[test]
+    fn an_override_without_compat_keeps_the_models_compat() {
+        let base: Model = serde_json::from_value(serde_json::json!({
+            "id": "glm-5.2", "name": "GLM", "api": "openai-completions",
+            "provider": "battery", "baseUrl": "http://x", "reasoning": false,
+            "input": [],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 200_000, "maxTokens": 65_536,
+            "compat": { "maxTokensField": "max_completion_tokens" }
+        }))
+        .unwrap();
+        let over = ModelOverride {
+            max_tokens: Some(131_072),
+            ..Default::default()
+        };
+        let merged = apply_model_override(&base, &over);
+        assert_eq!(merged.max_tokens, 131_072);
+        assert_eq!(
+            merged.compat.as_ref().map(|compat| compat.raw.clone()),
+            base.compat.as_ref().map(|compat| compat.raw.clone()),
+            "an override that does not mention compat must not erase it"
+        );
     }
 
     #[test]
