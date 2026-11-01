@@ -430,6 +430,280 @@ mod tests {
         }
     }
 
+    /// The special-key id matrix against TS `parseKey` itself: every modifier subset of Enter, Tab,
+    /// Backspace and Esc, fed as the kitty CSI-u form a terminal sends. TS formats the id from the
+    /// mask in the order shift, ctrl, alt, super, so a key that produces text keeps every bit the
+    /// terminal reported — the four arms this test covers used to drop part of the mask and hand the
+    /// bare action a key the user never pressed. The expectations are the TS producer's own output
+    /// (v0.9.8 `packages/tui/src/keys.ts`), not a hand-written table.
+    #[test]
+    fn every_special_key_modifier_subset_matches_ts_parse_key() {
+        let cases = [
+            // The expectations below are TS `parseKey`'s own output for `CSI <codepoint>;<mask>u`,
+            // generated from the v0.9.8 `packages/tui/src/keys.ts` producer.
+            (KeyCode::Enter, KeyModifiers::NONE, "enter"),
+            (KeyCode::Enter, KeyModifiers::SHIFT, "shift+enter"),
+            (KeyCode::Enter, KeyModifiers::ALT, "alt+enter"),
+            (
+                KeyCode::Enter,
+                KeyModifiers::SHIFT | KeyModifiers::ALT,
+                "shift+alt+enter",
+            ),
+            (KeyCode::Enter, KeyModifiers::CONTROL, "ctrl+enter"),
+            (
+                KeyCode::Enter,
+                KeyModifiers::SHIFT | KeyModifiers::CONTROL,
+                "shift+ctrl+enter",
+            ),
+            (
+                KeyCode::Enter,
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+                "ctrl+alt+enter",
+            ),
+            (
+                KeyCode::Enter,
+                KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT,
+                "shift+ctrl+alt+enter",
+            ),
+            (KeyCode::Enter, KeyModifiers::SUPER, "super+enter"),
+            (
+                KeyCode::Enter,
+                KeyModifiers::SHIFT | KeyModifiers::SUPER,
+                "shift+super+enter",
+            ),
+            (
+                KeyCode::Enter,
+                KeyModifiers::ALT | KeyModifiers::SUPER,
+                "alt+super+enter",
+            ),
+            (
+                KeyCode::Enter,
+                KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::SUPER,
+                "shift+alt+super+enter",
+            ),
+            (
+                KeyCode::Enter,
+                KeyModifiers::CONTROL | KeyModifiers::SUPER,
+                "ctrl+super+enter",
+            ),
+            (
+                KeyCode::Enter,
+                KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::SUPER,
+                "shift+ctrl+super+enter",
+            ),
+            (
+                KeyCode::Enter,
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                "ctrl+alt+super+enter",
+            ),
+            (
+                KeyCode::Enter,
+                KeyModifiers::SHIFT
+                    | KeyModifiers::CONTROL
+                    | KeyModifiers::ALT
+                    | KeyModifiers::SUPER,
+                "shift+ctrl+alt+super+enter",
+            ),
+            (KeyCode::Tab, KeyModifiers::NONE, "tab"),
+            (KeyCode::Tab, KeyModifiers::SHIFT, "shift+tab"),
+            (KeyCode::Tab, KeyModifiers::ALT, "alt+tab"),
+            (
+                KeyCode::Tab,
+                KeyModifiers::SHIFT | KeyModifiers::ALT,
+                "shift+alt+tab",
+            ),
+            (KeyCode::Tab, KeyModifiers::CONTROL, "ctrl+tab"),
+            (
+                KeyCode::Tab,
+                KeyModifiers::SHIFT | KeyModifiers::CONTROL,
+                "shift+ctrl+tab",
+            ),
+            (
+                KeyCode::Tab,
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+                "ctrl+alt+tab",
+            ),
+            (
+                KeyCode::Tab,
+                KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT,
+                "shift+ctrl+alt+tab",
+            ),
+            (KeyCode::Tab, KeyModifiers::SUPER, "super+tab"),
+            (
+                KeyCode::Tab,
+                KeyModifiers::SHIFT | KeyModifiers::SUPER,
+                "shift+super+tab",
+            ),
+            (
+                KeyCode::Tab,
+                KeyModifiers::ALT | KeyModifiers::SUPER,
+                "alt+super+tab",
+            ),
+            (
+                KeyCode::Tab,
+                KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::SUPER,
+                "shift+alt+super+tab",
+            ),
+            (
+                KeyCode::Tab,
+                KeyModifiers::CONTROL | KeyModifiers::SUPER,
+                "ctrl+super+tab",
+            ),
+            (
+                KeyCode::Tab,
+                KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::SUPER,
+                "shift+ctrl+super+tab",
+            ),
+            (
+                KeyCode::Tab,
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                "ctrl+alt+super+tab",
+            ),
+            (
+                KeyCode::Tab,
+                KeyModifiers::SHIFT
+                    | KeyModifiers::CONTROL
+                    | KeyModifiers::ALT
+                    | KeyModifiers::SUPER,
+                "shift+ctrl+alt+super+tab",
+            ),
+            (KeyCode::Backspace, KeyModifiers::NONE, "backspace"),
+            (KeyCode::Backspace, KeyModifiers::SHIFT, "shift+backspace"),
+            (KeyCode::Backspace, KeyModifiers::ALT, "alt+backspace"),
+            (
+                KeyCode::Backspace,
+                KeyModifiers::SHIFT | KeyModifiers::ALT,
+                "shift+alt+backspace",
+            ),
+            (KeyCode::Backspace, KeyModifiers::CONTROL, "ctrl+backspace"),
+            (
+                KeyCode::Backspace,
+                KeyModifiers::SHIFT | KeyModifiers::CONTROL,
+                "shift+ctrl+backspace",
+            ),
+            (
+                KeyCode::Backspace,
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+                "ctrl+alt+backspace",
+            ),
+            (
+                KeyCode::Backspace,
+                KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT,
+                "shift+ctrl+alt+backspace",
+            ),
+            (KeyCode::Backspace, KeyModifiers::SUPER, "super+backspace"),
+            (
+                KeyCode::Backspace,
+                KeyModifiers::SHIFT | KeyModifiers::SUPER,
+                "shift+super+backspace",
+            ),
+            (
+                KeyCode::Backspace,
+                KeyModifiers::ALT | KeyModifiers::SUPER,
+                "alt+super+backspace",
+            ),
+            (
+                KeyCode::Backspace,
+                KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::SUPER,
+                "shift+alt+super+backspace",
+            ),
+            (
+                KeyCode::Backspace,
+                KeyModifiers::CONTROL | KeyModifiers::SUPER,
+                "ctrl+super+backspace",
+            ),
+            (
+                KeyCode::Backspace,
+                KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::SUPER,
+                "shift+ctrl+super+backspace",
+            ),
+            (
+                KeyCode::Backspace,
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                "ctrl+alt+super+backspace",
+            ),
+            (
+                KeyCode::Backspace,
+                KeyModifiers::SHIFT
+                    | KeyModifiers::CONTROL
+                    | KeyModifiers::ALT
+                    | KeyModifiers::SUPER,
+                "shift+ctrl+alt+super+backspace",
+            ),
+            (KeyCode::Esc, KeyModifiers::NONE, "escape"),
+            (KeyCode::Esc, KeyModifiers::SHIFT, "shift+escape"),
+            (KeyCode::Esc, KeyModifiers::ALT, "alt+escape"),
+            (
+                KeyCode::Esc,
+                KeyModifiers::SHIFT | KeyModifiers::ALT,
+                "shift+alt+escape",
+            ),
+            (KeyCode::Esc, KeyModifiers::CONTROL, "ctrl+escape"),
+            (
+                KeyCode::Esc,
+                KeyModifiers::SHIFT | KeyModifiers::CONTROL,
+                "shift+ctrl+escape",
+            ),
+            (
+                KeyCode::Esc,
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+                "ctrl+alt+escape",
+            ),
+            (
+                KeyCode::Esc,
+                KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT,
+                "shift+ctrl+alt+escape",
+            ),
+            (KeyCode::Esc, KeyModifiers::SUPER, "super+escape"),
+            (
+                KeyCode::Esc,
+                KeyModifiers::SHIFT | KeyModifiers::SUPER,
+                "shift+super+escape",
+            ),
+            (
+                KeyCode::Esc,
+                KeyModifiers::ALT | KeyModifiers::SUPER,
+                "alt+super+escape",
+            ),
+            (
+                KeyCode::Esc,
+                KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::SUPER,
+                "shift+alt+super+escape",
+            ),
+            (
+                KeyCode::Esc,
+                KeyModifiers::CONTROL | KeyModifiers::SUPER,
+                "ctrl+super+escape",
+            ),
+            (
+                KeyCode::Esc,
+                KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::SUPER,
+                "shift+ctrl+super+escape",
+            ),
+            (
+                KeyCode::Esc,
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                "ctrl+alt+super+escape",
+            ),
+            (
+                KeyCode::Esc,
+                KeyModifiers::SHIFT
+                    | KeyModifiers::CONTROL
+                    | KeyModifiers::ALT
+                    | KeyModifiers::SUPER,
+                "shift+ctrl+alt+super+escape",
+            ),
+        ];
+        for (code, modifiers, expected) in cases {
+            let event = KeyEvent::new(code, modifiers);
+            assert_eq!(
+                key_event_to_id(&event).as_deref(),
+                Some(expected),
+                "{code:?} with {modifiers:?}"
+            );
+        }
+    }
+
     /// Every modifier the terminal reports rides the special keys' ids too (TS `formatParsedKey`:
     /// `shift`, `ctrl`, `alt`, `super` in that order). The four arms used to drop part of the mask —
     /// Tab lost `ctrl`/`alt`, Enter lost `ctrl`, Backspace gave `alt` precedence over `ctrl+alt`, and

@@ -382,6 +382,18 @@ fn forward(outputs: Vec<GuardOutput>, on_input: &mut dyn FnMut(ReaderInput) -> b
 ///
 /// The pending state is chunk-local where TS keeps it across `process` calls: a cross-chunk pending
 /// would eat a fast-typed double character.
+///
+/// **Two quick taps of one key are indistinguishable from that pair here, and the events carry no
+/// fact that separates them.** Both arrive as identical unmodified `Char` presses: the `event_type`
+/// sub-field exists only on CSI-u encodings, and a text-producing key is sent as raw UTF-8 (flags
+/// `1|2|4`), so no event type is present. Asking for one means pushing `0b1000` too, and that
+/// suppresses the raw text — the duplicate disappears along with the evidence, and the paste
+/// reconstruction in [`printable_text`] changes with it. `0b10` alone adds no sub-field to the text
+/// form. So the discriminator is not reachable from this seam: it lives at the byte and write
+/// boundary in crossterm's parser (which sees both forms and the chunk), or in re-enabling
+/// `0b1000` and rebuilding text handling on the associated-text field — a separate change, not a
+/// heuristic here. A time- or gap-based guess is ruled out for the same reason it is tempting: it
+/// would keep eating real input to fix a report.
 fn filter_enhanced_key_events(events: Vec<Event>) -> Vec<Event> {
     if !crate::enhanced_keys::kitty_active() {
         return events
