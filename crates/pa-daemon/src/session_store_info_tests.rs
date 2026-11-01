@@ -269,6 +269,17 @@ fn cache_rejects_replacement_and_same_length_in_place_rewrite() {
     );
     let saved_mtime = fs::metadata(&path).unwrap().modified().unwrap();
     let original = fs::read_to_string(&path).unwrap();
+    // Cross a filesystem timestamp tick before the rewrite. The cache keys on
+    // `ctime` as well as `mtime` (`SessionInfoGeneration`), and `ctime` cannot be
+    // set from user space — so two writes inside one tick look like the same file
+    // and the stale name is served. This test failed 2 of 10 runs on a fast
+    // machine for exactly that reason.
+    //
+    // This is the one case where waiting on time is the honest option: the missing
+    // observable is the kernel's timestamp, and there is no event that announces
+    // it. The wait is bounded by what a tick is, not by how slow the machine is,
+    // and it is the only way to make the test deterministic rather than lucky.
+    std::thread::sleep(std::time::Duration::from_millis(20));
     fs::write(&path, original.replace("bravo", "delta")).unwrap();
     filetime::set_file_mtime(&path, filetime::FileTime::from_system_time(saved_mtime)).unwrap();
     assert_eq!(fs::metadata(&path).unwrap().len(), original.len() as u64);
