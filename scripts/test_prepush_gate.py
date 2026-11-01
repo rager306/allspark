@@ -305,5 +305,239 @@ class RunUnitVerdicts(unittest.TestCase):
 
 
 
+LANE_STEP = 'step "verus proofs and proof depth (advisory)"'
+DRIFT_STEP = 'step "verus mirror drift (advisory)"'
+
+
+def slice_between(body, start_marker, end_marker, what):
+    """`body[start:end]`, with a failure that names the missing piece.
+
+    A plain `.index()` raises `ValueError: substring not found`, which reads as a broken
+    test rather than as the defect: this gate has no such step. The message says which.
+    """
+    assert start_marker in body, f"the gate has no {what} step ({start_marker})"
+    assert end_marker in body, f"the gate's {what} step has no known end ({end_marker})"
+    return body[body.index(start_marker) : body.index(end_marker)]
+
+
+def verus_lane_source():
+    """The gate's advisory Verus lane, as text, so its verdicts can be run for real."""
+    return slice_between(
+        GATE.read_text(), LANE_STEP, 'step "loom (pa-mem interleavings)"', "proof-lane"
+    )
+
+
+def verus_drift_source():
+    """The cheap drift check that runs before the gate's `--fast` exit."""
+    return slice_between(
+        GATE.read_text(), DRIFT_STEP, 'if [[ $FAST -eq 1 ]]; then', "mirror-drift"
+    )
+
+
+class VerusAdvisoryLane(unittest.TestCase):
+    """The proof lane was wired NOWHERE, and its one wired step contradicted its own rule.
+
+    Two defects, both measured on 2026-11-01:
+      * `scripts/verus-check.sh` — the script that proves the mirrors and then diffs
+        their constants — had no caller outside its own docs. The only Verus step the
+        gate ran was the mutation lane, so a broken proof stayed invisible.
+      * that one step set `fail=1`, so Verus WAS blocking, while AGENTS.md says a proof
+        that does not close never blocks a merge.
+
+    These tests run the gate's real lane against stub scripts, so both the wiring and
+    the advisory verdict are observed rather than asserted about in the script's text.
+    """
+
+    CLEAN_PROOFS = "verus-check: all mirror specs verified"
+    CLEAN_MUTANTS = "verus-mutants: ok (7 killed by Verus); 100.0% kill rate; sample=16 of 34"
+
+    def run_lane(self, statuses, messages):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "out").mkdir()
+            (root / "scripts").mkdir()
+            for status, name, message in zip(
+                statuses, ("verus-check.sh", "verus-mutants.sh"), messages
+            ):
+                stub = root / "scripts" / name
+                stub.write_text(
+                    "#!/bin/bash\nprintf '%s\\n' "
+                    + " ".join(f"'{line}'" for line in message.splitlines())
+                    + f"\nexit {status}\n"
+                )
+                stub.chmod(0o755)
+            script = root / "lane.sh"
+            script.write_text(
+                "set -uo pipefail\nfail=0\nstep() { printf '=== %s\\n' \"$*\"; }\n"
+                + verus_lane_source()
+                + 'echo "fail=$fail"\n'
+            )
+            result = subprocess.run(
+                ["bash", str(script)],
+                capture_output=True,
+                text=True,
+                # The lane invokes its stubs by the RELATIVE paths the gate uses
+                # (`bash scripts/verus-check.sh`), so the run's cwd is the stub tree.
+                cwd=root,
+                env={"PATH": "/usr/bin:/bin", "OUT": str(root / "out")},
+                timeout=120,
+            )
+            return result.returncode, result.stdout
+
+    def test_the_lane_runs_the_proof_check_and_not_only_the_mutation_one(self):
+        """The wiring defect: `verus-check.sh` had no caller, so a failing proof was
+        reported by nobody while the mutation lane (which passes) printed `ok`."""
+        rc, out = self.run_lane(
+            (1, 0),
+            ("verus-check: FAILED pa_core_gates.rs", self.CLEAN_MUTANTS),
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("verus-check (proofs): FAILED", out, out)
+        self.assertIn("verus-mutants (proof depth): ok", out, out)
+        self.assertIn("1 advisory failure(s)", out, out)
+
+    def test_a_failed_lane_is_advisory_and_never_turns_the_gate_red(self):
+        """AGENTS.md: a proof that does not close must never block a merge. The
+        mutation lane used to set `fail`, which is the reverse defect."""
+        for statuses in ((1, 1), (0, 1)):
+            rc, out = self.run_lane(
+                statuses,
+                (
+                    "verus-check: FAILED pa_core_gates.rs",
+                    "verus-mutants: FAILED — the kill rate fell below the floor (a real survivor)",
+                ),
+            )
+            self.assertEqual(rc, 0, out)
+            self.assertIn("fail=0", out, f"{statuses} blocked the gate:\n{out}")
+
+    def test_a_missing_toolchain_skips_with_its_reason(self):
+        """AGENTS.md: `verus-check.sh` exits 0 when the toolchain is absent. That skip
+        must read as a skip, not as a clean pass and not as a failure."""
+        rc, out = self.run_lane(
+            (0, 0),
+            (
+                "verus-check: toolchain not found at /x — skipping (install: verus/README.md)",
+                "verus-mutants: no Verus toolchain at verus/toolchain — skipping (see verus/README.md)",
+            ),
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("verus-check (proofs): SKIPPED", out, out)
+        self.assertIn("verus-mutants (proof depth): SKIPPED", out, out)
+        self.assertIn("verus: advisory lanes clean", out, out)
+
+    def test_the_mutation_lane_reports_its_own_verdict(self):
+        """`verus-mutants.sh` shares its log path with the step's redirect, so the file
+        ends on cargo's `summary: <path>` line. Reporting `tail -1` put a file name
+        where the kill rate belongs."""
+        rc, out = self.run_lane(
+            (0, 0),
+            (
+                self.CLEAN_PROOFS,
+                self.CLEAN_MUTANTS
+                + "\n16 mutants\nsummary: /repo/verus/mirrors/target/verus-mutants/summary.json",
+            ),
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("100.0% kill rate", out, out)
+        self.assertNotIn("verus-mutants (proof depth): ok — summary:", out, out)
+
+
+class TheGateRunsItsOwnTests(unittest.TestCase):
+    """This file guarded the gate and nothing ran it.
+
+    The gate's classes of defect are exactly "a guard that exists and is never
+    invoked" (`UntrackedOracle`, the disk floor, the catalog waiver, the Verus lane).
+    This file was the same shape one level up: `scripts/test_prepush_gate.py` was
+    written, committed, and referenced by no Makefile target, workflow or script, so
+    every verdict below could rot without a signal.
+    """
+
+    def test_the_gate_runs_this_file(self):
+        script = GATE.read_text()
+        self.assertIn("scripts/test_prepush_gate.py", script)
+        for class_name in ("RunUnitVerdicts", "VerusAdvisoryLane", "VerusMirrorDriftReachability"):
+            self.assertIn(class_name, script, f"the gate skips {class_name}")
+
+    def test_the_fast_lanes_run_before_the_fast_exit(self):
+        """`--fast` is the run developers make; a contract check after its exit is the
+        same dead wiring this file exists to catch."""
+        script = GATE.read_text()
+        self.assertIn(
+            "scripts/test_prepush_gate.py",
+            script,
+            "the gate does not run its own tests at all",
+        )
+        self.assertLess(
+            script.index("scripts/test_prepush_gate.py"),
+            script.index('if [[ $FAST -eq 1 ]]; then'),
+            "the gate's own contract check must run in --fast too",
+        )
+
+
+class VerusMirrorDriftReachability(unittest.TestCase):
+    """The drift check must reach the run developers actually do.
+
+    `--fast` exits right after fmt and clippy. A drift check placed among the layered
+    verification steps below that exit is unreachable from `--fast`, which is the gate
+    most runs use — the same shape as the defect being fixed: a check that exists and
+    is never reached.
+    """
+
+    def run_drift(self, status, message):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "out").mkdir()
+            (root / "scripts").mkdir()
+            stub = root / "scripts" / "verus-mirror-check.py"
+            stub.write_text(
+                "#!/usr/bin/env python3\nprint("
+                + " + chr(10) + ".join(repr(line) for line in message.splitlines())
+                + f")\nraise SystemExit({status})\n"
+            )
+            stub.chmod(0o755)
+            script = root / "drift.sh"
+            script.write_text(
+                "set -uo pipefail\nfail=0\nstep() { printf '=== %s\\n' \"$*\"; }\n"
+                + verus_drift_source()
+                + 'echo "fail=$fail"\n'
+            )
+            result = subprocess.run(
+                ["bash", str(script)],
+                capture_output=True,
+                text=True,
+                cwd=root,
+                env={"PATH": "/usr/bin:/bin", "OUT": str(root / "out")},
+                timeout=120,
+            )
+            return result.returncode, result.stdout
+
+    def test_the_drift_check_precedes_the_fast_exit(self):
+        """The reachability half: a drift check after the `--fast` exit is unreachable
+        from the run most developers make."""
+        script = GATE.read_text()
+        assert DRIFT_STEP in script, "the gate has no mirror-drift step at all"
+        self.assertLess(
+            script.index(DRIFT_STEP),
+            script.index('if [[ $FAST -eq 1 ]]; then'),
+            "the only toolchain-free Verus check must run in --fast too",
+        )
+
+    def test_a_drift_is_reported_with_the_constants_named(self):
+        rc, out = self.run_drift(
+            1,
+            "verus-mirror-check: DRIFT PTR_BYTES: verus/pa_mem_bucket.rs says 6,"
+            " crates/pa-mem/src/ptr48.rs says 8",
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("verus-mirror: DRIFT", out, out)
+        self.assertIn("DRIFT PTR_BYTES", out, "the drift itself must reach the reader")
+        self.assertIn("fail=0", out, "a drift is advisory by AGENTS.md")
+
+    def test_agreement_is_reported_as_agreement(self):
+        rc, out = self.run_drift(0, "verus-mirror-check: mirrors agree with their sources")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("verus-mirror: ok", out, out)
+
+
 if __name__ == "__main__":
     unittest.main()

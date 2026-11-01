@@ -161,6 +161,37 @@ if [[ $fail -ne 0 ]]; then
   exit 1
 fi
 
+step "gate contract (the gate's own tests)"
+# `scripts/test_prepush_gate.py` guards THIS script: its prologue reads its `$ROOT`,
+# `run_unit` draws skip-vs-pass verdicts, the summary must not call a skipped unit
+# green, and the Verus lane must stay wired and advisory. It existed and nothing ran
+# it, so the file's own class of defect (a guard nobody invokes) applied to the guard
+# of the gate. Cheap: measured 0.4-0.6 s for the two fast classes, and the one test
+# that executes `--fast` end to end is excluded here because the gate is already
+# running.
+if python3 scripts/test_prepush_gate.py \
+    RunUnitVerdicts VerusAdvisoryLane VerusMirrorDriftReachability TheGateRunsItsOwnTests \
+    >"$OUT/gate-contract.log" 2>&1; then
+  echo "gate contract: ok ($(grep -E '^Ran [0-9]+ tests' "$OUT/gate-contract.log"))"
+else
+  echo "gate contract: FAILED (see $OUT/gate-contract.log)"; tail -20 "$OUT/gate-contract.log"; fail=1
+fi
+
+step "verus mirror drift (advisory)"
+# The one layer of the Verus practice that must run on EVERY machine: it needs no
+# toolchain (measured 0.05 s) and it catches the drift the verifier structurally cannot
+# see — a constant changed in a source and not in its mirror, which turns the proof
+# into an assurance about code that no longer exists. Advisory per AGENTS.md: the exit
+# code is untouched. Placed before the `--fast` exit because that is the run developers
+# actually do; the proof and mutation lanes below need the toolchain and stay in the
+# full gate.
+if python3 scripts/verus-mirror-check.py >"$OUT/verus-mirror.log" 2>&1; then
+  echo "verus-mirror: ok ($(tail -1 "$OUT/verus-mirror.log"))"
+else
+  echo "verus-mirror: DRIFT (advisory — never blocks a merge; $OUT/verus-mirror.log)"
+  grep -E 'DRIFT|not (found|resolvable)' "$OUT/verus-mirror.log" | sed 's/^/  /'
+fi
+
 if [[ $FAST -eq 1 ]]; then
   echo; echo "GATE GREEN (fast: fmt + clippy)"
   exit 0
@@ -170,6 +201,61 @@ fi
 # MUT-kani-robin-hood). Both are opt-in: loom needs the `loom` dev-dependency wired into
 # pa-mem's spinlock/refcount, Kani needs the kani toolchain. Each prints SKIPPED with the
 # reason instead of a fake green — a guard that cannot fail is the class testgov exists for.
+step "verus proofs and proof depth (advisory)"
+# ADVISORY BY CONTRACT. AGENTS.md ("Formal verification (Verus)"): a proof that does
+# not close must never block a merge. So these lanes run and report, and never set
+# `fail` — including the mutation lane, which used to be BLOCKING here and thereby
+# contradicted the very rule it was written under (measured: a kill rate below the
+# floor printed GATE RED with every cargo test green).
+#
+# Why it exists at all: this lane was wired NOWHERE except `verus-mutants.sh`.
+# `scripts/verus-check.sh` — the script that proves the mirrors and diffs their
+# constants — had no caller at all, so a proof could rot and no gate would notice.
+# The drift half of it runs earlier (before the `--fast` exit) because it needs no
+# toolchain; the proof half lives here because it does.
+#
+# A proof that passes can still be worthless: mutation testing asks whether the
+# verifier REJECTS a mutated model, and a survivor is a spec gap. Measured
+# 2026-10-27: 16 sampled mutants, 92.3% kill; measured 2026-11-01 on a loaded box:
+# 3 m 49 s at 4 jobs. Both lanes skip cleanly without their toolchain.
+verus_advisory_failures=0
+verus_lane() {
+  local label="$1" log="$2"
+  shift 2
+  local status=0
+  "$@" >"$log" 2>&1 || status=$?
+  if [[ $status -ne 0 ]]; then
+    verus_advisory_failures=$((verus_advisory_failures + 1))
+    echo "$label: FAILED (advisory — reported, never blocks a merge; $log)"
+    sed -n '1,12p' "$log" | sed 's/^/  /'
+  elif grep -qiE 'skipp(ed|ing)' "$log"; then
+    echo "$label: SKIPPED — $(grep -iE 'skipp(ed|ing)' "$log" | tail -1)"
+  else
+    # The lane's OWN verdict line, not the log's last line. `verus-mutants.sh` sets its
+    # LOG to "$OUT/verus-mutants.log" and redirects cargo into it, so that file ends on
+    # cargo's `summary: <path>` line; matching the script's prefix reports the kill rate
+    # instead of a file name.
+    local verdict
+    verdict=$(grep -oE "${label%% *}: .*" "$log" | tail -1)
+    echo "$label: ok — ${verdict:-$(tail -1 "$log")}"
+  fi
+}
+verus_lane "verus-check (proofs)" "$OUT/verus-check.log" bash scripts/verus-check.sh
+# `.stdout.log`, not `.log`: verus-mutants.sh sets its own LOG to "$OUT/verus-mutants.log"
+# and redirects cargo into it, while this step redirects the script's stdout into the
+# same path. Two streams with independent offsets — the captured file was interleaved
+# garbage (measured: a first line reading `aseline: cargo verus build`, one byte of
+# `baseline` already overwritten), so neither the verdict nor a failure was readable.
+verus_lane "verus-mutants (proof depth)" "$OUT/verus-mutants.stdout.log" bash scripts/verus-mutants.sh
+# An advisory lane that fails silently is a lane nobody reads. The count is printed so
+# a reader of a green gate still learns that a proof needs attention.
+if [[ $verus_advisory_failures -eq 0 ]]; then
+  echo "verus: advisory lanes clean"
+else
+  echo "verus: $verus_advisory_failures advisory failure(s) — NOT blocking (AGENTS.md: a"
+  echo "       proof that does not close never blocks a merge). See $OUT/verus-*.log."
+fi
+
 step "loom (pa-mem interleavings)"
 # The alternative lane that DOES work today is Shuttle, and it is wired
 # (`.github/workflows/shuttle.yml` runs pa-mem's DST test on a schedule). This
@@ -185,18 +271,6 @@ elif ! cargo test -p pa-mem --features loom -- --test-threads=1 >"$OUT/loom.log"
   echo "loom: FAILED (see $OUT/loom.log)"; sed -n '1,20p' "$OUT/loom.log"; fail=1
 else
   echo "loom: ok"
-fi
-
-step "verus-mutants (proof depth)"
-# A proof that passes can still be worthless: mutation testing asks whether the
-# verifier REJECTS a mutated model. Survivors are spec gaps. Opt-in like the
-# Verus lane itself — a missing toolchain is a SKIP with the install command.
-if bash scripts/verus-mutants.sh >"$OUT/verus-mutants.log" 2>&1; then
-  grep -o 'verus-mutants: .*' "$OUT/verus-mutants.log" | tail -1
-else
-  echo "verus-mutants: FAILED (see $OUT/verus-mutants.log)"
-  sed -n '1,20p' "$OUT/verus-mutants.log"
-  fail=1
 fi
 
 step "kani (pa-core platform decisions)"
