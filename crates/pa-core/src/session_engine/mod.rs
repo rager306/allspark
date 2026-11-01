@@ -72,6 +72,7 @@ use pa_types::session::AgentMessage as SessionAgentMessage;
 use pa_types::session::FileEntry;
 
 use crate::session::manager::{capture_git_context, SessionManager};
+use crate::session_engine::provider_adapter::to_agent_model;
 use crate::skills::PromptTemplate;
 use slash_commands::{SessionSlashCommand, SlashCommandRegistry};
 
@@ -390,11 +391,10 @@ impl AgentSession {
         provider: &str,
         model_id: &str,
     ) -> anyhow::Result<()> {
-        let wire: pa_agent::types::Model = serde_json::from_value(
-            serde_json::to_value(model).map_err(|error| anyhow::anyhow!(error.to_string()))?,
-        )
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        self.agent.set_model(wire).await;
+        // Field projection, not a JSON round-trip: `pa_types::ai::Model` spells the
+        // endpoint `baseUrl` and `pa_agent::types::Model` has no rename for it, so the
+        // round-trip silently defaulted it to empty and the loop then lost the endpoint.
+        self.agent.set_model(to_agent_model(model)).await;
         let mut session = self.session.lock().await;
         session.append_model_change(provider, model_id)?;
         Ok(())
@@ -415,12 +415,9 @@ impl AgentSession {
         model_id: &str,
         thinking_level: ThinkingLevel,
     ) -> anyhow::Result<()> {
-        let wire: pa_agent::types::Model = serde_json::from_value(
-            serde_json::to_value(model).map_err(|error| anyhow::anyhow!(error.to_string()))?,
-        )
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        // Same projection as `set_model`: a JSON round-trip drops the endpoint.
         self.agent
-            .set_model_and_thinking_level(wire, thinking_level)
+            .set_model_and_thinking_level(to_agent_model(model), thinking_level)
             .await;
         let mut session = self.session.lock().await;
         session.append_model_change(provider, model_id)?;

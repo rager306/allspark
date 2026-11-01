@@ -2152,3 +2152,56 @@ async fn a_refusal_restores_the_rows_this_attempt_never_carried() {
         "the restored notice is delivered by the next turn, beside the earlier copy"
     );
 }
+
+/// The catalog-side model the setters take.
+fn ai_model(base_url: &str) -> pa_types::ai::Model {
+    pa_types::ai::Model {
+        id: "model".to_string(),
+        name: "model".to_string(),
+        api: "openai-completions".to_string(),
+        provider: "probe".to_string(),
+        base_url: base_url.to_string(),
+        reasoning: false,
+        thinking_level_map: None,
+        input: Vec::new(),
+        cost: pa_types::ai::ModelCost {
+            input: 0.0.into(),
+            output: 0.0.into(),
+            cache_read: 0.0.into(),
+            cache_write: 0.0.into(),
+        },
+        context_window: 1000,
+        max_tokens: 100,
+        max_tokens_explicit: false,
+        featured: None,
+        headers: None,
+        compat: None,
+    }
+}
+
+/// A model switch must carry the endpoint: `pa_types::ai::Model` spells it `baseUrl`
+/// and `pa_agent::types::Model` has no rename for it, so a JSON round-trip defaulted
+/// it to empty and the loop then sent requests to no endpoint at all.
+#[tokio::test]
+async fn a_model_switch_carries_the_resolved_base_url() {
+    let session = scripted_session().await;
+    let model = ai_model("https://probe.invalid/v1");
+
+    session.set_model(&model, "probe", "model").await.unwrap();
+    let after_set = session.agent().state().await.model;
+    assert_eq!(
+        after_set.base_url, "https://probe.invalid/v1",
+        "set_model must carry the endpoint"
+    );
+
+    let other = ai_model("https://atomic.invalid/v1");
+    session
+        .set_model_and_thinking_level(&other, "probe", "model", ThinkingLevel::High)
+        .await
+        .unwrap();
+    let after_atomic = session.agent().state().await.model;
+    assert_eq!(
+        after_atomic.base_url, "https://atomic.invalid/v1",
+        "set_model_and_thinking_level must carry the endpoint"
+    );
+}
