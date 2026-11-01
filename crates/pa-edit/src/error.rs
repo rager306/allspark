@@ -42,6 +42,52 @@ pub enum EditError {
     /// The host writer callback failed; carries its message verbatim.
     #[error("{0}")]
     Writer(String),
+    /// The host writer failed partway through a multi-file apply: the files
+    /// listed in [`PartialWrite::landed`] are already written and stay that
+    /// way, and the caller needs to know which ones before planning another
+    /// edit against them.
+    #[error("{0}")]
+    WriterPartial(PartialWrite),
+}
+
+/// A writer failure that left earlier writes of the same apply on disk.
+///
+/// The writes are not rolled back. A rollback would issue compensating
+/// writes through the same writer that just failed — and the usual causes
+/// (a full disk, a lost permission) block the restore exactly as they
+/// blocked the write — and it could overwrite a change another process made
+/// after ours landed. Reporting what landed is the truthful option: the
+/// caller re-reads those files instead of re-planning against stale bytes.
+#[derive(Debug, Clone)]
+pub struct PartialWrite {
+    /// The writer's own error, verbatim, so a re-plan message survives.
+    pub message: String,
+    /// Display paths written before the failure, in apply order. A move
+    /// reports its destination, which is where the bytes are now.
+    pub landed: Vec<String>,
+    /// The display path whose write failed.
+    pub failed: String,
+    /// Non-`Noop` files the apply intended to write.
+    pub planned: usize,
+}
+
+impl std::fmt::Display for PartialWrite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let PartialWrite {
+            message,
+            landed,
+            failed,
+            planned,
+        } = self;
+        let names = landed.join(", ");
+        write!(
+            f,
+            "{message}\n\nPartial apply: {} of {planned} file writes landed before {failed} \
+             failed — {names}. They stay written and were not rolled back; re-read them before \
+             planning another edit.",
+            landed.len(),
+        )
+    }
 }
 
 impl EditError {

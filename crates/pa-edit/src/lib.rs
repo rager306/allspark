@@ -91,7 +91,7 @@ pub use engine::{
     EditMode, FileOp, FileOpIntent, HeaderKind, Inspection, ModeEngine, PreviewFile, Resolved,
     StagedFile,
 };
-pub use error::{EditError, EditResult};
+pub use error::{EditError, EditResult, PartialWrite};
 pub use path_policy::{PathPolicy, UrlResolution};
 pub use session::{
     ApplyOutcome, ApplyRequest, EditWriter, FileOutcome, PreviewBatch, Session, WriteRequest,

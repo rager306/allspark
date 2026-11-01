@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use crate::{
     diff_string::{CompactDiffOptions, build_compact_diff_preview},
     engine::{EditMode, FileOp, FileOpIntent, HeaderKind, ModeEngine, PreviewFile, StagedFile},
-    error::{EditError, EditResult},
+    error::{EditError, EditResult, PartialWrite},
     files::{FileCache, FileSource},
     notebook,
     path_policy::{PathPolicy, UrlResolution, canonical_key},
@@ -288,15 +288,24 @@ impl Session {
     ///
     /// Order: reread every target fresh, stage all files in memory (any
     /// failure aborts before the first write), enforce the plan-mode guard
-    /// for every file, then write in payload order. A writer failure aborts
-    /// the loop; files already written stay written and the error is
-    /// returned verbatim. URL targets never reuse preview-time answers (see
-    /// [`Self::begin_apply_url_targets`]).
+    /// for every file, then write in payload order.
+    ///
+    /// A writer failure aborts the loop and the writes that already landed
+    /// stay on disk. They are not rolled back: the restore would go through
+    /// the writer that just failed (a full disk or a lost permission blocks
+    /// it) and could overwrite a change made by another process in the
+    /// meantime. Instead the error says which files landed — see
+    /// [`EditError::WriterPartial`] — and a failure on the first write, where
+    /// nothing changed, is still the writer's own error verbatim. The store
+    /// rows of the landed files were recorded as each write landed, so their
+    /// new tags are the ones on disk. URL targets never reuse preview-time
+    /// answers (see [`Self::begin_apply_url_targets`]).
     ///
     /// # Errors
     /// Staging and plan-mode failures, all raised before the first write —
     /// including [`EditError::UnresolvedUrl`], after which the host may
-    /// [`Self::provide`] the URL and retry — or the writer's error.
+    /// [`Self::provide`] the URL and retry — the writer's error, or
+    /// [`EditError::WriterPartial`] when earlier files of the call landed.
     pub async fn apply(
         &mut self,
         request: ApplyRequest,
@@ -318,13 +327,22 @@ impl Session {
         }
 
         let last_write = staged.iter().rposition(|file| file.op != FileOp::Noop);
+        let planned = staged.iter().filter(|file| file.op != FileOp::Noop).count();
         let mut files = Vec::with_capacity(staged.len());
+        // Display paths that reached the writer successfully, in apply order:
+        // what a mid-loop failure has to report.
+        let mut landed: Vec<String> = Vec::new();
         for (index, mut file) in staged.into_iter().enumerate() {
             let canonical = canonical_key(&file.absolute);
             let response = if file.op == FileOp::Noop {
                 WriteResponse::default()
             } else {
-                writer
+                // A move reports its destination: that is where the bytes are now.
+                let target = file
+                    .move_to
+                    .as_ref()
+                    .map_or_else(|| file.display.clone(), |m| m.display.clone());
+                let write = writer
                     .write(WriteRequest {
                         absolute: file.absolute.clone(),
                         display: file.display.clone(),
@@ -338,7 +356,27 @@ impl Session {
                         flush_lsp: request.lsp_flush && last_write == Some(index),
                         lsp_batch_id: request.lsp_batch_id.clone(),
                     })
-                    .await?
+                    .await;
+                match write {
+                    Ok(response) => {
+                        landed.push(target);
+                        response
+                    }
+                    // Nothing changed: the writer's own error, verbatim, stays
+                    // the whole answer.
+                    Err(err) if landed.is_empty() => return Err(err),
+                    Err(err) => {
+                        return Err(EditError::WriterPartial(PartialWrite {
+                            message: err.to_string(),
+                            landed,
+                            // The authored path, which is the section the
+                            // model wrote — a failed move keeps it (the
+                            // destination is where bytes WOULD have gone).
+                            failed: file.display.clone(),
+                            planned,
+                        }));
+                    }
+                }
             };
 
             let mut tag: Option<String> = None;

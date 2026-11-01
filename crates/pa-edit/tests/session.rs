@@ -543,6 +543,92 @@ async fn writer_failure_is_surfaced_verbatim() {
     assert_eq!(err.to_string(), "disk full");
 }
 
+/// A multi-file apply that dies on the k-th write leaves the earlier files
+/// changed; the error must say WHICH ones instead of only reporting the
+/// failure. The list is structured (`EditError::WriterPartial`) because the
+/// caller either re-plans against the landed files or repairs them by hand,
+/// and neither can parse prose.
+#[tokio::test]
+async fn writer_failure_reports_the_files_that_already_landed() {
+    use std::fmt::Write as _;
+
+    let ws = Workspace::new(EditMode::Sloppy);
+    for (name, text) in [
+        ("a.txt", "a one\n"),
+        ("b.txt", "b one\n"),
+        ("c.txt", "c one\n"),
+    ] {
+        ws.write(name, text);
+    }
+    let mut input = String::new();
+    for path in ["a.txt", "b.txt", "c.txt"] {
+        let stem = path.trim_end_matches(".txt");
+        let _ = write!(
+            input,
+            "*** Edit File: {path}\n*** Find\n{stem} one\n*** Replace\n{stem} two\n"
+        );
+    }
+    let writer = DiskWriter {
+        // The second of three writes fails: the first has already landed.
+        fail_at: Some((1, "disk full".into())),
+        ..Default::default()
+    };
+    let err = ws
+        .apply_json(&serde_json::json!({ "input": input }), &writer)
+        .await
+        .expect_err("second write fails");
+    let EditError::WriterPartial(partial) = &err else {
+        panic!("a mid-loop failure carries the landed files: {err:?}");
+    };
+    assert_eq!(partial.message, "disk full");
+    assert_eq!(partial.landed, ["a.txt"]);
+    assert_eq!(partial.failed, "b.txt");
+    assert_eq!(partial.planned, 3);
+    let message = err.to_string();
+    assert!(message.starts_with("disk full"), "{message}");
+    assert!(
+        message.contains("1 of 3 file writes landed before b.txt failed"),
+        "the error counts what landed: {message}"
+    );
+    assert!(
+        message.contains("— a.txt.") && !message.contains("c.txt"),
+        "the error names only the landed file: {message}"
+    );
+    // What the message says is what the disk holds: no rollback, and the
+    // third file was never attempted.
+    assert_eq!(ws.read("a.txt").unwrap(), "a two\n");
+    assert_eq!(ws.read("b.txt").unwrap(), "b one\n");
+    assert_eq!(ws.read("c.txt").unwrap(), "c one\n");
+    assert_eq!(writer.requests.lock().len(), 2);
+}
+
+/// A move that landed is reported at its destination: that is where the
+/// bytes are, and re-reading the old path would report them gone.
+#[tokio::test]
+async fn partial_apply_reports_a_landed_move_by_its_destination() {
+    let ws = Workspace::new(EditMode::Hashline);
+    ws.write("a.txt", "a one\n");
+    ws.write("b.txt", "b one\n");
+    let tag = ws.snapshot("a.txt", "a one\n", Some(&[1]));
+    let other = ws.snapshot("b.txt", "b one\n", Some(&[1]));
+    let input = format!("[a.txt#{tag}]\nMV moved.txt\n\n[b.txt#{other}]\nPUT 1.=1:\n+b two");
+    let writer = DiskWriter {
+        fail_at: Some((1, "disk full".into())),
+        ..Default::default()
+    };
+    let err = ws
+        .apply_json(&serde_json::json!({ "input": input }), &writer)
+        .await
+        .expect_err("second write fails");
+    let EditError::WriterPartial(partial) = &err else {
+        panic!("a mid-loop failure carries the landed files: {err:?}");
+    };
+    assert_eq!(partial.landed, ["moved.txt"]);
+    assert_eq!(partial.failed, "b.txt");
+    assert!(!ws.cwd().join("a.txt").exists());
+    assert_eq!(ws.read("moved.txt").unwrap(), "a one\n");
+}
+
 #[tokio::test]
 async fn plan_mode_rejects_working_tree_writes_before_writing() {
     let mut ws = Workspace::new(EditMode::Replace);
