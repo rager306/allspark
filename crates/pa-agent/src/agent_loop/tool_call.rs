@@ -488,6 +488,9 @@ mod tests {
             after_ms: 25,
             every_ms: 25,
         };
+        // Kept as a strong-count probe: every task the call frame spawns
+        // holds its own clone of the sink until that task's future is gone.
+        let sink_probe = Arc::clone(&sink);
         let execution = tokio::spawn(async move {
             execute_prepared_tool_call(&prepared, progress, None, &sink).await;
         });
@@ -508,16 +511,25 @@ mod tests {
         // stop) must abort the heartbeat.
         execution.abort();
         // Awaiting the cancelled handle settles only once the frame (and
-        // its HeartbeatGuard) has dropped, so the abort is in effect; the
-        // settle window absorbs an in-flight tick before sampling.
+        // its HeartbeatGuard) has dropped, so the abort is in effect.
         let _ = execution.await;
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let after_cancel = count();
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        assert_eq!(
-            count(),
-            after_cancel,
-            "the heartbeat must stop when the call frame is cancelled"
+        // The heartbeat task is the only emitter of `ToolExecutionProgress`,
+        // and it holds a sink clone until its future is dropped. Waiting for
+        // the count to fall back to the probe therefore observes that the
+        // tick loop is gone, instead of sampling a timed window and hoping
+        // no tick was in flight. A heartbeat that outlived the cancelled
+        // frame keeps its clone and fails the deadline rather than passing on
+        // luck.
+        let tasks_gone = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while Arc::strong_count(&sink_probe) > 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(
+            tasks_gone.is_ok(),
+            "a task spawned by the call frame outlived it and still holds the event sink; \
+             the heartbeat would keep emitting ToolExecutionProgress after cancellation"
         );
     }
 }

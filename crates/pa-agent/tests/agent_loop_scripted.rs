@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use pa_agent::abort::AbortSignal;
-use pa_agent::agent::{Agent, AgentOptions};
+use pa_agent::agent::{Agent, AgentOptions, AgentStateSnapshot};
 use pa_agent::agent_loop::{run_agent_loop_continue, AgentEventSink, AgentLoopConfig};
 use pa_agent::scripted::ScriptedProvider;
 use pa_agent::stream::AssistantMessageEvent;
@@ -161,6 +161,55 @@ fn single_text(content: &[ToolResultContent]) -> &str {
         [ToolResultContent::Text(TextContent { text, .. })] => text,
         other => panic!("expected single text block, got {other:?}"),
     }
+}
+
+/// The text streamed so far into the run's in-flight assistant message.
+fn streaming_text(state: &AgentStateSnapshot) -> String {
+    match state.streaming_message.as_ref() {
+        Some(AgentMessage::Standard(Message::Assistant(assistant))) => assistant
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                AssistantContent::Text(text) => Some(text.text.as_str()),
+                AssistantContent::Thinking(_) | AssistantContent::ToolCall(_) => None,
+            })
+            .collect(),
+        Some(
+            AgentMessage::Standard(Message::User(_) | Message::ToolResult(_))
+            | AgentMessage::Custom(_),
+        )
+        | None => String::new(),
+    }
+}
+
+/// Upper bound on every wait below. It is a failure deadline, not a delay:
+/// each wait returns as soon as its condition holds, so a loaded machine
+/// costs nothing here while a broken loop fails instead of hanging the suite.
+const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How often a wait re-reads its condition; it is the poll step, not the time
+/// the test waits.
+const POLL_INTERVAL: Duration = Duration::from_millis(1);
+
+/// Wait for an observable condition instead of sleeping a guessed number of
+/// milliseconds. Every state a test below waits on is published by the run
+/// itself (the in-flight message, the tool that started executing, the
+/// registered prompt), so the condition holds a poll or two after the event
+/// that sets it fires.
+async fn wait_until<Fut>(what: &str, ready: impl Fn() -> Fut)
+where
+    Fut: std::future::Future<Output = bool>,
+{
+    let waited = tokio::time::timeout(WAIT_TIMEOUT, async {
+        while !ready().await {
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+    })
+    .await;
+    assert!(
+        waited.is_ok(),
+        "timed out after {WAIT_TIMEOUT:?} waiting until {what}"
+    );
 }
 
 fn event_type(event: &AgentEvent) -> &'static str {
@@ -482,8 +531,13 @@ async fn user_abort_mid_stream_finalizes_aborted_assistant_message() {
         async move { agent.prompt("hello").await }
     });
 
-    // Wait until the partial text has been streamed, then abort like a user.
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    // Abort like a user once the partial text has streamed: the stalled
+    // stream cannot end on its own, so this state is the observable that the
+    // abort has something to cut off.
+    wait_until("the partial text reaches the streaming message", || async {
+        streaming_text(&agent.state().await) == "partial before abort"
+    })
+    .await;
     agent.abort();
 
     prompt_task.await.unwrap().unwrap();
@@ -517,7 +571,13 @@ async fn abort_during_tool_execution_produces_aborted_tool_result() {
         let agent = agent.clone();
         async move { agent.prompt("go").await }
     });
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    // Abort once the tool is actually executing. The counter is bumped at
+    // the top of `execute` and never reset, so the state stays visible for
+    // the tool's whole 60s run however late this poll wakes up.
+    wait_until("the slow tool starts executing", || async {
+        slow.calls.load(Ordering::SeqCst) >= 1
+    })
+    .await;
     agent.abort();
 
     prompt_task.await.unwrap().unwrap();
@@ -602,12 +662,17 @@ async fn steering_message_injects_before_next_turn() {
     provider.push_text_turn("finished");
 
     // `prompt` resolves when the whole run completes (TS parity), so the
-    // steering message must be queued concurrently, mid-run.
+    // steering message must be queued concurrently, mid-run: queue it once
+    // the first tool call is executing, which is still before the first
+    // turn ends.
     let prompt_task = tokio::spawn({
         let agent = agent.clone();
         async move { agent.prompt("start").await }
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_until("the first tool call starts executing", || async {
+        echo.calls.load(Ordering::SeqCst) >= 1
+    })
+    .await;
     agent.steer(AgentMessage::user("steered"));
     prompt_task.await.unwrap().unwrap();
     agent.wait_for_idle().await;
@@ -655,7 +720,13 @@ async fn prompt_while_processing_is_rejected_with_ts_message() {
         let agent = agent.clone();
         async move { agent.prompt("first").await }
     });
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // The second prompt is rejected by the busy check on the registered run,
+    // so wait until that run is streaming (state goes streaming after the run
+    // registers) instead of guessing how long registration takes.
+    wait_until("the first prompt is streaming", || async {
+        agent.state().await.is_streaming
+    })
+    .await;
     let error = agent.prompt("second").await.unwrap_err();
     assert!(
         error
