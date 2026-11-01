@@ -10,6 +10,7 @@ So this is the smallest test that can fail for that defect: execute the script a
 require it to get PAST its own prologue. `--fast` is used because the full gate
 compiles for minutes and this test is about reachability, not about the suite.
 """
+import os
 import pathlib
 import shutil
 import subprocess
@@ -559,6 +560,81 @@ class VerusMirrorDriftReachability(unittest.TestCase):
         rc, out = self.run_drift(0, "verus-mirror-check: mirrors agree with their sources")
         self.assertEqual(rc, 0, out)
         self.assertIn("verus-mirror: ok", out, out)
+
+
+class VerusMutantsVerdict(unittest.TestCase):
+    """`verus-mutants.sh` must not report a kill rate when no proof was attempted.
+
+    The lane runs `cargo verus-mutants`, which copies the package into
+    `$TMPDIR/.tmpXXXX/source`. Under the gate `TMPDIR` is the repo's own `.tmp`, so
+    that copy lands inside the workspace and `cargo metadata` refuses it with
+    "current package believes it's in a workspace when it's not" — the tool then finds
+    no Verus package at all. The script used to answer every non-timeout failure with
+    "the kill rate fell below the floor (a real survivor)", which asserts something
+    about proof depth that the run never measured.
+
+    Found 2026-11-01: with the gate's TMPDIR the lane exited 1 claiming a survivor,
+    while the same tree with `env -u TMPDIR` reported "7 killed, 100.0%".
+    """
+
+    SCRIPT = pathlib.Path(__file__).resolve().parent / "verus-mutants.sh"
+
+    def verdict_for(self, tool_output):
+        """Run the script's verdict arms against a stub `cargo`, verbatim from the file."""
+        body = self.SCRIPT.read_text()
+        # The arms after the invocation: everything from the first `if PATH=` line on.
+        start = body.index('if PATH="$TOOLCHAIN:$PATH" cargo verus-mutants')
+        arms = body[start:]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "bin").mkdir()
+            # A stub `cargo` that writes the tool's output to $LOG and exits 1.
+            cargo = root / "bin" / "cargo"
+            cargo.write_text(
+                "#!/bin/sh\n"
+                f"cat >&2 <<'EOF'\n{tool_output}\nEOF\n"
+                "exit 1\n"
+            )
+            cargo.chmod(0o755)
+            script = root / "run.sh"
+            script.write_text(
+                'TOOLCHAIN=""\n'
+                f'LOG="{root}/log"\n'
+                'LIMIT=16\n'
+                + arms
+            )
+            env = dict(os.environ)
+            env["PATH"] = f"{root / 'bin'}:{env.get('PATH', '')}"
+            done = subprocess.run(
+                ["bash", str(script)],
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=root,
+            )
+            return done.returncode, done.stdout + done.stderr
+
+    def test_a_baseline_that_never_built_is_infrastructure_not_a_survivor(self):
+        rc, out = self.verdict_for(
+            "Error: `cargo metadata` exited with an error: error: current package "
+            "believes it's in a workspace when it's not"
+        )
+        self.assertIn("SKIPPED", out, out)
+        self.assertNotIn("real survivor", out, "nothing was proved, so nothing survived")
+
+    def test_no_verus_package_is_also_infrastructure(self):
+        rc, out = self.verdict_for(
+            "Error: found no Verus workspace packages; expected "
+            "package.metadata.verus.verify = true"
+        )
+        self.assertIn("SKIPPED", out, out)
+        self.assertNotIn("kill rate fell below", out, out)
+
+    def test_a_real_survivor_still_reads_as_a_survivor(self):
+        rc, out = self.verdict_for("mutation survived: 3 of 16\n40.0% kill rate")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("real survivor", out, out)
 
 
 if __name__ == "__main__":

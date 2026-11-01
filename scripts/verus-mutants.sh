@@ -48,11 +48,15 @@ if PATH="$TOOLCHAIN:$PATH" cargo verus-mutants run \
   rate=$(grep -o '[0-9.]*% kill rate' "$LOG" 2>/dev/null | tail -1)
   killed=$(grep -o '[0-9]* killed by Verus' "$LOG" 2>/dev/null | tail -1)
   echo "verus-mutants: ok (${killed:-0 killed}); ${rate:-threshold met}; sample=$LIMIT of 34"
-elif grep -q 'baseline timed out' "$LOG"; then
-  # Not a proof failure: the baseline build did not finish. Say which, so a red
-  # lane is never read as "the spec got weaker".
-  echo "verus-mutants: SKIPPED (baseline build timed out on this machine — not a survivor)"
-  sed -n '1,10p' "$LOG"
+elif grep -Eq 'baseline timed out|no Verus workspace packages|believes it.s in a workspace' "$LOG"; then
+  # Not a proof failure: the baseline never ran. Two ways that happens — the build
+  # timed out on a loaded machine, or the tool's package copy landed inside the
+  # workspace (`TMPDIR` under the repo makes `cargo metadata` refuse it), so it
+  # found no Verus package at all. Both are INFRASTRUCTURE: nothing was proved, so
+  # reporting a kill rate here would be a claim the data does not support. The gate
+  # calls this lane with `env -u TMPDIR` for the same reason.
+  echo "verus-mutants: SKIPPED (the baseline never ran on this machine — no proof was attempted, so this says nothing about proof depth)"
+  grep -E 'baseline timed out|no Verus workspace packages|believes it' "$LOG" | head -3
 else
   echo "verus-mutants: FAILED — the kill rate fell below the floor (a real survivor)"
   grep -E 'survived|kill rate|Error' "$LOG" | tail -6
