@@ -130,14 +130,6 @@ impl Sandbox {
     }
 }
 
-/// A per-test disambiguator for the sandbox root (no uuid dependency in
-/// dev-deps: the pid plus the server port keeps concurrent runs apart).
-fn uuid_probe() -> String {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let next = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    format!("{next}")
-}
-
 fn run_prime_agent(args: &[&str], sandbox: &Sandbox, url: &str) -> std::process::Output {
     let mut command = prime_agent(args, sandbox);
     command.env(ENV_INSTALLER_URL, url);
