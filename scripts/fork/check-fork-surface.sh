@@ -42,7 +42,7 @@ INSIDERS=(
   crates/pa-core/src/tools/repeat_codec.rs
   crates/pa-core/src/jev
   crates/pa-core/src/session_engine/tool_bridge.rs
-  crates/pa-daemon/src/agent_engine/provider_admission.rs
+  crates/pa-daemon/src/agent_engine/provider_admission
   crates/pa-daemon/src/supervisor/provider_admission.rs
   crates/pa-daemon/src/image_route.rs
   crates/pa-daemon/src/input_pause_lease.rs
@@ -111,7 +111,7 @@ INSIDERS=(
   crates/pa-core/src/tools/repeat_codec.rs
   crates/pa-core/src/jev
   crates/pa-core/src/session_engine/tool_bridge.rs
-  crates/pa-daemon/src/agent_engine/provider_admission.rs
+  crates/pa-daemon/src/agent_engine/provider_admission
   crates/pa-daemon/src/supervisor/provider_admission.rs
   crates/pa-daemon/src/image_route.rs
   crates/pa-daemon/src/input_pause_lease.rs
