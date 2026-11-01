@@ -606,6 +606,12 @@ impl AgentView {
     /// Prepare an in-place mutation of one entry: capture its current
     /// height for `mark_entry_stale`'s tail bookkeeping fold.
     pub fn prepare_entry_mutation(&mut self, index: usize) {
+        // A held index can outlive the entry it names: a streaming index survives a
+        // transcript rebuild, and a click target recorded at the press can outlive a
+        // shrink before its release. Mutating an entry that is gone changes nothing.
+        if index >= self.chat.len() {
+            return;
+        }
         self.pending_handoff = None;
         if self.sparse_window_is_tail_anchored() && self.layout_width > 0 {
             let rows = self.count_entry_rows(index, self.layout_width);
@@ -818,6 +824,39 @@ fn item_to_entry(item: TranscriptItem) -> ChatEntry {
 mod prepend_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod entry_mutation_tests {
+    use super::{AgentView, ChatEntry};
+    use crate::chat::StatusKind;
+    use crate::theme::{ColorMode, Theme};
+
+    /// A held chat index outlives the entry it names: a streaming index survives a
+    /// transcript rebuild, a recorded click target survives a shrink between its press
+    /// and its release, and a restored status index survives an evicted head. Mutating
+    /// an entry that is no longer there is a no-op, never a panic.
+    #[test]
+    fn a_mutation_index_past_the_transcript_is_a_noop() {
+        let mut view = AgentView::new(Theme::builtin("prime", ColorMode::TrueColor));
+        for index in 0..3 {
+            view.push_entry(ChatEntry::Status {
+                text: format!("row {index}"),
+                kind: StatusKind::Info,
+            });
+        }
+        // The first frame lays the transcript out: the sparse window the mutation
+        // path measures against exists only from then on.
+        view.render_frame(80, 12);
+        view.prepare_entry_mutation(3);
+        view.mark_entry_stale(3);
+        // A rebuild empties the transcript under the same held index.
+        view.clear_chat();
+        view.render_frame(80, 12);
+        view.prepare_entry_mutation(0);
+        view.mark_entry_stale(0);
+        assert!(view.chat.is_empty(), "the no-op mutations change no entry");
+    }
+}
+
 #[cfg(test)]
 mod chunk_selection_tests {
     use super::chunk_selection;
