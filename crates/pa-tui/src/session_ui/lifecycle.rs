@@ -561,6 +561,11 @@ impl SessionUi {
         view.clear_chat();
         self.last_status_index = None;
         self.pressed_click = None;
+        // The streaming entry was an index into the transcript that just went
+        // away. A rebuild (navigation, fork, import, reload) leaves the turn
+        // streaming, so the next assistant delta would otherwise prepare a
+        // mutation at a stale index — past the end after a shorter branch.
+        self.streaming_index = None;
         self.pending_tools.clear();
         self.aborted_tools.clear();
         for entry in entries {
