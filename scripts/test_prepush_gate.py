@@ -425,6 +425,28 @@ class VerusAdvisoryLane(unittest.TestCase):
         self.assertIn("verus-mutants (proof depth): SKIPPED", out, out)
         self.assertIn("verus: advisory lanes clean", out, out)
 
+    def test_an_infrastructure_failure_is_not_reported_as_a_survivor(self):
+        """Measured 2026-11-01: the gate exports `TMPDIR="$ROOT/.tmp"`, and
+        `cargo-verus-mutants` copies its package under `$TMPDIR/.tmpXXXX/source`,
+        which is then INSIDE the workspace — `cargo metadata` refuses it and the
+        baseline build dies. `verus-mutants.sh` reports that as "the kill rate fell
+        below the floor (a real survivor)", a claim about the proofs that the
+        evidence does not support: they were never run."""
+        rc, out = self.run_lane(
+            (0, 1),
+            (
+                self.CLEAN_PROOFS,
+                "verus-mutants: FAILED — the kill rate fell below the floor (a real survivor)\n"
+                "Error: baseline failed: cargo verus build -p allspark-verus-mirrors\n"
+                "Error: `cargo metadata` exited with an error: error: current package"
+                " believes it's in a workspace when it's not:",
+            ),
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("INFRASTRUCTURE FAILURE", out, out)
+        self.assertNotIn("a real survivor", out, "the lane's own wrong verdict was repeated")
+        self.assertIn("verus: advisory lanes clean", out, "not counted as a proof failure")
+
     def test_the_mutation_lane_reports_its_own_verdict(self):
         """`verus-mutants.sh` shares its log path with the step's redirect, so the file
         ends on cargo's `summary: <path>` line. Reporting `tail -1` put a file name

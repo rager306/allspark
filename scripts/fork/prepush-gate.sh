@@ -224,7 +224,23 @@ verus_lane() {
   shift 2
   local status=0
   "$@" >"$log" 2>&1 || status=$?
-  if [[ $status -ne 0 ]]; then
+  if [[ $status -ne 0 ]] && grep -qE 'baseline failed|cargo metadata. exited with an error' "$log"; then
+    # An INFRASTRUCTURE failure, not a survivor: the baseline build never ran, and
+    # `verus-mutants.sh` reports that as "the kill rate fell below the floor (a real
+    # survivor)" — a claim about the proofs the evidence does not support. The script
+    # has a SKIPPED arm for its other infrastructure failure (`baseline timed out`);
+    # this is the same class and needs the same arm. Reported here so the gate never
+    # repeats the claim; the durable fix belongs in scripts/verus-mutants.sh.
+    #
+    # The cause measured on this tree: `cargo-verus-mutants` copies its package under
+    # `$TMPDIR/.tmpXXXX/source` and runs `cargo metadata` there. This gate exports
+    # TMPDIR="$ROOT/.tmp", so the copy lands INSIDE the workspace and cargo answers
+    # "current package believes it's in a workspace when it's not". The mutation lane
+    # therefore runs with `env -u TMPDIR` (see its call below).
+    echo "$label: INFRASTRUCTURE FAILURE — the baseline build did not run, so nothing"
+    echo "  was proved either way (not a survivor). Cause, from $log:"
+    grep -m1 -E 'baseline failed' "$log" | sed 's/^/  /'
+  elif [[ $status -ne 0 ]]; then
     verus_advisory_failures=$((verus_advisory_failures + 1))
     echo "$label: FAILED (advisory — reported, never blocks a merge; $log)"
     sed -n '1,12p' "$log" | sed 's/^/  /'
@@ -242,11 +258,17 @@ verus_lane() {
 }
 verus_lane "verus-check (proofs)" "$OUT/verus-check.log" bash scripts/verus-check.sh
 # `.stdout.log`, not `.log`: verus-mutants.sh sets its own LOG to "$OUT/verus-mutants.log"
-# and redirects cargo into it, while this step redirects the script's stdout into the
-# same path. Two streams with independent offsets — the captured file was interleaved
-# garbage (measured: a first line reading `aseline: cargo verus build`, one byte of
-# `baseline` already overwritten), so neither the verdict nor a failure was readable.
-verus_lane "verus-mutants (proof depth)" "$OUT/verus-mutants.stdout.log" bash scripts/verus-mutants.sh
+# and redirects cargo into it, while this step captures the script's stdout — two streams
+# on one path left interleaved garbage (measured: a first line reading `aseline: cargo
+# verus build`, one byte of `baseline` already overwritten).
+#
+# `env -u TMPDIR` for THIS lane only (see the infrastructure arm above): the tool copies
+# its package under "$TMPDIR/.tmpXXXX/source", and the gate's repo-local TMPDIR puts that
+# copy inside the workspace. Every test unit keeps the repo-local scratch; only this tool
+# needs the isolation it assumes it has. Measured 2026-11-01: exit 1 with TMPDIR set to
+# "$ROOT/.tmp", exit 0 with it unset — same tree, same minute.
+verus_lane "verus-mutants (proof depth)" "$OUT/verus-mutants.stdout.log" \
+  env -u TMPDIR bash scripts/verus-mutants.sh
 # An advisory lane that fails silently is a lane nobody reads. The count is printed so
 # a reader of a green gate still learns that a proof needs attention.
 if [[ $verus_advisory_failures -eq 0 ]]; then
