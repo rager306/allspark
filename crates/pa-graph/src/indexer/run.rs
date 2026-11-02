@@ -108,6 +108,10 @@ impl GraphStore {
         for rel in stored.keys() {
             if !seen.contains(rel) {
                 self.clear_file(&opts.project, rel)?;
+                // `call_sites` keys on the file, and `clear_file` only walks the
+                // node/edge/FTS tables — its rows would outlive the file and keep
+                // answering impact questions about call sites that no longer exist.
+                self.clear_call_sites(&opts.project, rel)?;
                 self.remove_file_hash(&opts.project, rel)?;
                 self.remove_file_surface(&opts.project, rel)?;
                 report.removed += 1;

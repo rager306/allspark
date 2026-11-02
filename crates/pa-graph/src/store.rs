@@ -969,6 +969,12 @@ impl GraphStore {
                 (SELECT id FROM nodes WHERE project = ?1 AND file_path = ?2)",
             params![project, rel_path],
         )?;
+        // `call_sites` keys on the file rather than on a node id, so nothing above
+        // takes its rows with it: the re-parse writes the new file's sites while the
+        // old ones stay and keep answering impact questions about call sites the
+        // re-parse removed (review #38). Deleting by file is safe here because the
+        // caller re-extracts the whole file right after.
+        self.clear_call_sites(project, rel_path)?;
         Ok(())
     }
 

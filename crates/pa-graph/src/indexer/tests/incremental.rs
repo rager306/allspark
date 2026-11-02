@@ -276,3 +276,65 @@ fn modified_file_keeps_incoming_call_edges() {
         .expect("in edges");
     assert_eq!(calls.len(), 2, "b::caller and c::other still call a::foo");
 }
+
+/// A removed file must take its call sites with it (review #38).
+///
+/// `call_sites` keys on the file, not on a node id, so `clear_file` — which walks
+/// the node, edge, and FTS tables — leaves the rows behind. They then answer
+/// impact questions about call sites whose file no longer exists.
+#[test]
+fn a_removed_file_takes_its_call_sites_with_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_tree(dir.path());
+    let mut store = GraphStore::open_in_memory().expect("store");
+    store
+        .index_project(dir.path(), &IndexOptions::new("p"))
+        .expect("first");
+    let before = store.call_sites("p").expect("sites").len();
+    assert!(before > 0, "the fixture records a call site to lose");
+
+    std::fs::remove_file(dir.path().join("lib.rs")).expect("remove");
+    store
+        .index_project(dir.path(), &IndexOptions::new("p"))
+        .expect("second");
+
+    assert_eq!(
+        store.call_sites("p").expect("sites").len(),
+        0,
+        "a removed file's call sites must not survive the removal sweep"
+    );
+}
+
+/// The same for a re-parse: the file stays, its old sites must not.
+///
+/// `clear_file_for_reparse` keeps the nodes so other files' incoming edges
+/// survive, and the new extraction writes fresh sites — but the old ones were
+/// keyed on the file and stayed, so a call the edit deleted kept answering.
+#[test]
+fn a_reparse_replaces_the_files_call_sites() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_tree(dir.path());
+    let mut store = GraphStore::open_in_memory().expect("store");
+    store
+        .index_project(dir.path(), &IndexOptions::new("p"))
+        .expect("first");
+    assert!(store.call_sites("p").expect("sites").len() > 0);
+
+    std::fs::write(
+        dir.path().join("lib.rs"),
+        "pub fn load(path: &str) -> u32 { path.len() as u32 }\n",
+    )
+    .expect("rewrite");
+    store
+        .index_project(dir.path(), &IndexOptions::new("p"))
+        .expect("second");
+
+    let sites = store.call_sites("p").expect("sites");
+    eprintln!("SITES AFTER REPARSE: {sites:?}");
+    assert!(
+        sites
+            .iter()
+            .all(|site| !site.caller_qn.contains("parse_config")),
+        "the call site of the removed function outlived the re-parse: {sites:?}"
+    );
+}
