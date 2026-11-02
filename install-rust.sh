@@ -1772,16 +1772,23 @@ env_socket_probe="no"
 if [ -n "$env_socket" ] && [ "$env_socket" != "$ts_socket" ] && [ "$env_socket" != "$rust_socket" ] && [ "$env_socket" != "$fork_socket" ]; then
   env_socket_probe="yes"
 fi
-# The pinned rust socket: OURS whenever it is not the TS default (an env
-# export pointing AT the pin is the same socket — the env candidate is
-# deduped against the pin above, so the pin is the one probed, as ours).
+# The fork socket: OURS, for a fork run only, deduped against the others.
+#
+# When the fork socket equals the pinned rust socket, the fork run is the one
+# that owns it: a fork tarball install pins `${TMPDIR}/allspark-daemon.sock`
+# while an upstream rust install pins `${TMPDIR}/prime-agent-rust-<uid>/`, so
+# the two coincide only when the operator pointed one at the other — and the
+# fork run is the process that is updating. Deduping in the rust-first order
+# would probe it under the rust label, which is the wrong owner for the
+# update-flow next-step line, and would drop the fork candidate entirely
+# (review #40). The rust probe therefore yields to the fork when they are the
+# same path and this is a fork run.
 rust_socket_probe="no"
-if [ "$rust_socket" != "$ts_socket" ]; then
+if [ "$rust_socket" != "$ts_socket" ] && { [ "$fork_run" != "yes" ] || [ "$rust_socket" != "$fork_socket" ]; }; then
   rust_socket_probe="yes"
 fi
-# The fork socket: OURS, for a fork run only, deduped against the others.
 fork_socket_probe="no"
-if [ "$fork_run" = "yes" ] && [ "$fork_socket" != "$ts_socket" ] && [ "$fork_socket" != "$rust_socket" ] && [ "$fork_socket" != "$env_socket" ]; then
+if [ "$fork_run" = "yes" ] && [ "$fork_socket" != "$ts_socket" ] && [ "$fork_socket" != "$env_socket" ]; then
   fork_socket_probe="yes"
 fi
 # ts_candidate_report: the candidates actually probed, in probe order, for the

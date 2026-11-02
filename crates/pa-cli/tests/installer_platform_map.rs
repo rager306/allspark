@@ -1272,3 +1272,79 @@ fn the_fork_run_skips_the_upstream_ts_socket_and_probes_the_fork_socket() {
         "the allspark env socket still probes the fork default: {fork_env}"
     );
 }
+
+/// The socket dedup must not drop both candidates when the fork and rust
+/// paths coincide (review #40).
+///
+/// A fork tarball install pins `${TMPDIR}/allspark-daemon.sock`; an upstream
+/// rust install pins `${TMPDIR}/prime-agent-rust-<uid>/daemon.sock`. They
+/// coincide only when an operator pointed one at the other, and then the
+/// running fork process is the one that owns it. Deduping rust-first dropped
+/// the fork candidate (`fork != rust` fails) and left the pin classified as
+/// `ours` under the wrong owner, so the update-flow next-step line could claim
+/// the wrong thing.
+#[test]
+fn the_socket_dedup_keeps_the_fork_owner_when_the_paths_coincide() {
+    let text = std::fs::read_to_string(repo_root().join("install-rust.sh"))
+        .expect("read the installer script");
+    let start = text
+        .find("env_socket_probe=\"no\"")
+        .expect("the env candidate block");
+    let end_at = start
+        + text[start..]
+            .find("ts_candidate_report=\"\"")
+            .expect("the candidate report");
+    let block = &text[start..end_at];
+
+    // Drive the block with fixed inputs and print both verdicts.
+    let probe = |rust_socket: &str, fork_socket: &str, fork_run: &str| -> (String, String) {
+        let harness = format!(
+            "set -u\n\
+             ts_socket=/tmp/ts.sock\n\
+             rust_socket={rust_socket}\n\
+             fork_socket={fork_socket}\n\
+             fork_run={fork_run}\n\
+             env_socket=\n\
+             {block}\n\
+             printf '%s %s\\n' \"$rust_socket_probe\" \"$fork_socket_probe\""
+        );
+        let out = Command::new("sh")
+            .arg("-c")
+            .arg(&harness)
+            .output()
+            .expect("run the dedup block");
+        assert!(
+            out.status.success(),
+            "the dedup block failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let mut parts = text.split_whitespace();
+        (
+            parts.next().unwrap_or_default().to_string(),
+            parts.next().unwrap_or_default().to_string(),
+        )
+    };
+
+    // The coincidence: exactly one owner, and it is the fork run.
+    assert_eq!(
+        probe("/tmp/same.sock", "/tmp/same.sock", "yes"),
+        ("no".to_string(), "yes".to_string()),
+        "a fork run owns the shared path; the rust label must yield"
+    );
+    // Not a fork run: the rust pin keeps it.
+    assert_eq!(
+        probe("/tmp/same.sock", "/tmp/same.sock", "no"),
+        ("yes".to_string(), "no".to_string())
+    );
+    // Distinct paths: both are probed.
+    assert_eq!(
+        probe("/tmp/r.sock", "/tmp/f.sock", "yes"),
+        ("yes".to_string(), "yes".to_string())
+    );
+    // The fork path equal to the TS default belongs to TS: neither ours.
+    assert_eq!(
+        probe("/tmp/r.sock", "/tmp/ts.sock", "yes"),
+        ("yes".to_string(), "no".to_string())
+    );
+}
