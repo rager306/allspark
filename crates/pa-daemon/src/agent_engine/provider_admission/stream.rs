@@ -36,6 +36,7 @@ pub fn admit_stream_fn(inner: StreamFn, key_of: KeyResolver, client: AdmissionCl
                     StreamAdmission::Admitted(id) => Some(StreamLease {
                         id,
                         client: client.clone(),
+                        resolved: false,
                     }),
                     StreamAdmission::Unadmitted => None,
                     // The provider's breaker is open (M4): fail fast with

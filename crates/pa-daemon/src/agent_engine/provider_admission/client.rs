@@ -112,6 +112,7 @@ impl AdmissionClient {
                             StreamLease {
                                 id,
                                 client: self.clone(),
+                                resolved: false,
                             },
                             stagger,
                         )
@@ -131,6 +132,7 @@ impl AdmissionClient {
                     StreamLease {
                         id,
                         client: self.clone(),
+                        resolved: false,
                     },
                     Duration::from_millis(stagger_ms),
                 ))
@@ -294,6 +296,12 @@ fn lease_command(worker_token: &str, action: &str, lease: u64) -> serde_json::Va
 pub struct StreamLease {
     pub(super) id: u64,
     pub(super) client: AdmissionClient,
+    /// Set once the settle/release round trip RESOLVED. `id` stays valid until
+    /// then so a cancelled future, a dropped stream, or a failed call still
+    /// reaches `Drop`'s detached release — clearing `id` first orphaned the slot
+    /// on a live worker (review #7). The flag, not a zeroed id, is what keeps a
+    /// resolved lease from releasing twice.
+    pub(super) resolved: bool,
 }
 
 impl StreamLease {
@@ -303,23 +311,28 @@ impl StreamLease {
     }
 
     /// Settle the slot with its AIMD signal.
+    ///
+    /// The id is cleared only after the call RESOLVES: clearing it first
+    /// disabled `Drop`'s detached release, so a cancelled future or a failed
+    /// round trip left the slot held forever on a live worker (review #7).
     pub async fn settle(mut self, outcome: StreamOutcome) {
-        let id = self.id;
-        self.id = 0;
-        self.client.settle(id, outcome).await;
+        self.client.settle(self.id, outcome).await;
+        self.resolved = true;
     }
 
     /// Give the slot back without a signal.
     pub async fn release(mut self) {
-        let id = self.id;
-        self.id = 0;
-        self.client.release(id).await;
+        self.client.release(self.id).await;
+        self.resolved = true;
     }
 }
 
 impl Drop for StreamLease {
     fn drop(&mut self) {
-        if self.id != 0 {
+        // A resolved lease already gave its slot back; an unresolved one still
+        // holds it, whether the caller dropped it, the future was cancelled, or
+        // the round trip failed.
+        if !self.resolved {
             self.client.release_detached(self.id);
         }
     }

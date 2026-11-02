@@ -1823,3 +1823,189 @@ async fn closing_the_breaker_releases_other_model_queues() {
         "the parked waiter must be admitted, got {admitted_after_recovery:?}"
     );
 }
+
+fn agent_model() -> pa_agent::types::Model {
+    pa_agent::types::Model {
+        id: "glm-5.3".to_string(),
+        name: "glm".to_string(),
+        api: "openai".to_string(),
+        provider: "zai".to_string(),
+        base_url: String::new(),
+        reasoning: false,
+        cost: pa_agent::types::UsageCost::default(),
+        context_window: 0,
+        max_tokens: 0,
+        max_tokens_explicit: false,
+    }
+}
+
+fn llm_context() -> LlmContext {
+    LlmContext {
+        system_prompt: None,
+        system_prompt_cache_prefix: None,
+        messages: Vec::new(),
+        tools: Vec::new(),
+    }
+}
+
+fn stream_options() -> pa_agent::stream::StreamRequestOptions {
+    pa_agent::stream::StreamRequestOptions {
+        transport: None,
+        temperature: None,
+        max_tokens: None,
+        reasoning: pa_agent::types::ThinkingLevel::Off,
+        session_id: None,
+        service_tier: None,
+        api_key: None,
+        signal: pa_agent::abort::AbortSignal::never(),
+        on_payload: None,
+        on_response: None,
+        headers: None,
+    }
+}
+
+/// A stream dropped without settling still returns its slot (review #7).
+///
+/// `StreamLease::settle`/`release` used to clear the lease id BEFORE awaiting, so
+/// `Drop` saw zero and skipped its detached release. A cancelled future — the
+/// abort path, an aborted turn, a dropped stream — then left the slot held on a
+/// LIVE worker, which the supervisor's holder reaping never reclaims because the
+/// holder is alive. Each cancellation shrank the provider's capacity by one.
+#[tokio::test]
+async fn a_stream_dropped_before_it_ends_returns_its_slot() {
+    use pa_agent::stream::StreamRequestOptions;
+    use pa_agent::types::Model as AgentModel;
+
+    let registry = ProviderAdmission::new(1);
+    let key = key();
+    let inner: StreamFn = Arc::new(
+        move |_model: AgentModel, _context: LlmContext, _options: StreamRequestOptions| {
+            Box::pin(async move {
+                let (_handle, consumer) = pa_agent::stream::event_stream();
+                Ok(Box::new(consumer) as Box<dyn ModelStream>)
+            })
+        },
+    );
+    let key_of: KeyResolver = {
+        let key = key.clone();
+        Arc::new(move || key.clone())
+    };
+    let client = AdmissionClient::local(Arc::clone(&registry));
+    let stream_fn = admit_stream_fn(inner, key_of, client);
+
+    let stream = stream_fn(agent_model(), llm_context(), stream_options())
+        .await
+        .expect("the wrapped stream opens");
+    assert_eq!(
+        registry.snapshot(&key).in_flight,
+        1,
+        "the stream holds the only slot"
+    );
+
+    // The abort shape: the stream is dropped while it is still open.
+    drop(stream);
+
+    until(
+        || registry.snapshot(&key).in_flight == 0,
+        "a stream dropped before it ends returns its slot",
+    )
+    .await;
+}
+
+/// A settled stream does not release a second time (review #7).
+///
+/// The `resolved` flag, not a zeroed id, keeps `Drop` quiet: a double release
+/// decrements a counter another lease owns, and at the floor it frees a slot
+/// nobody holds.
+#[tokio::test]
+async fn a_settled_stream_does_not_release_the_slot_twice() {
+    use pa_agent::stream::StreamRequestOptions;
+    use pa_agent::types::Model as AgentModel;
+
+    let registry = ProviderAdmission::new(1);
+    let key = key();
+    let inner: StreamFn = Arc::new(
+        move |_model: AgentModel, _context: LlmContext, _options: StreamRequestOptions| {
+            Box::pin(async move {
+                let (_handle, consumer) = pa_agent::stream::event_stream();
+                Ok(Box::new(consumer) as Box<dyn ModelStream>)
+            })
+        },
+    );
+    let key_of: KeyResolver = {
+        let key = key.clone();
+        Arc::new(move || key.clone())
+    };
+    let client = AdmissionClient::local(Arc::clone(&registry));
+    let stream_fn = admit_stream_fn(inner, key_of, client);
+
+    let first = stream_fn(agent_model(), llm_context(), stream_options())
+        .await
+        .expect("the first stream opens");
+    // A second acquirer parks on the FIFO behind the single slot.
+    let queued = {
+        let registry = Arc::clone(&registry);
+        let key = key.clone();
+        tokio::spawn(async move {
+            registry
+                .acquire_stream_within(&key, "queued-worker", Duration::from_secs(30))
+                .await
+        })
+    };
+    until(
+        || registry.snapshot(&key).queued == 1,
+        "the second acquirer parks",
+    )
+    .await;
+
+    // Dropping the live stream is what a settled stream's Drop looks like once
+    // `resolved` is set: exactly one release must reach the pool, so the queued
+    // acquirer takes it and the counter lands on 1, not 0.
+    drop(first);
+    let admitted = tokio::time::timeout(Duration::from_secs(2), queued)
+        .await
+        .expect("the queued acquirer is served")
+        .expect("the task joins");
+    assert!(
+        matches!(admitted, StreamAdmission::Admitted(_)),
+        "the queued acquirer must get the slot, got {admitted:?}"
+    );
+    assert_eq!(
+        registry.snapshot(&key).in_flight,
+        1,
+        "exactly one release: the queued lease holds the slot"
+    );
+}
+
+/// The lease keeps its id until the settle RESOLVES (review #7).
+///
+/// The defect was ordering, not arithmetic: `settle` cleared the id and then
+/// awaited, so any cancellation of that await left `Drop` with nothing to release
+/// and the slot held on a live worker. Cancelling a `Local` settle is not
+/// reachable — that path is synchronous — so the invariant is pinned directly:
+/// while the settle is in flight the lease still owns its id, and only a resolved
+/// settle sets `resolved`.
+#[tokio::test]
+async fn a_lease_keeps_its_id_until_the_settle_resolves() {
+    let registry = ProviderAdmission::new(1);
+    let key = key();
+    let client = AdmissionClient::local(Arc::clone(&registry));
+    let id = match registry
+        .acquire_stream_within(&key, "worker-a", Duration::from_millis(50))
+        .await
+    {
+        StreamAdmission::Admitted(id) => id,
+        other => panic!("the acquire must admit, got {other:?}"),
+    };
+    let lease = StreamLease {
+        id,
+        client,
+        resolved: false,
+    };
+    assert_eq!(
+        lease.id(),
+        id,
+        "a lease owns its id from construction until its settle resolves"
+    );
+    assert_ne!(id, 0, "a real lease id is never zero");
+}
