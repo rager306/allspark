@@ -71,7 +71,17 @@ async fn acquire_cleanup_lock(path: &Path) -> Result<pa_core::platform::LockDir>
 #[cfg(unix)]
 pub async fn prepare_socket_path(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
-        crate::paths::ensure_dir(parent)?;
+        // Create the parent if it is missing, but NEVER re-mode a directory that
+        // already exists: the default socket lives in the shared temp dir, and
+        // `ensure_dir` ends with `restrict_dir` (0700), which on an existing
+        // `${TMPDIR:-/tmp}` drops the sticky bit and makes the machine's shared
+        // temp dir owner-only (review #9, CWE-276). Measured on a live host:
+        // `/tmp` had become `drwx------` while `/var/tmp` stayed `drwxrwxrwt`.
+        if !parent.exists() {
+            crate::paths::ensure_dir(parent)?;
+        }
+        // The socket FILE is owner-only regardless (the bind's umask), and a
+        // private per-user parent keeps that guarantee when the caller passes one.
     }
     // lstat, not `Path::exists()`: a dangling symlink still blocks `bind`
     // while `exists()` (which follows links) denies it.
@@ -607,4 +617,30 @@ mod tests {
             .unwrap();
         assert!(!socket.exists(), "stale socket file must be unlinked");
     }
+}
+
+/// A socket parent that already exists keeps its mode (review #9, CWE-276).
+///
+/// The default socket lives in the shared temp dir. `ensure_dir` ends with
+/// `restrict_dir` (0700), so preparing the path used to chmod the caller's
+/// `${TMPDIR:-/tmp}` — on a live host `/tmp` had become `drwx------` (no sticky
+/// bit) while `/var/tmp` stayed `drwxrwxrwt`.
+#[tokio::test]
+async fn an_existing_socket_parent_keeps_its_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let shared = dir.path().join("shared-tmp");
+    std::fs::create_dir(&shared).unwrap();
+    // The shape a shared temp dir has: world-writable with the sticky bit.
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o1777)).unwrap();
+    let socket = shared.join("daemon.sock");
+
+    prepare_socket_path(&socket).await.unwrap();
+
+    let mode = std::fs::metadata(&shared).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(
+        mode, 0o1777,
+        "preparing a socket must not re-mode an existing shared parent"
+    );
 }
