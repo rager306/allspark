@@ -1,19 +1,20 @@
 //! Inline (daemonless) RLM subagents for the print runtime: the
 //! in-process child-session host over a tree of session nodes, the
-//! agent-messaging controller for that tree, the quiescence drive that
-//! holds a print run open until every admitted descendant settles, and
-//! the exit disposal. TS parity is `_createInlineRlmSubagentRuntime` +
-//! `waitForRlmQuiescence` minus the #2270 bug (print must wait for RLM
-//! quiescence, not just headless idle).
+//! agent-messaging and agent-observation controllers for that tree, the
+//! quiescence drive that holds a print run open until every admitted
+//! descendant settles, and the exit disposal. TS parity is
+//! `_createInlineRlmSubagentRuntime` + `waitForRlmQuiescence` minus the
+//! #2270 bug (print must wait for RLM quiescence, not just headless idle).
 
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
 use pa_core::session_engine::agent_messaging::{
     create_agent_session_message_id, create_agent_session_message_prompt,
-    create_agent_session_message_row, AgentFamilyMember, AgentFamilyRelationship,
-    AgentMessageController, AgentMessageDeliveryStatus, AgentMessagePromptPayload,
-    AgentMessageReceipt, AgentMessageSendInput, AgentSessionMessageRowPayload,
+    create_agent_session_message_row, register_agent_observe_host_handlers, AgentFamilyMember,
+    AgentFamilyRelationship, AgentMessageController, AgentMessageDeliveryStatus,
+    AgentMessagePromptPayload, AgentMessageReceipt, AgentMessageSendInput,
+    AgentSessionMessageRowPayload,
 };
 use pa_core::session_engine::engine::SessionEngine;
 use pa_core::session_engine::goal_boundary::custom_message_to_loop_row;
@@ -36,6 +37,10 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::print_boundary::TurnBoundary;
 use crate::print_runtime::{ChildEngineOverrides, ChildLane, FauxChildQueue, HeadlessEmbedding};
+
+mod observe;
+
+use observe::InlineObserve;
 
 /// Everything a spawned child inherits from the print invocation: the
 /// invocation's own config (cwd, agent dir, prompt/skill paths) and the
@@ -223,8 +228,12 @@ pub(crate) async fn adopt_built_engine(
     *node.thinking.lock().unwrap() = Some(model_thinking_level(level));
 }
 
-/// The inline host and the agent-message handlers one engine build wires
-/// over its node (the root and every child get both).
+/// The inline host and the family handlers one engine build wires over its
+/// node (the root and every child get both halves): `agent_message.*` from
+/// the messaging controller and `agent_observe.*` from the observation
+/// controller. Both ride the same node tree, so a print session with inline
+/// subagents offers the family surface the core prompt layer advertises for
+/// it — and `agent-observe` stays in the model-visible skill inventory.
 pub(crate) fn inline_subagent_wiring(
     node: &Arc<InlineSessionNode>,
 ) -> (
@@ -234,6 +243,10 @@ pub(crate) fn inline_subagent_wiring(
     let mut handlers = pa_core::kernel::shared::HostRequestHandlers::default();
     pa_core::session_engine::agent_messaging::register_agent_message_host_handlers(
         std::sync::Arc::new(InlineMessages(Arc::clone(node))),
+        &mut handlers,
+    );
+    register_agent_observe_host_handlers(
+        std::sync::Arc::new(InlineObserve::new(Arc::clone(node))),
         &mut handlers,
     );
     (Arc::new(InlineHost(Arc::clone(node))), handlers)
@@ -1245,7 +1258,7 @@ impl AgentMessageController for InlineMessages {
 mod tests {
     use super::*;
 
-    fn run_options(directory: &std::path::Path) -> crate::mode::RunOptions {
+    pub(super) fn run_options(directory: &std::path::Path) -> crate::mode::RunOptions {
         crate::mode::RunOptions {
             app_mode: crate::mode::AppMode::Print,
             config: crate::mode::RuntimeConfig {
