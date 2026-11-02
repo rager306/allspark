@@ -631,8 +631,26 @@ pub fn installed_channel(prefix: &Path) -> Option<&'static str> {
 /// # Errors
 /// Returns an error when the request fails, answers a non-success status,
 /// or the body cannot be read or written.
+/// The redirect policy for the installer download: an https→https hop is
+/// allowed (GitHub Releases redirects `…/releases/latest/download/<asset>` to a
+/// CDN), any downgrade to http is refused (review #5, CWE-319).
+///
+/// `ensure_https_url` only sees the URL the caller passed; reqwest follows up to
+/// ten redirects by default, so without this a plaintext Location header would
+/// hand the funnel a script it then pipes to `/bin/sh -s --`.
+fn installer_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.url().scheme() == "https" {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
+
 async fn fetch_script(url: &str) -> Result<(PathBuf, std::fs::File)> {
     let response = pa_ai::utils::tls::http_client_builder()
+        .redirect(installer_redirect_policy())
         .build()
         .expect("installer client")
         .get(url)
@@ -1766,4 +1784,128 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
             "the bundled installer and install-rust.sh differ in length"
         );
     }
+}
+
+/// A redirect that leaves https is not followed (review #5, CWE-319).
+///
+/// `ensure_https_url` only vets the URL the caller passed; reqwest follows up to
+/// ten redirects by default, so a plaintext `Location` would hand the funnel a
+/// script it pipes to `/bin/sh -s --`. The policy allows an https→https hop
+/// (GitHub Releases redirects to a CDN) and stops at any other scheme.
+///
+/// The policy is exercised through a real redirect chain on loopback rather than
+/// by inspecting the closure: what matters is the request the client actually
+/// makes, not the shape of the code that decides it.
+#[tokio::test]
+async fn an_installer_redirect_to_plaintext_is_not_followed() {
+    use std::io::{Read as _, Write as _};
+
+    // A target server that records whether it was reached at all.
+    let target = std::net::TcpListener::bind("127.0.0.1:0").expect("bind target");
+    let target_address = target.local_addr().expect("target address");
+    target.set_nonblocking(true).expect("nonblocking target");
+
+    // The redirecting server answers with one Location pointing at the target.
+    let redirector = std::net::TcpListener::bind("127.0.0.1:0").expect("bind redirector");
+    let redirector_address = redirector.local_addr().expect("redirector address");
+    std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = redirector.accept() {
+            let mut head = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                match stream.read(&mut byte) {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => head.push(byte[0]),
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://{target_address}/install.sh\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+
+    let client = pa_ai::utils::tls::http_client_builder()
+        .redirect(installer_redirect_policy())
+        .build()
+        .expect("client");
+    let response = client
+        .get(format!("http://{redirector_address}/install.sh"))
+        .send()
+        .await
+        .expect("the redirect response itself arrives");
+    // A 3xx means the client stopped instead of following.
+    assert!(
+        response.status().is_redirection(),
+        "an http Location must stop the chain, got {}",
+        response.status()
+    );
+    // And the plaintext target was never contacted.
+    assert!(
+        target.accept().is_err(),
+        "the plaintext target must never be reached"
+    );
+}
+
+/// The policy is the difference: reqwest's default follows the same chain.
+///
+/// Without this, a passing redirect test proves only that the chain stopped —
+/// which could be for any reason. Here the default client is driven over the
+/// same two servers and must reach the plaintext target, so the pair pins the
+/// behavioural difference the fix buys.
+#[tokio::test]
+async fn the_default_policy_would_have_followed_the_plaintext_hop() {
+    use std::io::{Read as _, Write as _};
+
+    let target = std::net::TcpListener::bind("127.0.0.1:0").expect("bind target");
+    let target_address = target.local_addr().expect("target address");
+    // The target answers 200 with a body, and records that it was reached.
+    std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = target.accept() {
+            let mut head = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                match stream.read(&mut byte) {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => head.push(byte[0]),
+                }
+            }
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nreached",
+            );
+        }
+    });
+
+    let redirector = std::net::TcpListener::bind("127.0.0.1:0").expect("bind redirector");
+    let redirector_address = redirector.local_addr().expect("redirector address");
+    std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = redirector.accept() {
+            let mut head = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                match stream.read(&mut byte) {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => head.push(byte[0]),
+                }
+            }
+            let response = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://{target_address}/install.sh\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+
+    let body = reqwest::Client::new()
+        .get(format!("http://{redirector_address}/install.sh"))
+        .send()
+        .await
+        .expect("the default client follows the hop")
+        .text()
+        .await
+        .expect("body");
+    assert_eq!(
+            body, "reached",
+            "the default policy must reach the plaintext target, which is why the installer sets its own"
+        );
 }
