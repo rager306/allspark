@@ -318,7 +318,12 @@ fn a_reparse_replaces_the_files_call_sites() {
     store
         .index_project(dir.path(), &IndexOptions::new("p"))
         .expect("first");
-    assert!(store.call_sites("p").expect("sites").len() > 0);
+    // Two: `lib::parse_config -> load` and `lib::load -> len`.
+    assert_eq!(
+        store.call_sites("p").expect("sites").len(),
+        2,
+        "the fixture records two call sites to lose"
+    );
 
     std::fs::write(
         dir.path().join("lib.rs"),
