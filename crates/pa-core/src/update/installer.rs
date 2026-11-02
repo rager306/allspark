@@ -1800,10 +1800,23 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
 async fn an_installer_redirect_to_plaintext_is_not_followed() {
     use std::io::{Read as _, Write as _};
 
-    // A target server that records whether it was reached at all.
+    // A target server that records whether it was reached at all. It ANSWERS when
+    // reached — a listener that only accepts would hang the client under a broken
+    // policy, turning this test into a suite-wide stall instead of a failure.
     let target = std::net::TcpListener::bind("127.0.0.1:0").expect("bind target");
     let target_address = target.local_addr().expect("target address");
-    target.set_nonblocking(true).expect("nonblocking target");
+    let reached = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let reached = std::sync::Arc::clone(&reached);
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = target.accept() {
+                reached.store(true, std::sync::atomic::Ordering::SeqCst);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nreached",
+                );
+            }
+        });
+    }
 
     // The redirecting server answers with one Location pointing at the target.
     let redirector = std::net::TcpListener::bind("127.0.0.1:0").expect("bind redirector");
@@ -1843,7 +1856,7 @@ async fn an_installer_redirect_to_plaintext_is_not_followed() {
     );
     // And the plaintext target was never contacted.
     assert!(
-        target.accept().is_err(),
+        !reached.load(std::sync::atomic::Ordering::SeqCst),
         "the plaintext target must never be reached"
     );
 }
@@ -1896,16 +1909,22 @@ async fn the_default_policy_would_have_followed_the_plaintext_hop() {
         }
     });
 
-    let body = reqwest::Client::new()
-        .get(format!("http://{redirector_address}/install.sh"))
-        .send()
-        .await
-        .expect("the default client follows the hop")
-        .text()
-        .await
-        .expect("body");
+    // A bounded wait: if the default client ever stops following, this test fails
+    // with a timeout instead of hanging the suite on a listener nobody accepts.
+    let body = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        reqwest::Client::new()
+            .get(format!("http://{redirector_address}/install.sh"))
+            .send(),
+    )
+    .await
+    .expect("the default client must answer within the bound")
+    .expect("the default client follows the hop")
+    .text()
+    .await
+    .expect("body");
     assert_eq!(
-            body, "reached",
-            "the default policy must reach the plaintext target, which is why the installer sets its own"
-        );
+        body, "reached",
+        "the default policy must reach the plaintext target, which is why the installer sets its own"
+    );
 }
