@@ -55,25 +55,7 @@ impl AgentCronJobStore {
             anyhow::bail!("Heartbeat instruction cannot be empty");
         }
         let now_iso = iso_from_millis(now);
-        let existing: Vec<AgentCronJob> = self
-            .read_jobs()
-            .into_iter()
-            .map(|job| {
-                if job.active_session_id == input.active_session_id
-                    && job.source.as_deref() == Some("heartbeat")
-                    && matches!(job.status, JobStatus::Active | JobStatus::Paused)
-                {
-                    AgentCronJob {
-                        status: JobStatus::Cancelled,
-                        next_run_at: None,
-                        updated_at: now_iso.clone(),
-                        ..job
-                    }
-                } else {
-                    job
-                }
-            })
-            .collect();
+        let cancel_stamp = now_iso.clone();
         let job = AgentCronJob {
             id: Uuid::new_v4().to_string(),
             status: JobStatus::Active,
@@ -99,9 +81,24 @@ impl AgentCronJobStore {
             last_error: None,
             run_count: 0,
         };
-        let mut jobs = existing;
-        jobs.push(job.clone());
-        self.write_jobs(&jobs)?;
+        // Cancel-and-add inside ONE lock, against the state as it is on disk:
+        // read-then-write dropped a job another writer added in between, and a
+        // timestamp tie kept the stale row (review #2).
+        let created = job.clone();
+        self.mutate_states(|state| {
+            for existing in &mut state.jobs {
+                if existing.active_session_id == input.active_session_id
+                    && existing.source.as_deref() == Some("heartbeat")
+                    && matches!(existing.status, JobStatus::Active | JobStatus::Paused)
+                {
+                    existing.status = JobStatus::Cancelled;
+                    existing.next_run_at = None;
+                    existing.updated_at.clone_from(&cancel_stamp);
+                }
+            }
+            state.jobs.push(created.clone());
+            Vec::new()
+        })?;
         Ok(job)
     }
     /// # Errors
@@ -116,25 +113,30 @@ impl AgentCronJobStore {
             return Ok(None);
         };
         let now_iso = iso_from_millis(now);
+        // The read and the write happen under ONE lock. Reading the jobs, building
+        // the new list and rewriting the file as separate steps left a window in
+        // which another writer's job (a concurrent add, a scheduler claim) was read
+        // into `jobs` and then dropped by the rewrite — and a timestamp tie made the
+        // merge keep the stale row, so the management call acknowledged a pause that
+        // was never persisted (review #2).
         let mut paused = None;
-        let jobs: Vec<AgentCronJob> = self
-            .read_jobs()
-            .into_iter()
-            .map(|job| {
+        self.mutate_states(|state| {
+            for job in &mut state.jobs {
                 if job.id != current.id {
-                    return job;
+                    continue;
                 }
                 let paused_job = AgentCronJob {
                     status: JobStatus::Paused,
                     next_run_at: None,
                     updated_at: now_iso.clone(),
-                    ..job
+                    ..job.clone()
                 };
-                paused = Some(paused_job.clone());
-                paused_job
-            })
-            .collect();
-        self.write_jobs(&jobs)?;
+                *job = paused_job.clone();
+                paused = Some(paused_job);
+                break;
+            }
+            Vec::new()
+        })?;
         Ok(paused)
     }
 
@@ -156,25 +158,26 @@ impl AgentCronJobStore {
             anyhow::bail!("Heartbeat schedule must be recurring");
         };
         let now_iso = iso_from_millis(now);
+        // One lock for the read and the write (review #2): read-then-write lost a
+        // concurrent writer's job, and a timestamp tie kept the stale row.
         let mut resumed = None;
-        let jobs: Vec<AgentCronJob> = self
-            .read_jobs()
-            .into_iter()
-            .map(|job| {
+        self.mutate_states(|state| {
+            for job in &mut state.jobs {
                 if job.id != current.id {
-                    return job;
+                    continue;
                 }
                 let resumed_job = AgentCronJob {
                     status: JobStatus::Active,
                     next_run_at: Some(iso_from_millis(next_run_at)),
                     updated_at: now_iso.clone(),
-                    ..job
+                    ..job.clone()
                 };
-                resumed = Some(resumed_job.clone());
-                resumed_job
-            })
-            .collect();
-        self.write_jobs(&jobs)?;
+                *job = resumed_job.clone();
+                resumed = Some(resumed_job);
+                break;
+            }
+            Vec::new()
+        })?;
         Ok(resumed)
     }
 
@@ -191,24 +194,23 @@ impl AgentCronJobStore {
         };
         let now_iso = iso_from_millis(now);
         let mut cleared = None;
-        let jobs: Vec<AgentCronJob> = self
-            .read_jobs()
-            .into_iter()
-            .map(|job| {
+        self.mutate_states(|state| {
+            for job in &mut state.jobs {
                 if job.id != current.id {
-                    return job;
+                    continue;
                 }
                 let cleared_job = AgentCronJob {
                     status: JobStatus::Cancelled,
                     next_run_at: None,
                     updated_at: now_iso.clone(),
-                    ..job
+                    ..job.clone()
                 };
-                cleared = Some(cleared_job.clone());
-                cleared_job
-            })
-            .collect();
-        self.write_jobs(&jobs)?;
+                *job = cleared_job.clone();
+                cleared = Some(cleared_job);
+                break;
+            }
+            Vec::new()
+        })?;
         Ok(cleared)
     }
 
@@ -226,66 +228,66 @@ impl AgentCronJobStore {
         now: u64,
     ) -> anyhow::Result<Option<AgentCronJob>> {
         let now_iso = iso_from_millis(now);
+        // One lock for the read and the write (review #2). The resume arm used to
+        // write twice — once for the status change, once for the recomputed
+        // `next_run_at` — so a concurrent writer's job could be dropped by either.
         let mut updated = None;
-        let jobs: Vec<AgentCronJob> = self
-            .read_jobs()
-            .into_iter()
-            .map(|job| {
+        let mut failure: Option<anyhow::Error> = None;
+        self.mutate_states(|state| {
+            for job in &mut state.jobs {
                 if job.id != id
                     || job.active_session_id != active_session_id
-                    || !is_heartbeat_cron_job(&job)
+                    || !is_heartbeat_cron_job(job)
                 {
-                    return job;
+                    continue;
                 }
                 if matches!(job.status, JobStatus::Cancelled | JobStatus::Completed) {
-                    return job;
+                    continue;
                 }
-                let next_job = match action {
+                let mut next_job = match action {
                     HeartbeatManagementAction::Pause => AgentCronJob {
                         status: JobStatus::Paused,
                         next_run_at: None,
                         updated_at: now_iso.clone(),
-                        ..job
+                        ..job.clone()
                     },
                     HeartbeatManagementAction::Stop => AgentCronJob {
                         status: JobStatus::Cancelled,
                         next_run_at: None,
                         updated_at: now_iso.clone(),
-                        ..job
+                        ..job.clone()
                     },
                     HeartbeatManagementAction::Resume => AgentCronJob {
                         status: JobStatus::Active,
                         updated_at: now_iso.clone(),
-                        ..job
+                        ..job.clone()
                     },
                 };
-                updated = Some(next_job.clone());
-                next_job
-            })
-            .collect();
-        let Some(mut updated_job) = updated else {
-            return Ok(None);
-        };
-        if action == HeartbeatManagementAction::Resume {
-            let Some(next_run_at) = next_run_at_for_schedule(&updated_job.schedule, now)? else {
-                anyhow::bail!("Heartbeat schedule must be recurring");
-            };
-            updated_job.next_run_at = Some(iso_from_millis(next_run_at));
-            let jobs: Vec<AgentCronJob> = jobs
-                .into_iter()
-                .map(|job| {
-                    if job.id == updated_job.id {
-                        updated_job.clone()
-                    } else {
-                        job
+                if action == HeartbeatManagementAction::Resume {
+                    match next_run_at_for_schedule(&next_job.schedule, now) {
+                        Ok(Some(next_run_at)) => {
+                            next_job.next_run_at = Some(iso_from_millis(next_run_at));
+                        }
+                        Ok(None) => {
+                            failure = Some(anyhow::anyhow!("Heartbeat schedule must be recurring"));
+                            break;
+                        }
+                        Err(error) => {
+                            failure = Some(error);
+                            break;
+                        }
                     }
-                })
-                .collect();
-            self.write_jobs(&jobs)?;
-            return Ok(Some(updated_job));
+                }
+                *job = next_job.clone();
+                updated = Some(next_job);
+                break;
+            }
+            Vec::new()
+        })?;
+        if let Some(error) = failure {
+            return Err(error);
         }
-        self.write_jobs(&jobs)?;
-        Ok(Some(updated_job))
+        Ok(updated)
     }
 }
 
@@ -341,5 +343,41 @@ mod tests {
         assert!(store
             .create_heartbeat(&input("nope", "in 10m", now))
             .is_err());
+    }
+
+    /// A management call stamped BEHIND the row it edits is refused, not acked.
+    ///
+    /// The merge accepts a candidate only when it is at least as fresh, so a pause
+    /// stamped before the row's own `updated_at` is discarded — while the old
+    /// read-modify-write returned `Some(paused)` as if it had persisted. Callers got an
+    /// acknowledgement for a change the store threw away.
+    #[test]
+    fn a_management_write_older_than_the_row_is_not_acknowledged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.json");
+        let now = 1_700_000_000_000_u64;
+
+        let store = AgentCronJobStore::new(path);
+        let job = store
+            .create_heartbeat(&input("continue", "every 5m", now))
+            .unwrap();
+        // The row is stamped later by a resume.
+        store
+            .resume_heartbeat("live-1", now + 60_000)
+            .unwrap()
+            .expect("resumed");
+
+        // A pause stamped BEFORE that instant cannot win the merge.
+        let paused = store.pause_heartbeat("live-1", now).unwrap();
+        let on_disk = store
+            .read_jobs()
+            .into_iter()
+            .find(|row| row.id == job.id)
+            .expect("the job survives");
+
+        assert!(
+            !(paused.is_some() && on_disk.status != JobStatus::Paused),
+            "the store acknowledged a pause it discarded: ack={paused:?} on_disk={on_disk:?}"
+        );
     }
 }
