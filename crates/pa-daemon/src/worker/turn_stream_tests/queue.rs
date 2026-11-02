@@ -873,6 +873,7 @@ async fn the_async_completion_notice_delivery_keeps_the_live_note() {
     runner
         .run_turn(
             engine.clone(),
+            Lane::Steering,
             vec![queued_prompt("review the installer", TurnPolicy::Queued)],
         )
         .await;
@@ -883,7 +884,11 @@ async fn the_async_completion_notice_delivery_keeps_the_live_note() {
     );
     let notice = runner.core.lock().unwrap().steering.pop_front();
     runner
-        .run_turn(engine.clone(), vec![notice.expect("the queued notice row")])
+        .run_turn(
+            engine.clone(),
+            Lane::Steering,
+            vec![notice.expect("the queued notice row")],
+        )
         .await;
     assert_eq!(
         engine.note_at_notice_turn.lock().unwrap().as_deref(),
@@ -913,6 +918,7 @@ async fn queued_follow_up_keeps_the_note_until_its_final_end() {
     runner
         .run_turn(
             engine.clone(),
+            Lane::Steering,
             vec![queued_prompt("review", TurnPolicy::Queued)],
         )
         .await;
@@ -921,7 +927,9 @@ async fn queued_follow_up_keeps_the_note_until_its_final_end() {
         Some("halfway through the review")
     );
     let follow_up = runner.core.lock().unwrap().follow_up.pop_front().unwrap();
-    runner.run_turn(engine.clone(), vec![follow_up]).await;
+    runner
+        .run_turn(engine.clone(), Lane::FollowUp, vec![follow_up])
+        .await;
     assert_eq!(
         engine.note_at_notice_turn.lock().unwrap().as_deref(),
         Some("halfway through the review")
@@ -945,6 +953,7 @@ async fn withdrawing_follow_up_after_agent_end_clears_the_note_at_settle() {
     runner
         .run_turn(
             engine.clone(),
+            Lane::Steering,
             vec![queued_prompt("review", TurnPolicy::Queued)],
         )
         .await;
@@ -1114,6 +1123,7 @@ async fn an_aborted_run_clears_the_note_at_its_idle_settle() {
         runner
             .run_turn(
                 engine_for_turn,
+                Lane::Steering,
                 vec![queued_prompt("review the gate", TurnPolicy::Queued)],
             )
             .await;
@@ -1157,6 +1167,7 @@ async fn an_aborted_run_never_exposes_an_idle_summary_with_its_old_note() {
         runner
             .run_turn(
                 engine_for_turn,
+                Lane::Steering,
                 vec![queued_prompt("review the gate", TurnPolicy::Queued)],
             )
             .await;
@@ -1188,3 +1199,83 @@ async fn an_aborted_run_never_exposes_an_idle_summary_with_its_old_note() {
 }
 
 mod withdrawal;
+
+/// RT-006 through the REAL runner: a prompt the loop picked up must not be what
+/// a relaunch replays.
+///
+/// This drives `TurnRunner::run` (not a hand-written checkpoint), so it fails if
+/// the pickup's write-ahead append in `turn.rs` disappears — the shape upstream
+/// shipped by deleting the append and keeping the admission's snapshot.
+#[tokio::test]
+async fn a_picked_up_prompt_is_not_what_a_relaunch_replays() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let journal_path = dir.path().join("recovery.jsonl");
+    // A slow turn: the kill must land while the prompt is EXECUTING. A fast turn
+    // settles before the kill, and the settle's own snapshot would clean the
+    // journal — hiding the defect the pickup record exists to prevent.
+    let engine = ScriptedEngine::from_value(&json!({
+        "responses": [{ "text": "done", "delayMs": 4000 }]
+    }))
+    .expect("script parses");
+    let runner = burst_runner(Arc::new(engine));
+    // The durable sink production uses: without it `run()` writes nothing and
+    // the test could not observe the pickup at all.
+    *runner.recovery.lock().unwrap() =
+        Some(crate::journal::WorkerRecoveryJournal::open(&journal_path).unwrap());
+
+    let (done_tx, _done_rx) = oneshot::channel();
+    {
+        let mut core = runner.core.lock().unwrap();
+        core.steering.push_back(QueuedItem {
+            priority: QueuePriority::Human,
+            preview: None,
+            message: "run the side effect".to_string(),
+            custom_message: None,
+            agent_message: None,
+            queue_key: None,
+            admission_id: None,
+            images: Vec::new(),
+            done: Some(done_tx),
+            queue_visible: true,
+            policy: TurnPolicy::Queued,
+            forced_batch: false,
+        });
+    }
+    // The admission's snapshot is what a relaunch would restore today.
+    crate::worker::queue::checkpoint_queue_recovery(
+        &runner.recovery,
+        &runner.core,
+        QueueCheckpoint::Admitted {
+            operation: "turn_admitted",
+        },
+    );
+
+    let core = std::sync::Arc::clone(&runner.core);
+    let running = tokio::spawn(async move { runner.run().await });
+    // Wait for the pickup to reach the engine: the lane drains, the turn starts.
+    let mut waited = 0;
+    while waited < 2000 {
+        let drained = {
+            let core = core.lock().unwrap();
+            core.steering.is_empty() && core.busy
+        };
+        if drained {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        waited += 25;
+    }
+    // The SIGKILL: nothing settles, the journal is all the relaunch has.
+    running.abort();
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(100), running).await;
+
+    let (steering, follow_up, _) =
+        crate::journal::WorkerRecoveryJournal::read_queue_snapshot(&journal_path, "burst-session")
+            .unwrap()
+            .expect("the runner wrote snapshots through the journal");
+    assert!(
+        steering.is_empty() && follow_up.is_empty(),
+        "a prompt the runner already executed must not survive in the journal, \
+         or the relaunch runs it twice: {steering:?} {follow_up:?}"
+    );
+}

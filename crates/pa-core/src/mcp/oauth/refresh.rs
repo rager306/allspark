@@ -186,6 +186,9 @@ pub async fn mcp_refresh_token(
     if !client_id.is_empty() {
         refresh_params.push(("client_id".to_string(), client_id.clone()));
     }
+    if let Some(client_secret) = &config.client_secret {
+        refresh_params.push(("client_secret".to_string(), client_secret.clone()));
+    }
     if let Some(resource) = resource {
         refresh_params.push(("resource".to_string(), resource.clone()));
     }

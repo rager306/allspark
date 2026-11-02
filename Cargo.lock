@@ -2038,7 +2038,7 @@ checksum = "13c45bb4a6ae1280ec0803b1ef9d3455eb50f01efbbe1447ab020f1d54fba9d8"
 
 [[package]]
 name = "pa-agent"
-version = "0.10.3-beta.1"
+version = "0.10.3-beta.10"
 dependencies = [
  "anyhow",
  "serde",
@@ -2049,7 +2049,7 @@ dependencies = [
 
 [[package]]
 name = "pa-ai"
-version = "0.10.3-beta.1"
+version = "0.10.3-beta.10"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2082,7 +2082,7 @@ dependencies = [
 
 [[package]]
 name = "pa-ast"
-version = "0.10.3-beta.1"
+version = "0.10.3-beta.10"
 dependencies = [
  "anyhow",
  "ast-grep-core",
@@ -2117,7 +2117,7 @@ dependencies = [
 
 [[package]]
 name = "pa-cli"
-version = "0.10.3-beta.1"
+version = "0.10.3-beta.10"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2147,7 +2147,7 @@ dependencies = [
 
 [[package]]
 name = "pa-core"
-version = "0.10.3-beta.1"
+version = "0.10.3-beta.10"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2193,11 +2193,12 @@ dependencies = [
 
 [[package]]
 name = "pa-daemon"
-version = "0.10.3-beta.1"
+version = "0.10.3-beta.10"
 dependencies = [
  "anyhow",
  "filetime",
  "futures",
+ "globset",
  "hotpath",
  "nix",
  "pa-agent",
@@ -2223,14 +2224,14 @@ dependencies = [
 
 [[package]]
 name = "pa-diff"
-version = "0.10.3-beta.1"
+version = "0.10.3-beta.10"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "pa-edit"
-version = "0.10.3-beta.1"
+version = "0.10.3-beta.10"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2255,7 +2256,7 @@ dependencies = [
 
 [[package]]
 name = "pa-graph"
-version = "0.10.3-beta.1"
+version = "0.10.3-beta.10"
 dependencies = [
  "blake3",
  "ignore",
@@ -2275,7 +2276,7 @@ dependencies = [
 
 [[package]]
 name = "pa-jev"
-version = "0.10.3-beta.1"
+version = "0.10.3-beta.10"
 dependencies = [
  "futures",
  "reqwest",
@@ -2287,7 +2288,7 @@ dependencies = [
 
 [[package]]
 name = "pa-lsp"
-version = "0.10.3-beta.1"
+version = "0.10.3-beta.10"
 dependencies = [
  "anyhow",
  "async-lsp",
@@ -2309,7 +2310,7 @@ dependencies = [
 
 [[package]]
 name = "pa-mem"
-version = "0.10.3-beta.1"
+version = "0.10.3-beta.10"
 dependencies = [
  "crc32fast",
  "lz4_flex",
@@ -2321,7 +2322,7 @@ dependencies = [
 
 [[package]]
 name = "pa-models"
-version = "0.10.3-beta.1"
+version = "0.10.3-beta.10"
 dependencies = [
  "hex",
  "hmac",
@@ -2341,7 +2342,7 @@ dependencies = [
 
 [[package]]
 name = "pa-perf"
-version = "0.10.3-beta.1"
+version = "0.10.3-beta.10"
 dependencies = [
  "anyhow",
  "clap",
@@ -2357,7 +2358,7 @@ dependencies = [
 
 [[package]]
 name = "pa-telemetry"
-version = "0.10.3-beta.1"
+version = "0.10.3-beta.10"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -2372,7 +2373,7 @@ dependencies = [
 
 [[package]]
 name = "pa-tui"
-version = "0.10.3-beta.1"
+version = "0.10.3-beta.10"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2400,7 +2401,7 @@ dependencies = [
 
 [[package]]
 name = "pa-types"
-version = "0.10.3-beta.1"
+version = "0.10.3-beta.10"
 dependencies = [
  "anyhow",
  "libc",

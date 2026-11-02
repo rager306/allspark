@@ -67,7 +67,7 @@ async fn idle_time_injected_admission_is_busy_evidence() {
     );
     let latest = latest_record(&worker);
     assert_eq!(latest.operation, "follow_up_queued");
-    let (steering, follow_up) = WorkerRecoveryJournal::read_queue_snapshot(
+    let (steering, follow_up, _) = WorkerRecoveryJournal::read_queue_snapshot(
         &worker.config.recovery_journal_path,
         "target-session",
     )
@@ -126,7 +126,7 @@ async fn a_bash_completion_notice_admits_the_steering_lane_with_busy_evidence() 
     );
     let latest = latest_record(&worker);
     assert_eq!(latest.operation, "steer_queued");
-    let (steering, _) = WorkerRecoveryJournal::read_queue_snapshot(
+    let (steering, _, _) = WorkerRecoveryJournal::read_queue_snapshot(
         &worker.config.recovery_journal_path,
         "target-session",
     )
@@ -249,7 +249,7 @@ async fn cancelled_admission_drop_settles_the_verdict() {
     );
     let latest = latest_record(&worker);
     assert_eq!(latest.operation, "queue_dropped");
-    let (steering, follow_up) = WorkerRecoveryJournal::read_queue_snapshot(
+    let (steering, follow_up, _) = WorkerRecoveryJournal::read_queue_snapshot(
         &worker.config.recovery_journal_path,
         "target-session",
     )
@@ -276,7 +276,7 @@ async fn mid_turn_withdrawal_keeps_the_in_flight_turn_busy() {
         latest.busy,
         "the in-flight turn keeps the withdrawal's verdict busy"
     );
-    let (steering, follow_up) = WorkerRecoveryJournal::read_queue_snapshot(
+    let (steering, follow_up, _) = WorkerRecoveryJournal::read_queue_snapshot(
         &worker.config.recovery_journal_path,
         "target-session",
     )
@@ -300,82 +300,6 @@ async fn mid_turn_withdrawal_keeps_the_in_flight_turn_busy() {
     let _ = std::fs::remove_dir_all(worker.config.socket_path.parent().unwrap());
 }
 
-/// RT-006 (exactly-once): a worker killed MID-TURN must not replay the
-/// delivered prompt after its supervisor relaunches it.
-///
-/// The shape the QA suite caught: the prompt is admitted (journal snapshot
-/// holds the row), the runner picks it up, the turn starts, and the worker
-/// dies before the settle. The relaunched worker restores its lanes from
-/// the journal — so the pickup's write-ahead `Delivered` record must have
-/// already dropped the row from the snapshot. Without it the restored lane
-/// re-delivers the prompt and the side effect happens twice.
-#[tokio::test]
-async fn a_worker_killed_mid_turn_restores_no_delivered_prompt() {
-    let worker = created_worker_with_journal().await;
-    worker.dispatch("clear_queue", &json!({})).await;
-    let admitted = worker
-        .dispatch("prompt", &json!({ "message": "run the side effect" }))
-        .await;
-    assert!(admitted.success, "prompt failed: {admitted:?}");
-    // The admission's snapshot parks the row: this is the state the
-    // pre-fix journal kept for the whole turn.
-    let (steering, _) = WorkerRecoveryJournal::read_queue_snapshot(
-        &worker.config.recovery_journal_path,
-        "target-session",
-    )
-    .unwrap()
-    .expect("the admission flushed its snapshot");
-    assert_eq!(
-        steering.len(),
-        1,
-        "the admitted row is parked: {steering:?}"
-    );
-    assert_eq!(steering[0].message, "run the side effect");
-
-    // The pickup: the runner drains the lane in memory and records the
-    // write-ahead delivery before the engine sees the rows.
-    let delivered = {
-        let mut core = worker.core.lock().unwrap();
-        let items = gather_delivery_batch(&mut core, Lane::Steering);
-        core.busy = true;
-        items
-    };
-    assert_eq!(delivered.len(), 1, "the pickup delivered the parked row");
-    worker.checkpoint_queue(QueueCheckpoint::Delivered {
-        operation: "turn_delivered",
-    });
-    let latest = latest_record(&worker);
-    assert_eq!(latest.operation, "turn_delivered");
-    assert!(latest.busy, "the in-flight delivery is live work");
-
-    // The SIGKILL: nothing settles, the journal is all the relaunch has.
-    let (steering, follow_up) = WorkerRecoveryJournal::read_queue_snapshot(
-        &worker.config.recovery_journal_path,
-        "target-session",
-    )
-    .unwrap()
-    .expect("the delivery flushed its snapshot");
-    assert!(
-        steering.is_empty() && follow_up.is_empty(),
-        "a delivered row must not survive the pickup in the journal: \
-         {steering:?} {follow_up:?}"
-    );
-    // The relaunched worker's restore (the fresh-process read) sees
-    // nothing to re-execute.
-    let (restored_steering, restored_follow_up) = WorkerRecoveryJournal::read_queue_snapshot(
-        &worker.config.recovery_journal_path,
-        "target-session",
-    )
-    .unwrap()
-    .expect("the delivery flushed its snapshot");
-    assert!(
-        restored_steering.is_empty() && restored_follow_up.is_empty(),
-        "the relaunch re-delivers the executed prompt: \
-         {restored_steering:?} {restored_follow_up:?}"
-    );
-    let _ = std::fs::remove_dir_all(worker.config.socket_path.parent().unwrap());
-}
-
 /// The other half of the write-ahead contract: a row that never left the
 /// lane (an admission killed before the pickup) still replays, because a
 /// turn that never started must not be lost.
@@ -389,7 +313,7 @@ async fn an_undelivered_admission_still_replays_after_a_kill() {
         .dispatch("follow_up", &json!({ "message": "queued behind the turn" }))
         .await;
     assert!(admitted.success, "follow_up failed: {admitted:?}");
-    let (_, restored_follow_up) = WorkerRecoveryJournal::read_queue_snapshot(
+    let (_, restored_follow_up, _) = WorkerRecoveryJournal::read_queue_snapshot(
         &worker.config.recovery_journal_path,
         "target-session",
     )

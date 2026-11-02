@@ -19,6 +19,8 @@ pub struct McpOAuthConfig {
     pub client_id: Option<String>,
     /// Fixed loopback port registered for a public client; otherwise use the DCR port range.
     pub callback_port: Option<u16>,
+    /// Secret of a pre-registered confidential client, sent as `client_secret_post`.
+    pub client_secret: Option<String>,
     /// Requested scopes; defaults to the server's advertised scopes.
     pub scopes: Option<String>,
 }

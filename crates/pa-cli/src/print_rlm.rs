@@ -44,7 +44,8 @@ use observe::InlineObserve;
 
 /// Everything a spawned child inherits from the print invocation: the
 /// invocation's own config (cwd, agent dir, prompt/skill paths) and the
-/// parsed faux script when the run is scripted.
+/// parsed faux script when the run is scripted. A child spawned with a
+/// `cwd` gets a copy carrying that cwd.
 pub(crate) struct PrintRecipe {
     pub options: crate::mode::RunOptions,
     pub faux: Option<Value>,
@@ -149,6 +150,9 @@ impl InlineSessionNode {
 /// One spawned child: its node, engine, driver task, and live state.
 pub(crate) struct InlineChild {
     pub(crate) rlm_child_id: String,
+    /// A factory state's child: the factory reads its settle through
+    /// collect, so no terminal notice reaches the parent.
+    factory: bool,
     pub(crate) node: Arc<InlineSessionNode>,
     pub(crate) engine: Arc<SessionEngine>,
     /// The child's model and request auth (the drive's boundary calls).
@@ -548,7 +552,7 @@ async fn settle_child(child: &Arc<InlineChild>, run_error: Option<String>) {
         // can observe the settled child before the parent's queue holds its
         // row — the quiescence check reads the child state before the
         // parent's queue and cannot return through the gap.
-        if let (Some(parent), Some(notice)) = (&parent, notice) {
+        if let (Some(parent), Some(notice)) = (&parent, notice.filter(|_| !child.factory)) {
             let delivered = match serde_json::to_value(notice) {
                 Ok(value) => deliver_row(parent, value),
                 Err(error) => Err(anyhow::anyhow!(
@@ -648,7 +652,21 @@ impl RlmSubagentHost for InlineHost {
             if node.depth >= node.max_depth {
                 return Err(rlm_depth_limit_error(node.depth, node.max_depth));
             }
-            let recipe = Arc::clone(&node.recipe);
+            let recipe = match request.cwd.as_deref() {
+                None => Arc::clone(&node.recipe),
+                Some(requested) => {
+                    let mut options = node.recipe.options.clone();
+                    options.config.cwd = pa_daemon::rlm_child_model::resolve_child_cwd(
+                        &options.config.cwd,
+                        Some(requested),
+                        "rlm.spawn",
+                    )?;
+                    Arc::new(PrintRecipe {
+                        options,
+                        faux: node.recipe.faux.clone(),
+                    })
+                }
+            };
             let config = &recipe.options.config;
             let child_id = format!("sub-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
             let name = request.name.clone().unwrap_or_else(|| {
@@ -821,6 +839,7 @@ impl RlmSubagentHost for InlineHost {
                 thinking,
                 semantic_parent_session_id: Some(node.session_id.clone()),
                 spawned_by_request_id: request.spawned_by_request_id.clone(),
+                factory_child: request.factory.is_some(),
             };
             let headless = crate::print_runtime::build_engine(
                 &recipe.options,
@@ -835,6 +854,7 @@ impl RlmSubagentHost for InlineHost {
             let _ = child_node.engine.set(Arc::downgrade(&engine));
             let child = Arc::new(InlineChild {
                 rlm_child_id: child_id.clone(),
+                factory: request.factory.is_some(),
                 node: Arc::clone(&child_node),
                 engine: Arc::clone(&engine),
                 model: headless.model,
@@ -1301,7 +1321,9 @@ mod tests {
             name: Some("late".to_string()),
             model: None,
             thinking: None,
+            cwd: None,
             spawned_by_request_id: None,
+            factory: None,
         });
         std::future::poll_fn(|context| {
             assert!(spawn.as_mut().poll(context).is_pending());

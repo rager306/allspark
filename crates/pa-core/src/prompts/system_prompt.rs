@@ -86,6 +86,9 @@ pub struct BuildSystemPromptOptions<'a> {
     pub rlm_depth: Option<u32>,
     /// Human-readable parent name or id for child communication doctrine.
     pub rlm_parent_agent: Option<&'a str>,
+    /// Whether this child runs one factory state: the factory reads its
+    /// final message, so the child does not reply to the parent.
+    pub factory_child: bool,
     /// Whether the session runs without a daemon (no scheduler, no
     /// heartbeat firing). The wake-up facts the daemonless line states
     /// must match the embedding's wiring.
@@ -551,7 +554,7 @@ fn session_role_section(options: &BuildSystemPromptOptions, has_ipython: bool) -
     }
     if has_ipython {
         lines.push(
-            "`await bash(cmd)` waits at most `yield_after` seconds (`bash(cmd, yield_after=...)`, default 10, max 300; `None` uses the default, not an unbounded wait). If the command is still running, it returns a snapshot: `r.running` is True, `r.exit_code` is None, `r.output` is the output so far, and `r.handle` is the live handle. A completed result has `r.running` False, an integer `r.exit_code`, and `r.handle` is None — a finished result has nothing left to collect. The command keeps running after a snapshot; end the turn and collect the final result on the `[bash-done]` notification. `bash` is a global function of this REPL: `import bash` fails by design."
+            "`await bash(cmd)` waits at most 1 second. If the command is still running, it returns a snapshot: `r.running` is True, `r.exit_code` is None, `r.output` is the output so far, and `r.handle` is the live handle. A completed result has `r.running` False, an integer `r.exit_code`, and `r.handle` is None — a finished result has nothing left to collect. The command keeps running after a snapshot; end the turn and collect the final result on the `[bash-done]` notification. `bash` is a global function of this REPL: `import bash` fails by design."
                 .to_string(),
         );
     } else {
@@ -568,10 +571,16 @@ fn session_role_section(options: &BuildSystemPromptOptions, has_ipython: bool) -
             "You are a child agent spawned by {}. Task prompts are labeled `[task from parent]`.",
             options.rlm_parent_agent.unwrap_or("your parent agent")
         ));
-        if has_ipython {
+        if options.factory_child {
+            lines.push(
+                "Your final message is this state's output, which the factory reads; do not message the parent.".to_string(),
+            );
+        } else if has_ipython {
             lines.push(
                 "When a task calls for an answer, reply explicitly with `await agent_message.send(message, receiver_role=\"parent\")`. Not every message or task needs a reply; continue cleanup after sending and go idle normally.".to_string(),
             );
+        }
+        if has_ipython {
             lines.push(
                 "For long-running work, report brief progress with `await rlm.progress_note('...')` (at most 512 characters, throttled to about one note per 10 seconds); the parent sees notes without needing a reply.".to_string(),
             );
@@ -770,6 +779,21 @@ mod tests {
             .contains("Enabled generic MCP servers: `slack`"));
         assert!(right.assembled[right.cached_prefix_len..]
             .contains("You are a child agent spawned by the lead."));
+    }
+
+    #[test]
+    fn factory_child_gets_the_factory_line_instead_of_the_reply_line() {
+        const REPLY: &str = "reply explicitly with `await agent_message.send(";
+        const FACTORY: &str = "Your final message is this state's output";
+        let mut child = base_options();
+        child.rlm_depth = Some(1);
+        let normal = build_system_prompt(&child);
+        assert!(normal.contains(REPLY));
+        assert!(!normal.contains(FACTORY));
+        child.factory_child = true;
+        let factory = build_system_prompt(&child);
+        assert!(factory.contains(FACTORY));
+        assert!(!factory.contains(REPLY));
     }
 
     #[test]

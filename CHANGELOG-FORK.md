@@ -13,6 +13,63 @@ branch (`feat/allspark-identity`). `fork.3` points at the SAME commit as `fork.2
 (`375ad95cf`) and is a duplicate tag, not a separate release — it has no entry here
 because nothing shipped between them. `FORK.md` carries the same correction.
 
+## fork.013 — upstream v0.10.3-beta.10
+
+- Tag: `allspark-v0.10.3-beta.10-fork.013` (2026-11-03)
+- Base: the `v0.10.3-beta.10` upstream merge (12 conflicts resolved), 22 upstream
+  commits since the `v0.10.3-beta.1` merge (`381e2fadf`).
+- No FORK-ONLY crate was touched: the upstream delta has zero files under
+  `crates/pa-{graph,edit,lsp,ast,mem,jev,diff}` and zero fork docs/scripts.
+
+### What the fork gained
+
+- **`ipython` edit diffs reach the tool card.** The `python_repl` edit path renders
+  its `diffs` in `details`; the fork's `toolArbiter` note was added beside it rather
+  than instead of it.
+- **A Google Workspace MCP server can log in with a user OAuth client.** A new
+  `McpOAuthConfig.client_secret` is sent as `client_secret_post` on both the code
+  exchange and the refresh, and a Google issuer gets `access_type=offline` +
+  `prompt=consent` so a refresh token is actually issued. The fork's split
+  `mcp/oauth/{login,refresh,ui}.rs` carry what upstream kept in one file.
+- **`rlm.spawn` takes a `cwd`**, and a factory child no longer wakes its parent.
+  `factory_child` threads through the fork's split `print_runtime/` modules to the
+  engine config.
+- **`agent_observe.recent_messages` reads a member no worker holds**, using the
+  new `session_file` row field (the fork's inline print host passes `None`, since
+  an inline node resolves its transcript from the tree).
+
+### What the fork deliberately did not take
+
+- **`bash` no longer has `yield_after`.** Upstream replaced the parameter with a
+  fixed 1-second yield. The fork follows: the prompt line, the runtime-ready probe,
+  and the `probe.rs` assertion all state the 1-second contract. `yield_after` was a
+  fork-era knob and is gone from every surface.
+- **The pickup checkpoint stays, against upstream.** Upstream deleted the RT-006
+  write-ahead record from `worker/turn.rs` and left only the admission's snapshot.
+  That reopens the defect the record existed for: the admission parks the row, the
+  runner drains the lane in memory, the worker is killed mid-turn, and the relaunch
+  restores the snapshot and executes the same prompt a second time — a duplicate
+  side effect and a duplicate user row. The fork keeps `QueueCheckpoint::Delivered`
+  and its append before the engine sees the rows.
+
+  Proven red-first through the REAL runner (`TurnRunner::run`, slow scripted turn,
+  abort mid-turn): without the append the journal still holds
+  `run the side effect` after the pickup, and the test fails. With it, the journal
+  is empty. Upstream's own tests do not cover this path — the fork's
+  `a_picked_up_prompt_is_not_what_a_relaunch_replays` is the only one.
+- **`parity-diff evidence` stays advisory.** Upstream's conflict side promotes
+  parity to a merge gate; the fork keeps its 2026-10-19 decision (advisory, with
+  wire compatibility binding). The new `.changes/<slug>.md` requirement was taken.
+
+### Verification
+
+- `pa-core` 1712 lib tests, `pa-daemon` 1276, `pa-graph` 558 — all green.
+- `cargo check --workspace --all-targets` clean; gate `--fast` (fmt + clippy) GREEN.
+- Every upstream behaviour fix has a test at its cheapest tier; the fork's own
+  fixes (`StreamOutcome::Failed`, `lease_held_by`, `PI_OFFLINE`, `redact_tokens`,
+  `push_user_turn`, `call_sites_for_callee`, `explain_change`, `AdrCodeRef`) are
+  present and unchanged.
+
 ## fork.012 — upstream v0.10.2-beta.10
 
 - Tag: `allspark-v0.10.2-beta.10-fork.012` (2026-10-27)

@@ -382,6 +382,9 @@ async fn observe_summary(member: &FamilyNode) -> AgentObserveSummary {
         parent_session_id: parent.as_ref().map(|parent| parent.session_id.clone()),
         rlm_child_id: member.rlm_child_id.clone(),
         first_message: first_message_text(rows),
+        // An inline node's transcript is resolved fresh on every observe, so the
+        // row carries no file path; `recent_messages` here reads the tree.
+        session_file: None,
     }
 }
 
@@ -470,7 +473,9 @@ mod tests {
                 name: Some("kid".to_string()),
                 model: None,
                 thinking: None,
+                cwd: None,
                 spawned_by_request_id: None,
+                factory: None,
             })
             .await
             .expect("the inline host admits a child");
@@ -482,7 +487,9 @@ mod tests {
                 name: Some("twin".to_string()),
                 model: None,
                 thinking: None,
+                cwd: None,
                 spawned_by_request_id: None,
+                factory: None,
             })
             .await
             .expect("the inline host admits a second child");

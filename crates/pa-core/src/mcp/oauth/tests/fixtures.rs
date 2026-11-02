@@ -177,6 +177,7 @@ pub(super) fn config(server: &str, url: &str) -> McpOAuthConfig {
         url: url.to_string(),
         client_id: None,
         callback_port: None,
+        client_secret: None,
         scopes: None,
     }
 }

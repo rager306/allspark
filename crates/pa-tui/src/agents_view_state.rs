@@ -858,7 +858,7 @@ mod tests {
             &std::collections::HashSet::default(),
             &std::collections::HashSet::default(),
             &std::collections::HashMap::default(),
-            &std::collections::HashMap::default(),
+            &crate::agents_view_forest::ActivityCounts::default(),
             None,
         );
         assert_eq!(rows[0].section, Section::Running);
@@ -1052,7 +1052,7 @@ mod tests {
             &std::collections::HashSet::default(),
             &std::collections::HashSet::default(),
             &std::collections::HashMap::default(),
-            &std::collections::HashMap::default(),
+            &crate::agents_view_forest::ActivityCounts::default(),
             None,
         );
         let layout = build_layout(&rows, 120);
@@ -1099,7 +1099,7 @@ mod tests {
             &std::collections::HashSet::default(),
             &std::collections::HashSet::default(),
             &std::collections::HashMap::default(),
-            &std::collections::HashMap::default(),
+            &crate::agents_view_forest::ActivityCounts::default(),
             None,
         );
         let age = rows

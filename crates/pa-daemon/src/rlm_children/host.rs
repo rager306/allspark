@@ -4,11 +4,11 @@
 //! with the spawn-admission helpers only this surface uses.
 use super::{
     assert_thinking_supported, bail, create_default_rlm_subagent_session_name, json, now_ms,
-    resolve_child_model, rlm_child_label, rlm_depth_limit_error, spawn_name_unavailable_error, Arc,
-    ChildCloseReason, ChildObservationSource, ChildRecord, Context, DaemonCommand, Duration,
-    Instant, Mutex, Path, PathBuf, Result, RlmChildResult, RlmCreateSessionHandle,
-    RlmCreateSessionRequest, RlmDeleteSubagentResult, RlmHostFuture, RlmSpawnHandle,
-    RlmSpawnRequest, RlmSubagentEntry, RlmSubagentHost, SpawnNameReservationGuard,
+    resolve_child_cwd, resolve_child_model, rlm_child_label, rlm_depth_limit_error,
+    spawn_name_unavailable_error, Arc, ChildCloseReason, ChildObservationSource, ChildRecord,
+    Context, DaemonCommand, Duration, Instant, Mutex, Path, Result, RlmChildResult,
+    RlmCreateSessionHandle, RlmCreateSessionRequest, RlmDeleteSubagentResult, RlmHostFuture,
+    RlmSpawnHandle, RlmSpawnRequest, RlmSubagentEntry, RlmSubagentHost, SpawnNameReservationGuard,
     SupervisorChildSessions, SupervisorChildSessionsInner, Value, KILL_TIMEOUT_MS,
     RENAME_TIMEOUT_MS,
 };
@@ -182,14 +182,22 @@ impl RlmSubagentHost for SupervisorChildSessions {
                 assert_thinking_supported(&this.agent_dir, pinned_thinking, &model)?;
                 let thinking = pinned_thinking.or(identity.thinking.as_deref());
                 let child_dir = this.child_session_dir(&child_id, &identity)?;
-                let cwd = identity.cwd.clone().unwrap_or_else(|| "/".to_string());
-                let runtime_metadata = json!({
+                let cwd = resolve_child_cwd(
+                    Path::new(identity.cwd.as_deref().unwrap_or("/")),
+                    request.cwd.as_deref(),
+                    "rlm.spawn",
+                )?;
+                let mut runtime_metadata = json!({
                     "kind": "subagent",
                     "rlmChildId": child_id,
                     "parentActiveSessionId": this.parent_active_session_id,
                     "rlmDepth": identity.rlm_depth + 1,
                     "createdAt": now_ms(),
                 });
+                // The admission's ledger spawn record reads the run tag back.
+                if let Some(factory) = &request.factory {
+                    runtime_metadata["factory"] = json!(factory);
+                }
                 let created = this
                     .create_child(
                         &child_id,
@@ -198,7 +206,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
                         identity.rlm_depth + 1,
                         &model,
                         thinking,
-                        &cwd,
+                        &cwd.to_string_lossy(),
                         &child_dir,
                         request.spawned_by_request_id.as_deref(),
                         Some(runtime_metadata),
@@ -231,6 +239,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
                     live_observation: None,
                     direct_observation: Arc::new(Mutex::new(())),
                     notice_delivered: false,
+                    factory: request.factory.is_some(),
                     prompt_admitted: false,
                     error: None,
                     closed_by_parent: false,
@@ -394,11 +403,11 @@ impl RlmSubagentHost for SupervisorChildSessions {
             assert_thinking_supported(&this.agent_dir, request.thinking.as_deref(), &model)?;
             // A depth-0 resident session is created exactly like a client
             // `create`: the shared sessions dir and the requested cwd.
-            let cwd = match &request.cwd {
-                Some(cwd) if Path::new(cwd).is_absolute() => PathBuf::from(cwd),
-                Some(cwd) => Path::new(identity.cwd.as_deref().unwrap_or("/")).join(cwd),
-                None => PathBuf::from(identity.cwd.clone().unwrap_or_else(|| "/".to_string())),
-            };
+            let cwd = resolve_child_cwd(
+                Path::new(identity.cwd.as_deref().unwrap_or("/")),
+                request.cwd.as_deref(),
+                "rlm.create_session",
+            )?;
             let sessions_dir = crate::paths::sessions_dir(&this.agent_dir)?;
             std::fs::create_dir_all(&sessions_dir)
                 .with_context(|| format!("create sessions dir {}", sessions_dir.display()))?;

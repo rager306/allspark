@@ -43,7 +43,7 @@ try:
 
 /// One line inside the bootstrap's try block, emitted only when the host
 /// registered the [`crate::kernel::shared::BASH_COMPLETED_REQUEST_TYPE`]
-/// handler: turns the runtime's bounded `await bash()` default on. Without
+/// handler: turns the runtime's bounded `await bash()` on. Without
 /// the notice nothing wakes a cell that ended its turn on a degraded command,
 /// so daemonless sessions keep the unbounded await.
 const RLM_BOOTSTRAP_BASH_NOTICES_LINE_CODE: &str =
@@ -137,7 +137,7 @@ except Exception as _prime_agent_rlm_error:
     # missing runtime nor what to do about it.
     mcp = _PrimeAgentMissingRlmMember(rlm, "mcp")
 
-    def bash(command, yield_after=None, persistent=False):
+    def bash(command, persistent=False):
         rlm._raise_missing()
 "#;
 

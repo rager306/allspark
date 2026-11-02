@@ -101,6 +101,8 @@ session's own supervisor — and shut it down; five workers and four subagents d
   A new dependency is an architectural change: state in the PR why the existing crates cannot
   host the functionality, and `make deny` must stay clean for it.
 - If a change starts forcing edits across many crate internals, stop and fix the boundary instead.
+- Do not commit scripts or tools that no workflow, Makefile target, or other code runs (one-off review, parity, or reproduction scripts). Put their results in the PR body as a one-off run with its command and result, not as coverage.
+- Do not commit evidence logs, reports, generated outputs, or local venvs and caches that no code or test reads.
 
 ## Idle time is work time
 
@@ -204,6 +206,8 @@ directory. Treat the tree as shared state.
 - Do not add tests for statically defined values.
 - Do not add negative tests for logic that was removed.
 - Bug fixes need a regression test that fails without the fix.
+- Keep test code in proportion to the change: one discriminating test per behavior change, not several that pin the same behavior or re-check behavior the PR does not change.
+- A new test file must be run by something: a runner, glob, loop, or run-time path in `.github/workflows/` or the Makefile. A name missing from those files can still be reached by a glob or a built path, so check those before calling a test unrun.
 - Verifiers over self-assessment: tmux user-level tests, differential tests against the TS binary
   on PATH, golden corpora replayed against real captured data. No lane merges without its verifier
   passing, rerun by the reviewer where feasible.
@@ -538,6 +542,8 @@ cleanup becomes another run's missing directory.
   the same gates; CI runs on the org's billing (`.github/workflows/continuous.yml` on `main`
   pushes; `release.yml` on version tags). The PR-only codebase-health check reports growth
   past 2,000 lines as review guidance; it never blocks a merge.
+- PRs that change shipped paths need a `.changes/<branch-slug>.md` fragment (one user-facing
+  bullet; see `.changes/README.md`) or the `no-changelog` label; the changelog-fragment check enforces it.
 - **Verus proofs are advisory, not a merge gate** (2026-10-22): `bash scripts/verus-check.sh`
   verifies the mirrors under `verus/` and skips cleanly without the toolchain. It is not part of
   `make check`, not part of `cargo test`, and not a CI job — a proof that does not close must never
