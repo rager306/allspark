@@ -29,27 +29,22 @@ use compaction_arms::OVERFLOW_RECOVERY_FAILED_MESSAGE;
 
 mod autorefine;
 
-use autorefine::RefineSurface;
+use pa_core::session_engine::auto_refine_trigger::CompactAutoRefineSurface;
 
 /// Where the boundary's json events go: stdout in the product, a captured
 /// buffer in tests.
 type EventSink = std::sync::Arc<dyn Fn(&serde_json::Value) + Send + Sync>;
 
 /// The print loop's turn-boundary state: the one-attempt overflow machine, the
-/// compact-trigger auto-refine bookkeeping, and the json/text output mode.
+/// settled-turn baseline its review counter derives from, and the json/text
+/// output mode. The compact-trigger auto-refine machine itself lives on the
+/// session ([`SessionEngine::session`]), so nothing here duplicates its
+/// trigger, cooldown, or in-flight state.
 pub(crate) struct TurnBoundary {
     recovery: OverflowRecovery,
-    /// A successful compaction schedules the compact-trigger auto-refine
-    /// review for the next serialized checkpoint (or the disposal drain).
-    compact_auto_refine_pending: bool,
-    /// (millis) Every review attempt — decline, success, or failure —
-    /// stamps the cooldown window.
-    last_auto_refine_review_at: Option<u64>,
-    /// The settled non-error, non-aborted assistant turns since the run's
-    /// start or the last review.
-    assistant_turns_since_review: u32,
-    /// The entry-count baseline the turn counter diffs against; set at
-    /// the first pre-turn check, so resumed history never counts.
+    /// The entry-count baseline [`TurnBoundary::count_settled_turns`] diffs
+    /// against; set at the first pre-turn check, so resumed history never
+    /// counts. The count itself lands on the session's own review counter.
     entry_baseline: Option<usize>,
     /// json mode streams the session events on stdout; text mode reads
     /// the durable rows through the headless terminal result.
@@ -61,9 +56,6 @@ impl TurnBoundary {
     pub(crate) fn new(json_mode: bool) -> Self {
         Self {
             recovery: OverflowRecovery::Idle,
-            compact_auto_refine_pending: false,
-            last_auto_refine_review_at: None,
-            assistant_turns_since_review: 0,
             entry_baseline: None,
             json_mode,
             sink: std::sync::Arc::new(|event| println!("{event}")),
@@ -76,9 +68,6 @@ impl TurnBoundary {
     pub(crate) fn with_sink(json_mode: bool, sink: EventSink) -> Self {
         Self {
             recovery: OverflowRecovery::Idle,
-            compact_auto_refine_pending: false,
-            last_auto_refine_review_at: None,
-            assistant_turns_since_review: 0,
             entry_baseline: None,
             json_mode,
             sink,
@@ -131,14 +120,14 @@ impl TurnBoundary {
         global_harness_dir: PathBuf,
     ) -> Result<(), String> {
         self.count_settled_turns(engine).await;
-        self.consume_compact_auto_refine(
+        self.service_compact_auto_refine(
             engine,
             model,
             api_key.clone(),
             global_harness_dir.clone(),
-            RefineSurface::Checkpoint,
+            CompactAutoRefineSurface::Checkpoint,
         )
-        .await?;
+        .await;
         let arm_finished = loop {
             let outcome = self
                 .overflow_recovery_attempt(
@@ -149,14 +138,14 @@ impl TurnBoundary {
                 )
                 .await?;
             if let OverflowOutcome::RetryTurn = outcome {
-                self.consume_compact_auto_refine(
+                self.service_compact_auto_refine(
                     engine,
                     model,
                     api_key.clone(),
                     global_harness_dir.clone(),
-                    RefineSurface::Checkpoint,
+                    CompactAutoRefineSurface::Checkpoint,
                 )
-                .await?;
+                .await;
             } else {
                 break matches!(outcome, OverflowOutcome::Finished);
             }

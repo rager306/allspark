@@ -1552,6 +1552,96 @@ async fn overflow_retry_compact_trigger_streams_the_ts_surface() {
     assert_eq!(refine_rows(&engine).await.len(), 2);
 }
 
+/// The trigger is the session's, not the boundary's: a compaction through the
+/// print arms must arm the one flag `engine.session` reports, so every other
+/// surface that reads it (and the in-flight/retained-approval guards behind
+/// it) sees the same state.
+#[tokio::test]
+async fn a_print_compaction_arms_the_sessions_compact_trigger() {
+    let _faux = FAUX_TEST_LOCK.lock().await;
+    let (engine, _dir, model) = faux_engine_with_settings(
+        json!({
+            "responses": [
+                {"text": "seed reply"},
+                {"text": "second reply"},
+                {"text": "the summary"},
+            ]
+        }),
+        compactable_settings(),
+        None,
+    )
+    .await;
+    let mut boundary = TurnBoundary::new(false);
+    admit(
+        &mut boundary,
+        &engine,
+        &model,
+        format!("seed turn {}", "x".repeat(48_000)),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !engine.session.compact_auto_refine_pending(),
+        "no trigger yet"
+    );
+    engine.turn_boundary.schedule_compaction(None).await;
+    admit_turn_with_scheduled_request(
+        &mut boundary,
+        &engine,
+        &model,
+        format!("second turn {}", "x".repeat(2_000)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(compaction_count(&engine).await, 1, "the compaction ran");
+    assert!(
+        engine.session.compact_auto_refine_pending(),
+        "the compaction armed the session's own trigger"
+    );
+}
+
+/// The reverse direction of the same ownership: a trigger armed directly on the
+/// session is serviced by the print boundary. A print-local copy of the flag
+/// could never see it.
+#[tokio::test]
+async fn the_boundary_consumes_a_trigger_armed_on_the_session() {
+    let _faux = FAUX_TEST_LOCK.lock().await;
+    let review = r#"{"shouldRefine": true, "rationale": "the session asked for a review"}"#;
+    let plan = r#"{"summary":"note it","rationale":"repeated","expectedOutcome":"recall","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A"}]}"#;
+    let (engine, _dir, model) = faux_engine_with_settings(
+        json!({ "responses": [{"text": review}, {"text": plan}] }),
+        compactable_settings(),
+        None,
+    )
+    .await;
+    let global_dir = tempfile::TempDir::new().unwrap().keep();
+    let (sink, events) = capture_sink();
+    let mut boundary = TurnBoundary::with_sink(true, sink);
+    engine.session.mark_compact_auto_refine_pending();
+    boundary
+        .run_at_settled_turn(&engine, &model, None, global_dir)
+        .await
+        .unwrap();
+    assert!(
+        !engine.session.compact_auto_refine_pending(),
+        "the boundary consumed the session's trigger"
+    );
+    let rows = refine_rows(&engine).await;
+    assert_eq!(
+        rows.first().map(|row| row.custom_type.as_str()),
+        Some("refinement_outcome"),
+        "the round's outcome row persisted"
+    );
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event["type"] == "refine_complete"),
+        "the round surfaced on the boundary's stream"
+    );
+}
+
 #[tokio::test]
 async fn compact_trigger_drains_at_disposal_off_the_stream() {
     let _faux = FAUX_TEST_LOCK.lock().await;

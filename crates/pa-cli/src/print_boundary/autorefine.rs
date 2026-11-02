@@ -1,29 +1,18 @@
-//! The compact-trigger auto-refine machine: the review gates, the durable-row
-//! surface, the requested-refinement streaming, and the disposal drain.
+//! The print boundary's compact-trigger auto-refine surface: what the round
+//! prints. The machine itself — the refine gates, the review cooldown, the
+//! in-flight guard, the retained approval — belongs to the session
+//! (`pa_core::session_engine::auto_refine_trigger`); this module only derives
+//! the settled-turn count the review prompt reads and renders the round's rows.
+
+use pa_core::session_engine::auto_refine_trigger::CompactAutoRefineSurface;
 
 use super::{json, Model, PathBuf, SessionAgentMessage, SessionEngine, TurnBoundary};
 
-/// Wall-clock milliseconds (the review-cooldown stamps).
-fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default()
-}
-
-/// Where the compact-trigger auto-refine surfaces: the serialized checkpoint runs
-/// mid-run; the disposal drain runs after the print client tore its subscription.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum RefineSurface {
-    /// The serialized checkpoint at a turn boundary.
-    Checkpoint,
-    /// The session disposal drain (best-effort, silent).
-    Dispose,
-}
-
 impl TurnBoundary {
-    /// The settled non-error, non-aborted assistant turns appended since the last
-    /// boundary call, added to the review prompt's trigger counter.
+    /// Count the settled non-error, non-aborted assistant turns appended since
+    /// the last boundary call into the session's review-trigger counter. The
+    /// print loop has no message-end hook, so it derives the count from the
+    /// durable rows; the counter itself lives on the session.
     pub(super) async fn count_settled_turns(&mut self, engine: &SessionEngine) {
         let Some(baseline) = self.entry_baseline else {
             return;
@@ -43,8 +32,10 @@ impl TurnBoundary {
                 )
             })
             .count();
-        self.assistant_turns_since_review += settled as u32;
         self.entry_baseline = Some(entries.len());
+        for _ in 0..settled {
+            engine.session.note_settled_turn_since_auto_refine_review();
+        }
     }
 
     /// The disposal drain: a serialized compaction can finish without another model
@@ -58,85 +49,55 @@ impl TurnBoundary {
         api_key: Option<String>,
         global_harness_dir: PathBuf,
     ) {
-        let _ = self
-            .consume_compact_auto_refine(
-                engine,
-                model,
-                api_key,
-                global_harness_dir,
-                RefineSurface::Dispose,
-            )
-            .await;
+        self.service_compact_auto_refine(
+            engine,
+            model,
+            api_key,
+            global_harness_dir,
+            CompactAutoRefineSurface::Dispose,
+        )
+        .await;
     }
 
-    /// The compact-trigger auto-refine consumption: gates first — the refine
-    /// surface, the settings, the review cooldown — then the review, and only
-    /// an approving review runs the refinement. The checkpoint preserves the
-    /// trigger through the cooldown; disposal clears it; each attempt stamps
-    /// the cooldown and resets the counter.
-    pub(super) async fn consume_compact_auto_refine(
+    /// Service one pending compact-trigger round: the session runs the machine
+    /// (gates, cooldown, in-flight guard, review, branch fence) and answers the
+    /// round, this surface renders it. A failed round surfaces as its own
+    /// `refine_failed` event, never as a boundary error — a broken refinement
+    /// must not end the print run.
+    pub(super) async fn service_compact_auto_refine(
         &mut self,
         engine: &SessionEngine,
         model: &Model,
         api_key: Option<String>,
         global_harness_dir: PathBuf,
-        surface: RefineSurface,
-    ) -> Result<(), String> {
-        if !self.compact_auto_refine_pending {
-            return Ok(());
+        surface: CompactAutoRefineSurface,
+    ) {
+        // The cheap pre-check: most boundaries carry no trigger at all.
+        if !engine.session.compact_auto_refine_pending() {
+            return;
         }
-        // Sessions without the refine surface drop the trigger
-        // outright.
-        if !engine.session.auto_refine_allowed() {
-            self.compact_auto_refine_pending = false;
-            return Ok(());
-        }
-        let gates = engine.session.auto_refine_gates();
-        if !gates.enabled || !gates.compact {
-            self.compact_auto_refine_pending = false;
-            return Ok(());
-        }
-        let under_cooldown = self
-            .last_auto_refine_review_at
-            .is_some_and(|last| now_millis().saturating_sub(last) < gates.cooldown_ms);
-        if under_cooldown && surface == RefineSurface::Checkpoint {
-            // Preserve the compact trigger for a later boundary while
-            // the cooldown is active.
-            return Ok(());
-        }
-        self.compact_auto_refine_pending = false;
-        if under_cooldown {
-            // The disposal drain clears a cooled-down trigger without a
-            // review.
-            return Ok(());
-        }
+        // The refinement rows this round appends land after this count.
         let entries_before = engine.session.entries().await.len();
-        let turns = self.assistant_turns_since_review;
-        let outcome = engine
+        let outcome = match engine
             .session
-            // The headless print boundary never moves branches (single-branch for the
-            // run), so the branch invalidation version stays at its initial 0.
-            .auto_refine_after_compaction(model, api_key, global_harness_dir, turns, 0)
-            .await;
-        // Every review attempt stamps the cooldown and resets the turn
-        // counter.
-        self.last_auto_refine_review_at = Some(now_millis());
-        self.assistant_turns_since_review = 0;
-        // The reviewer declined: no refinement, nothing surfaces.
-        let streamed = match outcome {
-            Ok(None) => return Ok(()),
+            .consume_compact_auto_refine(model, api_key, global_harness_dir, surface)
+            .await
+        {
+            // Every silent outcome: a gate drop, the cooldown, a round already
+            // in flight, a retained approval waiting out the turn, or a
+            // declining review.
+            Ok(None) => return,
             Ok(Some(result)) => Ok(result),
             Err(error) => Err(error),
         };
         self.stream_refinement_outcome(
             engine,
-            &streamed,
+            &outcome,
             entries_before,
-            surface == RefineSurface::Checkpoint,
+            surface == CompactAutoRefineSurface::Checkpoint,
             "automatic",
         )
         .await;
-        Ok(())
     }
 
     /// One refinement outcome's surface: the durable rows' message pairs plus
