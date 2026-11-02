@@ -216,6 +216,24 @@ def _selftest_problems(ctx: Context) -> list[str]:
         outcome = check_cls().run(Context(root=fixture, changed_paths=changed))
         if not outcome.findings:
             problems.append(f"{check_cls.name} PASSED its fixture — the check cannot fail")
+            continue
+        # A fixture may carry several INDEPENDENT cases (two rows citing two
+        # different ghosts, two axes, …). "Some finding appeared" then proves only
+        # that one detector still fires: break the other and the fixture stays
+        # green. `expected.txt` names one substring per case the fixture exists to
+        # exercise, and each must appear in some finding's message (review #41).
+        expected_file = fixture / "expected.txt"
+        if not expected_file.is_file():
+            continue
+        expected = [
+            line.strip() for line in expected_file.read_text().splitlines() if line.strip()
+        ]
+        messages = [finding.message for finding in outcome.findings]
+        for case in expected:
+            if not any(case in message for message in messages):
+                problems.append(
+                    f"{check_cls.name} did not report the case its fixture declares: {case!r}"
+                )
     return problems
 
 
@@ -237,13 +255,15 @@ def command_selftest(args, root: Path) -> int:
         fixture = fixtures / check_cls.name
         if not fixture.is_dir():
             continue
-        if any(problem.startswith(check_cls.name) for problem in problems):
-            print(f"selftest: {check_cls.name} PASSED its fixture — the check cannot fail")
+        own = [problem for problem in problems if problem.startswith(check_cls.name)]
+        if own:
+            # Print the actual problem, not a canned line: a fixture can fail for
+            # more than one reason now (it passed, or it stopped reporting a case
+            # it declares), and a fixed message would describe neither correctly.
+            for problem in own:
+                print(f"selftest: {problem}")
         else:
             print(f"selftest: {check_cls.name} fails its fixture as required")
-    for problem in problems:
-        if "no fixture dir" in problem:
-            print(f"selftest: {problem}")
     return 1 if problems else 0
 
 
