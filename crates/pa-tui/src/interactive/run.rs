@@ -248,6 +248,9 @@ async fn run_interactive_surface(
     // back whole: the unwind guard fires the one exit restore (a set_hook cannot — tokio catches
     // task panics).
     let _surface_restore = crate::exit_restore::SurfaceRestore::armed();
+    // The background tmux probe reports a warning through this lane (review #39);
+    // keep a handle before `Renderer::setup` takes ownership.
+    let background_ui_tx = ui_tx.clone();
     let mut renderer = Renderer::setup(
         ui,
         ui_tx,
@@ -688,12 +691,17 @@ async fn run_interactive_surface(
             session.attach_event_sequence,
         );
     }
-    if let Some(notice) = check_tmux_keyboard_setup().await {
-        view.push_entry(crate::chat::ChatEntry::Status {
-            text: format!("\u{26a0} {notice}"),
-            kind: crate::chat::StatusKind::Warning,
+    // The tmux probe spawns a process and can wait on it; nothing about it gates the
+    // first frame, so it runs in the background and reports through the input lane the
+    // run loop already drains (review #39). Awaiting it here put a process spawn — and
+    // up to its 2 s timeout — on the paint path.
+    {
+        let ui = background_ui_tx.clone();
+        tokio::spawn(async move {
+            if let Some(notice) = check_tmux_keyboard_setup().await {
+                let _ = ui.send(UiInput::BackgroundWarning(format!("\u{26a0} {notice}")));
+            }
         });
-        session.dirty = true;
     }
     // An open that waited through the update restart says so in the session's first status row.
     if waited_for_update_restart {
@@ -1125,6 +1133,11 @@ async fn run_interactive_surface(
                         } else {
                             session.handle_paste(&text, &mut view);
                         }
+                    }
+                    // A background task's warning row (the tmux probe, review #39): the
+                    // tone the paint path would have given it, delivered off that path.
+                    UiInput::BackgroundWarning(text) => {
+                        session.note_as(&text, crate::chat::StatusKind::Warning, &mut view);
                     }
                     // A mouse report reaches the transcript scroll dispatch's wheel branch;
                     // non-wheel reports are consumed inside.

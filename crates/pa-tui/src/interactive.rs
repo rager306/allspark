@@ -484,6 +484,9 @@ enum UiInput {
     /// A decoded mouse report (wheel turns; other reports are consumed at the source).
     Mouse(crate::mouse::MouseEvent),
     Submit(String),
+    /// A background task's warning row (the tmux probe, review #39): off the paint
+    /// path, but rendered with the tone a warning needs.
+    BackgroundWarning(String),
     /// The headless `SubmitAndSettle` step (see [`HeadlessStep`]).
     SubmitAndSettle {
         text: String,

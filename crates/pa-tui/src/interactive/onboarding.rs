@@ -264,6 +264,9 @@ async fn drive_onboarding_pane(
                 | UiInput::SubmitAndSettle { .. }
                 | UiInput::SettleIdle
                 | UiInput::InputChunkEnd
+                // A background warning has no pane to land in: the onboarding surface
+                // owns the frame, and the notice is for the chat behind it.
+                | UiInput::BackgroundWarning(_)
                 | UiInput::Mouse(_)
                 | UiInput::WaitIdle { .. }
                 | UiInput::ScrollTop
