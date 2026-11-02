@@ -266,11 +266,18 @@ impl GraphStore {
             props: json!({ "kind": "file" }),
         };
         // One statement for the whole file: the file node and every symbol it
-        // defines. The per-symbol `upsert_node` was the write path's dominant
-        // cost, 223 ms against 105 ms for the same rows batched (paired harness,
-        // see `measurement::batched_write_against_per_symbol_write`). FTS rows
-        // and CONTAINS edges stay per symbol: measured, batching them into one
-        // `json_each` insert changed nothing, so they keep the simpler form.
+        // defines. The per-symbol `upsert_node` was the write path's dominant cost:
+        // the paired harness (`measurement::batched_write_against_per_symbol_write`)
+        // reports 99-139 ms batched against 207-258 ms per symbol over 96 files and
+        // 2 158 rows.
+        //
+        // FTS rows and CONTAINS edges stay per symbol, and the reason is in their
+        // shape rather than a number: `index_fts` and `insert_edge` already run
+        // `prepare_cached` with constant SQL, so each call costs one statement step
+        // and batching cannot remove any per-row work — it only changes how many
+        // times the same prepared statement is stepped. `upsert_node` was different:
+        // it carried a follow-up SELECT for the row id, which `RETURNING id` and the
+        // batched form both remove.
         let file_qn = file_node.qualified_name.clone();
         let mut rows: Vec<Node> = Vec::with_capacity(extracted.symbols.len() + 1);
         rows.push(file_node);
