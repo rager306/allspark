@@ -1732,3 +1732,94 @@ fn only_queueing_actions_get_the_ten_minute_budget() {
         "the gap must be an order of magnitude, or the split buys nothing"
     );
 }
+
+/// A closed breaker releases every model queue of that provider (review #6).
+///
+/// The breaker is provider-wide while the queues are per `(provider, model)`.
+/// `settle` dispatched only the key whose lease settled, so a backlog parked on
+/// ANOTHER model of the same provider stayed stranded after recovery — it was
+/// refused while the breaker was open, and nothing woke it once the probe closed
+/// the breaker.
+#[tokio::test]
+async fn closing_the_breaker_releases_other_model_queues() {
+    let clock = ScriptedClock::new(1_000);
+    let registry = ProviderAdmission::with_parts(
+        1,
+        Arc::new(JitteredStagger::new()),
+        Arc::clone(&clock) as Arc<dyn ClockSource>,
+    );
+
+    // Model A: the only slot is held, so its next acquirer parks.
+    let parked_key = ProviderKey::new("zai", "glm-parked");
+    let holder = admitted(&registry, &parked_key, "slot-holder").await;
+    let parked = {
+        let registry = Arc::clone(&registry);
+        let key = parked_key.clone();
+        tokio::spawn(async move {
+            registry
+                .acquire_stream_within(&key, "pre-trip-waiter", Duration::from_secs(30))
+                .await
+        })
+    };
+    until(
+        || registry.snapshot(&parked_key).queued == 1,
+        "the waiter parks on model A",
+    )
+    .await;
+
+    // Model B (same provider) trips the provider-wide breaker.
+    let tripping_key = ProviderKey::new("zai", "glm-tripping");
+    for _ in 0..RETRY_BUDGET_MIN_SAMPLES {
+        let lease = admitted(&registry, &tripping_key, "storm-worker").await;
+        registry.settle(
+            lease,
+            StreamOutcome::RateLimited(RateLimitReason::RateLimit),
+        );
+    }
+    assert_eq!(
+        registry.snapshot(&tripping_key).breaker.state,
+        BreakerState::Open,
+        "the fixture must open the provider breaker"
+    );
+
+    // Free model A's slot while the breaker is open: the backlog stays parked,
+    // which is what makes the recovery below the thing under test.
+    registry.release(holder);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(
+        registry.snapshot(&parked_key).queued,
+        1,
+        "an open breaker parks the backlog"
+    );
+
+    // Cooldown, then a probe on model B; a clean settle closes the breaker.
+    clock.advance(BREAKER_COOLDOWN_MS);
+    let probe = match registry
+        .acquire_stream_within(&tripping_key, "probe", Duration::from_millis(50))
+        .await
+    {
+        StreamAdmission::Admitted(lease) => lease,
+        other => panic!("the probe must admit, got {other:?}"),
+    };
+    assert_eq!(
+        registry.snapshot(&tripping_key).breaker.state,
+        BreakerState::HalfOpen
+    );
+    registry.settle(probe, StreamOutcome::Settled);
+    assert_eq!(
+        registry.snapshot(&tripping_key).breaker.state,
+        BreakerState::Closed,
+        "a clean probe closes the breaker"
+    );
+
+    // The parked waiter on model A must now be admitted. Before the fix it stayed
+    // queued forever: nothing dispatched a key other than the probe's own.
+    let admitted_after_recovery = tokio::time::timeout(Duration::from_secs(2), parked)
+        .await
+        .expect("the other model's queue is released once the breaker closes")
+        .expect("the parked task joins");
+    assert!(
+        matches!(admitted_after_recovery, StreamAdmission::Admitted(_)),
+        "the parked waiter must be admitted, got {admitted_after_recovery:?}"
+    );
+}

@@ -642,8 +642,34 @@ impl ProviderAdmission {
             entry.in_flight = entry.in_flight.saturating_sub(1);
             report = Some((entry.limit, entry.in_flight));
         }
+        let blocked = |state: &RegistryState| {
+            matches!(
+                super::breaker::breaker_snapshot(&state.breakers, &record.key.provider).state,
+                BreakerState::Open | BreakerState::HalfOpen
+            )
+        };
+        let was_blocked = blocked(&state);
         self.breaker_settle(&mut state, &record.key.provider, lease, outcome);
-        self.dispatch(&mut state, &record.key);
+        // A CLOSED breaker releases the whole provider, not just the model whose
+        // probe settled: the breaker is provider-wide (`state.breakers[provider]`)
+        // while the queues are per `(provider, model)`, so a backlog parked on
+        // another model of the same provider stayed stranded after recovery
+        // (review #6). Closing is the only transition that unblocks them — open
+        // and half-open refuse in `dispatch` — so the wake-up is gated on it.
+        let blocked_now = blocked(&state);
+        if was_blocked && !blocked_now {
+            let keys: Vec<ProviderKey> = state
+                .providers
+                .keys()
+                .filter(|key| key.provider == record.key.provider)
+                .cloned()
+                .collect();
+            for key in keys {
+                self.dispatch(&mut state, &key);
+            }
+        } else {
+            self.dispatch(&mut state, &record.key);
+        }
         if let Some((limit, in_flight)) = report {
             tracing::debug!(
                 provider = %record.key.provider,
