@@ -283,7 +283,7 @@ impl AgentCronJobStore {
     pub fn defer_next_run(&self, id: &str, until_ms: u64) -> anyhow::Result<Option<AgentCronJob>> {
         let until_iso = iso_from_millis(until_ms);
         let mut updated = None;
-        self.mutate_states(|state| {
+        self.mutate_states_only(|state| {
             state.jobs = state
                 .jobs
                 .clone()
@@ -317,14 +317,20 @@ impl AgentCronJobStore {
 
     /// Atomically claim due jobs: advance their schedule and record dispatches.
     ///
+    /// A multi-partition claim can fail on one partition after another's rows
+    /// were already marked claimed on disk. Those claims are REAL work: returning
+    /// only the error would leave them never dispatched, indistinguishable from
+    /// interrupted work until a later recovery pass (review #3). The landed
+    /// dispatches therefore come back beside the error.
+    ///
     /// # Errors
     ///
-    /// Returns an error when the state lock or write fails.
+    /// Returns `(error, landed)` when a partition write or the state lock fails.
     pub fn claim_due(
         &self,
         due_at: u64,
         claimed_at: u64,
-    ) -> anyhow::Result<Vec<AgentCronDispatch>> {
+    ) -> Result<Vec<AgentCronDispatch>, (anyhow::Error, Vec<AgentCronDispatch>)> {
         self.mutate_states(|state| claim_due_in_state(state, due_at, claimed_at))
     }
 
@@ -359,7 +365,7 @@ impl AgentCronJobStore {
         let now = result.now.unwrap_or_else(now_millis);
         let now_iso = iso_from_millis(now);
         let mut updated = None;
-        self.mutate_states(|state| {
+        self.mutate_states_only(|state| {
             let Some(dispatch) = state
                 .dispatches
                 .iter()
@@ -416,7 +422,7 @@ impl AgentCronJobStore {
     /// Returns an error when the state lock or write fails.
     pub fn recover_interrupted_dispatches(&self, now: u64) -> anyhow::Result<Vec<AgentCronJob>> {
         let mut recovered = Vec::new();
-        self.mutate_states(|state| {
+        self.mutate_states_only(|state| {
             recover_interrupted_in_state(state, now, &mut recovered, None);
             Vec::new()
         })?;

@@ -85,7 +85,7 @@ impl AgentCronJobStore {
         // read-then-write dropped a job another writer added in between, and a
         // timestamp tie kept the stale row (review #2).
         let created = job.clone();
-        self.mutate_states(|state| {
+        self.mutate_states_only(|state| {
             for existing in &mut state.jobs {
                 if existing.active_session_id == input.active_session_id
                     && existing.source.as_deref() == Some("heartbeat")
@@ -120,7 +120,7 @@ impl AgentCronJobStore {
         // merge keep the stale row, so the management call acknowledged a pause that
         // was never persisted (review #2).
         let mut paused = None;
-        self.mutate_states(|state| {
+        self.mutate_states_only(|state| {
             for job in &mut state.jobs {
                 if job.id != current.id {
                     continue;
@@ -161,7 +161,7 @@ impl AgentCronJobStore {
         // One lock for the read and the write (review #2): read-then-write lost a
         // concurrent writer's job, and a timestamp tie kept the stale row.
         let mut resumed = None;
-        self.mutate_states(|state| {
+        self.mutate_states_only(|state| {
             for job in &mut state.jobs {
                 if job.id != current.id {
                     continue;
@@ -194,7 +194,7 @@ impl AgentCronJobStore {
         };
         let now_iso = iso_from_millis(now);
         let mut cleared = None;
-        self.mutate_states(|state| {
+        self.mutate_states_only(|state| {
             for job in &mut state.jobs {
                 if job.id != current.id {
                     continue;
@@ -233,7 +233,7 @@ impl AgentCronJobStore {
         // `next_run_at` — so a concurrent writer's job could be dropped by either.
         let mut updated = None;
         let mut failure: Option<anyhow::Error> = None;
-        self.mutate_states(|state| {
+        self.mutate_states_only(|state| {
             for job in &mut state.jobs {
                 if job.id != id
                     || job.active_session_id != active_session_id

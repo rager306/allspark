@@ -36,40 +36,89 @@ impl AgentCronJobStore {
         vec![read_jobs_state(&self.require_file_path())]
     }
 
+    /// Run one mutator against every partition under one lock.
+    ///
+    /// A partition whose write fails stops the loop but does NOT discard the
+    /// claims earlier partitions already committed: those rows are marked claimed
+    /// on disk, so returning nothing would leave them never dispatched —
+    /// indistinguishable from interrupted work until a later recovery pass
+    /// (review #3). The landed claims come back beside the error instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns `(error, landed)` when a partition write fails, and a plain error
+    /// when the cross-process lock cannot be taken.
     pub(crate) fn mutate_states(
         &self,
         mut mutator: impl FnMut(&mut CronJobsState) -> Vec<AgentCronDispatch>,
-    ) -> anyhow::Result<Vec<AgentCronDispatch>> {
+    ) -> Result<Vec<AgentCronDispatch>, (anyhow::Error, Vec<AgentCronDispatch>)> {
         let paths: Vec<PathBuf> = if self.session_artifact_mode {
-            self.session_artifact_files
+            // Sorted, not `HashMap` order: the loop below stops at the first
+            // failing partition, so the set of claims that landed must not depend
+            // on hash iteration order (review #3 — a nondeterministic prefix makes
+            // the failure unlearnable and the tests flaky).
+            let mut paths: Vec<PathBuf> = self
+                .session_artifact_files
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .values()
                 .cloned()
-                .collect()
+                .collect();
+            paths.sort();
+            paths
         } else {
             vec![self.require_file_path()]
         };
         let previous_heartbeats = Self::heartbeat_catalog_signature(&self.read_jobs());
         let mut changed = false;
-        let dispatches = with_state_locks(&paths, || {
+        let Some(outcome) = with_state_locks(&paths, || {
             let mut dispatches = Vec::new();
+            let mut failure: Option<anyhow::Error> = None;
             for path in &paths {
                 let mut state = read_jobs_state(path);
                 let before = serde_json::to_string(&state).unwrap_or_default();
-                dispatches.extend(mutator(&mut state));
+                let claimed = mutator(&mut state);
                 if serde_json::to_string(&state).unwrap_or_default() != before {
-                    write_jobs_state(path, &state)?;
+                    if let Err(error) = write_jobs_state(path, &state) {
+                        failure = Some(error);
+                        break;
+                    }
                     changed = true;
                 }
+                dispatches.extend(claimed);
             }
-            Ok::<_, anyhow::Error>(dispatches)
-        })
-        .ok_or_else(|| anyhow::anyhow!("cron jobs state lock not acquired; skipped"))??;
+            match failure {
+                Some(error) => Err((error, dispatches)),
+                None => Ok(dispatches),
+            }
+        }) else {
+            return Err((
+                anyhow::anyhow!("cron jobs state lock not acquired; skipped"),
+                Vec::new(),
+            ));
+        };
         if changed && Self::heartbeat_catalog_signature(&self.read_jobs()) != previous_heartbeats {
             self.notify_heartbeat_change();
         }
-        Ok(dispatches)
+        outcome
+    }
+
+    /// [`Self::mutate_states`] for callers that produce no dispatches.
+    ///
+    /// Management calls only mutate rows, so a partially applied partition is
+    /// just an error for them; the landed-claims channel exists for
+    /// [`Self::claim_due`]'s callers, which must run work already marked claimed.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the partition write or lock error.
+    pub(crate) fn mutate_states_only(
+        &self,
+        mut mutator: impl FnMut(&mut CronJobsState) -> Vec<AgentCronDispatch>,
+    ) -> anyhow::Result<()> {
+        self.mutate_states(|state| mutator(state))
+            .map(|_| ())
+            .map_err(|(error, _landed)| error)
     }
 
     pub(crate) fn write_jobs(&self, jobs: &[AgentCronJob]) -> anyhow::Result<()> {

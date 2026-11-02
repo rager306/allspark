@@ -153,7 +153,14 @@ impl<H: AgentCronSchedulerHooks + 'static> SchedulerCore<H> {
         // Recover interrupted dispatches before claiming: a claim left
         // by an unwound pass is released here.
         self.store.recover_interrupted_dispatches(now)?;
-        let claimed = self.store.claim_due(now, self.hooks.now())?;
+        // A partial multi-partition claim still produced work: those rows are
+        // marked claimed on disk, so they must RUN before the error surfaces —
+        // otherwise the claim is left for a recovery pass to treat as interrupted
+        // (review #3). Dispatch first, then report.
+        let (claimed, claim_failure) = match self.store.claim_due(now, self.hooks.now()) {
+            Ok(claimed) => (claimed, None),
+            Err((error, landed)) => (landed, Some(error)),
+        };
         let dispatches: Vec<PendingDispatch> = claimed
             .into_iter()
             .map(|dispatch| {
@@ -162,6 +169,9 @@ impl<H: AgentCronSchedulerHooks + 'static> SchedulerCore<H> {
             })
             .collect();
         let ran = self.dispatch_all(dispatches).await;
+        if let Some(error) = claim_failure {
+            return Err(error);
+        }
         Ok(ran)
     }
 
