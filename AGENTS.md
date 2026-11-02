@@ -522,13 +522,14 @@ cleanup becomes another run's missing directory.
 - Anything a *system* tool spawns (a compiler cache daemon, a package manager) stays in its own
   `~/.cache` home, outside the repo and outside `target/`.
 - Cleanup is `rm -rf .tmp` — one path, inside the tree, nothing outside it.
-- Compound Engineering review runs keep their run directories inside this repo:
-  create the ce-code-review run dir under `.tmp/ce-review/<run-id>/`, never
-  `/tmp/compound-engineering-*/` (the skill's Stage 1c default). When a run
-  finishes, archive the finished directory (report.md, review.json,
-  metadata.json, synthesized-findings.json, stages.jsonl, reviewer artifacts)
-  to `.research/review-runs/<run-id>/` before the session ends — `.tmp/` is
-  disposable scratch, `.research/` persists.
+- Compound Engineering review runs keep their run directories in the durable
+  research tree: create the ce-code-review run dir directly under
+  `.research/review-runs/<run-id>/`, never under `.tmp/` or
+  `/tmp/compound-engineering-*/` (the skill's Stage 1c default) — `.tmp/` is
+  disposable scratch and a review is not. Every intermediate the run writes
+  (full.diff, reviewer artifacts, merged and validated findings, report.md,
+  metadata.json, stages.jsonl) therefore persists by construction, and the
+  finished directory needs no archive step.
 
 ## Merge gates
 
