@@ -623,9 +623,6 @@ pub struct ToolProfileSettings {
     pub included_tools: Vec<String>,
 }
 
-/// The default per-cell watchdog budget for user `python_repl` cells: 60
-/// seconds.
-
 /// The default time limit for user `python_repl` cells: 60 seconds.
 pub const DEFAULT_PYTHON_CELL_TIMEOUT_MS: u64 = 60_000;
 

@@ -13,6 +13,42 @@ branch (`feat/allspark-identity`). `fork.3` points at the SAME commit as `fork.2
 (`375ad95cf`) and is a duplicate tag, not a separate release — it has no entry here
 because nothing shipped between them. `FORK.md` carries the same correction.
 
+## fork.014 — upstream v0.10.3-beta.13
+
+- Tag: `allspark-v0.10.3-beta.13-fork.014` (2026-11-03)
+- Base: the `v0.10.3-beta.13` upstream merge (11 conflicts resolved), 6 upstream
+  commits since the `v0.10.3-beta.10` merge (`6f6680681`).
+- No FORK-ONLY crate was touched: the upstream delta has zero files under
+  `crates/pa-{graph,edit,lsp,ast,mem,jev,diff}` and zero fork docs/scripts.
+
+### What the fork gained
+
+- **`rlm.session.messages`** — the model reads its own transcript slice from the
+  REPL. The trait method is implemented for the fork's inline print host, with the
+  daemon's role filter and negative-`start` contract.
+- **`python_repl` cells interrupt at their time limit and say why**, with a
+  per-call `timeout` that replaces the session default.
+- **Billed-call accounting**: refinement, review, side-question, and uncommitted
+  compaction summaries now land as `model_usage` rows, and goal budgets, session
+  stats, and telemetry count them.
+
+### What the fork fixed while merging
+
+- **A second compaction on a session that just compacted.** `auto_compaction_due`
+  did not fence a STALE usage anchor the way `threshold_compaction_due` already
+  did, and the stale path also re-added the system prompt + tool schemas. Measured:
+  12 012 message tokens + 21 131 prefix against a ~16 000 threshold, so the turn
+  loop's post-turn `run_auto_compaction` compacted again and its summarizer ate the
+  next turn. A stale anchor is now dropped from the estimate while `anchored` stays
+  true, which is the rule this method's doc already promised.
+- **The degraded kernel stub covers `rlm.session`**, and the guard now accepts a
+  nested namespace bound as `rlm.<name> = …` (the shape the real namespace has).
+
+### Verification
+
+- `pa-core` 1733 lib tests, `pa-daemon` 1303, `pa-graph` 566 — all green.
+- `cargo check --workspace --all-targets` clean; gate `--fast` (fmt + clippy) GREEN.
+
 ## fork.013 — upstream v0.10.3-beta.10
 
 - Tag: `allspark-v0.10.3-beta.10-fork.013` (2026-11-03)
