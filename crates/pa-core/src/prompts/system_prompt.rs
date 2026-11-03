@@ -1246,4 +1246,36 @@ mod tests {
              family: {premise:?}"
         );
     }
+
+    /// The static core layer's heartbeat block states the condition it depends on.
+    ///
+    /// `rlm_heartbeat.*` is host-request-backed: the handlers are registered
+    /// only when the session has a cron store, and a print session builds its
+    /// engine with `cron_store: None`. The layer is the cache-stable prefix and
+    /// cannot vary per session, so the block must state the condition instead of
+    /// promising the surface everywhere — otherwise a scheduler-less session is
+    /// told it can create a heartbeat that will never fire (review #27).
+    ///
+    /// The assertion is the invariant, not the wording: the paragraph
+    /// introducing the heartbeat section must name the requirement.
+    #[test]
+    fn the_heartbeat_block_states_the_scheduler_condition() {
+        let layer = layers::CORE_LAYER;
+        let start = layer
+            .find("## Heartbeat")
+            .expect("the core layer has a heartbeat section");
+        let block = &layer[start..];
+        let end = block[3..].find("\n## ").map_or(block.len(), |at| at + 3);
+        let section = &block[..end];
+        let premise = section
+            .lines()
+            .take_while(|line| !line.trim_start().starts_with("- `"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            premise.contains("cron") || premise.contains("daemon"),
+            "the heartbeat block must state that it needs a scheduler-backed \
+             session: {premise:?}"
+        );
+    }
 }

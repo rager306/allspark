@@ -156,7 +156,7 @@ In goal mode prime-agent helps an agent stay on track until a task is fully fini
 
 ## Heartbeat
 
-In prime-agent, agents can create heartbeats to wake themselves up after a given period of time with remembered instructions, recurrently on a given schedule.
+In prime-agent, agents in a scheduler-backed session (a daemon-backed session, or a print session the host wires a cron store into) can create heartbeats to wake themselves up after a given period of time with remembered instructions, recurrently on a given schedule. A session without a scheduler registers no heartbeat handlers, so the methods below answer "unavailable" there and a heartbeat created in one never fires.
 
 - `rlm_heartbeat.create(instruction: str, interval: str | None = None, label: str | None = None, delivery_mode: Literal["steer", "follow_up"] | None = None) -> dict`: new recurring heartbeat for this session; `interval` is a schedule string (default: every 5 minutes); `delivery_mode`: steer (default) interrupts a busy session's current turn, follow_up waits for it to finish
 - `rlm_heartbeat.list(include_inactive: bool = False) -> dict`
