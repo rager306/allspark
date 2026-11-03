@@ -4,7 +4,7 @@
 //! One pass, in four numbered phases plus the close-out. Each phase is a method
 //! on [`GraphStore`]; the order is load-bearing and stated at the code.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::error::{GraphError, Result};
@@ -59,6 +59,10 @@ impl GraphStore {
         // revision whose edges never landed makes the next run classify the file
         // as unchanged, skip it, and keep the loss forever.
         let mut pending_hashes: Vec<(String, crate::hash::FileHash)> = Vec::new();
+        // The files this run re-parsed. Resolution is per file, so a definition
+        // that arrives here can satisfy a call spelled in a file that did NOT
+        // change — and that caller's miss is re-resolved below.
+        let mut reparsed: HashSet<String> = HashSet::new();
         let mut file_node_ids: HashMap<String, i64> = HashMap::new();
         let mut batches = Self::read_batches(&root, opts, &stored)?;
         loop {
@@ -77,6 +81,7 @@ impl GraphStore {
                     FileChange::Modified => report.modified += 1,
                 }
                 report.parsed += 1;
+                reparsed.insert(w.rel.clone());
 
                 // ONE file, ONE transaction. A re-parse first clears the file's
                 // FTS rows and outgoing edges and only then writes the new
@@ -165,6 +170,11 @@ impl GraphStore {
             for (rel, hash) in &pending_hashes {
                 store.put_file_hash(&opts.project, rel, hash)?;
             }
+            // A definition that arrived in a file this run re-parsed can satisfy
+            // a call spelled in a file it did NOT touch. Only the touched files
+            // were re-resolved above, and the untouched caller never changes
+            // again, so its stale miss would outlive every later pass.
+            store.resolve_newly_satisfiable(&resolver, &opts.project, &reparsed)?;
             Ok(())
         })?;
 
@@ -272,6 +282,16 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("count")
+    }
+
+    /// The call sites naming `helper`, the callee the stale-miss test watches.
+    fn helper_sites(store: &GraphStore) -> Vec<crate::types::CallSiteRow> {
+        store
+            .call_sites("p")
+            .expect("sites")
+            .into_iter()
+            .filter(|site| site.callee == "helper")
+            .collect()
     }
 
     fn symbol_count(store: &GraphStore) -> i64 {
@@ -488,6 +508,67 @@ mod tests {
             4,
             "every call now names the new callee: {sites:?}"
         );
+    }
+
+    /// A call that could not resolve in an earlier run must resolve once the
+    /// definition it names exists — even though the CALLER's file did not change
+    /// and is therefore skipped.
+    ///
+    /// Resolution ran only over the call sites of the files this run re-parsed.
+    /// A new file that satisfies an old miss leaves the miss in place, so the
+    /// store disagreed with what a fresh index of the same tree produces, and no
+    /// later pass could repair it: the caller never changes again.
+    #[test]
+    fn a_new_definition_resolves_an_untouched_callers_stale_miss() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(dir.path(), "a.rs", "pub fn caller() -> u32 { helper() }\n");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("first index");
+        let before = helper_sites(&store);
+        assert_eq!(before.len(), 1, "the first run records the miss");
+        assert_eq!(before[0].resolution, "unresolved");
+
+        // The definition arrives in a file the first run never saw. `a.rs` is
+        // untouched from here on.
+        write(dir.path(), "b.rs", "pub fn helper() -> u32 { 1 }\n");
+        let report = store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("second index");
+        assert_eq!(report.unchanged, 1, "a.rs is skipped: {report:?}");
+
+        let sites = helper_sites(&store);
+        assert_eq!(sites.len(), 1, "one call site, one row: {sites:?}");
+        assert_ne!(
+            sites[0].resolution, "unresolved",
+            "the untouched caller's miss was never re-resolved: {sites:?}"
+        );
+        let calls: Vec<String> = store
+            .connection()
+            .prepare(
+                "SELECT json_extract(props_json,'$.callee') FROM edges
+                 WHERE project = 'p' AND edge_type = 'CALLS'",
+            )
+            .expect("stmt")
+            .query_map([], |r| r.get(0))
+            .expect("rows")
+            .map(|r| r.expect("row"))
+            .collect();
+        assert_eq!(
+            calls,
+            vec!["helper".to_string()],
+            "the resolved edge a fresh index writes: {calls:?}"
+        );
+        let uses: i64 = store
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM edges WHERE project = 'p' AND edge_type = 'USAGE'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(uses, 0, "the stale miss must not survive beside its edge");
     }
 
     /// The resolved edges of a run are ONE transaction, so a run that fails

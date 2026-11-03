@@ -438,18 +438,19 @@ impl GraphStore {
 
     /// Re-resolve unresolved call sites whose callee now HAS a definition.
     ///
-    /// A new file can satisfy a call another file left unresolved: no edge existed, so the
-    /// depth-1 closure could not discover the dependent. A full index resolves it, so
-    /// leaving it stale makes the two write paths disagree about the same tree — the
-    /// review's own acceptance check.
+    /// Both write paths call this, after they have resolved the call sites of the
+    /// files they touched. Resolution is per FILE, so a definition that arrives in
+    /// one file can satisfy a call spelled in another — and that caller never
+    /// changes again, so nothing else would ever revisit its miss. The store then
+    /// disagreed with a fresh index of the same tree for good (review #37).
     ///
     /// Only rows still marked `unresolved` and in files this run did NOT touch are
     /// considered: a touched file's rows were just rewritten from its fresh parse.
     ///
     /// # Errors
     /// Propagates SQLite errors.
-    fn resolve_newly_satisfiable(
-        &mut self,
+    pub(crate) fn resolve_newly_satisfiable(
+        &self,
         resolver: &Resolver,
         project: &str,
         reindexed: &std::collections::HashSet<String>,
