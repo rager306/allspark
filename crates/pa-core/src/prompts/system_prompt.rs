@@ -403,7 +403,8 @@ fn native_tools_section(tools: &[&str], options: &BuildSystemPromptOptions<'_>) 
             .map(|mode| mode.as_str())
             .collect();
         if !others.is_empty() {
-            line.push_str(&format!("; it also accepts {}", others.join(", ")));
+            line.push_str("; it also accepts ");
+            line.push_str(&others.join(", "));
         }
         line.push_str(
             ". NEVER issue an individual edit with `sed`/`perl`/`python` through `bash` — this \

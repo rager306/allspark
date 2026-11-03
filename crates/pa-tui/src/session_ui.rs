@@ -561,7 +561,6 @@ impl SessionUi {
             .unwrap_or_else(|| crate::chrome::display_name(&self.cwd.to_string_lossy()))
     }
 
-
     async fn bounded_request(&self, timeout: Duration, command: DaemonCommand) -> Result<Value> {
         tokio::time::timeout(timeout, self.client.request_ok(command))
             .await
