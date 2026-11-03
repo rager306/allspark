@@ -225,14 +225,34 @@ def _selftest_problems(ctx: Context) -> list[str]:
         expected_file = fixture / "expected.txt"
         if not expected_file.is_file():
             continue
-        expected = [
-            line.strip() for line in expected_file.read_text().splitlines() if line.strip()
-        ]
-        messages = [finding.message for finding in outcome.findings]
-        for case in expected:
-            if not any(case in message for message in messages):
+        # Each line is `<substring>` or `<SEVERITY> <substring>`; a bare line
+        # means HIGH, because only a HIGH finding fails CI — a fixture whose case
+        # fires as LOW stays green under the gate it exists to protect (review
+        # #41). An explicit `low` prefix marks a case that is advisory on purpose.
+        expected: list[tuple[Severity, str]] = []
+        for line in expected_file.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            head, _, rest = line.partition(" ")
+            if head.lower() in {severity.value for severity in Severity} and rest.strip():
+                expected.append((Severity(head.lower()), rest.strip()))
+            else:
+                expected.append((Severity.HIGH, line))
+        for severity, case in expected:
+            matched = [
+                finding for finding in outcome.findings if case in finding.message
+            ]
+            if not matched:
                 problems.append(
                     f"{check_cls.name} did not report the case its fixture declares: {case!r}"
+                )
+                continue
+            if not any(finding.severity is severity for finding in matched):
+                got = ", ".join(sorted({str(finding.severity) for finding in matched}))
+                problems.append(
+                    f"{check_cls.name} reported {case!r} as {got}, not {severity}: "
+                    f"a {severity} case that reports lower cannot fail the gate"
                 )
     return problems
 
