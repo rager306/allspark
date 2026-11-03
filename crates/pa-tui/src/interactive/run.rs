@@ -730,13 +730,23 @@ async fn run_interactive_surface(
         session.dirty = true;
     }
     // The ban-risk warning on an Anthropic subscription credential at startup.
-    if let Some(provider) = session.current_model_provider().await {
-        session
-            .maybe_warn_anthropic_subscription_auth_if_subscribed(
-                Some(provider.as_str()),
-                &mut view,
-            )
-            .await;
+    //
+    // OFF the paint path (review #14). Resolving the provider is a bounded
+    // `GetState` request and the warning itself reads session state and the
+    // credential — each with `UI_REQUEST_TIMEOUT_MS`, so a slow or wedged daemon
+    // held the first frame for tens of seconds. The provider is resolved on the
+    // shared client from a background task and delivered on the input lane the
+    // loop already drains; the warning then runs against the live session.
+    {
+        let ui = background_ui_tx.clone();
+        let client = session.client.clone();
+        let session_id = session.active_session_id.clone();
+        tokio::spawn(async move {
+            if let Some(provider) = crate::session_ui::model_provider_of(&client, &session_id).await
+            {
+                let _ = ui.send(UiInput::BackgroundProvider(provider));
+            }
+        });
     }
     // The once-per-installation telemetry disclosure (TS
     // agent-session-services): rendered as an info row here — the alt
@@ -1163,6 +1173,17 @@ async fn run_interactive_surface(
                     // tone the paint path would have given it, delivered off that path.
                     UiInput::BackgroundWarning(text) => {
                         session.note_as(&text, crate::chat::StatusKind::Warning, &mut view);
+                    }
+                    // The off-paint-path provider lookup answered: the ban-risk
+                    // warning's own reads may now run, and its row lands on the
+                    // live view rather than a first frame (review #14).
+                    UiInput::BackgroundProvider(provider) => {
+                        session
+                            .maybe_warn_anthropic_subscription_auth_if_subscribed(
+                                Some(&provider),
+                                &mut view,
+                            )
+                            .await;
                     }
                     // A mouse report reaches the transcript scroll dispatch's wheel branch;
                     // non-wheel reports are consumed inside.

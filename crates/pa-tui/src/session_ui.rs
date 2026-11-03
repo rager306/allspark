@@ -490,6 +490,34 @@ pub(crate) enum DockFold {
     Held,
 }
 
+/// The provider of the session's current model, resolved WITHOUT a
+/// `SessionUi` so a background task can ask (review #14).
+///
+/// Same request and the same `UI_REQUEST_TIMEOUT_MS` bound as
+/// the old in-process path; `None` on any failure, because a failed
+/// lookup only means the warning is skipped.
+pub(crate) async fn model_provider_of(
+    client: &DaemonClient,
+    active_session_id: &str,
+) -> Option<String> {
+    let state = tokio::time::timeout(
+        Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
+        client.request_ok(DaemonCommand::GetState {
+            id: None,
+            active_session_id: active_session_id.to_string(),
+            rest: Map::default(),
+        }),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    state
+        .get("model")?
+        .get("provider")?
+        .as_str()
+        .map(str::to_string)
+}
+
 impl SessionUi {
     /// Take the one-shot post-first-frame trim request.
     pub(crate) fn take_trim_after_frame(&mut self) -> bool {
@@ -533,24 +561,6 @@ impl SessionUi {
             .unwrap_or_else(|| crate::chrome::display_name(&self.cwd.to_string_lossy()))
     }
 
-    pub(crate) async fn current_model_provider(&mut self) -> Option<String> {
-        let state = self
-            .bounded_request(
-                Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
-                DaemonCommand::GetState {
-                    id: None,
-                    active_session_id: self.active_session_id.clone(),
-                    rest: Map::default(),
-                },
-            )
-            .await
-            .ok()?;
-        state
-            .get("model")?
-            .get("provider")?
-            .as_str()
-            .map(str::to_string)
-    }
 
     async fn bounded_request(&self, timeout: Duration, command: DaemonCommand) -> Result<Value> {
         tokio::time::timeout(timeout, self.client.request_ok(command))

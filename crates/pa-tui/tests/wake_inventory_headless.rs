@@ -19,12 +19,24 @@ const PLAN_HEIGHT: u16 = 40;
 
 struct MockBoot {
     listener: UnixListener,
+    /// When set, `get_state` requests are never answered — the shape a slow daemon
+    /// has from the client's side (review #14: a lookup that must not gate paint).
+    hang_get_state: bool,
 }
 
 impl MockBoot {
     fn bind(socket: &std::path::Path) -> Self {
         MockBoot {
             listener: UnixListener::bind(socket).expect("bind mock socket"),
+            hang_get_state: false,
+        }
+    }
+
+    /// A mock that never answers `get_state`.
+    fn bind_hanging_get_state(socket: &std::path::Path) -> Self {
+        MockBoot {
+            listener: UnixListener::bind(socket).expect("bind mock socket"),
+            hang_get_state: true,
         }
     }
 
@@ -67,11 +79,16 @@ impl MockBoot {
                     let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
                         continue;
                     };
-                    match value
+                    let command = value
                         .get("command")
                         .and_then(|c| c.get("type"))
-                        .and_then(Value::as_str)
-                    {
+                        .and_then(Value::as_str);
+                    if self.hang_get_state && command == Some("get_state") {
+                        // Deliberately unanswered: the client's own bound is what
+                        // must keep painting.
+                        continue;
+                    }
+                    match command {
                         Some("create") => {
                             let _ = writeln!(
                                 writer,
@@ -278,5 +295,50 @@ fn a_blocked_tmux_probe_does_not_delay_the_first_frame() {
     assert!(
         elapsed < std::time::Duration::from_secs(2),
         "the open waited on the tmux probe ({elapsed:?}); the probe must not be on the paint path"
+    );
+}
+
+/// A slow model lookup must not hold the first frame (review #14).
+///
+/// `current_model_provider` is a bounded `GetState` request, and the ban-risk
+/// warning behind it reads session state and the credential — each with the
+/// 10-second request bound. Awaiting that chain before the first draw meant a
+/// slow or wedged daemon could keep the surface blank for tens of seconds.
+///
+/// The mock never answers `get_state`, so only a paint path that does NOT wait on
+/// the lookup can produce frames at all.
+#[test]
+fn a_hanging_model_lookup_does_not_hold_the_first_frame() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket: PathBuf = dir.path().join("tui.sock");
+    let supervisor = MockBoot::bind_hanging_get_state(&socket);
+    let handle = std::thread::spawn(move || supervisor.serve());
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let started = std::time::Instant::now();
+    let outcome = runtime
+        .block_on(run_interactive(
+            options(socket),
+            UiMode::Headless(HeadlessPlan {
+                steps: Vec::new(),
+                width: 100,
+                height: PLAN_HEIGHT,
+            }),
+        ))
+        .expect("interactive run");
+    let elapsed = started.elapsed();
+    // Teardown is not the paint path (see the tmux test).
+    runtime.shutdown_background();
+    let _ = handle.join();
+
+    assert!(
+        !outcome.frames.is_empty(),
+        "the first frame must paint while the model lookup is still unanswered"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "the open waited on the model lookup ({elapsed:?}); it must not be on the paint path"
     );
 }

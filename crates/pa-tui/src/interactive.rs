@@ -520,6 +520,10 @@ enum UiInput {
     /// A background task's warning row (the tmux probe, review #39): off the paint
     /// path, but rendered with the tone a warning needs.
     BackgroundWarning(String),
+    /// A background task's answer that the LOOP must apply to the live view (the
+    /// provider the Anthropic ban-risk warning needs, review #14): the lookup is
+    /// off the paint path, its consequence is not.
+    BackgroundProvider(String),
     /// The headless `SubmitAndSettle` step (see [`HeadlessStep`]).
     SubmitAndSettle {
         text: String,
