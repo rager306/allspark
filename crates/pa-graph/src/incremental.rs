@@ -235,6 +235,11 @@ impl GraphStore {
         for rel in stored_hashes.keys() {
             if !seen.contains(rel) {
                 self.clear_file(&opts.project, rel)?;
+                // `call_sites` keys on the file, not on a node id, so `clear_file`
+                // leaves its rows behind — the incremental sweep is the one place
+                // that forgot, while the full pass clears them beside the file
+                // (review #38).
+                self.clear_call_sites(&opts.project, rel)?;
                 self.remove_file_hash(&opts.project, rel)?;
                 self.remove_file_surface(&opts.project, rel)?;
                 self.remove_lsp_surface(&opts.project, rel)?;
@@ -1311,6 +1316,37 @@ mod tests {
         assert_eq!(
             stored.sha256, parsed.sha256,
             "the stored hash must describe the parsed bytes, not a second disk read"
+        );
+    }
+
+    /// A file REMOVED between incremental passes must take its call sites (#38).
+    ///
+    /// The full pass clears `call_sites` beside the file (`indexer/run.rs`); the
+    /// incremental sweep is a separate path and forgot. A `call_sites` row keys on
+    /// the file rather than a node id, so nothing else takes it: the removed file
+    /// kept answering impact questions about call sites it no longer had.
+    #[test]
+    fn a_removed_file_loses_its_call_sites_on_the_incremental_sweep() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(dir.path(), "a.rs", "pub fn helper() {}\n");
+        write(dir.path(), "b.rs", "pub fn caller() { helper(); }\n");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        index(&mut store, dir.path());
+        let before = store.call_sites("p").expect("sites");
+        assert!(
+            before.iter().any(|s| s.rel_path == "b.rs"),
+            "the fixture records a call site to lose: {before:?}"
+        );
+
+        std::fs::remove_file(dir.path().join("b.rs")).expect("remove");
+        store
+            .reindex_incremental(dir.path(), &IndexOptions::new("p"))
+            .expect("reindex");
+
+        let after = store.call_sites("p").expect("sites");
+        assert!(
+            !after.iter().any(|s| s.rel_path == "b.rs"),
+            "a removed file's call sites must not survive the incremental sweep: {after:?}"
         );
     }
 }
