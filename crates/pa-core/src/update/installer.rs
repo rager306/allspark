@@ -120,6 +120,33 @@ fn is_https_url(url: &str) -> bool {
     url.trim_start().starts_with("https://")
 }
 
+/// A URL with its userinfo removed, for anything a human or a log will read
+/// (review #32, CWE-532).
+///
+/// `https://user:token@host/path` is a legal way to hand a mirror its
+/// credentials, and every refusal/error path here formats the URL. The token is
+/// then in the daemon log, the update status file, and the TUI's error row.
+/// Everything between the scheme's `//` and the last `@` before the path is the
+/// userinfo; a URL with no `@` in that span is returned unchanged.
+#[must_use]
+pub fn redact_url_credentials(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let authority_start = scheme_end + 3;
+    let authority_end = url[authority_start..]
+        .find(['/', '?', '#'])
+        .map_or(url.len(), |at| authority_start + at);
+    let Some(userinfo_end) = url[authority_start..authority_end].rfind('@') else {
+        return url.to_string();
+    };
+    format!(
+        "{}<redacted>@{}",
+        &url[..authority_start],
+        &url[authority_start + userinfo_end + 1..]
+    )
+}
+
 /// The refusal for a non-`https` installer URL or download base, unless the
 /// explicitly-named escape hatch ([`ENV_ALLOW_HTTP`]`=1`) is active — the exact
 /// rule and knob `install-rust.sh` and `install.ps1` carry for the download
@@ -131,8 +158,9 @@ pub fn installer_url_refusal(url: &str, allow_http: bool) -> Option<String> {
         return None;
     }
     Some(format!(
-        "the installer URL must be an https URL: {url} \
-         (set {ENV_ALLOW_HTTP}=1 only for a local channel you control)"
+        "the installer URL must be an https URL: {} \
+         (set {ENV_ALLOW_HTTP}=1 only for a local channel you control)",
+        redact_url_credentials(url)
     ))
 }
 
@@ -149,7 +177,10 @@ pub fn allow_http() -> bool {
 /// more permissive than the script it fetches and execs.
 fn ensure_https_url(url: &str) -> Result<(), UpdateFailure> {
     if let Some(message) = installer_url_refusal(url, allow_http()) {
-        tracing::warn!(url, "refusing a non-https installer source: {message}");
+        tracing::warn!(
+            url = %redact_url_credentials(url),
+            "refusing a non-https installer source: {message}"
+        );
         return Err(UpdateFailure { message });
     }
     Ok(())
@@ -346,7 +377,10 @@ pub async fn run_installer_from(
         message: format!("{error:#}"),
     })?;
     let (script, handle) = fetch_script(url).await.map_err(|error| UpdateFailure {
-        message: format!("could not download the installer from {url}: {error:#}"),
+        message: format!(
+            "could not download the installer from {}: {error:#}",
+            redact_url_credentials(url)
+        ),
     })?;
     let result = execute_script(&handle, &[], prefix, channel, output).await;
     let _ = std::fs::remove_file(&script);
@@ -1797,6 +1831,58 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
             on_disk.len(),
             "the bundled installer and install-rust.sh differ in length"
         );
+    }
+    /// A refusal must not print the URL's credentials (review #32, CWE-532).
+    ///
+    /// `https://user:token@mirror/install.sh` is a legal way to hand a mirror its
+    /// credentials, and the refusal text reaches the daemon log, the update status
+    /// file, and the TUI's error row.
+    #[test]
+    fn a_refusal_redacts_url_credentials() {
+        let refusal = installer_url_refusal(
+            "http://user:s3cr3t-token@mirror.example.com/install.sh",
+            /*allow_http*/ false,
+        )
+        .expect("a plaintext URL is refused");
+        assert!(
+            !refusal.contains("s3cr3t-token"),
+            "the refusal must not carry the token: {refusal}"
+        );
+        assert!(
+            refusal.contains("<redacted>@mirror.example.com/install.sh"),
+            "the host and path stay, so the operator can tell WHICH URL: {refusal}"
+        );
+    }
+
+    /// A credential-free URL is printed verbatim; nothing else changes.
+    #[test]
+    fn a_refusal_without_credentials_prints_the_url() {
+        let url = "http://mirror.example.com/install.sh";
+        let refusal =
+            installer_url_refusal(url, /*allow_http*/ false).expect("a plaintext URL is refused");
+        assert!(
+            refusal.contains(url),
+            "a credential-free URL is named as-is: {refusal}"
+        );
+    }
+
+    /// The redactor handles the shapes a URL can take.
+    #[test]
+    fn url_redaction_covers_the_authority_shapes() {
+        for (input, expected) in [
+            ("https://tok@h/x", "https://<redacted>@h/x"),
+            ("https://u:p@h", "https://<redacted>@h"),
+            (
+                "https://u:p@h:8443/x?y=1",
+                "https://<redacted>@h:8443/x?y=1",
+            ),
+            ("https://h/x", "https://h/x"),
+            ("http://h", "http://h"),
+            // A `@` in the PATH is not userinfo.
+            ("https://h/x@y", "https://h/x@y"),
+        ] {
+            assert_eq!(redact_url_credentials(input), expected, "input: {input}");
+        }
     }
 }
 
