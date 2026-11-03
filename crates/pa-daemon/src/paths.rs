@@ -78,9 +78,34 @@ pub fn logs_dir(agent_dir: &Path) -> PathBuf {
 /// Returns an error when directory creation fails; the permission
 /// restriction is best effort.
 pub fn ensure_dir(path: &Path) -> Result<()> {
-    std::fs::create_dir_all(path)?;
-    let _ = pa_core::platform::perms::restrict_dir(path);
-    Ok(())
+    // ONLY a directory this call CREATED gets the 0700 restriction. Asking
+    // `create_dir_all` whether the leaf was missing is not enough: the answer is
+    // the error kind, and a racing process creating the same path in between makes
+    // our mkdir fail with `AlreadyExists` — which reads the same as "someone else
+    // owns it" (review #9). `create_dir` is the atomic claim: it succeeds for
+    // exactly one caller per path, and only that caller restricts.
+    match std::fs::create_dir(path) {
+        Ok(()) => {
+            let _ = pa_core::platform::perms::restrict_dir(path);
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // A parent is missing: build the chain, then claim the leaf.
+            if let Some(parent) = path.parent() {
+                ensure_dir(parent)?;
+            }
+            match std::fs::create_dir(path) {
+                Ok(()) => {
+                    let _ = pa_core::platform::perms::restrict_dir(path);
+                    Ok(())
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+                Err(error) => Err(error.into()),
+            }
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// sha256 hex, first `chars` characters.
@@ -324,6 +349,61 @@ mod tests {
         assert_eq!(
             mode, 0o600,
             "the post-rotation log file must be owner-read/write only, got {mode:o}"
+        );
+    }
+
+    /// An existing directory keeps its mode; only a directory this call CREATES
+    /// is restricted (review #9).
+    ///
+    /// The check-then-create shape asked `!parent.exists()` and then
+    /// `create_dir_all`. Two daemons racing on the same fresh parent both saw
+    /// "missing"; the loser's `create_dir_all` returned `AlreadyExists`, and its
+    /// 0700 restriction then landed on a directory it did not own. The atomic
+    /// claim is `create_dir`, which succeeds for exactly one caller.
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_this_call_did_not_create_keeps_its_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let shared = root.path().join("shared");
+        std::fs::create_dir(&shared).expect("create the shared dir");
+        // A deliberately permissive mode, as the shared temp dir has.
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o1777)).expect("chmod");
+        let before = std::fs::metadata(&shared)
+            .expect("stat")
+            .permissions()
+            .mode();
+
+        ensure_dir(&shared).expect("an existing directory is not an error");
+
+        let after = std::fs::metadata(&shared)
+            .expect("stat")
+            .permissions()
+            .mode();
+        assert_eq!(
+            before, after,
+            "ensure_dir must not re-mode a directory another owner created"
+        );
+    }
+
+    /// And a directory it DOES create is owner-only.
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_this_call_created_is_restricted() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let fresh = root.path().join("fresh/nested");
+        ensure_dir(&fresh).expect("create the chain");
+        let mode = std::fs::metadata(&fresh)
+            .expect("stat")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o700,
+            "a created directory is owner-only, got {mode:o}"
         );
     }
 }

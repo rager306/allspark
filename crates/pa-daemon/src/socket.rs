@@ -71,15 +71,18 @@ async fn acquire_cleanup_lock(path: &Path) -> Result<pa_core::platform::LockDir>
 #[cfg(unix)]
 pub async fn prepare_socket_path(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
-        // Create the parent if it is missing, but NEVER re-mode a directory that
-        // already exists: the default socket lives in the shared temp dir, and
-        // `ensure_dir` ends with `restrict_dir` (0700), which on an existing
+        // NEVER re-mode a directory that already exists: the default socket lives
+        // in the shared temp dir, and a 0700 restriction on an existing
         // `${TMPDIR:-/tmp}` drops the sticky bit and makes the machine's shared
         // temp dir owner-only (review #9, CWE-276). Measured on a live host:
         // `/tmp` had become `drwx------` while `/var/tmp` stayed `drwxrwxrwt`.
-        if !parent.exists() {
-            crate::paths::ensure_dir(parent)?;
-        }
+        //
+        // No `exists()` pre-check either: that is a check-then-act window, and a
+        // racing daemon creating the parent between the check and the create turns
+        // our `mkdir` into `AlreadyExists` — which `ensure_dir` already treats as
+        // "not ours, leave it alone". `ensure_dir` itself restricts only a leaf it
+        // created, so calling it unconditionally is safe and closes the window.
+        crate::paths::ensure_dir(parent)?;
         // The socket FILE is owner-only regardless (the bind's umask), and a
         // private per-user parent keeps that guarantee when the caller passes one.
     }
