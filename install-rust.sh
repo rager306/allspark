@@ -1783,12 +1783,24 @@ fi
 # update-flow next-step line, and would drop the fork candidate entirely
 # (review #40). The rust probe therefore yields to the fork when they are the
 # same path and this is a fork run.
+#
+# The env socket yields the same way. An operator who exports the fork's own
+# path (`PRIME_AGENT_DAEMON_SOCKET=${TMPDIR}/allspark-daemon.sock`, which the
+# launcher also pins) used to collide with BOTH conditions at once: the env
+# candidate requires `env != fork` and the fork candidate requires
+# `fork != env`, so neither probe fired and the path vanished from the report
+# entirely. A fork run owns a path it named itself; the env label yields.
 rust_socket_probe="no"
 if [ "$rust_socket" != "$ts_socket" ] && { [ "$fork_run" != "yes" ] || [ "$rust_socket" != "$fork_socket" ]; }; then
   rust_socket_probe="yes"
 fi
 fork_socket_probe="no"
-if [ "$fork_run" = "yes" ] && [ "$fork_socket" != "$ts_socket" ] && [ "$fork_socket" != "$env_socket" ]; then
+# No env dedup here: an env socket naming the fork's own path is the SAME
+# candidate and the env probe already yields to it (its condition requires
+# `env != fork`). Requiring both to differ from each other meant a launcher-style
+# export of the fork path satisfied neither and the path dropped out of the
+# report (review #40).
+if [ "$fork_run" = "yes" ] && [ "$fork_socket" != "$ts_socket" ]; then
   fork_socket_probe="yes"
 fi
 # ts_candidate_report: the candidates actually probed, in probe order, for the

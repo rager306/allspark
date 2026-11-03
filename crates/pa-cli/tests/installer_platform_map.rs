@@ -1347,4 +1347,35 @@ fn the_socket_dedup_keeps_the_fork_owner_when_the_paths_coincide() {
         probe("/tmp/r.sock", "/tmp/ts.sock", "yes"),
         ("yes".to_string(), "no".to_string())
     );
+
+    // The env socket naming the FORK's own path: one candidate, owned by the
+    // fork run. Requiring `env != fork` AND `fork != env` made both probes "no"
+    // and the path vanished from the report entirely (review #40).
+    let shared = "/tmp/same.sock";
+    let harness = format!(
+        "set -u\n\
+         ts_socket=/tmp/ts.sock\n\
+         rust_socket=/tmp/r.sock\n\
+         fork_socket={shared}\n\
+         fork_run=yes\n\
+         env_socket={shared}\n\
+         {block}\n\
+         printf '%s %s %s\\n' \"$env_socket_probe\" \"$rust_socket_probe\" \"$fork_socket_probe\""
+    );
+    let out = Command::new("sh")
+        .arg("-c")
+        .arg(&harness)
+        .output()
+        .expect("run the dedup block with an env/fork collision");
+    assert!(
+        out.status.success(),
+        "the dedup block failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert_eq!(
+        text, "no yes yes",
+        "an env socket naming the fork path leaves exactly one owner (the fork); \
+         the rust pin is a DIFFERENT path and keeps its probe, got {text:?}"
+    );
 }
