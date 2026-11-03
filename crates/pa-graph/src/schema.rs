@@ -19,6 +19,11 @@ pub const SCHEMA: &[&str] = &[
         v TEXT NOT NULL
     )",
     // Per-file content hashes for incremental classification.
+    //
+    // `depth` is the shallowest pass this row satisfies (`0` skeleton, `1`
+    // symbols, `2` full). The hash alone says the file's CONTENT is indexed, not
+    // how much of it reached the graph, so a skeleton pass storing the hash made
+    // every later full pass skip the whole tree.
     r"CREATE TABLE IF NOT EXISTS file_hashes (
         project  TEXT NOT NULL REFERENCES projects(name) ON DELETE CASCADE,
         rel_path TEXT NOT NULL,
@@ -26,6 +31,7 @@ pub const SCHEMA: &[&str] = &[
         blake3   TEXT NOT NULL DEFAULT '',
         mtime_ns INTEGER NOT NULL DEFAULT 0,
         size     INTEGER NOT NULL DEFAULT 0,
+        depth    INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (project, rel_path)
     )",
     // Graph nodes: symbols, files, folders.
@@ -161,6 +167,26 @@ pub const SCHEMA: &[&str] = &[
 pub fn apply(conn: &rusqlite::Connection) -> crate::Result<()> {
     let batch = SCHEMA.join(";\n");
     conn.execute_batch(&batch)?;
+    add_file_hash_depth(conn)?;
+    Ok(())
+}
+
+/// Give a store written before `file_hashes.depth` existed the column.
+///
+/// `CREATE TABLE IF NOT EXISTS` leaves an existing table byte-identical, so the
+/// column is added separately. The default `0` reads as "skeleton", which is the
+/// honest answer for those rows: they claim nothing about symbols, so the next
+/// deeper pass re-parses the file instead of skipping it.
+fn add_file_hash_depth(conn: &rusqlite::Connection) -> crate::Result<()> {
+    let present = conn
+        .prepare("PRAGMA table_info(file_hashes)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|name| name == "depth");
+    if !present {
+        conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN depth INTEGER NOT NULL DEFAULT 0")?;
+    }
     Ok(())
 }
 

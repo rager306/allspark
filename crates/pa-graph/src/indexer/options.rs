@@ -6,53 +6,7 @@
 use std::time::Duration;
 
 use crate::lease::{CancelToken, DEFAULT_LEASE_WAIT};
-
-/// How much of the graph to build.
-///
-/// A skeleton is cheap and answers structural questions immediately; the symbol
-/// pass costs two orders of magnitude more. Measured on this repository (2,743
-/// files): `Skeleton` 1,105 ms, `Symbols` about 135,000 ms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
-pub enum Depth {
-    /// One `File` node per tracked file: names, paths, sizes. Nothing is parsed.
-    Skeleton,
-    /// Skeleton plus every symbol definition. Calls and imports are not resolved,
-    /// so `trace` and `structure` views are empty; `search` and `architecture`
-    /// workspace files work.
-    Symbols,
-    /// Everything: symbols, call edges, import edges, coverage accounting.
-    #[default]
-    Full,
-}
-
-impl Depth {
-    /// Stable lowercase wire name.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Skeleton => "skeleton",
-            Self::Symbols => "symbols",
-            Self::Full => "full",
-        }
-    }
-
-    /// Parse a depth from its wire name; unknown names mean `Full`, so an old
-    /// caller keeps the behaviour it had.
-    #[must_use]
-    pub fn from_str_or_default(value: &str) -> Self {
-        match value {
-            "skeleton" => Self::Skeleton,
-            "symbols" => Self::Symbols,
-            _ => Self::Full,
-        }
-    }
-
-    /// Whether this pass resolves call and import edges.
-    #[must_use]
-    pub const fn resolves_edges(self) -> bool {
-        matches!(self, Self::Full)
-    }
-}
+pub use crate::types::Depth;
 
 pub struct IndexOptions {
     /// Project name to register/update.

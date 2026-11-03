@@ -64,6 +64,9 @@ pub enum ReindexReason {
     SurfaceChange,
     /// `force` was set.
     Forced,
+    /// At least one stored revision was shallower than this pass: a skeleton or
+    /// symbols index left rows whose content hash matched but whose graph did not.
+    Deepened,
     /// More than one of the above applied in a single run.
     Mixed,
 }
@@ -79,6 +82,7 @@ impl ReindexReason {
             Self::BodyOnly => "body_only",
             Self::SurfaceChange => "surface_change",
             Self::Forced => "forced",
+            Self::Deepened => "deepened",
             Self::Mixed => "mixed",
         }
     }
@@ -178,7 +182,12 @@ impl GraphStore {
             if meta.len() > opts.max_file_bytes {
                 continue;
             }
-            let hash = hash_bytes(&bytes, &meta);
+            let mut hash = hash_bytes(&bytes, &meta);
+            // This pass always resolves edges, so the row it writes satisfies the
+            // full depth whatever `opts.depth` the caller passed: `reindex` builds
+            // the same graph a full index does, and a row stamped shallower would
+            // make the next reindex redo the work.
+            hash.depth = crate::types::Depth::Full;
             let source = String::from_utf8_lossy(&bytes).into_owned();
             let module = module_of(&rel);
 
@@ -187,7 +196,14 @@ impl GraphStore {
             } else {
                 match stored_hashes.get(&rel) {
                     None => ReindexReason::Added,
-                    Some(old) if old.sha256 == hash.sha256 => {
+                    // Same bytes but a shallower stored revision: a skeleton or
+                    // symbols pass wrote this row and left the graph without the
+                    // symbols (or the edges) this pass is here to write. Skipping
+                    // it made "reindex" a no-op over a symbolic graph.
+                    Some(old)
+                        if old.sha256 == hash.sha256
+                            && old.depth.satisfies(crate::types::Depth::Full) =>
+                    {
                         // Content is byte-identical. If the surface row is
                         // missing (older index) backfill it without a full
                         // re-parse, then skip.
@@ -204,6 +220,12 @@ impl GraphStore {
                         unchanged += 1;
                         continue;
                     }
+                    // Same bytes, but a shallower pass wrote the row: the graph has
+                    // no symbols (skeleton) or no resolved edges (symbols) for this
+                    // file, so this pass must re-read it. It also seeds the closure,
+                    // because nothing in the store says the file's dependents were
+                    // ever resolved against symbols it did not index.
+                    Some(_) if stored_hashes[&rel].sha256 == hash.sha256 => ReindexReason::Deepened,
                     Some(_) => {
                         let new_surface = surface_of(&source, lang, &module);
                         match stored_surfaces.get(&rel) {
@@ -218,7 +240,10 @@ impl GraphStore {
                 }
             };
             reasons.insert(reason);
-            if reason == ReindexReason::SurfaceChange {
+            if matches!(
+                reason,
+                ReindexReason::SurfaceChange | ReindexReason::Deepened
+            ) {
                 closure_seeds.push(rel.clone());
             }
             targets.push(Target {
@@ -274,7 +299,8 @@ impl GraphStore {
             let Ok(meta) = std::fs::metadata(&abs) else {
                 continue;
             };
-            let hash = hash_bytes(&bytes, &meta);
+            let mut hash = hash_bytes(&bytes, &meta);
+            hash.depth = crate::types::Depth::Full;
             let source = String::from_utf8_lossy(&bytes).into_owned();
             closure_targets.push(Target {
                 rel: rel.clone(),
@@ -710,6 +736,59 @@ mod tests {
             .expect("run");
         assert_eq!(report.files_reindexed, 1);
         assert_eq!(report.reason, ReindexReason::Added);
+    }
+
+    /// A reindex over a store a skeleton pass built must re-read every file:
+    /// the content hash matches, but the graph has no symbols to show for it.
+    /// Classification keyed on the hash alone, so `reindex` reported "unchanged"
+    /// over a symbolic graph and the caller had no way to deepen it.
+    #[test]
+    fn a_reindex_over_a_shallow_store_deepens_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(dir.path(), "a.rs", "pub fn helper() -> u32 { 1 }\n");
+        write(dir.path(), "b.rs", "pub fn caller() -> u32 { helper() }\n");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(
+                dir.path(),
+                &IndexOptions::new("p").with_depth(crate::types::Depth::Skeleton),
+            )
+            .expect("skeleton");
+        assert!(
+            store.node_by_qn("p", "a::helper").expect("qn").is_none(),
+            "the fixture must start symbolic"
+        );
+
+        let report = store
+            .reindex_incremental(dir.path(), &IndexOptions::new("p"))
+            .expect("reindex");
+        assert_eq!(
+            report.unchanged, 0,
+            "a symbolic row is not an indexed file: {report:?}"
+        );
+        assert_eq!(report.files_reindexed, 2, "{report:?}");
+        assert_eq!(report.reason, ReindexReason::Deepened, "{report:?}");
+        assert!(
+            store.node_by_qn("p", "a::helper").expect("qn").is_some(),
+            "the reindex skipped the file and left the graph symbolic"
+        );
+        let calls: i64 = store
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM edges WHERE project = 'p' AND edge_type = 'CALLS'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert!(calls >= 1, "the deepened pass resolves the call");
+
+        // The row now records the depth the graph reaches: a second reindex is a
+        // no-op rather than a second full tree read.
+        let again = store
+            .reindex_incremental(dir.path(), &IndexOptions::new("p"))
+            .expect("second reindex");
+        assert_eq!(again.files_reindexed, 0, "{again:?}");
+        assert_eq!(again.reason, ReindexReason::Unchanged, "{again:?}");
     }
 
     #[test]

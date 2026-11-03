@@ -19,6 +19,13 @@ pub struct FileHash {
     pub mtime_ns: i64,
     /// File size in bytes.
     pub size: i64,
+    /// How deep the pass that wrote this row parsed the file.
+    ///
+    /// A row is a claim about the file's CONTENT *and* about how much of that
+    /// content reached the graph. The hash alone cannot say the second: every
+    /// depth stores it, so a skeleton pass left rows that made a later full pass
+    /// skip the whole tree.
+    pub depth: crate::types::Depth,
 }
 
 /// Compute both content hashes for `bytes` and merge in `metadata`.
@@ -34,6 +41,9 @@ pub fn hash_bytes(bytes: &[u8], meta: &Metadata) -> FileHash {
         blake3,
         mtime_ns: mtime_ns(meta),
         size: meta.len() as i64,
+        // Filled in by the caller that knows which pass is writing: hashing
+        // bytes says nothing about how much of them will be parsed.
+        depth: crate::types::Depth::Skeleton,
     }
 }
 

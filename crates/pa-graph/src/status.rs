@@ -318,10 +318,11 @@ pub fn probe_freshness(store: &GraphStore, project: &str, root: &Path) -> Result
 
 /// Infer how deep the stored graph is from what it holds.
 ///
-/// The store records no depth of its own, and adding a column would let the two
-/// disagree. Reading it back from the data cannot: a graph with no symbol nodes
-/// is a skeleton, one with symbols but no RESOLVED edge is a symbols pass, and
-/// anything else is full.
+/// This reads what the graph HOLDS, not what the last pass was asked for. The
+/// two are different questions and the per-file `file_hashes.depth` column
+/// answers the second: a store deepened file by file — a full pass over a tree a
+/// skeleton pass had claimed — holds full data for some files and symbolic rows
+/// for the rest, and no single "requested depth" describes it. The data does.
 ///
 /// "Resolved" is what [`Depth::resolves_edges`] means, and it is the only
 /// question that answers this: a symbols pass still writes one CONTAINS edge per

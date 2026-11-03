@@ -1253,13 +1253,14 @@ impl GraphStore {
     /// Propagates SQLite errors.
     pub fn put_file_hash(&self, project: &str, rel_path: &str, hash: &FileHash) -> Result<()> {
         let mut stmt = self.conn.prepare_cached(
-            "INSERT INTO file_hashes(project,rel_path,sha256,blake3,mtime_ns,size)
-             VALUES (?1,?2,?3,?4,?5,?6)
+            "INSERT INTO file_hashes(project,rel_path,sha256,blake3,mtime_ns,size,depth)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)
              ON CONFLICT(project, rel_path) DO UPDATE SET
                 sha256 = excluded.sha256,
                 blake3 = excluded.blake3,
                 mtime_ns = excluded.mtime_ns,
-                size = excluded.size",
+                size = excluded.size,
+                depth = excluded.depth",
         )?;
         stmt.execute(params![
             project,
@@ -1267,7 +1268,8 @@ impl GraphStore {
             hash.sha256,
             hash.blake3,
             hash.mtime_ns,
-            hash.size
+            hash.size,
+            hash.depth.rank()
         ])?;
         Ok(())
     }
@@ -1280,7 +1282,7 @@ impl GraphStore {
         let h = self
             .conn
             .query_row(
-                "SELECT sha256,blake3,mtime_ns,size FROM file_hashes
+                "SELECT sha256,blake3,mtime_ns,size,depth FROM file_hashes
                  WHERE project = ?1 AND rel_path = ?2",
                 params![project, rel_path],
                 |r| {
@@ -1289,6 +1291,7 @@ impl GraphStore {
                         blake3: r.get(1)?,
                         mtime_ns: r.get(2)?,
                         size: r.get(3)?,
+                        depth: crate::types::Depth::from_rank(r.get(4)?),
                     })
                 },
             )
@@ -1302,7 +1305,7 @@ impl GraphStore {
     /// Propagates SQLite errors.
     pub fn all_file_hashes(&self, project: &str) -> Result<HashMap<String, FileHash>> {
         let mut stmt = self.conn.prepare(
-            "SELECT rel_path,sha256,blake3,mtime_ns,size FROM file_hashes WHERE project = ?1",
+            "SELECT rel_path,sha256,blake3,mtime_ns,size,depth FROM file_hashes WHERE project = ?1",
         )?;
         let rows = stmt.query_map(params![project], |r| {
             Ok((
@@ -1312,6 +1315,7 @@ impl GraphStore {
                     blake3: r.get(2)?,
                     mtime_ns: r.get(3)?,
                     size: r.get(4)?,
+                    depth: crate::types::Depth::from_rank(r.get(5)?),
                 },
             ))
         })?;

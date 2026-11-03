@@ -326,6 +326,92 @@ pub struct CallArg {
     pub e: String,
 }
 
+/// How much of the graph an index pass builds.
+///
+/// A skeleton is cheap and answers structural questions immediately; the symbol
+/// pass costs two orders of magnitude more. Measured on this repository (2,743
+/// files): `Skeleton` 1,105 ms, `Symbols` about 135,000 ms.
+///
+/// The store records the depth each file was written at, and a pass skips only a
+/// file whose stored revision is at least as deep as the one asked for. Without
+/// that, a skeleton pass storing the file hash made every later full pass skip
+/// the whole tree: the run reported success and the graph stayed symbolic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+pub enum Depth {
+    /// One `File` node per tracked file: names, paths, sizes. Nothing is parsed.
+    Skeleton,
+    /// Skeleton plus every symbol definition. Calls and imports are not resolved,
+    /// so `trace` and `structure` views are empty; `search` and `architecture`
+    /// workspace files work.
+    Symbols,
+    /// Everything: symbols, call edges, import edges, coverage accounting.
+    #[default]
+    Full,
+}
+
+impl Depth {
+    /// Stable lowercase wire name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Skeleton => "skeleton",
+            Self::Symbols => "symbols",
+            Self::Full => "full",
+        }
+    }
+
+    /// Parse a depth from its wire name; unknown names mean `Full`, so an old
+    /// caller keeps the behaviour it had.
+    #[must_use]
+    pub fn from_str_or_default(value: &str) -> Self {
+        match value {
+            "skeleton" => Self::Skeleton,
+            "symbols" => Self::Symbols,
+            _ => Self::Full,
+        }
+    }
+
+    /// Whether this pass resolves call and import edges.
+    #[must_use]
+    pub const fn resolves_edges(self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    /// Whether a file written at this depth satisfies a request for `wanted`.
+    ///
+    /// Depth is cumulative — a full pass writes everything a symbols pass writes
+    /// — so a stored revision at least as deep needs no second visit, while a
+    /// shallower one does.
+    #[must_use]
+    pub const fn satisfies(self, wanted: Self) -> bool {
+        self.rank() >= wanted.rank()
+    }
+
+    /// The `file_hashes.depth` value for this depth.
+    ///
+    /// An integer rather than the wire name: the column is compared with `>=`,
+    /// and the ordering is the point.
+    #[must_use]
+    pub const fn rank(self) -> i64 {
+        match self {
+            Self::Skeleton => 0,
+            Self::Symbols => 1,
+            Self::Full => 2,
+        }
+    }
+
+    /// Parse a stored rank; an unknown value reads as the deepest depth, so a
+    /// store written by a newer build is re-indexed rather than silently trusted.
+    #[must_use]
+    pub const fn from_rank(rank: i64) -> Self {
+        match rank {
+            0 => Self::Skeleton,
+            1 => Self::Symbols,
+            _ => Self::Full,
+        }
+    }
+}
+
 /// Outcome of a full or incremental index run.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexReport {

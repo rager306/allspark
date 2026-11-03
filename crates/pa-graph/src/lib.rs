@@ -228,8 +228,8 @@ pub use tokenize::{fts_match_expr, split_for_fts, split_ident, tokenize};
 pub use trace::{CrossServiceEdge, Direction, TraceOptions, TraceResult, TraceStep, Truncation};
 pub use tri_modal::{tri_modal, tri_modal_search, TriModalHit, TriModalOptions};
 pub use types::{
-    CallArg, CallCandidate, CallSiteRow, CallSiteVerdict, CallStrategy, Edge, EdgeType, FileChange,
-    IndexReport, Label, Node,
+    CallArg, CallCandidate, CallSiteRow, CallSiteVerdict, CallStrategy, Depth, Edge, EdgeType,
+    FileChange, IndexReport, Label, Node,
 };
 
 // ── Phase 6-A re-exports ────────────────────────────────────────────────

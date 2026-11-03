@@ -41,13 +41,22 @@ pub(super) fn read_work(
         return None;
     }
     let bytes = std::fs::read(abs).ok()?;
-    let hash = hash_bytes(&bytes, &meta);
+    let mut hash = hash_bytes(&bytes, &meta);
+    // The row this work item will write says how much of the file reached the
+    // graph, and that is the pass's depth — not the hasher's business.
+    hash.depth = opts.depth;
     let change = if opts.force {
         FileChange::Modified
     } else {
         match stored.get(&rel) {
             None => FileChange::Added,
-            Some(old) if old.sha256 == hash.sha256 => FileChange::Unchanged,
+            // Same bytes, shallower revision: the stored row claims nothing about
+            // the symbols below the depth it was written at, so a deeper pass must
+            // read the file. Skipping this made `index_depth=skeleton` followed by
+            // a full pass report success over a graph that had no symbols.
+            Some(old) if old.sha256 == hash.sha256 && old.depth.satisfies(opts.depth) => {
+                FileChange::Unchanged
+            }
             Some(_) => FileChange::Modified,
         }
     };
