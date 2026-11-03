@@ -179,8 +179,8 @@ impl GraphStore {
         // dropped. Stale symbols go once extraction has run (see
         // `delete_file_nodes_not_in` below).
         self.clear_file_for_reparse(project, rel)?;
-        // Re-record this file's coverage from scratch so a file that now parses
-        // cleanly stops being reported as `parse_partial`.
+        // Re-record the coverage from scratch so a file that now parses cleanly
+        // stops being reported as `parse_partial`.
         self.clear_file_coverage(project, rel)?;
         let Some(lang) = pa_ast::SupportLang::from_path(&work.abs) else {
             self.record_coverage(project, rel, KIND_SKIPPED, "unsupported language")?;
@@ -192,11 +192,14 @@ impl GraphStore {
             self.write_skeleton_file(project, work)?;
             return Ok(FileWrite::default());
         }
+
         let module = module_of(rel);
         let extracted = crate::extract::extract(&work.source, lang, &module);
         if !depth.resolves_edges() {
             let (nodes, file_id) = self.write_file(project, rel, &extracted)?;
             report.nodes += nodes;
+            // This depth resolves nothing afterwards, so the file's contribution
+            // is complete here and its hash commits with it.
             self.put_file_hash(project, rel, &work.hash)?;
             return Ok(FileWrite {
                 file_id,
@@ -216,11 +219,16 @@ impl GraphStore {
             &surface.surface_json,
         )?;
         report.nodes += nodes;
-        self.put_file_hash(project, rel, &work.hash)?;
+        // The hash is NOT written here: it claims the file's contribution is
+        // whole, and at this depth that includes edges written in a later
+        // transaction. Committing it now survived a failed resolution, and the
+        // next run then skipped the file as unchanged — a permanent loss every
+        // run reported as success. The caller commits it with them.
         Ok(FileWrite {
             file_id,
             calls: extracted.calls,
             imports: extracted.imports,
+            hash: Some(work.hash.clone()),
         })
     }
 
@@ -266,18 +274,12 @@ impl GraphStore {
             props: json!({ "kind": "file" }),
         };
         // One statement for the whole file: the file node and every symbol it
-        // defines. The per-symbol `upsert_node` was the write path's dominant cost:
-        // the paired harness (`measurement::batched_write_against_per_symbol_write`)
-        // reports 99-139 ms batched against 207-258 ms per symbol over 96 files and
-        // 2 158 rows.
+        // defines. The per-symbol `upsert_node` was the write path's dominant cost
+        // (99-139 ms batched against 207-258 ms per symbol, 96 files, 2 158 rows).
         //
-        // FTS rows and CONTAINS edges stay per symbol, and the reason is in their
-        // shape rather than a number: `index_fts` and `insert_edge` already run
-        // `prepare_cached` with constant SQL, so each call costs one statement step
-        // and batching cannot remove any per-row work — it only changes how many
-        // times the same prepared statement is stepped. `upsert_node` was different:
-        // it carried a follow-up SELECT for the row id, which `RETURNING id` and the
-        // batched form both remove.
+        // FTS rows and CONTAINS edges stay per symbol: `index_fts` and `insert_edge`
+        // already run `prepare_cached` with constant SQL, so batching cannot remove
+        // per-row work — only how often the same statement is stepped.
         let file_qn = file_node.qualified_name.clone();
         let mut rows: Vec<Node> = Vec::with_capacity(extracted.symbols.len() + 1);
         rows.push(file_node);
@@ -329,6 +331,11 @@ pub(crate) struct FileWrite {
     pub(crate) file_id: Option<i64>,
     pub(crate) calls: Vec<CallSite>,
     pub(crate) imports: Vec<crate::extract::ImportDef>,
+    /// The hash the caller must record in the SAME transaction as the resolved
+    /// edges this file's call sites produce. Only the full depth sets it; every
+    /// other depth finishes a file's contribution inside the per-file
+    /// transaction and commits its hash there.
+    pub(crate) hash: Option<crate::hash::FileHash>,
 }
 
 #[cfg(test)]

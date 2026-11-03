@@ -113,6 +113,13 @@ pub struct IncrementalReport {
     pub closure_paths: Vec<String>,
 }
 
+/// What one in-place re-parse handed back to the pass.
+struct ReindexedFile {
+    calls: Vec<CallSite>,
+    imports: Vec<ImportDef>,
+    hash: crate::hash::FileHash,
+}
+
 /// A file selected for reindexing, with its parsed inputs.
 struct Target {
     rel: String,
@@ -314,16 +321,22 @@ impl GraphStore {
         // ── 4. reindex in place, collecting call sites to re-resolve ─────
         let mut pending_calls: Vec<(String, String, CallSite)> = Vec::new();
         let mut pending_imports: Vec<(String, ImportDef)> = Vec::new();
+        // Hashes of the re-parsed files. They commit in the resolution
+        // transaction below, beside the edges they claim: a hash stored over a
+        // revision whose edges never landed makes the next run skip the file and
+        // turns the loss permanent.
+        let mut pending_hashes: Vec<(String, crate::hash::FileHash)> = Vec::new();
 
         let mut reindexed_rels: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         for t in targets.iter().chain(closure_targets.iter()) {
             reindexed_rels.insert(t.rel.clone());
-            let (calls, imports) = self.reindex_file_in_place(&opts.project, t)?;
-            for call in calls {
+            let reindexed = self.reindex_file_in_place(&opts.project, t)?;
+            pending_hashes.push((t.rel.clone(), reindexed.hash));
+            for call in reindexed.calls {
                 pending_calls.push((t.rel.clone(), call.caller_qn.clone(), call));
             }
-            for import in imports {
+            for import in reindexed.imports {
                 pending_imports.push((t.rel.clone(), import));
             }
         }
@@ -345,21 +358,35 @@ impl GraphStore {
             resolver.note_imports(rel, std::slice::from_ref(import));
         }
         let file_nodes = self.file_node_ids(&opts.project)?;
-        // `record_call_edge` is the full index's per-call writer: it resolves,
-        // ELSE records a dependency-rooted self-loop, ELSE records a miss row
-        // with its reason. Calling it here is what makes the two write paths
-        // agree — an unresolved call becomes evidence instead of silence.
-        for (rel, caller_qn, call) in &pending_calls {
-            self.record_call_edge(&resolver, &opts.project, rel, caller_qn, call)?;
-        }
-        for (rel, import) in &pending_imports {
-            let Some(&file_id) = file_nodes.get(rel) else {
-                continue;
-            };
-            if let Some((target, props)) = resolver.resolve_import(import) {
-                self.insert_edge(&opts.project, file_id, target, EdgeType::Imports, &props)?;
+        // Resolution and the hashes it justifies are ONE unit of work, exactly as
+        // in the full pass. A prefix of the edges is meaningless against the
+        // definition set the rest was resolved with, and a hash committed over a
+        // file whose edges never landed makes the next run skip that file — the
+        // loss then outlives every subsequent run.
+        self.with_transaction(|store| {
+            // `record_call_edge` is the full index's per-call writer: it resolves,
+            // ELSE records a dependency-rooted self-loop, ELSE records a miss row
+            // with its reason. Calling it here is what makes the two write paths
+            // agree — an unresolved call becomes evidence instead of silence.
+            for (rel, caller_qn, call) in &pending_calls {
+                store.record_call_edge(&resolver, &opts.project, rel, caller_qn, call)?;
             }
-        }
+            for (rel, import) in &pending_imports {
+                let Some(&file_id) = file_nodes.get(rel) else {
+                    continue;
+                };
+                if let Some((target, props)) = resolver.resolve_import(import) {
+                    store.insert_edge(&opts.project, file_id, target, EdgeType::Imports, &props)?;
+                }
+            }
+            // The hashes travel WITH the resolved edges (see `Target::hash`): the
+            // disk is not read a second time, so a stored hash can never describe a
+            // newer revision than the symbols it indexes — nor land without them.
+            for (rel, hash) in &pending_hashes {
+                store.put_file_hash(&opts.project, rel, hash)?;
+            }
+            Ok(())
+        })?;
 
         // A NEW definition can satisfy a call another file left unresolved in a previous
         // run, and no edge exists for it — so the closure cannot discover it and the stale
@@ -468,8 +495,14 @@ impl GraphStore {
 
     /// Re-parse one file **in place**, as ONE unit of work: preserve node ids,
     /// refresh FTS rows, drop symbols that disappeared, and remove stale
-    /// resolved edges so they can be recomputed. Returns the file's call sites
-    /// and imports.
+    /// resolved edges so they can be recomputed. Returns the file's call sites,
+    /// imports, and the hash its row must record.
+    ///
+    /// The hash comes back rather than being written here because it is the claim
+    /// that the file's contribution is WHOLE, and the edges are part of that
+    /// contribution: the caller commits it in the resolution transaction. Writing
+    /// it here survived a failed resolution, and the next run then skipped the
+    /// file as unchanged and kept the loss.
     ///
     /// The clear steps and the rewrite commit or roll back together, exactly
     /// like the full indexer's per-file rewrite ([`GraphStore::rewrite_file`]
@@ -489,11 +522,7 @@ impl GraphStore {
     ///
     /// # Errors
     /// Propagates SQLite errors, and the file's previous revision stays intact.
-    fn reindex_file_in_place(
-        &self,
-        project: &str,
-        t: &Target,
-    ) -> Result<(Vec<CallSite>, Vec<ImportDef>)> {
+    fn reindex_file_in_place(&self, project: &str, t: &Target) -> Result<ReindexedFile> {
         let extracted = crate::extract::extract(&t.source, t.lang, &t.module);
         // The returned call sites leave `with_transaction` only once the commit
         // succeeded: a rolled-back revision contributes nothing to the caller's
@@ -538,13 +567,20 @@ impl GraphStore {
                 &surface.body_sha,
                 &surface.surface_json,
             )?;
-            // The hash travels WITH the parsed bytes (see `Target::hash`): the disk
-            // is not read a second time, so the stored hash can never describe a
-            // newer revision than the symbols it indexes.
-            store.put_file_hash(project, &t.rel, &t.hash)?;
+            // The hash is NOT written here. It claims the file's contribution is
+            // whole, and this pass adds the file's call and import edges in a
+            // later step. Committing it now survived a failed resolution, and the
+            // next run then skipped the file as unchanged — the sites it never
+            // resolved stayed unresolved forever while every run reported success.
+            // The caller commits it with them.
             // Moving, not cloning: the closure owns the parse, so the call
             // sites leave it once, after the commit.
-            Ok((extracted.calls, extracted.imports))
+            Ok(ReindexedFile {
+                calls: extracted.calls,
+                imports: extracted.imports,
+                // The hash that travelled WITH the parsed bytes (see `Target::hash`).
+                hash: t.hash.clone(),
+            })
         })
     }
 }
@@ -723,6 +759,76 @@ mod tests {
             callees,
             vec!["missing_two".to_string()],
             "the removed site must not survive: {callees:?}"
+        );
+    }
+
+    /// The same interruption the full pass has, on the incremental path: the
+    /// re-parse commits a file's hash, resolution is a separate step, and a
+    /// failure there left the hash behind. The next run then classified the file
+    /// as unchanged, skipped it, and the call sites it never resolved stayed
+    /// unresolved forever.
+    #[test]
+    fn an_interrupted_reindex_resolution_is_recovered_by_the_next_run() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(dir.path(), "a.rs", "pub fn target() -> u32 { 1 }\n");
+        write(dir.path(), "b.rs", "pub fn caller() -> u32 { target() }\n");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        index(&mut store, dir.path());
+        let calls_before: i64 = store
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM edges WHERE project = 'p' AND edge_type = 'CALLS'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(calls_before, 1, "the fixture resolves one call");
+
+        // A body-only edit of b.rs: the caller's call site moves to `missing`.
+        write(dir.path(), "b.rs", "pub fn caller() -> u32 { missing() }\n");
+        store
+            .connection()
+            .execute_batch(
+                "CREATE TRIGGER refuse_the_site BEFORE INSERT ON call_sites
+                 WHEN NEW.callee = 'missing'
+                 BEGIN SELECT RAISE(ABORT, 'injected: the reindex resolution fails'); END",
+            )
+            .expect("trigger");
+        assert!(
+            store
+                .reindex_incremental(dir.path(), &IndexOptions::new("p"))
+                .is_err(),
+            "the injected failure must abort the reindex"
+        );
+        store
+            .connection()
+            .execute_batch("DROP TRIGGER refuse_the_site")
+            .expect("drop trigger");
+
+        // The failed run must not have claimed b.rs: a stored hash over call sites
+        // that never landed is what made the next run skip the repair.
+        let stale = store.file_hash("p", "b.rs").expect("hash").expect("row");
+        let on_disk = crate::hash::hash_file(&dir.path().join("b.rs"))
+            .expect("hash on disk")
+            .sha256;
+        assert_ne!(
+            stale.sha256, on_disk,
+            "the failed reindex claimed a file whose call sites it never wrote"
+        );
+
+        store
+            .reindex_incremental(dir.path(), &IndexOptions::new("p"))
+            .expect("recovery");
+        let callees: Vec<String> = store
+            .call_sites("p")
+            .expect("sites")
+            .into_iter()
+            .map(|site| site.callee)
+            .collect();
+        assert_eq!(
+            callees,
+            vec!["missing".to_string()],
+            "the recovery run must record the new call site: {callees:?}"
         );
     }
 
@@ -1389,7 +1495,10 @@ mod tests {
             lang: pa_ast::SupportLang::from_path(&path).unwrap(),
             module: "lib".to_string(),
         };
-        store.reindex_file_in_place("p", &target).unwrap();
+        let reindexed = store.reindex_file_in_place("p", &target).unwrap();
+        // The re-parse hands the hash back instead of writing it: it commits in the
+        // caller's resolution transaction, beside the edges it claims to cover.
+        store.put_file_hash("p", "lib.rs", &reindexed.hash).unwrap();
 
         let stored = store.file_hash("p", "lib.rs").unwrap().expect("hash row");
         assert_eq!(

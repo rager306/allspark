@@ -54,6 +54,11 @@ impl GraphStore {
         let mut seen: Vec<String> = Vec::new();
         let mut pending_calls: Vec<(String, String, CallSite)> = Vec::new();
         let mut pending_imports: Vec<(String, ImportDef)> = Vec::new();
+        // Hashes of the re-parsed files whose edges are written AFTER this batch.
+        // They commit in the resolution transaction: a hash stored over a
+        // revision whose edges never landed makes the next run classify the file
+        // as unchanged, skip it, and keep the loss forever.
+        let mut pending_hashes: Vec<(String, crate::hash::FileHash)> = Vec::new();
         let mut file_node_ids: HashMap<String, i64> = HashMap::new();
         let mut batches = Self::read_batches(&root, opts, &stored)?;
         loop {
@@ -98,6 +103,9 @@ impl GraphStore {
                 }
                 for import in writes.imports {
                     pending_imports.push((w.rel.clone(), import));
+                }
+                if let Some(hash) = writes.hash {
+                    pending_hashes.push((w.rel.clone(), hash));
                 }
             }
         }
@@ -149,6 +157,13 @@ impl GraphStore {
                 if let Some((target, props)) = resolver.resolve_import(import) {
                     store.insert_edge(&opts.project, file_id, target, EdgeType::Imports, &props)?;
                 }
+            }
+            // The hash is this pass's claim that the file's contribution is whole,
+            // and the edges above are part of that contribution. Same transaction,
+            // or a failed resolution leaves the claim standing over a graph that
+            // has nothing to show for it.
+            for (rel, hash) in &pending_hashes {
+                store.put_file_hash(&opts.project, rel, hash)?;
             }
             Ok(())
         })?;
@@ -378,6 +393,101 @@ mod tests {
             .query_row("SELECT count(*) FROM symbols_fts", [], |r| r.get(0))
             .expect("count");
         assert_eq!(fts, 2, "FTS rows must match the surviving nodes exactly");
+    }
+
+    /// A run that fails during resolution must leave the files it re-parsed
+    /// UNCLAIMED, so the next run repairs them.
+    ///
+    /// The per-file rewrite commits the file's nodes and its hash; resolution is
+    /// a later transaction. A failure there rolled the edges back but kept the
+    /// hashes, so the next run classified every re-parsed file as `unchanged`,
+    /// skipped it — and the call sites that never resolved were never even
+    /// collected. The graph was permanently missing those edges, and every later
+    /// run reported success.
+    ///
+    /// The hash is the pass's claim that a file's contribution is complete, so it
+    /// commits WITH the edges it describes.
+    #[test]
+    fn an_interrupted_resolution_is_recovered_by_the_next_pass() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for i in 0..4 {
+            write(
+                dir.path(),
+                &format!("m{i}.rs"),
+                &format!("pub fn f{i}() {{ target() }}\n"),
+            );
+        }
+        write(
+            dir.path(),
+            "target.rs",
+            "pub fn target() {}\npub fn other() {}\n",
+        );
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("first index");
+        assert_eq!(call_edges(&store), 4, "one resolved call per file");
+
+        for i in 0..4 {
+            write(
+                dir.path(),
+                &format!("m{i}.rs"),
+                &format!("pub fn f{i}() {{ other() }}\n"),
+            );
+        }
+        store
+            .connection()
+            .execute_batch(
+                "CREATE TRIGGER refuse_the_last_file BEFORE INSERT ON call_sites
+                 WHEN NEW.caller_qn = 'm3::f3'
+                 BEGIN SELECT RAISE(ABORT, 'injected: resolution fails mid-run'); END",
+            )
+            .expect("trigger");
+        assert!(
+            store
+                .index_project(dir.path(), &IndexOptions::new("p"))
+                .is_err(),
+            "the injected failure must abort the pass"
+        );
+        assert_eq!(call_edges(&store), 0, "resolution rolled back whole");
+
+        // The interrupted run must not have claimed the files it re-parsed. A
+        // stored hash over a graph that has no edges for the file is exactly the
+        // state that made the loss permanent.
+        let stale = store.file_hash("p", "m0.rs").expect("hash").expect("row");
+        let on_disk = crate::hash::hash_file(&dir.path().join("m0.rs"))
+            .expect("hash on disk")
+            .sha256;
+        assert_ne!(
+            stale.sha256, on_disk,
+            "the failed run claimed a file whose edges it never wrote"
+        );
+
+        // Recovery: remove the trigger and run again. The files are re-parsed
+        // because the failed run left their previous hashes in place.
+        store
+            .connection()
+            .execute_batch("DROP TRIGGER refuse_the_last_file")
+            .expect("drop trigger");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("recovery index");
+        assert_eq!(
+            call_edges(&store),
+            4,
+            "the next pass must re-resolve the files the failed run left behind"
+        );
+        let sites: Vec<String> = store
+            .call_sites("p")
+            .expect("sites")
+            .into_iter()
+            .map(|site| site.callee)
+            .collect();
+        assert_eq!(
+            sites.iter().filter(|callee| *callee == "other").count(),
+            4,
+            "every call now names the new callee: {sites:?}"
+        );
     }
 
     /// The resolved edges of a run are ONE transaction, so a run that fails
