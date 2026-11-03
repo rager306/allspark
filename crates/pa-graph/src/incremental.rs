@@ -154,7 +154,7 @@ impl GraphStore {
 
         let stored_hashes = self.all_file_hashes(&opts.project)?;
         let stored_surfaces = self.all_file_surfaces(&opts.project)?;
-        let files = discover(&root, opts);
+        let files = discover(&root, opts)?;
 
         // ── 1. classify every discovered file ───────────────────────────
         let mut targets: Vec<Target> = Vec::new();

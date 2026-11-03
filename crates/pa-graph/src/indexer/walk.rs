@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use ignore::WalkBuilder;
 
+use crate::error::Result;
 use crate::hash::{hash_bytes, FileHash};
 use crate::types::FileChange;
 
@@ -101,7 +102,12 @@ pub fn is_indexable(path: &Path) -> bool {
 /// is a candidate only if neither excludes it — and a `!path` re-include in
 /// `.graphignore` wins over gitignore, because custom ignores take precedence
 /// in the `ignore` crate.
-pub(crate) fn discover(root: &Path, opts: &IndexOptions) -> Vec<PathBuf> {
+///
+/// # Errors
+/// Propagates a walker error. An unreadable directory is not an empty one: the
+/// entries behind it are simply unknown, and the pass removing every stored file
+/// it did not see would turn "we could not look" into a deleted index.
+pub(crate) fn discover(root: &Path, opts: &IndexOptions) -> Result<Vec<PathBuf>> {
     let mut builder = WalkBuilder::new(root);
     builder
         .hidden(false)
@@ -111,7 +117,8 @@ pub(crate) fn discover(root: &Path, opts: &IndexOptions) -> Vec<PathBuf> {
         .parents(opts.respect_gitignore)
         .add_custom_ignore_filename(GRAPHIGNORE_FILE);
     let mut out = Vec::new();
-    for entry in builder.build().flatten() {
+    for entry in builder.build() {
+        let entry = entry?;
         let path = entry.path();
         if !entry.file_type().is_some_and(|t| t.is_file()) {
             continue;
@@ -128,7 +135,7 @@ pub(crate) fn discover(root: &Path, opts: &IndexOptions) -> Vec<PathBuf> {
         out.push(path.to_path_buf());
     }
     out.sort();
-    out
+    Ok(out)
 }
 
 pub(crate) fn rel_path(root: &Path, abs: &Path) -> String {

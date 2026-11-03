@@ -607,7 +607,7 @@ mod measurement {
         use crate::extract::ExtractedFile;
         let root = root();
         let mut works: Vec<(String, ExtractedFile)> = Vec::new();
-        for abs in super::super::walk::discover(&root, &IndexOptions::new("bench")) {
+        for abs in super::super::walk::discover(&root, &IndexOptions::new("bench")).expect("walk") {
             let Some(lang) = pa_ast::SupportLang::from_path(&abs) else {
                 continue;
             };

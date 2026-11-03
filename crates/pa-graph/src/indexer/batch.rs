@@ -73,19 +73,21 @@ impl GraphStore {
     /// skip is a property of the pass.
     ///
     /// # Errors
-    /// Propagates SQLite errors from the coverage notes.
+    /// Propagates a walker error. The walk runs here, before the first batch, so a
+    /// directory the walker could not read aborts the pass instead of looking like
+    /// a tree with nothing left in it.
     pub(super) fn read_batches<'a>(
         root: &Path,
         opts: &'a IndexOptions,
         stored: &'a HashMap<String, FileHash>,
-    ) -> SourceBatches<'a> {
-        SourceBatches {
+    ) -> Result<SourceBatches<'a>> {
+        Ok(SourceBatches {
             root: root.to_path_buf(),
             opts,
             stored,
-            files: discover(root, opts),
+            files: discover(root, opts)?,
             cursor: 0,
-        }
+        })
     }
 
     /// The next batch, or empty at the end of the tree.

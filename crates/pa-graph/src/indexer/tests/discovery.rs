@@ -87,6 +87,48 @@ fn the_ripgrep_ignore_file_is_honoured_in_both_modes() {
     }
 }
 
+/// A walk that FAILS is not a walk that found nothing.
+///
+/// The removal sweep deletes every stored file the pass did not see, so a
+/// directory the walker could not traverse used to become silent data loss: the
+/// pass reported success and the store lost the files it could not reach. The
+/// error belongs to the pass, which must abort before it removes anything.
+#[test]
+fn a_failed_walk_aborts_the_pass_instead_of_emptying_the_store() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_tree(dir.path());
+    let mut store = GraphStore::open_in_memory().expect("store");
+    store
+        .index_project(dir.path(), &IndexOptions::new("p"))
+        .expect("first index");
+    assert_eq!(indexed_files(&store, "p"), vec!["lib.rs"]);
+
+    // The root is gone, so the walker reports an error for it and every stored
+    // path is "not seen". Both write paths must refuse to act on that.
+    let root = dir.path().to_path_buf();
+    std::fs::remove_dir_all(&root).expect("remove the tree");
+    let full = store.index_project(&root, &IndexOptions::new("p"));
+    assert!(full.is_err(), "a failed walk must abort the pass: {full:?}");
+    let incremental = store.reindex_incremental(&root, &IndexOptions::new("p"));
+    assert!(
+        incremental.is_err(),
+        "a failed walk must abort the incremental pass: {incremental:?}"
+    );
+
+    assert_eq!(
+        indexed_files(&store, "p"),
+        vec!["lib.rs"],
+        "the sweep removed files a failed walk simply did not see"
+    );
+    assert!(
+        store
+            .node_by_qn("p", "lib::parse_config")
+            .expect("qn")
+            .is_some(),
+        "the symbols are gone with the file rows"
+    );
+}
+
 #[test]
 fn the_extension_filter_applies_in_both_ignore_modes() {
     let dir = tempfile::tempdir().expect("tempdir");

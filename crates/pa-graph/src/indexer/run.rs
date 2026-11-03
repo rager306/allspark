@@ -55,7 +55,7 @@ impl GraphStore {
         let mut pending_calls: Vec<(String, String, CallSite)> = Vec::new();
         let mut pending_imports: Vec<(String, ImportDef)> = Vec::new();
         let mut file_node_ids: HashMap<String, i64> = HashMap::new();
-        let mut batches = Self::read_batches(&root, opts, &stored);
+        let mut batches = Self::read_batches(&root, opts, &stored)?;
         loop {
             let batch = self.next_batch(&mut batches, &mut report)?;
             if batch.is_empty() {
