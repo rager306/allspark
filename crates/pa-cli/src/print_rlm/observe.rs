@@ -187,7 +187,6 @@ impl AgentObserveController for InlineObserve {
         })
     }
 
-
     async fn session_messages(
         &self,
         target: &str,

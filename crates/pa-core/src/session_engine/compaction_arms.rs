@@ -97,9 +97,8 @@ impl AgentSession {
             _ => None,
         });
         let usage_anchor_is_stale = estimate.last_usage_index.is_some_and(|index| {
-            compaction_stamp.is_some_and(|stamp| {
-                compaction::message_timestamp(&messages[index]) <= stamp
-            })
+            compaction_stamp
+                .is_some_and(|stamp| compaction::message_timestamp(&messages[index]) <= stamp)
         });
         let estimate = if usage_anchor_is_stale {
             compaction::ContextTokensEstimate {

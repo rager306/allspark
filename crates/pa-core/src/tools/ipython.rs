@@ -824,9 +824,16 @@ mod tests {
     #[tokio::test]
     async fn a_bash_cell_gets_the_note_appended_not_substituted() {
         let options = arbiter_options(Some(r#"grep -rn "fn main" src"#));
-        let result = execute_ipython(&options, "await bash('grep -rn x src')", None, None, None, None)
-            .await
-            .expect("the cell succeeds");
+        let result = execute_ipython(
+            &options,
+            "await bash('grep -rn x src')",
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("the cell succeeds");
         let text = text_of(&result);
         assert!(text.starts_with("src/lib.rs:12"), "{text}");
         assert!(text.contains("[tool-arbiter]"), "{text}");

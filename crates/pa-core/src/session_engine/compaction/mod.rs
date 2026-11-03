@@ -74,8 +74,8 @@ pub use threshold::{
     compaction_threshold, plan_compaction_due, request_output_budget, should_compact,
     threshold_compaction_due,
 };
+pub(crate) use tokens::message_timestamp;
 pub use tokens::{
     calculate_context_tokens, estimate_context_tokens, estimate_entry_tokens, estimate_tokens,
     get_last_assistant_usage, ContextTokensEstimate,
 };
-pub(crate) use tokens::message_timestamp;
