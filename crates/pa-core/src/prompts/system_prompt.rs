@@ -73,6 +73,11 @@ pub struct BuildSystemPromptOptions<'a> {
     pub vision_capable: Option<bool>,
     /// Active tools. Tool schemas carry tool descriptions outside the prompt.
     pub selected_tools: Option<Vec<&'a str>>,
+    /// The edit modes this session's `edit` tool accepts, from
+    /// `editHybrid.allowModes`; `None` means every mode.
+    pub edit_modes: Option<&'a [pa_edit::EditMode]>,
+    /// The mode a bare `edit` call uses (`editHybrid.defaultMode`).
+    pub edit_default_mode: Option<pa_edit::EditMode>,
     pub append_system_prompt: Option<String>,
     pub cwd: String,
     /// Conversation log path.
@@ -205,7 +210,7 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
     // The fork's native tools (lsp, graph) are top-level tools, not REPL
     // programmatic tools; a short section tells the model they exist only
     // when they are on this session's roster.
-    let native = native_tools_section(&tools);
+    let native = native_tools_section(&tools, options);
     if !native.is_empty() {
         segments.push(PromptSegment::dynamic_segment(
             "native-tools",
@@ -342,7 +347,16 @@ fn date_section() -> String {
 /// The native fork tools (`lsp`, `graph`, `edit`, `jev`) present on this
 /// session's roster. Empty when none is active, so the segment never renders
 /// for sessions that keep only the REPL surface.
-fn native_tools_section(tools: &[&str]) -> String {
+/// Every edit mode the engine knows, in the order the tool lists them.
+const ALL_EDIT_MODES: [pa_edit::EditMode; 5] = [
+    pa_edit::EditMode::Replace,
+    pa_edit::EditMode::Patch,
+    pa_edit::EditMode::ApplyPatch,
+    pa_edit::EditMode::Hashline,
+    pa_edit::EditMode::Sloppy,
+];
+
+fn native_tools_section(tools: &[&str], options: &BuildSystemPromptOptions<'_>) -> String {
     let has_lsp = tools.contains(&"lsp");
     let has_graph = tools.contains(&"graph");
     let has_edit = tools.contains(&"edit");
@@ -368,16 +382,40 @@ fn native_tools_section(tools: &[&str]) -> String {
             .to_string(),
     ];
     if has_edit {
-        lines.push(
-            "- `edit`: every file modification. `replace` (the default) takes `path` + `edits` \
-             (`[{ oldText, newText, replaceAll? }]`) and requires a prior read of the file; \
-             `patch`/`apply_patch`/`hashline`/`sloppy` take a raw `payload` string. NEVER issue an \
-             individual edit with `sed`/`perl`/`python` through `bash` — this engine matches fuzzily \
-             on whitespace, reports a unique-match error you can refine, previews the diff, and \
-             detects no-op loops that a silent `sed` would hide."
-                .to_string(),
+        // The advertised surface is the CONFIGURED policy, not every mode the
+        // engine knows (review #28): `editHybrid.allowModes` decides which modes
+        // the tool accepts and `editHybrid.defaultMode` which a bare call uses,
+        // so naming all five promises a session modes it rejects and prints
+        // instructions for a mode the caller did not choose.
+        let allowed = options.edit_modes.unwrap_or(&ALL_EDIT_MODES);
+        let default = options
+            .edit_default_mode
+            .filter(|mode| allowed.contains(mode))
+            .or_else(|| allowed.first().copied())
+            .unwrap_or(pa_edit::EditMode::Replace);
+        let mut line = format!(
+            "- `edit`: every file modification. `{}` is this session's default mode",
+            default.as_str()
         );
-        lines.push(pa_edit::description(pa_edit::EditMode::Hashline).to_string());
+        let others: Vec<&str> = allowed
+            .iter()
+            .filter(|mode| **mode != default)
+            .map(|mode| mode.as_str())
+            .collect();
+        if !others.is_empty() {
+            line.push_str(&format!("; it also accepts {}", others.join(", ")));
+        }
+        line.push_str(
+            ". NEVER issue an individual edit with `sed`/`perl`/`python` through `bash` — this \
+             engine matches fuzzily on whitespace, reports a unique-match error you can refine, \
+             previews the diff, and detects no-op loops that a silent `sed` would hide.",
+        );
+        lines.push(line);
+        // The instructions for the modes THIS session accepts, default first.
+        lines.push(pa_edit::description(default).to_string());
+        for mode in allowed.iter().filter(|mode| **mode != default) {
+            lines.push(pa_edit::description(*mode).to_string());
+        }
     }
     if has_lsp {
         lines.push(
@@ -872,7 +910,10 @@ mod tests {
     /// layer up — the cheat-sheet cannot outlive the tool it names.
     #[test]
     fn the_route_table_never_names_an_absent_tool() {
-        let full = native_tools_section(&["bash", "edit", "graph", "jev", "lsp"]);
+        let full = native_tools_section(
+            &["bash", "edit", "graph", "jev", "lsp"],
+            &BuildSystemPromptOptions::default(),
+        );
         assert!(full.contains("## Which tool for which situation"));
         assert!(full.contains("`graph` `architecture`"));
         // The route a session reaches first must name the pack action, or the
@@ -883,7 +924,10 @@ mod tests {
         );
         assert!(full.contains("`jev`"));
 
-        let no_graph = native_tools_section(&["bash", "edit", "lsp"]);
+        let no_graph = native_tools_section(
+            &["bash", "edit", "lsp"],
+            &BuildSystemPromptOptions::default(),
+        );
         assert!(no_graph.contains("## Which tool for which situation"));
         assert!(
             !no_graph.contains("`graph`"),
@@ -900,7 +944,7 @@ mod tests {
 
         // Neither graph nor lsp: no exploration route at all, and no heading
         // promising one.
-        let neither = native_tools_section(&["bash", "edit"]);
+        let neither = native_tools_section(&["bash", "edit"], &BuildSystemPromptOptions::default());
         assert!(
             !neither.contains("## Which tool for which situation"),
             "no route to offer means no section: {neither}"
@@ -909,7 +953,10 @@ mod tests {
 
     #[test]
     fn native_tools_section_documents_each_active_tool_and_no_other() {
-        let all = native_tools_section(&["bash", "edit", "graph", "jev", "lsp"]);
+        let all = native_tools_section(
+            &["bash", "edit", "graph", "jev", "lsp"],
+            &BuildSystemPromptOptions::default(),
+        );
         for expected in [
             "- `edit`:",
             "- `lsp`:",
@@ -924,7 +971,7 @@ mod tests {
         }
 
         // A roster without `lsp` must not advertise lsp actions.
-        let no_lsp = native_tools_section(&["edit", "graph"]);
+        let no_lsp = native_tools_section(&["edit", "graph"], &BuildSystemPromptOptions::default());
         assert!(no_lsp.contains("- `edit`:"));
         assert!(no_lsp.contains("- `graph`:"));
         assert!(!no_lsp.contains("- `lsp`:"), "leaked lsp into:\n{no_lsp}");
@@ -934,14 +981,23 @@ mod tests {
         assert!(!no_lsp.contains("safe_delete_symbol` is already complete"));
 
         // A roster with none of them renders no section at all.
-        assert_eq!(native_tools_section(&["bash", "python_repl"]), "");
+        assert_eq!(
+            native_tools_section(
+                &["bash", "python_repl"],
+                &BuildSystemPromptOptions::default()
+            ),
+            ""
+        );
     }
 
     /// Every action named in the native-tools section must exist on the tool
     /// that owns it, so the prompt cannot drift from the real surface.
     #[test]
     fn native_tools_section_names_real_actions() {
-        let section = native_tools_section(&["edit", "graph", "jev", "lsp", "schedule"]);
+        let section = native_tools_section(
+            &["edit", "graph", "jev", "lsp", "schedule"],
+            &BuildSystemPromptOptions::default(),
+        );
         // pa-lsp's action enum (crates/pa-lsp/src/types.rs).
         for action in [
             "status",
@@ -1014,10 +1070,14 @@ mod tests {
     /// renders the section (the tool is otherwise absent from the prompt).
     #[test]
     fn the_schedule_line_follows_its_gate() {
-        let with = native_tools_section(&["bash", "schedule"]);
+        let with =
+            native_tools_section(&["bash", "schedule"], &BuildSystemPromptOptions::default());
         assert!(with.contains("- `schedule`:"), "missing the line:\n{with}");
         assert!(with.contains("NEVER simulate a recurring task"));
-        let without = native_tools_section(&["bash", "edit", "lsp", "graph", "jev"]);
+        let without = native_tools_section(
+            &["bash", "edit", "lsp", "graph", "jev"],
+            &BuildSystemPromptOptions::default(),
+        );
         assert!(
             !without.contains("- `schedule`:"),
             "leaked schedule into:\n{without}"
@@ -1276,6 +1336,54 @@ mod tests {
             premise.contains("cron") || premise.contains("daemon"),
             "the heartbeat block must state that it needs a scheduler-backed \
              session: {premise:?}"
+        );
+    }
+
+    /// The edit block advertises the CONFIGURED policy, not every mode (#28).
+    ///
+    /// `editHybrid.allowModes` decides which modes the tool accepts and
+    /// `editHybrid.defaultMode` which a bare call uses. The prompt named all five
+    /// and always appended the hashline instructions, so a session that rejects
+    /// `sloppy` still promised it, and one whose default is `replace` still read
+    /// hashline instructions.
+    #[test]
+    fn the_edit_block_states_the_configured_mode_policy() {
+        use pa_edit::EditMode;
+
+        let allowed = [EditMode::Replace, EditMode::Hashline];
+        let options = BuildSystemPromptOptions {
+            edit_modes: Some(&allowed),
+            edit_default_mode: Some(EditMode::Replace),
+            ..BuildSystemPromptOptions::default()
+        };
+        let section = native_tools_section(&["edit"], &options);
+
+        assert!(
+            section.contains("`replace` is this session's default mode"),
+            "the default mode is named: {section}"
+        );
+        assert!(
+            section.contains("also accepts hashline"),
+            "the other allowed mode is named: {section}"
+        );
+        for refused in ["`sloppy`", "`apply_patch`", "`patch` is this session's"] {
+            assert!(
+                !section.contains(refused),
+                "a refused mode must not be advertised ({refused}): {section}"
+            );
+        }
+        // Instructions for the allowed modes only.
+        assert!(
+            section.contains(&pa_edit::description(EditMode::Replace).to_string()),
+            "the default mode's instructions are included"
+        );
+        assert!(
+            section.contains(&pa_edit::description(EditMode::Hashline).to_string()),
+            "the allowed mode's instructions are included"
+        );
+        assert!(
+            !section.contains(&pa_edit::description(EditMode::Sloppy).to_string()),
+            "a refused mode's instructions must not be printed"
         );
     }
 }

@@ -699,8 +699,8 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             jev_graph_rerank,
             jev_graph_rerank_raw,
             edit_hybrid_enabled,
-            edit_hybrid_default_mode,
-            edit_hybrid_allow_modes,
+            edit_hybrid_default_mode: edit_hybrid_default_mode.clone(),
+            edit_hybrid_allow_modes: edit_hybrid_allow_modes.clone(),
             // `schedule.enabled` AND a scheduler the tool can reach: an
             // embedding without one (print/RPC) registers nothing, exactly as
             // it registers no `rlm_heartbeat.*` handler.
@@ -730,6 +730,33 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // MCP connection order, or hash iteration.
     tools.sort_by(|left, right| left.name().cmp(right.name()));
     let active_tool_names: Vec<String> = tools.iter().map(|tool| tool.name().to_string()).collect();
+    // The `edit` tool's resolved policy, for the prompt: only meaningful when the
+    // tool survived the profile filter above.
+    let (edit_prompt_modes, edit_prompt_default) =
+        if active_tool_names.iter().any(|name| name == "edit") {
+            let allow: Vec<pa_edit::EditMode> = if edit_hybrid_allow_modes.is_empty() {
+                vec![
+                    pa_edit::EditMode::Replace,
+                    pa_edit::EditMode::Patch,
+                    pa_edit::EditMode::ApplyPatch,
+                    pa_edit::EditMode::Hashline,
+                    pa_edit::EditMode::Sloppy,
+                ]
+            } else {
+                edit_hybrid_allow_modes
+                    .iter()
+                    .filter_map(|mode| pa_edit::EditMode::parse(mode))
+                    .collect()
+            };
+            let default = edit_hybrid_default_mode
+                .as_deref()
+                .and_then(pa_edit::EditMode::parse)
+                .filter(|mode| allow.contains(mode))
+                .or_else(|| allow.first().copied());
+            (Some(allow), default)
+        } else {
+            (None, None)
+        };
     // FORK-ONLY: keep only the fork tools that survived the profile filter, so
     // `native_tool_names` mirrors the effective surface the prompt advertises.
     native_tool_names.retain(|name| active_tool_names.iter().any(|active| active == name));
@@ -822,6 +849,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                     .map(String::as_str)
                     .collect::<Vec<_>>(),
             ),
+            // The `edit` tool's own policy, so the prompt names the modes this
+            // session accepts instead of all five (review #28).
+            edit_modes: edit_prompt_modes.as_deref(),
+            edit_default_mode: edit_prompt_default,
             allow_recursion: config.allow_recursion,
             // A spawned child's prompt must read "depth: N (not root)" with
             // the child-agent reply doctrine, never the root identity.
