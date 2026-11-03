@@ -226,6 +226,7 @@ async fn golden_ipython_group_matches_ts() {
             None,
             None,
             None,
+            None,
         )
         .await;
         let recorded = &case["result"];
@@ -302,7 +303,7 @@ async fn ipython_details_carry_the_cell_edit_diffs() {
         // The replay drives the edit path only; no arbiter is consulted there.
         arbiter: None,
     };
-    let result = ipython::execute_ipython(&options, "edit()", None, None, None)
+    let result = ipython::execute_ipython(&options, "edit()", None, None, None, None)
         .await
         .expect("cell executes");
     assert_eq!(

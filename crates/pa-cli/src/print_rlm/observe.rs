@@ -186,6 +186,64 @@ impl AgentObserveController for InlineObserve {
             truncated: start > 0,
         })
     }
+
+
+    async fn session_messages(
+        &self,
+        target: &str,
+        start: i64,
+        limit: u64,
+        roles: Vec<String>,
+    ) -> anyhow::Result<serde_json::Value> {
+        use pa_types::session::AgentMessage;
+
+        let member = self
+            .find(target)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("agent {target} is not reachable"))?;
+        let transcript = observe_transcript(&member.node).await?;
+        let rows = &transcript.rows;
+        // The daemon's contract: `start` is a ROW INDEX (negative counts from the
+        // end), `limit` caps the slice, `roles` filters by role name.
+        let role_of = |message: &AgentMessage| match message {
+            AgentMessage::User(_) => "user",
+            AgentMessage::Assistant(_) => "assistant",
+            AgentMessage::ToolResult(_) => "toolResult",
+            AgentMessage::BashExecution(_) => "bashExecution",
+            AgentMessage::Custom(_) => "custom",
+            AgentMessage::BranchSummary(_) => "branchSummary",
+            AgentMessage::CompactionSummary(_) => "compactionSummary",
+        };
+        let total = rows.len();
+        let begin = if start < 0 {
+            total.saturating_sub(start.unsigned_abs() as usize)
+        } else {
+            (start as usize).min(total)
+        };
+        let messages: Vec<serde_json::Value> = rows
+            .iter()
+            .enumerate()
+            .skip(begin)
+            .filter(|(_, row)| {
+                roles.is_empty() || roles.iter().any(|wanted| wanted == role_of(row))
+            })
+            .take(limit as usize)
+            .map(|(index, row)| {
+                serde_json::json!({
+                    "index": index,
+                    "message": serde_json::to_value(row).unwrap_or(serde_json::Value::Null),
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({
+            "agent": member
+                .node
+                .session_name()
+                .unwrap_or_else(|| member.node.session_id.clone()),
+            "messages": messages,
+            "total": total,
+        }))
+    }
 }
 
 /// Sort family rows by the name the roster shows (the recorded session name,

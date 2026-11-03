@@ -379,7 +379,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let resolved_profile =
         crate::tool_profile::resolve_profile(settings.settings().tool_profile.as_ref(), false);
     // Captured before `settings` moves into the resource loader: the
-    // per-cell watchdog budget (default 60s, `0` disables).
+    // default cell time limit (default 60s, `0` disables).
     let python_cell_timeout_ms = settings.get_python_cell_timeout_ms();
     let (mcp_skill_overrides, mcp_generic_servers, built_manager) =
         mcp_gating(&settings, config.agent_dir.clone()).await?;
@@ -619,9 +619,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         .await
         .map_err(|join| anyhow::anyhow!("websearch key resolve join failed: {join}"))?
     };
-    // The per-cell watchdog: daemon-backed sessions arm the settings budget
-    // (default 60s, `0` disables); daemonless sessions keep `await bash()`
-    // unbounded by design (#3523), so their cells are never annotated.
+    // The cell time limit: daemon-backed sessions arm the settings default
+    // (60s, `0` disables); daemonless sessions keep `await bash()`
+    // unbounded by design (#3523), so their cells are never interrupted.
     let cell_timeout_ms =
         super::runtime_wiring::arm_cell_timeout_ms(config.daemonless, python_cell_timeout_ms);
     let provisioner = super::runtime_wiring::kernel_provisioner(
@@ -1086,6 +1086,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // so the session seam reports exactly what the tools consult.
     session.set_tool_arbiter(tool_arbiter.clone());
     session.set_agent_dir(config.agent_dir.clone());
+    session.set_usage_store(wiring.rlm_usage.store());
     // Keep the context descriptor even while disabled, so re-enabling can load it.
     session.harness_digest = Some(digest_context);
     session.refinement_settings = Some(refinement_settings);
@@ -1204,6 +1205,22 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         wiring.rlm_usage.set_telemetry(telemetry.clone());
     }
     let goal_driver = wiring.runtime.goal_driver().clone();
+    // Each row the session's durable store appends that bills a model call
+    // outside the agent loop charges the running goal and telemetry run.
+    let charge_goal = goal_driver.lock().await.billed_row_recorder();
+    let charge_run = telemetry.clone();
+    wiring
+        .rlm_usage
+        .store()
+        .observe_billed_rows(std::sync::Arc::new(
+            move |row: &crate::session::billed_row::BilledRow| {
+                charge_goal(&row.usage);
+                if let Some(telemetry) = &charge_run {
+                    telemetry.note_billed_call(&row.usage);
+                }
+            },
+        ))
+        .await;
     // The factory host bridge: registered from `create_session` (the #3184
     // pattern), so the daemon/TUI factory surface resolves against this
     // session's harness dirs, model registry, and the allowlist pin. The
@@ -1448,5 +1465,7 @@ mod tests;
 #[cfg(test)]
 mod append_system_tests;
 
+#[cfg(test)]
+mod billed_row_tests;
 #[cfg(test)]
 mod transport_tests;

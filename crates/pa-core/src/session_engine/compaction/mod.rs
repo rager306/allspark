@@ -78,3 +78,4 @@ pub use tokens::{
     calculate_context_tokens, estimate_context_tokens, estimate_entry_tokens, estimate_tokens,
     get_last_assistant_usage, ContextTokensEstimate,
 };
+pub(crate) use tokens::message_timestamp;

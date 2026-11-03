@@ -81,16 +81,55 @@ impl AgentSession {
                 .map(|tool| compaction::estimate_tool_schema_tokens(tool.as_ref()))
                 .sum(),
         );
+        // Usage BEFORE the latest compaction must not re-trigger. A retained-tail
+        // assistant keeps its pre-compaction `total_tokens`, so a pass that just
+        // compacted would price that old anchor again and compact a SECOND time on
+        // the next boundary — the double summarizer the turn loop's second
+        // `run_auto_compaction` (after the turn) produces.
+        //
+        // Dropping the anchor flag is NOT enough: `ContextPlan::for_request` with
+        // `anchored = false` still carries `estimate.tokens`, which IS the stale
+        // anchor's total. The estimate must be taken WITHOUT the anchor, from the
+        // messages themselves — the rule `threshold_compaction_due` already
+        // applies (`return false`), and the one this method's doc promises.
+        let compaction_stamp = messages.iter().rev().find_map(|message| match message {
+            SessionAgentMessage::CompactionSummary(summary) => Some(summary.timestamp),
+            _ => None,
+        });
+        let usage_anchor_is_stale = estimate.last_usage_index.is_some_and(|index| {
+            compaction_stamp.is_some_and(|stamp| {
+                compaction::message_timestamp(&messages[index]) <= stamp
+            })
+        });
+        let estimate = if usage_anchor_is_stale {
+            compaction::ContextTokensEstimate {
+                tokens: messages.iter().map(compaction::estimate_tokens).sum(),
+                last_usage_index: None,
+            }
+        } else {
+            estimate
+        };
+        // `anchored` stays TRUE when the anchor was merely STALE: the estimate
+        // already carries a provider-measured prompt+schemas count, so adding the
+        // prefix on top double-counts and crosses a threshold the session is
+        // nowhere near (measured: 12 012 messages + 21 131 prefix = 33 143 against
+        // a ~16 000 threshold).
+        // `anchored` stays TRUE when the anchor was merely STALE: such an estimate
+        // already carries a provider-measured prompt+schemas count, so adding the
+        // prefix on top double-counts and crosses a threshold the session is
+        // nowhere near (measured: 12 012 message tokens + 21 131 prefix = 33 143
+        // against a ~16 000 threshold — a second compaction on a session that had
+        // just compacted).
+        let ever_anchored = messages
+            .iter()
+            .any(|message| matches!(message, SessionAgentMessage::Assistant(_)));
         let plan = compaction::ContextPlan::for_request(
             estimate,
-            estimate.last_usage_index.is_some(),
+            ever_anchored,
             prefix,
             output_reserve,
             model.context_window,
         );
-        // The plan trigger can only be MORE eager than the message-only one (it
-        // counts strictly more input), so asking either is the same as asking the
-        // plan; keeping both would let a stale call path silently skip the prefix.
         compaction::plan_compaction_due(&plan, &self.compaction_settings())
     }
 
@@ -329,11 +368,25 @@ impl AgentSession {
                 summary_delta: options.summary_delta.clone(),
                 semantic_edges: options.semantic_edges.clone(),
             };
-            let mut prepared = crate::session_engine::compact_session::summarize_attempt(
+            let summaries = UncommittedSummaries {
+                store: std::sync::Arc::clone(&self.usage_store),
+                session_id: self.session_id().await,
+                bill: crate::session_engine::compact_session::SummaryBill::default(),
+            };
+            let summarized = crate::session_engine::compact_session::summarize_attempt(
                 &attempt,
                 &attempt_options,
+                &summaries.bill,
             )
-            .await?;
+            .await;
+            let mut prepared = match summarized {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    // A failed or aborted attempt's resolved calls land before the error returns.
+                    self.record_model_usage(summaries.bill.take()).await;
+                    return Err(error);
+                }
+            };
             // A toggle during the summarizer request must not re-inject the captured digest.
             if !self.harness_refinements_enabled() {
                 prepared.entry.harness_digest = None;
@@ -346,9 +399,18 @@ impl AgentSession {
                     &mut attempt,
                     &prepared,
                     options.abort,
-                )?
+                )
+            };
+            let committed = match committed {
+                Ok(committed) => committed,
+                Err(error) => {
+                    self.record_model_usage(summaries.bill.take()).await;
+                    return Err(error);
+                }
             };
             if committed {
+                // The committed row carries the attempt's calls.
+                summaries.bill.take();
                 return Ok(CompactOutcome::Ran(Box::new(
                     crate::session_engine::compact_session::CompactRun {
                         result: prepared.result,
@@ -358,6 +420,9 @@ impl AgentSession {
                     },
                 )));
             }
+            // A structural conflict retries from PREPARE: the discarded calls
+            // land first, so the retry builds on their row.
+            self.record_model_usage(summaries.bill.take()).await;
             pa_agent::abort::throw_if_aborted_signal(options.abort)?;
         }
         Err(anyhow::anyhow!(
@@ -479,7 +544,8 @@ impl AgentSession {
             messages,
             refinement_history,
         } = parts.await?;
-        let (result, context_row_ids) = {
+        let (refine_call, billed) = refine::billed_refiner_call(refine_call, "refine");
+        let refined = {
             let mut session = self.session.lock().await;
             // The factory opt-in resolves at apply time, not here: the
             // agent dir (the same settings.json the kernel-side factory
@@ -504,8 +570,12 @@ impl AgentSession {
                 refine_call,
                 self.agent_dir.as_deref(),
             )
-            .await?
+            .await
         };
+        // The planning call bills whether or not its plan applied.
+        let billed = billed.lock().expect("billed refiner call lock").take();
+        self.record_model_usage(billed).await;
+        let (result, context_row_ids) = refined?;
         // The outcome rows (and the notice row when any edit applied) push
         // onto the live context after the durable append, never a full rebuild
         // — a rebuild would resurrect a retried turn's dropped trailing
@@ -520,5 +590,37 @@ impl AgentSession {
             self.agent.append_messages(loop_rows).await;
         }
         Ok(result)
+    }
+}
+
+/// One compaction attempt's summarizer spend until it commits. A commit takes
+/// the bill (the compaction row carries those calls); a conflict, failure, or
+/// abort records it as a `compaction_discarded` `model_usage` row before
+/// `compaction_attempts` moves on. What is left when this drops belongs to a
+/// compaction future the caller dropped mid-flight, recorded from here, in
+/// the session the attempt started in.
+struct UncommittedSummaries {
+    store: std::sync::Arc<dyn super::rlm_usage::RlmChildUsageStore>,
+    session_id: String,
+    bill: crate::session_engine::compact_session::SummaryBill,
+}
+
+impl Drop for UncommittedSummaries {
+    fn drop(&mut self) {
+        let Some(usage) = self.bill.take() else {
+            return;
+        };
+        // A drop cannot await the append, and a dropped compaction future
+        // leaves no caller to await it.
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let store = std::sync::Arc::clone(&self.store);
+        let session_id = std::mem::take(&mut self.session_id);
+        runtime.spawn(async move {
+            if let Err(error) = store.append_model_usage(session_id, usage).await {
+                eprintln!("pa-core: model usage row not persisted: {error}");
+            }
+        });
     }
 }

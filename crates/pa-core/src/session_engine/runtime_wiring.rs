@@ -315,8 +315,8 @@ pub fn kernel_provisioner(
             // Only persistent sessions (which have an artifact dir) get
             // a revivable snapshot (TS `snapshotDir`).
             snapshot_dir: session_artifact_dir.clone(),
-            // The engine-resolved watchdog budget (`None`: daemonless or
-            // disabled; the runtime bootstrap and state ops never arm it).
+            // The engine-resolved default cell time limit (`None`: daemonless;
+            // the runtime bootstrap and state ops never arm it).
             cell_timeout_ms,
             evidence_dir: session_artifact_dir,
             ready_gate: None,
@@ -389,7 +389,7 @@ impl IpythonKernelProvisioner for KernelProvisioner {
 /// Adapts the kernel manager to the ipython tool's executor contract.
 struct KernelManagerExecutor {
     manager: crate::kernel::manager::ReplKernelManager,
-    /// The provisioner-resolved per-cell watchdog budget (`None`: never armed).
+    /// The session's default cell time limit (`None`: never armed; `0`: disabled).
     cell_timeout_ms: Option<u64>,
     /// Where a clipped stdout/stderr keeps its original stream (`None` for an
     /// ephemeral session: the clip is then the only record).
@@ -411,12 +411,15 @@ impl KernelExecutor for KernelManagerExecutor {
         let code = code.to_string();
         let signal = options.signal;
         let on_late_sent_agent_message = options.on_late_sent_agent_message;
-        let cell_timeout_ms = self.cell_timeout_ms;
-        // The session's artifact dir, resolved once when the executor is built.
-        // It is already exported to the kernel as `RLM_SESSION_DIR`: a clipped
-        // stream's original belongs beside the session's other artifacts, not in
-        // $TMPDIR.
+        // The evidence dir is the executor's own field (our side), so it must be
+        // captured here before the async block moves `self` out of scope.
         let evidence_dir = self.evidence_dir.clone();
+        // The session decides whether cells are limited at all; the model's
+        // per-call `timeout` only replaces the default limit.
+        let cell_timeout_ms = self
+            .cell_timeout_ms
+            .filter(|ms| *ms > 0)
+            .map(|default_ms| options.timeout_ms.unwrap_or(default_ms));
         Box::pin(async move {
             let result = manager
                 .execute(
@@ -436,10 +439,10 @@ impl KernelExecutor for KernelManagerExecutor {
     }
 }
 
-/// Whether the per-cell watchdog arms for this session. Daemonless sessions
-/// keep `await bash()` unbounded by design (#3523): every over-budget cell
+/// Whether the cell time limit arms for this session. Daemonless sessions
+/// keep `await bash()` unbounded by design (#3523): every over-limit cell
 /// there would be a sanctioned long await with no background lane to move
-/// to, so the watchdog arms only in daemon-backed sessions.
+/// to, so the limit arms only in daemon-backed sessions.
 pub(crate) fn arm_cell_timeout_ms(daemonless: bool, settings_ms: u64) -> Option<u64> {
     if daemonless {
         None
@@ -487,6 +490,8 @@ fn convert_execute_result(
         diffs: result.diffs.unwrap_or_default(),
         sent_agent_messages: result.sent_agent_messages.unwrap_or_default(),
         bash_commands: result.bash_commands,
+        transcript_reads: result.transcript_reads.unwrap_or_default(),
+        timed_out_after_ms: result.timed_out_after_ms,
     }
 }
 
@@ -600,9 +605,9 @@ mod tests {
     }
 
     #[test]
-    fn cell_watchdog_arms_only_in_daemon_backed_sessions() {
+    fn cell_timeout_arms_only_in_daemon_backed_sessions() {
         // Daemonless sessions keep `await bash()` unbounded by design
-        // (#3523): their over-budget cells are sanctioned long awaits.
+        // (#3523): their over-limit cells are sanctioned long awaits.
         assert_eq!(arm_cell_timeout_ms(true, 60_000), None);
         assert_eq!(arm_cell_timeout_ms(true, 0), None);
         assert_eq!(arm_cell_timeout_ms(false, 60_000), Some(60_000));

@@ -241,7 +241,7 @@ pub fn estimate_context_tokens(messages: &[AgentMessage]) -> ContextTokensEstima
 }
 
 /// A message's timestamp (millis since the epoch; every role carries one).
-pub(super) fn message_timestamp(message: &AgentMessage) -> u64 {
+pub(crate) fn message_timestamp(message: &AgentMessage) -> u64 {
     match message {
         AgentMessage::User(user) => user.timestamp,
         AgentMessage::Assistant(assistant) => assistant.timestamp,

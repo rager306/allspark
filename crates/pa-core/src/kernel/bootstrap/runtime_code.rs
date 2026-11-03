@@ -136,6 +136,10 @@ except Exception as _prime_agent_rlm_error:
     # otherwise `mcp.list_tools(...)` raises NameError, which names neither the
     # missing runtime nor what to do about it.
     mcp = _PrimeAgentMissingRlmMember(rlm, "mcp")
+    # `rlm.session.messages(...)` is a NESTED namespace: bound as an attribute on
+    # the instance, after `rlm` exists, so it degrades to the teaching error
+    # rather than AttributeError.
+    rlm.session = _PrimeAgentMissingRlmMember(rlm, "session")
 
     def bash(command, persistent=False):
         rlm._raise_missing()
@@ -458,6 +462,11 @@ _prime_agent_probe_asyncio.run(_prime_agent_probe_all())
             .filter(|member| {
                 !code.contains(&format!("def {member}("))
                     && !code.contains(&format!("self.{member} = "))
+                    // A NESTED namespace (`rlm.session.messages`) is bound as a
+                    // class attribute, not a method: the stub must have a shape
+                    // the real namespace has, or the member degrades to
+                    // AttributeError instead of the teaching error.
+                    && !code.contains(&format!("rlm.{member} = _PrimeAgentMissingRlmMember("))
             })
             .collect();
         assert!(

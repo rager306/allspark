@@ -150,8 +150,8 @@ impl IpythonKernelProvisioner {
         self.lock_state().manager.clone()
     }
 
-    /// The per-cell watchdog budget the kernel executor arms for user cells
-    /// (`None`: the watchdog never arms).
+    /// The default time limit the kernel executor arms for user cells
+    /// (`None`: never armed).
     #[must_use]
     pub fn cell_timeout_ms(&self) -> Option<u64> {
         self.inner.options.cell_timeout_ms

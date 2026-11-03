@@ -258,9 +258,9 @@ impl SettingsManager {
         self.merged.request_timing.unwrap_or(false)
     }
 
-    /// The per-cell watchdog budget for user `python_repl` cells, in
+    /// The default time limit for user `python_repl` cells, in
     /// milliseconds (`0` disables; the default is 60s). Daemonless
-    /// sessions never arm the watchdog.
+    /// sessions never arm it.
     #[must_use]
     pub fn get_python_cell_timeout_ms(&self) -> u64 {
         self.merged
