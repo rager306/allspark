@@ -876,6 +876,10 @@ struct GatedSink {
     entered_notify: tokio::sync::Notify,
     /// The delivered batches' event names (delivery finished).
     delivered: std::sync::Mutex<Vec<String>>,
+    /// The delivered events' full payloads, so a test can assert on PROPERTIES
+    /// and not only on which events arrived (review #24: a name-only assertion
+    /// passes even when the product stops emitting a required property).
+    delivered_events: std::sync::Mutex<Vec<pa_telemetry::TelemetryEvent>>,
     /// The release flag the hanging send waits on.
     released: std::sync::atomic::AtomicBool,
     /// The hang gate's waker: `notify_waiters` on release, no
@@ -897,6 +901,10 @@ impl GatedSink {
 
     fn delivered_names(&self) -> Vec<String> {
         self.delivered.lock().expect("gate lock").clone()
+    }
+
+    fn delivered_events(&self) -> Vec<pa_telemetry::TelemetryEvent> {
+        self.delivered_events.lock().expect("gate lock").clone()
     }
 
     /// The first send's entry future.
@@ -938,6 +946,11 @@ impl pa_telemetry::TelemetrySink for GatedSink {
             for event in &events {
                 delivered.push(event.name.clone());
             }
+            drop(delivered);
+            self.delivered_events
+                .lock()
+                .expect("gate lock")
+                .extend(events);
             self.delivered_notify.notify_one();
             pa_telemetry::SinkOutcome::Sent
         })
@@ -965,19 +978,10 @@ async fn startup_flush_never_blocks_the_first_frame() {
     config.sinks = vec![sink.clone() as std::sync::Arc<dyn pa_telemetry::TelemetrySink>];
     let client = pa_telemetry::TelemetryClient::spawn(config).expect("startup client");
 
-    // The composition root's startup tracks: the event and the ui_ready
-    // stage on the one-shot client.
-    let mut properties = pa_telemetry::base_properties("interactive");
-    properties.set("duration_ms", serde_json::Value::from(1));
-    client.track("startup", properties);
-    pa_telemetry::AgentStartupStage {
-        stage: "ui_ready",
-        outcome: "completed",
-        duration_ms: Some(1),
-        startup_kind: Some("cold"),
-        timing_scope: Some("system_work"),
-    }
-    .track(&client);
+    // The composition root's OWN emit, not a hand-rebuilt copy: a test that
+    // re-declares the properties agrees with itself even when the product emits
+    // something else (review #24).
+    let startup_started = std::time::Instant::now();
 
     // The paint path's contract, run as its own task so a regression
     // back to a blocking flush reds the timeout instead of wedging the
@@ -987,7 +991,7 @@ async fn startup_flush_never_blocks_the_first_frame() {
         tokio::spawn(async move {
             // The hand-off: while the sink still hangs, it must already
             // be done — the first frame paints with delivery pending.
-            let flush = flush_startup_telemetry(client);
+            let flush = track_startup_ready(client, startup_started, "cold");
             // The batch must have entered the sink before the boundary
             // is meaningful: a release that beats the send's entry
             // drains without ever hanging, and the hand-off below would
@@ -1029,6 +1033,22 @@ async fn startup_flush_never_blocks_the_first_frame() {
             assert!(
                 names.contains(&"agent startup stage".to_string()),
                 "the ui_ready stage delivered: {names:?}"
+            );
+            // The `startup` event's own payload, from the PRODUCT's emit. The
+            // schema requires `phase_timings`; asserting only the event name let a
+            // regression drop it unnoticed (review #24).
+            let events = sink.delivered_events();
+            let startup = events
+                .iter()
+                .find(|event| event.name == "startup")
+                .expect("the startup event delivered");
+            let timings = startup
+                .properties
+                .get("phase_timings")
+                .expect("the schema requires phase_timings");
+            assert!(
+                timings.get("daemon_ready").is_some(),
+                "the daemon_ready timing is in the map: {timings}"
             );
 
             // The quick-exit seam: the composition root joins this

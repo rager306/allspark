@@ -113,24 +113,9 @@ pub fn run_interactive_mode(options: &RunOptions) -> Result<i32> {
         // one-shot client; the session's own telemetry rides the daemon
         // worker. The flush handle rides to the end of the run — the
         // quick-exit join below bounds delivery on a fast quit.
-        let startup_flush = startup_telemetry.take().map(|client| {
-            let daemon_ready_ms = startup_started.elapsed().as_millis() as u64;
-            let mut properties = pa_telemetry::base_properties("interactive");
-            properties.set("duration_ms", serde_json::Value::from(daemon_ready_ms));
-            let mut phase_timings = pa_telemetry::Properties::new();
-            phase_timings.set("daemon_ready", serde_json::Value::from(daemon_ready_ms));
-            properties.set_map("phase_timings", &phase_timings);
-            client.track("startup", properties);
-            pa_telemetry::AgentStartupStage {
-                stage: "ui_ready",
-                outcome: "completed",
-                duration_ms: Some(daemon_ready_ms),
-                startup_kind: Some(startup_kind),
-                timing_scope: Some("system_work"),
-            }
-            .track(&client);
-            flush_startup_telemetry(client)
-        });
+        let startup_flush = startup_telemetry
+            .take()
+            .map(|client| track_startup_ready(client, startup_started, startup_kind));
         // `prime-agent agents` and bare `--resume` open the agents view
         // (TS `agentsViewRequested`); the view then opens sessions, and a
         // session exits back into the view until the user exits it. TS gates
@@ -214,6 +199,37 @@ pub(super) fn flush_startup_telemetry(
     tokio::spawn(async move {
         let _ = client.shutdown().await;
     })
+}
+
+/// Track the two `startup`-era events and hand the client's final flush to the
+/// runtime: the `startup` event (with its `phase_timings` map) and the `ui_ready`
+/// stage.
+///
+/// This is the composition root's own emit, split out so a test can drive it. The
+/// behaviour it pins is the pair of events and the non-blocking hand-off; a test
+/// that rebuilt the properties by hand could agree with the schema while the
+/// product emitted something else (review #24).
+pub(super) fn track_startup_ready(
+    client: pa_telemetry::TelemetryClient,
+    startup_started: std::time::Instant,
+    startup_kind: &'static str,
+) -> tokio::task::JoinHandle<()> {
+    let daemon_ready_ms = startup_started.elapsed().as_millis() as u64;
+    let mut properties = pa_telemetry::base_properties("interactive");
+    properties.set("duration_ms", serde_json::Value::from(daemon_ready_ms));
+    let mut phase_timings = pa_telemetry::Properties::new();
+    phase_timings.set("daemon_ready", serde_json::Value::from(daemon_ready_ms));
+    properties.set_map("phase_timings", &phase_timings);
+    client.track("startup", properties);
+    pa_telemetry::AgentStartupStage {
+        stage: "ui_ready",
+        outcome: "completed",
+        duration_ms: Some(daemon_ready_ms),
+        startup_kind: Some(startup_kind),
+        timing_scope: Some("system_work"),
+    }
+    .track(&client);
+    flush_startup_telemetry(client)
 }
 
 /// TS `shutdown` prints the dim resume hint (`formatResumeHint`) to stdout
