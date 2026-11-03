@@ -27,8 +27,9 @@ use super::breaker::{BreakerGate, BreakerState};
 use super::clock::{ClockSource, JitteredStagger, StaggerSource, SystemClock};
 use super::{
     Grant, HolderLiveness, LeaseRecord, ProviderAdmission, ProviderKey, ProviderState,
-    RegistryState, StreamAdmission, StreamOutcome, Waiter, ACQUIRE_BUDGET, BREAKER_COOLDOWN_MS,
-    FLOOR_LIMIT, MAX_QUEUED_WAITERS, RETRY_BUDGET_WINDOW, START_LIMIT,
+    RegistryState, SpawnReservation, StreamAdmission, StreamOutcome, Waiter, WaiterRole,
+    ACQUIRE_BUDGET, BREAKER_COOLDOWN_MS, FLOOR_LIMIT, MAX_QUEUED_WAITERS, RETRY_BUDGET_WINDOW,
+    START_LIMIT,
 };
 
 impl ProviderAdmission {
@@ -232,10 +233,12 @@ impl ProviderAdmission {
         state: &mut RegistryState,
         key: &ProviderKey,
         holder: &str,
+        role: WaiterRole,
     ) -> Option<(oneshot::Receiver<Grant>, Arc<Waiter>)> {
         let start = self.start;
         let waiter = Arc::new(Waiter {
             holder: holder.to_string(),
+            role,
             grant: Mutex::new(None),
         });
         let (tx, rx) = oneshot::channel();
@@ -401,18 +404,29 @@ impl ProviderAdmission {
             // This acquirer is the half-open probe when the gate said so:
             // if it never reaches a lease, the probe must un-wedge (below).
             let is_probe = matches!(gate, BreakerGate::Probe);
-            match self.admit_now(&mut state, key, holder, &dead) {
-                Some(lease) => {
-                    if is_probe {
-                        Self::note_probe(&mut state, &key.provider, lease);
-                    }
-                    return StreamAdmission::Admitted(lease);
+            if let Some(lease) = self.admit_now(&mut state, key, holder, &dead) {
+                if is_probe {
+                    Self::note_probe(&mut state, &key.provider, lease);
                 }
-                None => match self.enqueue(&mut state, key, holder) {
-                    Some(queued) => (queued, is_probe),
-                    // The queue is full: fail over now, like a spent wait budget.
-                    None => return StreamAdmission::Refused,
-                },
+                return StreamAdmission::Admitted(lease);
+            }
+            let role = if is_probe {
+                WaiterRole::Probe
+            } else {
+                WaiterRole::Ordinary
+            };
+            match self.enqueue(&mut state, key, holder, role) {
+                Some(queued) => {
+                    // Queueing is not the end of the decision. A FREE slot can exist beside a
+                    // non-empty queue — an OPEN breaker held the backlog back while a settle
+                    // freed the slot (review #9) — and a probe must not park behind a backlog it
+                    // outranks (review #8). Nothing would wake it later: the slot is already
+                    // free, so only a settle or a release dispatches, and neither is coming.
+                    self.dispatch(&mut state, key);
+                    (queued, is_probe)
+                }
+                // The queue is full: fail over now, like a spent wait budget.
+                None => return StreamAdmission::Refused,
             }
         };
         let (rx, waiter) = pending;
@@ -512,17 +526,27 @@ impl ProviderAdmission {
     /// Wait for a free slot to dispatch one spawn on `key`; the answer is
     /// the lease plus the randomized stagger to wait before starting the
     /// child. `None` = wait budget expired (fail-open: start anyway).
-    pub async fn spawn_gate(&self, key: &ProviderKey, spawn_id: &str) -> Option<(u64, Duration)> {
-        self.spawn_gate_within(key, spawn_id, ACQUIRE_BUDGET).await
+    ///
+    /// The lease is minted against [`SpawnReservation::holder`], which is the identity a later
+    /// release must present — see the type's note for why the spawn id cannot be it (review
+    /// #10).
+    pub async fn spawn_gate(
+        &self,
+        key: &ProviderKey,
+        reservation: SpawnReservation<'_>,
+    ) -> Option<(u64, Duration)> {
+        self.spawn_gate_within(key, reservation, ACQUIRE_BUDGET)
+            .await
     }
 
     /// [`Self::spawn_gate`] with an explicit wait budget.
     pub async fn spawn_gate_within(
         &self,
         key: &ProviderKey,
-        spawn_id: &str,
+        reservation: SpawnReservation<'_>,
         budget: Duration,
     ) -> Option<(u64, Duration)> {
+        let SpawnReservation { holder, spawn_id } = reservation;
         // A spawn reservation can also be held by a dead worker; the same evidence
         // applies (the spawn gate draws from the same pool).
         let dead = self.dead_leases_for(key).await;
@@ -535,7 +559,7 @@ impl ProviderAdmission {
             // create would break session startup on a cooling-down provider. The pool cost is
             // real but bounded by the spawn's own lifetime. The two tests that pin this
             // contract were written before the review and are not wrong.
-            match self.admit_now(&mut state, key, spawn_id, &dead) {
+            match self.admit_now(&mut state, key, holder, &dead) {
                 Some(lease) => {
                     let stagger_ms = self.stagger.next_delay_ms();
                     tracing::info!(
@@ -548,7 +572,7 @@ impl ProviderAdmission {
                     );
                     return Some((lease, Duration::from_millis(stagger_ms)));
                 }
-                None => self.enqueue(&mut state, key, spawn_id),
+                None => self.enqueue(&mut state, key, holder, WaiterRole::Ordinary),
             }
         };
         // A full queue refuses the spawn the same way a spent budget does: the child

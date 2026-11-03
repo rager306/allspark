@@ -147,6 +147,21 @@ pub const BREAKER_COOLDOWN_MS: u64 = 30_000;
 /// The wire command the admission plane rides (worker -> supervisor).
 pub const ADMISSION_COMMAND: &str = "provider_admission";
 
+/// Who asks for a spawn slot, and which spawn it is for (review #10).
+///
+/// The two are NOT interchangeable. `holder` is the identity that may later settle or release
+/// the minted lease — a worker token on the link path, the in-process holder name otherwise —
+/// while `spawn_id` only labels the reservation in the log. The spawn path used to pass the
+/// spawn id AS the holder, which no worker token could ever match: the supervisor refuses a
+/// release from a token that does not own the lease, so every spawn lease was unreleasable and
+/// each spawn leaked a slot for the life of the worker. The same mismatch made a live worker's
+/// reservation look DEAD to the reaper, which could then hand its slot to another acquirer.
+#[derive(Clone, Copy, Debug)]
+pub struct SpawnReservation<'a> {
+    pub holder: &'a str,
+    pub spawn_id: &'a str,
+}
+
 /// The resolved provider/model pair an admission slot is keyed by.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ProviderKey {
@@ -316,9 +331,41 @@ struct Grant {
     stagger_ms: u64,
 }
 
+/// What one queued acquirer is (review #8).
+///
+/// The provider's circuit breaker allows exactly one acquirer to run while it is HALF-OPEN:
+/// the probe. That probe may arrive at a full pool, in which case it PARKS in the FIFO like
+/// any other acquirer — so the queue has to be able to tell it apart from the backlog, which
+/// must stay parked until the probe's verdict closes the breaker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WaiterRole {
+    /// Normal traffic: grantable only while the breaker is closed.
+    Ordinary,
+    /// The single half-open probe: grantable while the breaker is half-open.
+    Probe,
+}
+
+impl WaiterRole {
+    /// Whether a waiter of this role may be granted while the provider's breaker stands in
+    /// `breaker` (review #8).
+    ///
+    /// A CLOSED breaker grants the whole queue in FIFO order, including a probe that queued
+    /// while half-open and outlived the verdict. A HALF-OPEN one grants ONLY the probe, at
+    /// whatever depth it sits: the backlog queued before the trip must not drain beside it.
+    /// An OPEN one grants nobody.
+    fn admitted_by(self, breaker: BreakerState) -> bool {
+        match breaker {
+            BreakerState::Closed => true,
+            BreakerState::HalfOpen => matches!(self, Self::Probe),
+            BreakerState::Open => false,
+        }
+    }
+}
+
 /// One queued acquirer.
 struct Waiter {
     holder: String,
+    role: WaiterRole,
     grant: Mutex<Option<oneshot::Sender<Grant>>>,
 }
 

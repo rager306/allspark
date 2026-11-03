@@ -21,7 +21,8 @@ use serde_json::json;
 use pa_core::session_engine::provider_retry::RateLimitReason;
 
 use crate::agent_engine::provider_admission::{
-    ProviderAdmission, ProviderKey, StreamAdmission, StreamOutcome, ADMISSION_COMMAND,
+    ProviderAdmission, ProviderKey, SpawnReservation, StreamAdmission, StreamOutcome,
+    ADMISSION_COMMAND,
 };
 use crate::protocol::{response_failure, response_success, DaemonResponse};
 use crate::supervisor::Supervisor;
@@ -196,8 +197,20 @@ impl Supervisor {
                         StreamAdmission::Unadmitted => None,
                     }
                 } else {
+                    // The reservation is attributed to the WORKER, not the spawn (review #10):
+                    // the release that follows the create round trip authenticates by worker
+                    // token, so a lease held by a spawn id could never be released and the
+                    // slot leaked for the life of that worker.
                     let spawn_id = spawn_id.clone().unwrap_or_else(|| worker_token.clone());
-                    registry.spawn_gate(&key, &spawn_id).await
+                    registry
+                        .spawn_gate(
+                            &key,
+                            SpawnReservation {
+                                holder: worker_token,
+                                spawn_id: &spawn_id,
+                            },
+                        )
+                        .await
                 };
                 let Some((lease, stagger)) = admitted else {
                     // The wait budget expired: the worker proceeds
@@ -485,5 +498,54 @@ mod tests {
         assert_eq!(row["breakerState"], serde_json::json!("closed"));
         assert_eq!(row["budgetFailures"], serde_json::json!(1));
         assert_eq!(row["budgetSamples"], serde_json::json!(1));
+    }
+
+    /// A spawn reservation must be releasable by the worker that took it (review #10).
+    ///
+    /// The spawn gate minted its lease against the SPAWN id, while `spawnId` is a label and
+    /// the only identity a later release can present is the worker token. So the supervisor
+    /// refused every spawn release ("lease is not held by this worker") and the reservation
+    /// leaked a slot for the life of the worker; the same mismatch made the reservation look
+    /// DEAD to the liveness reaper, which could then hand its slot to another acquirer.
+    #[tokio::test]
+    async fn a_spawn_reservation_is_releasable_by_its_worker() {
+        let (supervisor, _dir) = supervisor();
+        let mut gate = command("spawn_gate", &[]);
+        if let DaemonCommand::ProviderAdmission {
+            spawn_id, model, ..
+        } = &mut gate
+        {
+            *spawn_id = Some("sub-1a2b3c4d".to_string());
+            // A model of its own, so this reservation is the only lease on its key.
+            *model = Some("glm-spawn".to_string());
+        }
+        let response = supervisor
+            .handle_provider_admission("c", "provider_admission", &gate)
+            .await;
+        assert!(
+            response.success,
+            "the spawn gate must succeed: {response:?}"
+        );
+        let lease = response.data.expect("spawn data")["leaseId"]
+            .as_u64()
+            .expect("lease id");
+
+        let mut release = command("release_stream", &[]);
+        if let DaemonCommand::ProviderAdmission { lease_id, .. } = &mut release {
+            *lease_id = Some(lease);
+        }
+        let response = supervisor
+            .handle_provider_admission("c", "provider_admission", &release)
+            .await;
+        assert!(
+            response.success,
+            "the worker that took the reservation must be able to release it: {response:?}"
+        );
+        let key = ProviderKey::new("zai", "glm-spawn");
+        assert_eq!(
+            supervisor.provider_admission().snapshot(&key).in_flight,
+            0,
+            "and the slot must come back"
+        );
     }
 }

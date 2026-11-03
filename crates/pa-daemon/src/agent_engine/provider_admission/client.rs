@@ -16,7 +16,10 @@ use std::time::Duration;
 
 use crate::supervisor_link::SupervisorLink;
 
-use super::{ProviderAdmission, ProviderKey, StreamAdmission, StreamOutcome, ADMISSION_COMMAND};
+use super::{
+    ProviderAdmission, ProviderKey, SpawnReservation, StreamAdmission, StreamOutcome,
+    ADMISSION_COMMAND,
+};
 
 /// How a worker reaches the shared registry.
 #[derive(Clone)]
@@ -96,6 +99,11 @@ impl AdmissionClient {
     /// Wait for a free slot to dispatch one spawn on `key`; the answer is
     /// the held lease plus the randomized stagger to wait before starting
     /// the child. `None` = fail-open (the caller starts unadmitted).
+    ///
+    /// The lease is minted against the CLIENT's own identity, never the spawn id (review
+    /// #10): the supervisor only honours a release from the holder recorded at mint, and a
+    /// holder of "sub-1a2b3c4d" is a token no worker ever presents, so such a lease leaked a
+    /// slot for the life of the worker.
     pub async fn spawn_gate(
         &self,
         key: &ProviderKey,
@@ -103,21 +111,25 @@ impl AdmissionClient {
     ) -> Option<(StreamLease, Duration)> {
         match self {
             AdmissionClient::Disabled => None,
-            AdmissionClient::Local(registry) => {
-                registry
-                    .spawn_gate(key, spawn_id)
-                    .await
-                    .map(|(id, stagger)| {
-                        (
-                            StreamLease {
-                                id,
-                                client: self.clone(),
-                                resolved: false,
-                            },
-                            stagger,
-                        )
-                    })
-            }
+            AdmissionClient::Local(registry) => registry
+                .spawn_gate(
+                    key,
+                    SpawnReservation {
+                        holder: LOCAL_HOLDER,
+                        spawn_id,
+                    },
+                )
+                .await
+                .map(|(id, stagger)| {
+                    (
+                        StreamLease {
+                            id,
+                            client: self.clone(),
+                            resolved: false,
+                        },
+                        stagger,
+                    )
+                }),
             AdmissionClient::Link { link, worker_token } => {
                 let data = self
                     .call(

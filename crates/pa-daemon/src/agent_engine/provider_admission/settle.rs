@@ -116,34 +116,44 @@ impl ProviderAdmission {
     /// re-checks the limit each pass).
     pub(super) fn dispatch(&self, state: &mut RegistryState, key: &ProviderKey) {
         loop {
+            let breaker_state = state
+                .breakers
+                .get(&key.provider)
+                .map_or(BreakerState::Closed, |breaker| breaker.state);
             let Some(entry) = state.providers.get_mut(key) else {
                 return;
             };
-            // An open breaker refuses new admissions; the queue drains only
-            // through a half-open probe (finding #5: the settle path used
-            // to dispatch through an open breaker, so the fail-fast never
-            // stopped the stream of fresh leases into a dead provider).
+            // WHICH WAITERS THE BREAKER LETS THROUGH (findings #5, #9, #8). `breaker_gate`
+            // runs on the ACQUIRE path only — `dispatch` is called from `settle` and
+            // `release`, which never pass through it — so the gate here is the only thing
+            // standing between a parked waiter and a lease.
             //
-            // HALF-OPEN IS THE SAME REFUSAL (review #9). `breaker_gate` answers `Refuse` for
-            // half-open, but it runs on the ACQUIRE path only — `dispatch` is called from
-            // `settle` and `release`, which never pass through it. So a backlog queued while
-            // the breaker was CLOSED (a waiter's budget is 600 s, the cooldown 30 s) was
+            // An OPEN breaker grants nobody: otherwise a freed slot fed fresh leases into a
+            // dead provider and the fail-fast stopped nothing (finding #5).
+            //
+            // A HALF-OPEN one grants ONLY the probe (review #9). A backlog queued while the
+            // breaker was CLOSED (a waiter's budget is 600 s, the cooldown 30 s) used to be
             // granted as soon as the cooldown expired: non-probe leases beside the single
-            // probe, whose settles land in the `BreakerState::Open | HalfOpen => {}` no-op arm
-            // and teach the breaker nothing, while fresh traffic stays refused.
+            // probe, whose settles land in the `Open | HalfOpen => {}` no-op arm and teach the
+            // breaker nothing, while fresh traffic stays refused.
             //
-            // The earlier note here claimed this arm was dead code. It was not: the test that
-            // "proved" it only covered a waiter arriving AFTER the probe was taken, which
-            // `breaker_gate` does refuse. Pre-trip backlog was the uncovered half.
-            if let Some(breaker) = state.breakers.get(&key.provider) {
-                if matches!(breaker.state, BreakerState::Open | BreakerState::HalfOpen) {
-                    return;
-                }
-            }
+            // The probe ITSELF can be a waiter here (review #8): a full pool has no slot to
+            // admit it into, so it parked — behind the very backlog it now has to jump. A
+            // position-only drain stranded it for the whole wait budget (600 s) and the
+            // breaker then re-opened on expiry, so the provider failed fast for ten minutes
+            // and never attempted recovery. Hence the search by ROLE: the probe is granted at
+            // whatever depth it sits, and the backlog ahead of it waits for its verdict.
             if entry.in_flight >= entry.limit {
                 return;
             }
-            let Some(waiter) = entry.waiters.pop_front() else {
+            let Some(position) = entry
+                .waiters
+                .iter()
+                .position(|waiter| waiter.role.admitted_by(breaker_state))
+            else {
+                return;
+            };
+            let Some(waiter) = entry.waiters.remove(position) else {
                 return;
             };
             entry.in_flight += 1;

@@ -54,6 +54,17 @@ async fn admitted(registry: &ProviderAdmission, key: &ProviderKey, holder: &str)
     }
 }
 
+/// One spawn reservation for `spawn_id`, held by a stand-in worker identity.
+///
+/// The HOLDER is the identity a later release must present, so it is the worker, never the
+/// spawn id (review #10). The spawn id only labels the reservation in the log.
+fn spawn_reservation(spawn_id: &str) -> SpawnReservation<'_> {
+    SpawnReservation {
+        holder: "spawn-parent",
+        spawn_id,
+    }
+}
+
 async fn until(condition: impl Fn() -> bool, what: &str) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while !condition() {
@@ -79,7 +90,11 @@ async fn nine_spawns_behind_a_limit_of_six_queue_three_and_dispatch_fifo() {
     let mut immediate = Vec::new();
     for index in 0..6 {
         let lease = registry
-            .spawn_gate_within(&key, &format!("spawn-{index}"), Duration::from_millis(200))
+            .spawn_gate_within(
+                &key,
+                spawn_reservation(&format!("spawn-{index}")),
+                Duration::from_millis(200),
+            )
             .await
             .expect("the first six spawns admit immediately");
         immediate.push(lease.0);
@@ -92,7 +107,11 @@ async fn nine_spawns_behind_a_limit_of_six_queue_three_and_dispatch_fifo() {
     for index in 6..9 {
         assert!(
             registry
-                .spawn_gate_within(&key, &format!("spawn-{index}"), Duration::from_millis(0))
+                .spawn_gate_within(
+                    &key,
+                    spawn_reservation(&format!("spawn-{index}")),
+                    Duration::from_millis(0),
+                )
                 .await
                 .is_none(),
             "a spawn over the limit must queue, not admit"
@@ -107,7 +126,7 @@ async fn nine_spawns_behind_a_limit_of_six_queue_three_and_dispatch_fifo() {
         let spawn_id = format!("spawn-{index}");
         queued.push(tokio::spawn(async move {
             registry
-                .spawn_gate_within(&key, &spawn_id, Duration::from_secs(5))
+                .spawn_gate_within(&key, spawn_reservation(&spawn_id), Duration::from_secs(5))
                 .await
                 .map(|(lease, stagger)| (spawn_id, lease, stagger))
         }));
@@ -407,6 +426,175 @@ async fn a_half_open_breaker_drains_no_backlog() {
     registry.release(probe);
 }
 
+/// A probe that queues behind a backlog is still dispatched when a slot frees (review #8).
+///
+/// The breaker's half-open state grants exactly one acquirer, and the gate arms it as the
+/// probe. When its key's pool has no free slot the probe PARKS in the FIFO — behind a
+/// backlog queued before the trip — and `dispatch` refused every grant while the breaker
+/// was half-open, so the probe's own grant could never arrive: the breaker sat half-open
+/// for the whole wait budget with no probe in flight, then re-opened on expiry. The
+/// provider therefore failed fast for ten minutes without ever attempting recovery.
+///
+/// The backlog behind which the probe parks is the #9 shape: waiters queued while the
+/// breaker was CLOSED must stay parked until the probe's verdict closes it.
+#[tokio::test]
+async fn a_probe_queued_behind_a_backlog_is_dispatched_when_a_slot_frees() {
+    let clock = ScriptedClock::new(1_000);
+    let registry = ProviderAdmission::with_parts(
+        1,
+        Arc::new(JitteredStagger::new()),
+        Arc::clone(&clock) as Arc<dyn ClockSource>,
+    );
+    // The probe's key: its only slot is held, so the probe cannot be admitted outright.
+    let parked_key = ProviderKey::new("zai", "glm-parked");
+    let holder = admitted(&registry, &parked_key, "slot-holder").await;
+    // A backlog waiter parked while the breaker was still CLOSED.
+    let backlog = {
+        let registry = Arc::clone(&registry);
+        let key = parked_key.clone();
+        tokio::spawn(async move {
+            registry
+                .acquire_stream_within(&key, "pre-trip-waiter", Duration::from_secs(5))
+                .await
+        })
+    };
+    until(
+        || registry.snapshot(&parked_key).queued == 1,
+        "the pre-trip waiter parks in the FIFO",
+    )
+    .await;
+
+    // Trip the PROVIDER's breaker from another model on it, then wait out the cooldown.
+    let tripping_key = ProviderKey::new("zai", "glm-tripping");
+    for _ in 0..RETRY_BUDGET_MIN_SAMPLES {
+        let lease = admitted(&registry, &tripping_key, "storm-worker").await;
+        registry.settle(
+            lease,
+            StreamOutcome::RateLimited(RateLimitReason::RateLimit),
+        );
+    }
+    assert_eq!(
+        registry.snapshot(&parked_key).breaker.state,
+        BreakerState::Open,
+        "the fixture must open the provider breaker, or the test proves nothing"
+    );
+    clock.advance(BREAKER_COOLDOWN_MS);
+
+    // The probe arrives at a full pool and parks BEHIND the backlog.
+    let probe = {
+        let registry = Arc::clone(&registry);
+        let key = parked_key.clone();
+        tokio::spawn(async move {
+            registry
+                .acquire_stream_within(&key, "probe", Duration::from_secs(2))
+                .await
+        })
+    };
+    until(
+        || registry.snapshot(&parked_key).queued == 2,
+        "the probe parks behind the backlog",
+    )
+    .await;
+
+    // Freeing the slot must dispatch the PROBE, not the backlog ahead of it.
+    registry.release(holder);
+    let verdict = probe.await.expect("the probe task joins");
+    assert!(
+        matches!(verdict, StreamAdmission::Admitted(_)),
+        "the queued probe must be dispatched on the freed slot, got {verdict:?}"
+    );
+    assert_eq!(
+        registry.snapshot(&parked_key).queued,
+        1,
+        "and the backlog must stay parked: only the probe may run in half-open"
+    );
+    assert_eq!(
+        registry.snapshot(&parked_key).breaker.state,
+        BreakerState::HalfOpen,
+        "the probe is in flight, so the breaker waits for its verdict"
+    );
+    assert_eq!(
+        registry.snapshot(&parked_key).in_flight,
+        1,
+        "the freed slot went to the probe"
+    );
+    backlog.abort();
+}
+
+/// A probe finding a FREE slot beside a parked backlog must take it (review #8).
+///
+/// The second half of the same defect, and the one no release can rescue: while the breaker
+/// was OPEN the dispatch gate held back a backlog queued before the trip, so freeing the slot
+/// during the outage left it FREE with the queue intact. The cooldown then expired, and the
+/// probe that arrived was refused the free slot by the FIFO (`admit_now` never bypasses the
+/// queue) and parked behind it — where nothing was left to wake it: the slot was already free,
+/// so there was no settle or release to dispatch from, and the breaker stayed half-open until
+/// the probe's wait budget expired.
+#[tokio::test]
+async fn a_probe_takes_a_free_slot_beside_a_parked_backlog() {
+    let clock = ScriptedClock::new(1_000);
+    let registry = ProviderAdmission::with_parts(
+        1,
+        Arc::new(JitteredStagger::new()),
+        Arc::clone(&clock) as Arc<dyn ClockSource>,
+    );
+    let keyboard = ProviderKey::new("zai", "glm-parked");
+    let holder = admitted(&registry, &keyboard, "slot-holder").await;
+    let backlog = {
+        let registry = Arc::clone(&registry);
+        let key = keyboard.clone();
+        tokio::spawn(async move {
+            registry
+                .acquire_stream_within(&key, "pre-trip-waiter", Duration::from_secs(5))
+                .await
+        })
+    };
+    until(
+        || registry.snapshot(&keyboard).queued == 1,
+        "the pre-trip waiter parks in the FIFO",
+    )
+    .await;
+
+    let tripping_key = ProviderKey::new("zai", "glm-tripping");
+    for _ in 0..RETRY_BUDGET_MIN_SAMPLES {
+        let lease = admitted(&registry, &tripping_key, "storm-worker").await;
+        registry.settle(
+            lease,
+            StreamOutcome::RateLimited(RateLimitReason::RateLimit),
+        );
+    }
+    assert_eq!(
+        registry.snapshot(&keyboard).breaker.state,
+        BreakerState::Open,
+        "the fixture must open the provider breaker, or the test proves nothing"
+    );
+
+    // The slot frees while the breaker is OPEN, so the backlog cannot drain and the slot stays
+    // FREE until the cooldown expires.
+    registry.release(holder);
+    assert_eq!(
+        registry.snapshot(&keyboard).in_flight,
+        0,
+        "the slot is free, and the open breaker keeps the backlog parked"
+    );
+    assert_eq!(registry.snapshot(&keyboard).queued, 1);
+
+    clock.advance(BREAKER_COOLDOWN_MS);
+    let probe = registry
+        .acquire_stream_within(&keyboard, "probe", Duration::from_millis(200))
+        .await;
+    assert!(
+        matches!(probe, StreamAdmission::Admitted(_)),
+        "the probe must take the free slot instead of parking behind the backlog, got {probe:?}"
+    );
+    assert_eq!(
+        registry.snapshot(&keyboard).queued,
+        1,
+        "the backlog stays parked until the probe's verdict"
+    );
+    backlog.abort();
+}
+
 /// The narrow bracket (oh-my-pi #3749): a spawn tree must not deadlock on
 /// its own admission. With a limit of ONE, three generations nest: the
 /// parent's stream slot must free for the child's spawn, and the child's
@@ -428,7 +616,7 @@ async fn a_nested_spawn_is_admitted_by_the_parent_stream_settle_not_its_end() {
         let key = key.clone();
         tokio::spawn(async move {
             registry
-                .spawn_gate_within(&key, "child", Duration::from_secs(5))
+                .spawn_gate_within(&key, spawn_reservation("child"), Duration::from_secs(5))
                 .await
                 .map(|(lease, _)| lease)
         })
@@ -469,7 +657,11 @@ async fn a_nested_spawn_is_admitted_by_the_parent_stream_settle_not_its_end() {
         let key = key.clone();
         tokio::spawn(async move {
             registry
-                .spawn_gate_within(&key, "grandchild", Duration::from_secs(5))
+                .spawn_gate_within(
+                    &key,
+                    spawn_reservation("grandchild"),
+                    Duration::from_secs(5),
+                )
                 .await
                 .map(|(lease, _)| lease)
         })
@@ -509,7 +701,11 @@ async fn dispatch_stagger_comes_from_the_injected_source_and_stays_in_range() {
     // The immediate dispatch and the queued dispatch each take one delay
     // from the source.
     let (first, first_stagger) = registry
-        .spawn_gate_within(&key, "spawn-a", Duration::from_millis(50))
+        .spawn_gate_within(
+            &key,
+            spawn_reservation("spawn-a"),
+            Duration::from_millis(50),
+        )
         .await
         .expect("the first spawn admits");
     let queued = {
@@ -517,7 +713,7 @@ async fn dispatch_stagger_comes_from_the_injected_source_and_stays_in_range() {
         let key = key.clone();
         tokio::spawn(async move {
             registry
-                .spawn_gate_within(&key, "spawn-b", Duration::from_secs(5))
+                .spawn_gate_within(&key, spawn_reservation("spawn-b"), Duration::from_secs(5))
                 .await
         })
     };
@@ -1147,7 +1343,11 @@ async fn an_open_breaker_does_not_gate_spawn_admissions() {
     );
     assert!(
         registry
-            .spawn_gate_within(&key, "spawn-1", Duration::from_millis(50))
+            .spawn_gate_within(
+                &key,
+                spawn_reservation("spawn-1"),
+                Duration::from_millis(50)
+            )
             .await
             .is_some(),
         "a spawn reservation is the create round trip, not provider traffic"
@@ -1522,7 +1722,11 @@ async fn provider_rows_emit_the_snapshot_rollup() {
     // held lease is a spawn reservation (spawns never gate on the
     // breaker): one slot in flight, and a second spawn parks in the queue.
     let (_stormy_held, _) = registry
-        .spawn_gate_within(&stormy, "spawn-held", Duration::from_millis(50))
+        .spawn_gate_within(
+            &stormy,
+            spawn_reservation("spawn-held"),
+            Duration::from_millis(50),
+        )
         .await
         .expect("the floor's one slot admits a spawn");
     let parked = tokio::spawn({
@@ -1530,7 +1734,11 @@ async fn provider_rows_emit_the_snapshot_rollup() {
         let stormy = stormy.clone();
         async move {
             registry
-                .spawn_gate_within(&stormy, "spawn-queued", Duration::from_secs(5))
+                .spawn_gate_within(
+                    &stormy,
+                    spawn_reservation("spawn-queued"),
+                    Duration::from_secs(5),
+                )
                 .await
         }
     });
