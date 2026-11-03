@@ -554,4 +554,83 @@ mod shuttle_claim_tests {
             50,
         );
     }
+
+    /// A partition write failure still returns the claims that landed (#3).
+    ///
+    /// `mutate_states` writes each session-artifact partition in a loop. Before the
+    /// fix it propagated a later partition's write error with `?`, discarding the
+    /// dispatches of the partitions whose rows were ALREADY marked claimed on disk —
+    /// never dispatched, and indistinguishable from interrupted work to the next
+    /// recovery pass, which cannot tell "claimed but never run" from "claimed and
+    /// crashed".
+    ///
+    /// The failure is injected below `read_jobs_state`: a directory at the file's
+    /// ATOMIC TEMP path (`<path>.tmp<pid>`) makes the write fail while the read
+    /// still succeeds. A directory at the partition path itself does not work — the
+    /// read returns the default, the state never changes, and the write is never
+    /// attempted.
+    #[test]
+    fn a_partition_write_failure_still_returns_the_landed_claims() {
+        let root = tempfile::tempdir().unwrap();
+        let good = root.path().join("a");
+        let bad = root.path().join("b");
+        std::fs::create_dir_all(&good).unwrap();
+        std::fs::create_dir_all(&bad).unwrap();
+        let store = AgentCronJobStore::for_session_artifacts();
+        assert!(store.register_session_artifact("a", &good));
+        assert!(store.register_session_artifact("b", &bad));
+
+        let seed = |session: &str| CronJobsState {
+            jobs: vec![serde_json::from_value(serde_json::json!({
+                "id": format!("job-{session}"),
+                "activeSessionId": session,
+                "sessionId": session,
+                "sessionFile": format!("/tmp/{session}.jsonl"),
+                "cwd": "/tmp",
+                "prompt": "ping",
+                "schedule": { "kind": "interval", "expression": "each 30s", "intervalMs": 30000 },
+                "status": "active",
+                "nextRunAt": "2023-11-14T22:20:00.000Z",
+                "createdAt": "2023-11-14T22:13:20.000Z",
+                "updatedAt": "2023-11-14T22:13:20.000Z"
+            }))
+            .expect("job json")],
+            dispatches: Vec::new(),
+        };
+        write_jobs_state(&good.join("scheduled-jobs.json"), &seed("a")).expect("seed a");
+        let bad_path = bad.join("scheduled-jobs.json");
+        write_jobs_state(&bad_path, &seed("b")).expect("seed b");
+        // The bad partition still READS, but cannot WRITE: its atomic temp path is a
+        // directory.
+        let temp = PathBuf::from(format!("{}.tmp{}", bad_path.display(), std::process::id()));
+        std::fs::create_dir(&temp).expect("block the atomic temp path");
+
+        // A mutator that claims everything it sees, so both partitions "land" work.
+        let outcome = store.mutate_states(|state| {
+            let mut claimed = Vec::new();
+            for job in &mut state.jobs {
+                if job.status == JobStatus::Active {
+                    job.status = JobStatus::Paused;
+                    claimed.push(AgentCronDispatch {
+                        id: format!("dispatch-{}", job.id),
+                        job: job.clone(),
+                    });
+                }
+            }
+            claimed
+        });
+
+        let landed = match outcome {
+            Ok(dispatches) => {
+                panic!("the blocked partition must fail the write, got {dispatches:?}")
+            }
+            Err((_error, landed)) => landed,
+        };
+        assert_eq!(
+            landed.len(),
+            1,
+            "the claim the good partition committed must come back beside the error, not vanish"
+        );
+        assert_eq!(landed[0].job.id, "job-a");
+    }
 }
