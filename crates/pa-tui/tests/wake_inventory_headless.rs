@@ -119,6 +119,12 @@ impl MockBoot {
 
 fn run_boot_plan(steps: Vec<HeadlessStep>) -> pa_tui::interactive::InteractiveOutcome {
     std::env::remove_var("TMUX");
+    run_boot_plan_keeping_env(steps)
+}
+
+/// The same run WITHOUT clearing `TMUX`: the probe test needs the env the product
+/// reads, not the sanitized default.
+fn run_boot_plan_keeping_env(steps: Vec<HeadlessStep>) -> pa_tui::interactive::InteractiveOutcome {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket: PathBuf = dir.path().join("tui.sock");
     let supervisor = MockBoot::bind(&socket);
@@ -203,5 +209,74 @@ fn a_wait_render_barrier_times_out_on_a_quiet_surface() {
     assert!(
         all.contains("timed out waiting"),
         "the barrier's deadline fired the timeout note:\n{all}"
+    );
+}
+
+/// A blocked tmux probe must not delay the first frame (review #39).
+///
+/// The probe spawns `tmux` and waits up to 2 s for it. Awaiting it before the
+/// first draw put a process spawn — and its timeout — on the paint path, so an
+/// open under a slow tmux painted nothing until the probe gave up.
+///
+/// The test owns the runtime so it can measure the RUN, not the teardown: dropping
+/// a multi-thread runtime waits for `spawn_blocking` tasks, and the probe runs in
+/// one, so including the drop would time the probe regardless of the fix.
+#[test]
+fn a_blocked_tmux_probe_does_not_delay_the_first_frame() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let stub_dir = tempfile::TempDir::new().expect("stub dir");
+    let tmux = stub_dir.path().join("tmux");
+    // Answers too late for any paint path to have waited on it.
+    std::fs::write(&tmux, "#!/bin/sh\nsleep 5\n").expect("write the stub");
+    std::fs::set_permissions(&tmux, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let previous_path = std::env::var_os("PATH");
+    let mut path = std::ffi::OsString::from(stub_dir.path());
+    if let Some(existing) = &previous_path {
+        path.push(":");
+        path.push(existing);
+    }
+    std::env::set_var("PATH", &path);
+    std::env::set_var("TMUX", "/tmp/fake-tmux-session,1,0");
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket: PathBuf = dir.path().join("tui.sock");
+    let supervisor = MockBoot::bind(&socket);
+    let handle = std::thread::spawn(move || supervisor.serve());
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let started = std::time::Instant::now();
+    let outcome = runtime
+        .block_on(run_interactive(
+            options(socket),
+            UiMode::Headless(HeadlessPlan {
+                steps: Vec::new(),
+                width: 100,
+                height: PLAN_HEIGHT,
+            }),
+        ))
+        .expect("interactive run");
+    let elapsed = started.elapsed();
+    // Teardown is NOT the paint path: do not let the blocked probe's host task
+    // count against the run. `shutdown_background` returns immediately.
+    runtime.shutdown_background();
+    let _ = handle.join();
+
+    std::env::remove_var("TMUX");
+    match previous_path {
+        Some(path) => std::env::set_var("PATH", path),
+        None => std::env::remove_var("PATH"),
+    }
+
+    assert!(
+        !outcome.frames.is_empty(),
+        "the first frame must paint while the tmux probe is still blocked"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "the open waited on the tmux probe ({elapsed:?}); the probe must not be on the paint path"
     );
 }
