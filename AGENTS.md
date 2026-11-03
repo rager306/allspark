@@ -581,8 +581,9 @@ cleanup becomes another run's missing directory.
 Every user-visible feature ships its adoption telemetry event in the same PR as the feature:
 the event name + properties join the versioned schema (`pa-telemetry`), and a
 seam emits it from day one. Telemetry properties never carry prompt, session, or file content
-(primitives only; see `pa-telemetry`); delivery is fire-and-forget from user-facing code
-(see Performance and the critical path).
+(primitives, or one level of primitive-valued map where the schema declares
+`PrimitiveMap` — never nested objects; see `pa-telemetry`); delivery is fire-and-forget from
+user-facing code (see Performance and the critical path).
 
 ## Branding
 
