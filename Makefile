@@ -199,7 +199,15 @@ shard-gates:
 	python3 scripts/test_ci_test_shard.py
 	python3 scripts/test_ci_pr_crates.py
 
-.PHONY: check deny windows-cross actionlint glibc-gate release-dry-run continuous-dry-run audit-build package catalog-assets catalog-assets-fixture catalog-assets-gates fold-gates restamp-gates shard-gates perf
+# The QA runner's contract battery (scripts/qa/test_*.py): the exit codes that
+# make `run_suite.py` a gate (review #16: a failing task gated on the opt-in
+# `--strict`, so the documented command exited 0 on a regression), the judge's
+# evidence guard, and the `max_repeat_calls` rule. Stdlib only, no binary
+# needed (the three binary-backed judge tests skip without one).
+qa-gates:
+	python3 -m unittest discover -s scripts/qa -p 'test_*.py'
+
+.PHONY: check deny windows-cross actionlint glibc-gate release-dry-run continuous-dry-run audit-build package catalog-assets catalog-assets-fixture catalog-assets-gates fold-gates restamp-gates shard-gates qa-gates perf
 
 # Offline packaging contract tests for updaters shipped since Prime Agent 0.6.
 legacy-upgrade-gates:

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Runner CLI -> native judge executable -> manifest integration, no network."""
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -12,6 +14,57 @@ import qa_judge
 import run_suite
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+class RunnerFailureExitTests(unittest.TestCase):
+    """Review #16: the documented `--lane real-model --tasks ST-001 ST-002` run exits 0
+    on a failing task because failures only gated behind the opt-in `--strict`. A
+    semantic regression that reads as a green exit is the same defect class as the
+    all-skipped run that reported green (review #54): the exit code then claims the
+    opposite of what the run observed."""
+
+    def test_a_failing_task_exits_nonzero_without_any_flag(self):
+        self.assertEqual(self.run_verbatim(), 1)
+
+    def test_allow_failures_is_the_deliberate_opt_out(self):
+        self.assertEqual(self.run_verbatim("--allow-failures"), 0)
+
+    def test_a_baseline_run_keeps_the_delta_gate_as_its_verdict(self):
+        """A baseline comparison answers "did this REGRESS", so a known-red task
+        must not decide it: a task that is red today is data there, not a failure,
+        and the delta gate is the verdict."""
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = Path(tmp) / "manifest.json"
+            baseline.write_text(json.dumps({
+                "tasks": [{"id": "exit-fixture", "pass_all": False,
+                           "trials": [{"ok": False}]}]}))
+            self.assertEqual(self.run_verbatim("--baseline", str(baseline)), 0)
+
+    def run_verbatim(self, *extra):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            task_dir = work / "task"
+            task_dir.mkdir()
+            (task_dir / "task.yaml").write_text(
+                "id: exit-fixture\nlane: faux\nnetwork: off\nprompt: p\n"
+                "oracle:\n  type: state\n  spec:\n    - exit_code: 0\n")
+            (task_dir / "faux-script.json").write_text("[]")
+            task = run_suite.Task(task_dir)
+
+            def failing_trial(*args, **kwargs):
+                return {"trial": "trial-1", "ok": False, "reasons": ["oracle: exit_code 1"],
+                        "duration_s": 0.1, "steps": 0, "tokens": 0, "tool_freq": {},
+                        "exit_code": 1, "tool_calls": 0, "killed": False}
+
+            command = ["run_suite.py", "--trials", "1", "--out", str(work / "out"), *extra]
+            with patch.object(run_suite, "load_tasks", return_value=[task]), \
+                 patch.object(run_suite, "resolve_binary", return_value=work / "unused-bin"), \
+                 patch.object(run_suite, "run_trial", side_effect=failing_trial), \
+                 patch.object(run_suite, "suite_revision", return_value={}), \
+                 patch.object(run_suite, "binary_version", return_value="offline"), \
+                 patch("sys.argv", command), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                return run_suite.main()
 
 
 class RunnerJudgeIntegrationTests(unittest.TestCase):
@@ -40,7 +93,7 @@ class RunnerJudgeIntegrationTests(unittest.TestCase):
             judge.chmod(0o755)
             command = ["python3", str(ROOT / "scripts/qa/run_suite.py"),
                        "--tasks", "RT-007", "--lane", "faux", "--trials", "2",
-                       "--bin", str(binary.resolve()), "--strict", "--judge", "live",
+                       "--bin", str(binary.resolve()), "--judge", "live",
                        "--judge-bin", str(judge), "--judge-timeout", timeout,
                        "--out", str(work / "out")]
             result = subprocess.run(command, capture_output=True, text=True, timeout=90)
@@ -131,7 +184,7 @@ class RunnerSecretEvidenceTests(unittest.TestCase):
 
             response = {"model": qa_judge.DEFAULT_MODEL,
                         "text": json.dumps({"verdict": "achieved"})}
-            command = ["run_suite.py", "--trials", "1", "--strict", "--judge", mode,
+            command = ["run_suite.py", "--trials", "1", "--judge", mode,
                        "--out", str(work / "out")]
             with patch.object(run_suite, "load_tasks", return_value=[task]), \
                  patch.object(run_suite, "resolve_binary", return_value=work / "unused-bin"), \

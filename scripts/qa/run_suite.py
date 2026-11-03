@@ -1796,8 +1796,11 @@ def main() -> int:
     parser.add_argument("--judge-timeout", type=float, default=25.0,
                         help="per-call judge timeout in seconds; no retry")
     parser.add_argument("--keep", action="store_true", help="keep trial sandboxes for inspection")
-    parser.add_argument("--strict", action="store_true",
-                        help="exit 1 when any task fails (without --baseline)")
+    parser.add_argument(
+        "--allow-failures",
+        action="store_true",
+        help="exit 0 even when a task failed (deliberate, while iterating)",
+    )
     parser.add_argument(
         "--allow-all-skip",
         action="store_true",
@@ -1973,7 +1976,14 @@ def main() -> int:
             print(line)
         if tripped:
             return 1
-    if args.strict and any(t["status"] == "fail" for t in task_results):
+    # A failing task is the run's verdict (review #16): `--strict` was opt-in, so the
+    # documented `--lane real-model --tasks ST-001 ST-002` command exited 0 on a
+    # semantic regression. `--baseline` keeps its own verdict (it answers "did this
+    # regress", where a red-today task is data), and `--allow-failures` is the
+    # deliberate opt-out for iterating.
+    failed = [t["id"] for t in task_results if t["status"] == "fail"]
+    if failed and not args.allow_failures and not args.baseline:
+        print(f"\nsuite: {len(failed)} task(s) failed: {', '.join(failed)}")
         return 1
     # A suite where NOTHING ran must not exit 0 (review #54): every task skipped is
     # the same signal as every unit skipped in the prepush gate — the run proved

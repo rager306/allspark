@@ -15,6 +15,35 @@ either changes.
 - Comments must be short, human-readable, and only where the code cannot say it. Reject comments that restate code, narrate control flow, or describe deleted mechanisms or history.
 - Doc comments must describe current behavior, not the history of how it got there.
 
+## Style
+
+- Inline format args: flag `format!("{}", x)` and `write!(f, "{}", x)` where `format!("{x}")` compiles.
+- Flag an `if` whose body is a single `if` (clippy::collapsible_if) and a closure that only forwards its argument to a method (clippy::redundant_closure_for_method_calls).
+- Flag a `match` that ends in a `_ =>` wildcard arm where the enumerated variants can be named: matches are exhaustive so a new variant fails the build instead of falling into a catch-all.
+- Flag a bare `bool`/`Option` literal passed positionally at a call site (`foo(false)`, `bar(None)`): use an enum, a named method, or a newtype, or at minimum an exact `/*param_name*/` comment matching the callee signature.
+- Flag `#[async_trait]` and `#[allow(async_fn_in_trait)]` on new traits: the house form is a native RPITIT method with an explicit `Send` bound (`fn foo(&self) -> impl Future<Output = T> + Send;`); implementations may use `async fn` when they satisfy it.
+- Flag `.instrument(...)` at a call site: async work is instrumented at its definition (`#[tracing::instrument(...)]`), and the first check is whether the callee is already instrumented.
+
+## Prompt-input caps
+
+- Flag any new path that reads a file into the prompt (context files, prompt-input files, skill bodies, model-prompt layers) without a byte cap and a reported truncation. A prompt is model input and cache payload at once, so an unbounded read is both a denial of service and a permanent cost; new paths reuse `truncate_context_content` and the existing `MAX_CONTEXT_FILE_BYTES` / `MAX_SKILLS_INVENTORY*` ceilings.
+
+## Performance and the critical path
+
+- Flag anything user-visible that awaits the network, disk sync, or background bookkeeping on a render path (telemetry, catalog fetch, update check): the paint path hands the work to a background worker and returns, and delivery semantics live with the worker.
+- Flag telemetry that is awaited, batched, or flushed from startup, session create, tab open, or first-render code: delivery is fire-and-forget inside `pa-telemetry`'s background worker.
+- Flag a fire-and-forget boundary with no red-first hanging-sink test: a sink that never replies must not delay paint, and a mocked or offline test cannot prove it (the #3288 regression passed every CI check because `DO_NOT_TRACK=1` and the benchmark mocked the sink).
+
+## Branding
+
+- Flag "pi"/"pi-mono"/"pi-ai"/"Prime Intellect" naming on user-visible surfaces — docs, READMEs, CLI help text, error messages, splash/onboarding strings, keybinding hints, TUI labels, and comments that quote user-facing strings. The product is Prime Agent.
+- Wire identifiers that must stay byte-compatible with the TS product are exempt and stay until the TS side renames them: `PI_*` env vars (`PI_PACKAGE_DIR`), settings keys, provider ids such as `prime-inference`, harness `_meta` namespaces, and lockfile names. Parity beats branding on the wire.
+
+## Adoption telemetry
+
+- Flag a user-visible feature that ships without its adoption telemetry event in the same PR: the event name and properties join the versioned schema in `pa-telemetry` and a seam emits it from day one.
+- Flag telemetry properties carrying prompt, session, or file content: primitives only, plus one level of primitive-valued map where the schema declares `PrimitiveMap`, never nested objects.
+
 ## Live-system safety
 
 - Flag any code path, test, script, or documented experiment that runs `prime-agent update`, `allspark update`, `install-rust.sh`, or `install.sh`. The installer stops daemons by socket path, so running it from inside a live session ends the session and every worker under it (2026-10-21 incident). An update flow is proved only with a fake channel and a socket under a temp directory — never $TMPDIR/prime-agent*, $TMPDIR/allspark*, or /tmp/prime-agent*.

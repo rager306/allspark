@@ -473,6 +473,14 @@ jobs:
           python3 scripts/test_ci_pr_crates.py
           python3 scripts/test_ci_test_shard_summary.py
           python3 scripts/ci_test_shard_summary.py --total ${{ env.SHARD_COUNT }} --dir manifests
+      # The QA runner's own contract battery (`scripts/qa/test_*.py`): stdlib only and
+      # under a second, so it costs this job nothing. It pins the exit codes that make
+      # `run_suite.py` a gate — review #16 was exactly this battery's blind spot: a
+      # failing task exited 0 unless the opt-in `--strict` was passed, so the
+      # AGENTS.md-documented `--lane real-model --tasks ST-001 ST-002` run reported a
+      # wrong-tool regression as success. `make qa-gates` is the local mirror.
+      - name: QA runner exit codes
+        run: python3 -m unittest discover -s scripts/qa -p 'test_*.py'
 
   # The Windows job set + the supply-chain deny gate:
   #

@@ -96,7 +96,10 @@ and exit nonzero with reasons on failure.
 Known-red-on-purpose: RT-007 (the launcher does not pin
 `PRIME_AGENT_SESSION_DIR`, so an ambient value escapes the isolated home)
 is expected RED today; it documents a real isolation gap and the baseline
-manifest records it. RT-004 is red-first proven at the runtime level
+manifest records it. Since review #16 a failing task exits 1 without any
+flag, so a whole-corpus run exits 1 while any task is red — use
+`--baseline` (the regression gate, where a red-today task is data) or
+`--allow-failures` (iterating). RT-004 is red-first proven at the runtime level
 (pre-fix runtime truncates to 0, fixed runtime keeps 1700 bytes; see its
 reference/) and green end-to-end once the kernel venv carries the fixed
 runtime. A task being red is DATA; the delta gate decides regressions.
@@ -120,6 +123,16 @@ python3 scripts/qa/run_suite.py --lane daemon --tasks RT-006 RT-012
 # regression gate vs a baseline manifest:
 python3 scripts/qa/run_suite.py --baseline out/<ts>/manifest.json
 ```
+
+Exit status: a run whose task failed exits 1, with or without `--strict`
+(retired in review #16: failures gated on an opt-in flag, so the documented
+command exited 0 on a regression). Two deliberate opt-outs exist:
+
+* `--allow-failures` - iterating on a task that is expected red; the failure
+  still lands in the manifest and the printed summary.
+* `--baseline <manifest.json>` - the verdict is the DELTA (pass-rate drop
+  >= 3pp, or >= 2 stable tasks losing pass-all), because a task that is
+  red-today is data in a regression comparison, not a failure.
 
 Binary resolution: `--bin` > `PRIME_AGENT_BIN` > `target/debug/pa-cli` >
 `target/debug/prime-agent` > `target/dist/prime-agent` > `$(which
