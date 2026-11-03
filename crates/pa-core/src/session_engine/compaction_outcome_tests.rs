@@ -669,7 +669,7 @@ async fn refinement_and_auto_review_send_the_session_request_identity() {
         .await
         .unwrap();
     session
-        .review_compact_auto_refine(&model, None, &global, 5, 0)
+        .review_compact_auto_refine(&model, None, &global, 5, 0, "compact")
         .await
         .unwrap();
     assert_eq!(

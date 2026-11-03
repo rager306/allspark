@@ -26,6 +26,10 @@ pub const REFINEMENT_NOTICE_CUSTOM_TYPE: &str = "refinement_notice";
 
 pub const AUTO_REFINE_COMPACT_REASON: &str = "compact";
 
+/// The interval trigger's reason (TS `turn_interval`): the trigger that fires
+/// every `turnInterval` settled turns without waiting for a compaction.
+pub const AUTO_REFINE_INTERVAL_REASON: &str = "turn_interval";
+
 /// The resolved auto-refine gates: the settings block with the product
 /// defaults and clamps applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -567,6 +571,7 @@ impl AgentSession {
         global_harness_dir: &Path,
         turns_since_last_review: u32,
         branch_version: u64,
+        reason: &str,
     ) -> anyhow::Result<Option<AutoRefineReview>> {
         if !self.harness_refinements_enabled() {
             return Ok(None);
@@ -597,7 +602,7 @@ impl AgentSession {
             &history,
             model,
             &AutoRefineReviewContext {
-                reason: AUTO_REFINE_COMPACT_REASON.to_string(),
+                reason: reason.to_string(),
                 turns_since_last_review,
             },
             self.refiner_call(model, api_key).await?,
@@ -620,13 +625,14 @@ impl AgentSession {
     pub(crate) async fn run_approved_refine(
         &self,
         review: &AutoRefineReview,
+        reason: &str,
         model: &pa_types::ai::Model,
         api_key: Option<String>,
         global_harness_dir: std::path::PathBuf,
     ) -> anyhow::Result<RefinementResult> {
         let options = RefineOptions {
             global: false,
-            instructions: Some(auto_refine_instructions(AUTO_REFINE_COMPACT_REASON, review)),
+            instructions: Some(auto_refine_instructions(reason, review)),
             rollback_id: None,
         };
         self.refine(

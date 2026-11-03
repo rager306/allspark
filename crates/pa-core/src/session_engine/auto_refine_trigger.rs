@@ -7,7 +7,9 @@ use pa_types::ai::Model;
 use crate::refinement::executor::AutoRefineReview;
 use crate::refinement::RefinementResult;
 
-use super::refine::{now_millis, AutoRefineRound};
+use super::refine::{
+    now_millis, AutoRefineRound, AUTO_REFINE_COMPACT_REASON, AUTO_REFINE_INTERVAL_REASON,
+};
 use super::AgentSession;
 
 /// The boundary a pending trigger is serviced at.
@@ -24,6 +26,11 @@ pub enum CompactAutoRefineSurface {
 #[derive(Debug, Default)]
 pub(crate) struct CompactAutoRefineState {
     pending: bool,
+    /// The INTERVAL trigger's arm (review #30): set when the settled-turn count
+    /// reaches `turnInterval`, consumed by the same boundary servicing. Kept
+    /// apart from `pending` so a compaction between intervals cannot swallow it
+    /// and an interval cannot masquerade as a compaction.
+    interval_pending: bool,
     /// The last review attempt's timestamp (millis); every attempt
     /// stamps the cooldown window.
     last_review_at: Option<u64>,
@@ -68,7 +75,7 @@ impl AgentSession {
             .compact_auto_refine
             .lock()
             .expect("compact auto-refine state lock");
-        state.pending || state.pending_review.is_some()
+        state.pending || state.interval_pending || state.pending_review.is_some()
     }
 
     /// Whether the branch version is still the one the round captured:
@@ -105,10 +112,20 @@ impl AgentSession {
     ///
     /// Panics if the compact auto-refine state mutex is poisoned.
     pub fn note_settled_turn_since_auto_refine_review(&self) {
-        self.compact_auto_refine
+        let gates = self.auto_refine_gates();
+        let mut state = self
+            .compact_auto_refine
             .lock()
-            .expect("compact auto-refine state lock")
-            .settled_turns_since_review += 1;
+            .expect("compact auto-refine state lock");
+        state.settled_turns_since_review += 1;
+        // The interval trigger (review #30): every `turnInterval` settled turns
+        // arm a review, with no compaction needed. The counter resets when the
+        // review is recorded, so this compares the count, not a reminder.
+        if state.settled_turns_since_review
+            >= u32::try_from(gates.turn_interval).unwrap_or(u32::MAX)
+        {
+            state.interval_pending = true;
+        }
     }
 
     /// Consume the armed trigger at one boundary. `Ok(None)` is every silent
@@ -130,18 +147,24 @@ impl AgentSession {
         surface: CompactAutoRefineSurface,
     ) -> anyhow::Result<Option<RefinementResult>> {
         let gates = self.auto_refine_gates();
-        let (retained_review, settled_turns, branch_version) = {
+        let (retained_review, settled_turns, branch_version, reason) = {
             let mut state = self
                 .compact_auto_refine
                 .lock()
                 .expect("compact auto-refine state lock");
-            if !state.pending && state.pending_review.is_none() {
+            let interval = state.interval_pending;
+            if !state.pending && !interval && state.pending_review.is_none() {
                 return Ok(None);
             }
             // Gate order: the refine surface, then the `enabled` gate, then the
-            // `compact` gate — a dropped trigger clears the flag and retained review.
-            if !self.auto_refine_allowed() || !gates.enabled || !gates.compact {
+            // trigger's own gate. The interval trigger has no compaction to gate
+            // on — it is the mechanism that exists precisely because a compaction
+            // may never come — so it answers to `compact` being off only when the
+            // operator also turned the interval off, which is what the `compact`
+            // flag means for a compact-triggered review.
+            if !self.auto_refine_allowed() || !gates.enabled || (!gates.compact && !interval) {
                 state.pending = false;
+                state.interval_pending = false;
                 state.pending_review = None;
                 return Ok(None);
             }
@@ -169,18 +192,33 @@ impl AgentSession {
                     Some(review),
                     state.settled_turns_since_review,
                     state.branch_version,
+                    AUTO_REFINE_COMPACT_REASON,
                 )
             } else {
+                // A compact trigger wins over an interval one at the same
+                // boundary: the compaction already changed the context the review
+                // reads, and the interval arm would find nothing to add.
+                let reason = if state.pending {
+                    AUTO_REFINE_COMPACT_REASON
+                } else {
+                    AUTO_REFINE_INTERVAL_REASON
+                };
                 state.pending = false;
+                state.interval_pending = false;
                 state.in_flight = true;
-                (None, state.settled_turns_since_review, state.branch_version)
+                (
+                    None,
+                    state.settled_turns_since_review,
+                    state.branch_version,
+                    reason,
+                )
             }
         };
         let outcome = if let Some(review) = retained_review.as_ref() {
             // The branch fence: a branch move since the retained round's start
             // dropped this review — the refinement never starts.
             if self.compact_auto_refine_branch_version_unchanged(branch_version) {
-                self.run_approved_refine(review, model, api_key, global_harness_dir)
+                self.run_approved_refine(review, reason, model, api_key, global_harness_dir)
                     .await
                     .map(AutoRefineRound::Ran)
             } else {
@@ -196,6 +234,7 @@ impl AgentSession {
                     &global_harness_dir,
                     settled_turns,
                     branch_version,
+                    reason,
                 )
                 .await
             {
@@ -208,9 +247,15 @@ impl AgentSession {
                         // round resolved against a bumped version never applies.
                         Ok(AutoRefineRound::Declined)
                     } else {
-                        self.run_approved_refine(&review, model, api_key, global_harness_dir)
-                            .await
-                            .map(AutoRefineRound::Ran)
+                        self.run_approved_refine(
+                            &review,
+                            reason,
+                            model,
+                            api_key,
+                            global_harness_dir,
+                        )
+                        .await
+                        .map(AutoRefineRound::Ran)
                     }
                 }
                 Err(error) => Err(error),
@@ -492,5 +537,64 @@ mod tests {
         assert!(!pending);
         assert!(last_review_at.is_some(), "the success stamped the cooldown");
         assert_eq!(turns, 0, "the counter reset");
+    }
+
+    /// The interval trigger fires on settled turns alone (review #30).
+    ///
+    /// `turnInterval` was resolved, clamped, and incremented — and never compared
+    /// to anything, so the setting could not change behaviour: a session that
+    /// never compacted never refined, however many turns it settled. The trigger
+    /// is a second, independent arm: every `turnInterval` settled turns arms a
+    /// review with no compaction needed.
+    #[tokio::test]
+    async fn the_turn_interval_arms_a_review_without_a_compaction() {
+        let mut session = session(true).await;
+        session.set_auto_refine(
+            true,
+            AutoRefineGates {
+                turn_interval: 3,
+                ..AutoRefineGates::default()
+            },
+        );
+
+        // Two settled turns are below the interval: nothing armed.
+        session.note_settled_turn_since_auto_refine_review();
+        session.note_settled_turn_since_auto_refine_review();
+        assert!(
+            !session.compact_auto_refine_pending(),
+            "the interval has not been reached yet"
+        );
+
+        // The third reaches it — with no compaction anywhere in the sequence.
+        session.note_settled_turn_since_auto_refine_review();
+        assert!(
+            session.compact_auto_refine_pending(),
+            "reaching turnInterval must arm the review without a compaction"
+        );
+    }
+
+    /// And a compaction between intervals does not swallow the interval arm.
+    #[tokio::test]
+    async fn a_compaction_does_not_cancel_the_interval_arm() {
+        let mut session = session(true).await;
+        session.set_auto_refine(
+            true,
+            AutoRefineGates {
+                turn_interval: 2,
+                ..AutoRefineGates::default()
+            },
+        );
+        session.note_settled_turn_since_auto_refine_review();
+        session.note_settled_turn_since_auto_refine_review();
+        let armed = session.compact_auto_refine.lock().unwrap().interval_pending;
+        assert!(armed, "the interval armed");
+        // A compaction's own arm is a SEPARATE flag; clearing one must not clear
+        // the other.
+        session.discard_compact_auto_refine();
+        let after = session.compact_auto_refine.lock().unwrap().interval_pending;
+        assert!(
+            after,
+            "the compaction's discard must not drop the interval arm"
+        );
     }
 }
