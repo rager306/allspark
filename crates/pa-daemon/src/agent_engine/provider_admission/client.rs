@@ -142,37 +142,50 @@ impl AdmissionClient {
 
     /// Settle a lease with its AIMD signal (the typed reason rides the
     /// wire when the outcome is rate-limited).
-    pub async fn settle(&self, lease: u64, outcome: StreamOutcome) {
+    ///
+    /// Answers whether the supervisor CONFIRMED the mutation. A `false` means the
+    /// slot is still the supervisor's: holder reaping only runs when the worker
+    /// exits, so a live worker that treated a failed round trip as done would
+    /// shrink provider capacity by one for the rest of its life (review #7).
+    pub async fn settle(&self, lease: u64, outcome: StreamOutcome) -> bool {
         match self {
-            AdmissionClient::Disabled => {}
-            AdmissionClient::Local(registry) => registry.settle(lease, outcome),
+            AdmissionClient::Disabled => true,
+            AdmissionClient::Local(registry) => {
+                registry.settle(lease, outcome);
+                true
+            }
             AdmissionClient::Link { link, worker_token } => {
                 let mut command = lease_command(worker_token, "settle_stream", lease);
                 command["outcome"] = serde_json::json!(outcome.as_wire());
                 if let StreamOutcome::RateLimited(reason) = outcome {
                     command["reason"] = serde_json::json!(reason.as_wire());
                 }
-                let _ = self
-                    .call_within(link, command, request_budget("settle_stream"))
-                    .await;
+                self.call_within(link, command, request_budget("settle_stream"))
+                    .await
+                    .is_some()
             }
         }
     }
 
     /// Give a lease back without an AIMD signal.
-    pub async fn release(&self, lease: u64) {
+    ///
+    /// Answers whether the supervisor CONFIRMED it, for the same reason as
+    /// [`Self::settle`]: an unconfirmed release leaves the slot held.
+    pub async fn release(&self, lease: u64) -> bool {
         match self {
-            AdmissionClient::Disabled => {}
-            AdmissionClient::Local(registry) => registry.release(lease),
-            AdmissionClient::Link { link, worker_token } => {
-                let _ = self
-                    .call_within(
-                        link,
-                        lease_command(worker_token, "release_stream", lease),
-                        request_budget("release_stream"),
-                    )
-                    .await;
+            AdmissionClient::Disabled => true,
+            AdmissionClient::Local(registry) => {
+                registry.release(lease);
+                true
             }
+            AdmissionClient::Link { link, worker_token } => self
+                .call_within(
+                    link,
+                    lease_command(worker_token, "release_stream", lease),
+                    request_budget("release_stream"),
+                )
+                .await
+                .is_some(),
         }
     }
 
@@ -186,7 +199,9 @@ impl AdmissionClient {
         // A drop can land outside a runtime (a teardown); there the
         // supervisor's own holder reaping covers the slot.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move { client.release(lease).await });
+            handle.spawn(async move {
+                let _ = client.release(lease).await;
+            });
         }
     }
 
@@ -316,14 +331,15 @@ impl StreamLease {
     /// disabled `Drop`'s detached release, so a cancelled future or a failed
     /// round trip left the slot held forever on a live worker (review #7).
     pub async fn settle(mut self, outcome: StreamOutcome) {
-        self.client.settle(self.id, outcome).await;
-        self.resolved = true;
+        // `resolved` only on a CONFIRMED settle. A timeout or a refusal leaves it
+        // false, so `Drop` still runs its detached release and the slot comes
+        // back instead of staying held by a live worker (review #7).
+        self.resolved = self.client.settle(self.id, outcome).await;
     }
 
     /// Give the slot back without a signal.
     pub async fn release(mut self) {
-        self.client.release(self.id).await;
-        self.resolved = true;
+        self.resolved = self.client.release(self.id).await;
     }
 }
 

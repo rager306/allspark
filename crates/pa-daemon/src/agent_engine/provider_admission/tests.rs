@@ -2009,3 +2009,27 @@ async fn a_lease_keeps_its_id_until_the_settle_resolves() {
     );
     assert_ne!(id, 0, "a real lease id is never zero");
 }
+
+/// A settle against a link that cannot answer must NOT report success (#7).
+///
+/// This is the flag's contract: `settle`/`release` answer whether the supervisor
+/// confirmed the mutation. A dead link (worker lost the supervisor, supervisor
+/// restarting) answers `false`, and only then does `StreamLease` keep the lease
+/// unresolved so `Drop` gives the slot back. Reporting `true` here is what turned
+/// a failed round trip into a permanently lost slot on a live worker: holder
+/// reaping runs on worker EXIT, which a live worker never reaches.
+#[tokio::test]
+async fn a_settle_against_a_dead_link_reports_no_confirmation() {
+    let dead = Arc::new(crate::supervisor_link::SupervisorLink::new(
+        std::path::PathBuf::from("/nonexistent-provider-admission-test.sock"),
+    ));
+    let client = AdmissionClient::link(dead, "worker-a".to_string());
+    assert!(
+        !client.settle(7, StreamOutcome::Settled).await,
+        "a link that never answers cannot confirm a settle"
+    );
+    assert!(
+        !client.release(7).await,
+        "a link that never answers cannot confirm a release"
+    );
+}
