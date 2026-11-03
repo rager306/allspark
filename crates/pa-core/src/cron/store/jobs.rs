@@ -117,11 +117,10 @@ impl AgentCronJobStore {
     ) -> anyhow::Result<Vec<AgentCronJob>> {
         let now_iso = iso_from_millis(now);
         let target_session_file = input.session_file.as_ref().map(|file| resolve_path(file));
+        // One lock for the read and the write (review #2).
         let mut cancelled = Vec::new();
-        let jobs: Vec<AgentCronJob> = self
-            .read_jobs()
-            .into_iter()
-            .map(|job| {
+        self.mutate_states_only(|state| {
+            for job in &mut state.jobs {
                 let matches = input
                     .active_session_id
                     .as_ref()
@@ -134,21 +133,18 @@ impl AgentCronJobStore {
                         .as_ref()
                         .is_some_and(|file| resolve_path(&job.session_file) == *file);
                 if !matches || !matches!(job.status, JobStatus::Active | JobStatus::Paused) {
-                    return job;
+                    continue;
                 }
-                let cancelled_job = AgentCronJob {
+                *job = AgentCronJob {
                     status: JobStatus::Cancelled,
                     next_run_at: None,
                     updated_at: now_iso.clone(),
-                    ..job
+                    ..job.clone()
                 };
-                cancelled.push(cancelled_job.clone());
-                cancelled_job
-            })
-            .collect();
-        if !cancelled.is_empty() {
-            self.write_jobs(&jobs)?;
-        }
+                cancelled.push(job.clone());
+            }
+            Vec::new()
+        })?;
         Ok(cancelled)
     }
     /// # Errors
@@ -156,27 +152,25 @@ impl AgentCronJobStore {
     /// Returns an error when the state lock or write fails.
     pub fn cancel(&self, id: &str, now: u64) -> anyhow::Result<Option<AgentCronJob>> {
         let now_iso = iso_from_millis(now);
+        // One lock for the read and the write (review #2): read-then-write dropped a
+        // job another writer added in between, and the merge's freshness rule could
+        // keep the stale row while this call still acknowledged a cancel.
         let mut cancelled = None;
-        let jobs: Vec<AgentCronJob> = self
-            .read_jobs()
-            .into_iter()
-            .map(|job| {
+        self.mutate_states_only(|state| {
+            for job in &mut state.jobs {
                 if job.id != id || job.status == JobStatus::Cancelled {
-                    return job;
+                    continue;
                 }
-                let cancelled_job = AgentCronJob {
+                *job = AgentCronJob {
                     status: JobStatus::Cancelled,
                     next_run_at: None,
                     updated_at: now_iso.clone(),
-                    ..job
+                    ..job.clone()
                 };
-                cancelled = Some(cancelled_job.clone());
-                cancelled_job
-            })
-            .collect();
-        if cancelled.is_some() {
-            self.write_jobs(&jobs)?;
-        }
+                cancelled = Some(job.clone());
+            }
+            Vec::new()
+        })?;
         Ok(cancelled)
     }
 
@@ -192,17 +186,16 @@ impl AgentCronJobStore {
     ) -> anyhow::Result<Option<AgentCronJob>> {
         let now = result.now.unwrap_or_else(now_millis);
         let now_iso = iso_from_millis(now);
+        // One lock for the read and the write (review #2).
         let mut updated = None;
-        let jobs: Vec<AgentCronJob> = self
-            .read_jobs()
-            .into_iter()
-            .map(|mut job| {
+        self.mutate_states_only(|state| {
+            for job in &mut state.jobs {
                 if job.id != id {
-                    return job;
+                    continue;
                 }
                 if job.status != JobStatus::Active {
                     updated = Some(job.clone());
-                    return job;
+                    continue;
                 }
                 let next_run_at = match job.schedule.kind {
                     ScheduleKind::Cron => next_run_at_for_schedule(&job.schedule, now + 1)
@@ -226,12 +219,9 @@ impl AgentCronJobStore {
                 job.run_count += 1;
                 job.updated_at.clone_from(&now_iso);
                 updated = Some(job.clone());
-                job
-            })
-            .collect();
-        if updated.is_some() {
-            self.write_jobs(&jobs)?;
-        }
+            }
+            Vec::new()
+        })?;
         Ok(updated)
     }
 
@@ -242,17 +232,16 @@ impl AgentCronJobStore {
     /// Returns an error when the state lock or write fails.
     pub fn record_skip_result(&self, id: &str, now: u64) -> anyhow::Result<Option<AgentCronJob>> {
         let now_iso = iso_from_millis(now);
+        // One lock for the read and the write (review #2).
         let mut updated = None;
-        let jobs: Vec<AgentCronJob> = self
-            .read_jobs()
-            .into_iter()
-            .map(|mut job| {
+        self.mutate_states_only(|state| {
+            for job in &mut state.jobs {
                 if job.id != id {
-                    return job;
+                    continue;
                 }
                 if job.status != JobStatus::Active {
                     updated = Some(job.clone());
-                    return job;
+                    continue;
                 }
                 job.next_run_at = next_run_at_for_schedule(&job.schedule, now)
                     .ok()
@@ -261,12 +250,9 @@ impl AgentCronJobStore {
                 job.last_skipped_at = Some(now_iso.clone());
                 job.updated_at.clone_from(&now_iso);
                 updated = Some(job.clone());
-                job
-            })
-            .collect();
-        if updated.is_some() {
-            self.write_jobs(&jobs)?;
-        }
+            }
+            Vec::new()
+        })?;
         Ok(updated)
     }
 
@@ -622,5 +608,40 @@ mod tests {
             .defer_next_run(&job.id, now + 2_000_000)
             .unwrap()
             .is_none());
+    }
+
+    /// `cancel` must not acknowledge a change the merge discarded (review #2).
+    ///
+    /// Same shape as the heartbeat management test: a cancel stamped BEFORE the
+    /// row's own `updated_at` loses the freshness merge, and the old
+    /// read-modify-write still returned `Some(cancelled)`. A caller that trusts the
+    /// acknowledgement reports a job as cancelled while it keeps running.
+    #[test]
+    fn a_cancel_older_than_the_row_is_not_acknowledged() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = 1_700_000_000_000_u64;
+        let store = AgentCronJobStore::new(dir.path().join("jobs.json"));
+        let job = store
+            .create(&input("nightly", "every 5m", now))
+            .expect("create");
+
+        // A later stamp on the row: the freshness merge now refuses older candidates.
+        store
+            .record_skip_result(&job.id, now + 60_000)
+            .expect("skip")
+            .expect("the job is active");
+
+        // A cancel stamped BEFORE that instant cannot win the merge.
+        let cancelled = store.cancel(&job.id, now).expect("cancel");
+        let on_disk = store
+            .read_jobs()
+            .into_iter()
+            .find(|row| row.id == job.id)
+            .expect("the job survives");
+
+        assert!(
+            !(cancelled.is_some() && on_disk.status != JobStatus::Cancelled),
+            "the store acknowledged a cancel it discarded: ack={cancelled:?} on_disk={on_disk:?}"
+        );
     }
 }
