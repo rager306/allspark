@@ -176,10 +176,7 @@ pub struct AutoRefineSettings {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderWaitSettings {
-    pub enabled: Option<bool>,
-    pub base_delay_ms: Option<u64>,
-    pub max_delay_ms: Option<u64>,
-    pub max_attempts: Option<u64>,
+    /// The quick-retry loop's cumulative-wait budget.
     pub max_wait_ms: Option<u64>,
     /// Park sessions for provider-reported resets beyond the bounded wait (default true).
     pub pause_until_reset: Option<bool>,

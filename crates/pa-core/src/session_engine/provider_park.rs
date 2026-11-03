@@ -32,7 +32,10 @@ pub const QUOTA_RESUME_MARKER_TEXT: &str = "<provider_quota_resumed>\nThe provid
 
 /// The quota-park policy (settings `retry.provider.waitForUsage`): whether resets beyond
 /// the bounded wait park the session, the per-park ceiling, and the per-episode park
-/// budget. The TS group's wait-loop keys stay unused; only the park keys have a consumer.
+/// budget. The TS group's wait-loop keys (`enabled`, `baseDelayMs`, `maxDelayMs`,
+/// `maxAttempts`) are deliberately absent from the settings type: this product has no
+/// separate wait-for-recovery loop, so they had no consumer and parsed into nothing
+/// (review #31). `maxWaitMs` stays — it is the quick-retry loop's cumulative budget.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderParkPolicy {
     /// Park sessions for provider-reported resets beyond the bounded
