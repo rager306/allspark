@@ -59,6 +59,9 @@ async fn download_once(
 ) -> Result<()> {
     use futures::StreamExt;
     let response = pa_ai::utils::tls::http_client_builder()
+        // The archive URL comes from the (unsigned) channel manifest, so each
+        // redirect hop is re-vetted exactly like the URL itself (review #5).
+        .redirect(super::installer::update_redirect_policy())
         .build()
         .expect("download client")
         .get(url)

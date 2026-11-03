@@ -631,26 +631,40 @@ pub fn installed_channel(prefix: &Path) -> Option<&'static str> {
 /// # Errors
 /// Returns an error when the request fails, answers a non-success status,
 /// or the body cannot be read or written.
-/// The redirect policy for the installer download: an https→https hop is
-/// allowed (GitHub Releases redirects `…/releases/latest/download/<asset>` to a
-/// CDN), any downgrade to http is refused (review #5, CWE-319).
+/// The redirect policy every update fetch carries: each hop must satisfy the same
+/// rule as the URL the caller passed (review #5, CWE-319).
 ///
-/// `ensure_https_url` only sees the URL the caller passed; reqwest follows up to
-/// ten redirects by default, so without this a plaintext Location header would
-/// hand the funnel a script it then pipes to `/bin/sh -s --`.
-fn installer_redirect_policy() -> reqwest::redirect::Policy {
+/// `ensure_https_url` only sees the URL the caller passes, and reqwest follows up
+/// to ten redirects by default. One funnel was guarded that way; the channel
+/// manifest and the binary archive were not. The manifest is UNSIGNED — the
+/// archive's sha comes FROM it, so a plaintext manifest lets an attacker supply
+/// matching bytes — and a plaintext `Location` on the installer fetch would hand
+/// that funnel a script it pipes to `/bin/sh -s --`.
+///
+/// The check asks ONLY the scheme, for the hop's destination and for every hop
+/// already taken, so a refusal cannot be laundered through an intermediate
+/// plaintext redirect.
+///
+/// It deliberately does not consult [`allow_http`]. That escape hatch belongs to
+/// the URL the caller hands in — a local channel an operator opted into — and
+/// reading it here would put a process-global env lookup on every hop, where a
+/// concurrent test (or a process changing its own settings) flips the answer
+/// mid-chain. A plaintext 30x the caller was not allowed to start is also not one
+/// it is allowed to follow.
+#[must_use]
+pub fn update_redirect_policy() -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(|attempt| {
-        if attempt.url().scheme() == "https" {
-            attempt.follow()
-        } else {
-            attempt.stop()
+        let plaintext = |url: &reqwest::Url| !is_https_url(url.as_str());
+        if plaintext(attempt.url()) || attempt.previous().iter().any(plaintext) {
+            return attempt.stop();
         }
+        attempt.follow()
     })
 }
 
 async fn fetch_script(url: &str) -> Result<(PathBuf, std::fs::File)> {
     let response = pa_ai::utils::tls::http_client_builder()
-        .redirect(installer_redirect_policy())
+        .redirect(update_redirect_policy())
         .build()
         .expect("installer client")
         .get(url)
@@ -1840,7 +1854,7 @@ async fn an_installer_redirect_to_plaintext_is_not_followed() {
     });
 
     let client = pa_ai::utils::tls::http_client_builder()
-        .redirect(installer_redirect_policy())
+        .redirect(update_redirect_policy())
         .build()
         .expect("client");
     let response = client

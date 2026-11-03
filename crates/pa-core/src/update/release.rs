@@ -85,6 +85,10 @@ pub async fn latest_release(
         super::version::resolve_update_channel(current_version, channel).manifest_path();
     let url = format!("{}/{manifest_path}", base_url.trim_end_matches('/'));
     let response = pa_ai::utils::tls::http_client_builder()
+        // The manifest is UNSIGNED and its sha is what the archive is checked
+        // against, so a plaintext hop would let an attacker supply both halves
+        // (review #5).
+        .redirect(super::installer::update_redirect_policy())
         .build()
         .expect("release client")
         .get(&url)
@@ -323,6 +327,88 @@ mod tests {
         assert!(
             head.contains(&format!("user-agent: {}", update_user_agent("1.2.2"))),
             "the request identifies the release updater: {head}"
+        );
+    }
+
+    /// A manifest redirect to a plaintext destination is NOT followed (review #5).
+    ///
+    /// The manifest is unsigned and the archive's sha comes FROM it, so one
+    /// plaintext hop lets an attacker supply both halves: their manifest, their
+    /// hash, their bytes. The fetch vetted only the URL the caller passed and let
+    /// reqwest follow the rest.
+    ///
+    /// The destination ANSWERS when reached, so a policy that follows it fails in
+    /// milliseconds instead of stalling the suite on a listener nobody completes.
+    #[tokio::test]
+    async fn a_manifest_redirect_to_plaintext_is_not_followed() {
+        use std::io::{Read as _, Write as _};
+
+        // Destination: records the contact and answers.
+        let target = std::net::TcpListener::bind("127.0.0.1:0").expect("bind target");
+        let target_address = target.local_addr().expect("target address");
+        let reached = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let reached = std::sync::Arc::clone(&reached);
+            std::thread::spawn(move || {
+                if let Ok((mut stream, _)) = target.accept() {
+                    reached.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let mut head = Vec::new();
+                    let mut byte = [0_u8; 1];
+                    while !head.ends_with(b"\r\n\r\n") {
+                        match stream.read(&mut byte) {
+                            Ok(0) | Err(_) => return,
+                            Ok(_) => head.push(byte[0]),
+                        }
+                    }
+                    let body = br#"{"version":"9.9.9","binaries_v2":[]}"#;
+                    let _ = stream.write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    );
+                    let _ = stream.write_all(body);
+                }
+            });
+        }
+
+        // Redirector: answers the manifest request with a 302 to the destination.
+        let redirector = std::net::TcpListener::bind("127.0.0.1:0").expect("bind redirector");
+        let redirector_address = redirector.local_addr().expect("redirector address");
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = redirector.accept() {
+                let mut head = Vec::new();
+                let mut byte = [0_u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    match stream.read(&mut byte) {
+                        Ok(0) | Err(_) => return,
+                        Ok(_) => head.push(byte[0]),
+                    }
+                }
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 302 Found\r\nLocation: http://{target_address}/latest.json\r\ncontent-length: 0\r\n\r\n"
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+
+        let release = latest_release(
+            "1.2.2",
+            Some(UpdateChannel::Stable),
+            &format!("http://{redirector_address}"),
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .expect("the fetch resolves");
+        // The 302 itself is answered, so the fetch is "nothing to install" — what
+        // matters is that the destination was never contacted.
+        assert!(release.is_none(), "an unfollowed redirect installs nothing");
+        assert!(
+            !reached.load(std::sync::atomic::Ordering::SeqCst),
+            "the plaintext destination must never be reached"
         );
     }
 
