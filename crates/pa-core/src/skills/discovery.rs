@@ -71,13 +71,10 @@ pub(crate) fn load_skill_from_file(
 ) -> (Option<Skill>, Vec<ResourceDiagnostic>) {
     let mut diagnostics = Vec::new();
     // A SKILL.md is untrusted repo content that reaches the prompt verbatim.
-    // Cap it here so a generated or hostile file cannot flood the context.
-    let raw_content = match std::fs::read_to_string(file_path) {
-        Ok(content) => {
-            let (content, truncated) = crate::resources::truncate_context_content(
-                &content,
-                crate::resources::MAX_CONTEXT_FILE_BYTES,
-            );
+    // The shared bounded reader caps it AND refuses a FIFO before the open, so a generated or
+    // hostile file can neither flood the context nor hang discovery with a pipe (#4, #29).
+    let raw_content = match crate::resources::read_prompt_input_bounded(file_path) {
+        Ok((content, truncated)) => {
             if truncated {
                 diagnostics.push(ResourceDiagnostic::Warning {
                     message: format!(
@@ -182,7 +179,11 @@ impl DiscoveryState {
         };
         for filename in [".gitignore", ".ignore", ".fdignore"] {
             let ignore_path = dir.join(filename);
-            let Ok(content) = std::fs::read_to_string(&ignore_path) else {
+            // A walk rule file is small and only its first lines matter: the bounded reader
+            // stops at the cap and refuses a FIFO instead of waiting for a writer (#4, #29).
+            let Ok((content, _truncated)) =
+                crate::resources::read_prompt_input_bounded(&ignore_path)
+            else {
                 continue;
             };
             let patterns: Vec<String> = content

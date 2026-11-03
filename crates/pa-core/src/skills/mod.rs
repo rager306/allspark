@@ -305,17 +305,15 @@ pub fn expand_skill_command<'a>(text: &str, skills: &'a [Skill]) -> (String, Opt
     let Some(skill) = skills.iter().find(|skill| skill.name == skill_name) else {
         return (text.to_string(), None);
     };
-    let Ok(content) = std::fs::read_to_string(&skill.file_path) else {
+    // The expanded skill body is prompt input; cap it like any other untrusted file so a huge
+    // SKILL.md cannot blow the turn's context. The shared reader also bounds the READ and
+    // refuses a FIFO before the open, so neither an enormous body nor a pipe named SKILL.md can
+    // stall the turn (#4, #29); the marker rides in the body so a cut skill is visible to the
+    // model, not just to a discarded flag (review #2).
+    let Ok(content) = crate::resources::read_prompt_input_marked(&skill.file_path, "SKILL BODY")
+    else {
         return (text.to_string(), None);
     };
-    // The expanded skill body is prompt input; cap it like any other untrusted
-    // file so a huge SKILL.md cannot blow the turn's context. The marker rides in the body so
-    // a cut skill is visible to the model, not just to a discarded flag (review #2).
-    let content = crate::resources::truncate_context_content_marked(
-        &content,
-        crate::resources::MAX_CONTEXT_FILE_BYTES,
-        "SKILL BODY",
-    );
     let body = frontmatter::strip_frontmatter(&content).trim().to_string();
     let block = format!(
         "<skill name=\"{}\" location=\"{}\">\nReferences are relative to {}.\n\n{}\n</skill>",
@@ -443,6 +441,55 @@ mod tests {
                 .map(|skill| skill.name.as_str())
                 .collect::<Vec<_>>(),
             vec!["named-dir"]
+        );
+    }
+
+    /// `load_skill_from_file` refuses a FIFO instead of waiting for a writer.
+    ///
+    /// The directory walkers reach it only for entries `metadata` already called regular, so
+    /// this asserts the FUNCTION's contract: a caller that hands it a path from a tree it does
+    /// not control gets a warning, not a worker parked on `open` (review #29).
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_skill_file_is_refused_without_opening_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fifo = dir.path().join("SKILL.md");
+        nix::unistd::mkfifo(
+            &fifo,
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )
+        .expect("mkfifo");
+
+        // A writer kept available turns a regression into a failed assertion instead of a hung
+        // suite: the nonblocking open only succeeds if the loader opened the FIFO.
+        let writer_path = fifo.clone();
+        let writer = std::thread::spawn(move || {
+            use std::os::unix::fs::OpenOptionsExt;
+            loop {
+                if let Ok(file) = std::fs::OpenOptions::new()
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&writer_path)
+                {
+                    drop(file);
+                    break;
+                }
+                if !writer_path.exists() {
+                    break;
+                }
+                std::thread::yield_now();
+            }
+        });
+        let (skill, diagnostics) = crate::skills::discovery::load_skill_from_file(&fifo, "user");
+        std::fs::remove_file(&fifo).expect("remove fifo");
+        writer.join().expect("writer thread");
+        assert!(skill.is_none(), "{skill:?}");
+        assert!(
+            diagnostics.iter().any(|diagnostic| matches!(
+                diagnostic,
+                ResourceDiagnostic::Warning { message, .. } if message == "expected a regular file"
+            )),
+            "the refusal names the reason: {diagnostics:?}"
         );
     }
 

@@ -4,6 +4,7 @@
 //! and bundled skills through the package manager. Theme loading lives in pa-tui.
 
 use std::collections::HashSet;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use crate::skills::diagnostics::ResourceDiagnostic;
@@ -51,15 +52,112 @@ pub fn truncate_context_content(content: &str, limit: usize) -> (String, bool) {
 /// diagnostic struct that never reaches the prompt reports to a log, not to the reader.
 #[must_use]
 pub fn truncate_context_content_marked(content: &str, limit: usize, what: &str) -> String {
-    let (kept, truncated) = truncate_context_content(content, limit);
-    if !truncated {
+    capped_and_marked(content, limit, what, content.len() as u64)
+}
+
+/// Cap `raw` at `limit` bytes and build the marker, whose total is the SOURCE size.
+///
+/// The two numbers differ once the read itself is bounded: `raw` then ends at the cap and
+/// `source_bytes` is the whole file, which is the only size worth telling the model (review #4).
+fn capped_and_marked(raw: &str, limit: usize, what: &str, source_bytes: u64) -> String {
+    let (kept, cut) = truncate_context_content(raw, limit);
+    if !cut && source_bytes <= limit as u64 {
         return kept;
     }
+    let total = source_bytes.max(kept.len() as u64);
     format!(
-        "{kept}\n\n[... {what} TRUNCATED at {limit} bytes of {} — the rest is NOT in this \
-         prompt ...]",
-        content.len()
+        "{kept}\n\n[... {what} TRUNCATED at {limit} bytes of {total} — the rest is NOT in this \
+         prompt ...]"
     )
+}
+
+/// Longest UTF-8 scalar, in bytes: the slack the bounded read takes past the cap so a scalar
+/// the cap cuts through is not mistaken for corrupt input.
+const MAX_SCALAR_BYTES: u64 = 4;
+
+/// Read a prompt-input file, capped at `MAX_CONTEXT_FILE_BYTES`, never a special file.
+///
+/// Two bounds live here, and both are about a file the working tree controls.
+///
+/// **Size.** Every caller used to read to EOF and truncate afterwards, so the cap bounded the
+/// prompt but not the read: a 1 TiB AGENTS.md still tried to buffer 1 TiB, and a file whose
+/// bytes past the cap are not UTF-8 was dropped as unreadable even though none of it would
+/// have reached the model (review #4).
+///
+/// **Type.** Opening a FIFO read-only waits for a writer, and these paths come from the
+/// working tree and the agent directory, so `mkfifo AGENTS.md` used to hang session start
+/// (review #29). The open is therefore the guarded step, not a `metadata` call before it: a
+/// stat on a pipe returns at once but the open that follows it blocks, so `O_NONBLOCK` belongs
+/// on the open, and the type check rides on the handle it returns.
+///
+/// Returns the kept text and whether the file was longer than the cap, so a caller that only
+/// needs the text as data (frontmatter, walk rules) can still report the cut.
+///
+/// # Errors
+///
+/// The open error; `InvalidInput` for anything that is not a regular file; and `InvalidData`
+/// when the bytes that would be kept are not UTF-8.
+pub fn read_prompt_input_bounded(path: &Path) -> io::Result<(String, bool)> {
+    let (text, size) = read_prompt_input(path)?;
+    let (kept, cut) = truncate_context_content(&text, MAX_CONTEXT_FILE_BYTES);
+    Ok((kept, cut || size > MAX_CONTEXT_FILE_BYTES as u64))
+}
+
+/// [`read_prompt_input_bounded`], capped and marked for the prompt.
+///
+/// # Errors
+///
+/// As [`read_prompt_input_bounded`].
+pub fn read_prompt_input_marked(path: &Path, what: &str) -> io::Result<String> {
+    let (text, size) = read_prompt_input(path)?;
+    Ok(capped_and_marked(&text, MAX_CONTEXT_FILE_BYTES, what, size))
+}
+
+/// The read both public helpers share: `(text up to the cap, the file's real size)`.
+fn read_prompt_input(path: &Path) -> io::Result<(String, u64)> {
+    let file = open_regular_file(path)?;
+    let size = file.metadata()?.len();
+    let mut bytes = Vec::new();
+    std::io::BufReader::new(file)
+        .take(MAX_CONTEXT_FILE_BYTES as u64 + MAX_SCALAR_BYTES)
+        .read_to_end(&mut bytes)?;
+    let text = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        // A scalar straddling the cap is the one tolerable UTF-8 error: those bytes were never
+        // going to be kept. Anything invalid inside the kept prefix refuses the file exactly as
+        // an unbounded `read_to_string` would have.
+        Err(error) => {
+            let valid = error.utf8_error().valid_up_to();
+            if valid < MAX_CONTEXT_FILE_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "stream did not contain valid UTF-8",
+                ));
+            }
+            String::from_utf8(error.into_bytes()[..valid].to_vec())
+                .expect("the prefix up to valid_up_to is UTF-8")
+        }
+    };
+    Ok((text, size))
+}
+
+/// Open `path` read-only without trusting its type; see [`read_prompt_input_bounded`].
+fn open_regular_file(path: &Path) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected a regular file",
+        ));
+    }
+    Ok(file)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -71,12 +169,11 @@ pub struct ContextFile {
 fn load_context_file_from_dir(dir: &Path) -> Option<ContextFile> {
     for filename in CONTEXT_FILE_CANDIDATES {
         let file_path = dir.join(filename);
-        if let Ok(content) = std::fs::read_to_string(&file_path) {
-            // Cap before the content ever reaches the prompt: the file is
-            // untrusted input from the working tree. The marker travels IN the text, because
-            // a flag nobody reads is a truncation the model cannot notice (review #2).
-            let content =
-                truncate_context_content_marked(&content, MAX_CONTEXT_FILE_BYTES, "CONTEXT FILE");
+        // Bounded read, then the cap: the file is untrusted input from the working tree, and a
+        // FIFO or an enormous file must cost neither a hang nor a whole-file buffer (review
+        // #29, #4). The marker travels IN the text, because a flag nobody reads is a
+        // truncation the model cannot notice (review #2).
+        if let Ok(content) = read_prompt_input_marked(&file_path, "CONTEXT FILE") {
             return Some(ContextFile {
                 path: file_path,
                 content,
@@ -303,15 +400,10 @@ fn diagnostics_path(diagnostic: &ResourceDiagnostic) -> Option<String> {
 fn resolve_prompt_input(input: &str) -> Option<String> {
     let path = Path::new(input);
     if path.exists() {
-        // Same cap as a context file: this text becomes the system prompt or
-        // its appended tail, so an oversized file is the same denial of
-        // service by another route.
-        let content = std::fs::read_to_string(path).ok()?;
-        return Some(truncate_context_content_marked(
-            &content,
-            MAX_CONTEXT_FILE_BYTES,
-            "PROMPT INPUT",
-        ));
+        // Same cap and the same bounded read as a context file: this text becomes the system
+        // prompt or its appended tail, so an oversized file is the same denial of service by
+        // another route (review #4).
+        return read_prompt_input_marked(path, "PROMPT INPUT").ok();
     }
     Some(truncate_context_content_marked(
         input,
@@ -664,5 +756,75 @@ mod tests {
             "and the cut is marked in the prompt: {}",
             &content[MAX_CONTEXT_FILE_BYTES..]
         );
+    }
+
+    /// The read stops at the cap, so bytes past it cannot decide the file's fate.
+    ///
+    /// The truncated tail is never decoded: this file's bytes past the cap are not UTF-8, and a
+    /// loader that read to EOF and truncated afterwards dropped the whole file as unreadable
+    /// even though none of that tail would ever reach the prompt (review #4).
+    #[test]
+    fn bytes_past_the_cap_are_never_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut content = "A".repeat(MAX_CONTEXT_FILE_BYTES);
+        content.push_str("\u{0}\u{0} trailing bytes that are not UTF-8");
+        let mut bytes = content.into_bytes();
+        bytes.truncate(MAX_CONTEXT_FILE_BYTES + 2);
+        bytes[MAX_CONTEXT_FILE_BYTES] = 0xff;
+        fs::write(tmp.path().join("AGENTS.md"), &bytes).unwrap();
+
+        let file = load_context_file_from_dir(tmp.path()).expect("found and capped, not dropped");
+        assert!(
+            file.content
+                .starts_with(&"A".repeat(MAX_CONTEXT_FILE_BYTES)),
+            "the kept prefix is byte-exact"
+        );
+        // The marker names the file's REAL size, which the loader learns without reading it.
+        assert!(
+            file.content.contains(&format!("of {} — ", bytes.len())),
+            "the marker must name what was cut: {}",
+            &file.content[MAX_CONTEXT_FILE_BYTES..]
+        );
+    }
+
+    /// A FIFO named `AGENTS.md` is refused before the open.
+    ///
+    /// Opening a FIFO read-only waits for a writer, and the context-file walk runs on the
+    /// session-start path, so a pipe planted in a repository used to hang the loader forever
+    /// (review #29).
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_named_agents_md_is_skipped_without_opening_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("AGENTS.md");
+        nix::unistd::mkfifo(
+            &path,
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )
+        .unwrap();
+        // Keep a writer available so a regression fails the assertion instead of hanging the
+        // suite: the nonblocking open only succeeds if the loader opened the FIFO.
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            use std::os::unix::fs::OpenOptionsExt;
+            loop {
+                if let Ok(file) = std::fs::OpenOptions::new()
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&writer_path)
+                {
+                    drop(file);
+                    break;
+                }
+                if !writer_path.exists() {
+                    break;
+                }
+                std::thread::yield_now();
+            }
+        });
+        let found = load_context_file_from_dir(tmp.path());
+        std::fs::remove_file(&path).unwrap();
+        writer.join().unwrap();
+        assert!(found.is_none(), "a FIFO is not a context file: {found:?}");
     }
 }

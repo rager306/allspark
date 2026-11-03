@@ -144,18 +144,12 @@ impl SaturatingSub1OrZero for usize {
 }
 
 fn load_template_from_file(file_path: &Path, source_info: SourceInfo) -> Option<PromptTemplate> {
-    let raw_content = std::fs::read_to_string(file_path).ok()?;
     // A template body is substituted verbatim into the turn's prompt, so it is prompt input
-    // like a context file — same cap, same visible marker (review #7). The file comes from the
+    // like a context file — same cap, same visible marker (review #7), and the same bounded
+    // read that refuses a FIFO before the open (review #4, #29). The file comes from the
     // working tree, i.e. untrusted.
-    // A template body is substituted verbatim into the turn's prompt, so it is prompt input
-    // like a context file — same cap, same visible marker (review #7). The file comes from the
-    // working tree, i.e. untrusted.
-    let raw_content = crate::resources::truncate_context_content_marked(
-        &raw_content,
-        crate::resources::MAX_CONTEXT_FILE_BYTES,
-        "PROMPT TEMPLATE",
-    );
+    let raw_content =
+        crate::resources::read_prompt_input_marked(file_path, "PROMPT TEMPLATE").ok()?;
     let (frontmatter, body) = parse_frontmatter(&raw_content);
     let name = file_path
         .file_name()?
@@ -413,6 +407,41 @@ mod tests {
             template.content.contains("PROMPT TEMPLATE TRUNCATED"),
             "and the cut must be visible where the model reads it"
         );
+    }
+
+    /// The template callsite reads through the shared bounded reader, tail and all.
+    ///
+    /// The body's bytes past the cap are not UTF-8. A loader that read the whole file and
+    /// truncated afterwards dropped this template as unreadable; the bounded read never looks
+    /// at them (review #4).
+    #[test]
+    fn bytes_past_the_cap_are_never_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let prompts_dir = dir
+            .path()
+            .join(crate::skills::loader::CONFIG_DIR_NAME)
+            .join("prompts");
+        std::fs::create_dir_all(&prompts_dir).unwrap();
+        let mut bytes = vec![b'B'; crate::resources::MAX_CONTEXT_FILE_BYTES + 2];
+        bytes[crate::resources::MAX_CONTEXT_FILE_BYTES] = 0xff;
+        std::fs::write(prompts_dir.join("huge.md"), &bytes).unwrap();
+        let templates = load_prompt_templates(&LoadPromptTemplatesOptions {
+            agent_dir: dir.path().to_path_buf(),
+            cwd: dir.path().to_path_buf(),
+            prompt_paths: Vec::new(),
+            include_defaults: true,
+        });
+        let template = templates
+            .iter()
+            .find(|template| template.name == "huge")
+            .expect("the file loads instead of being dropped as unreadable");
+        assert!(
+            template
+                .content
+                .starts_with(&"B".repeat(crate::resources::MAX_CONTEXT_FILE_BYTES)),
+            "the kept prefix is byte-exact"
+        );
+        assert!(template.content.contains("PROMPT TEMPLATE TRUNCATED"));
     }
 
     #[test]

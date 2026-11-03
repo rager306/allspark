@@ -119,24 +119,6 @@ fn rule_applies(rule: &ParsedRule, segments: &[&str]) -> bool {
     })
 }
 
-// Check the file type before opening: opening a FIFO can wait forever for a writer.
-fn read_regular_file(path: &Path) -> io::Result<String> {
-    if !std::fs::metadata(path)?.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "expected a regular file",
-        ));
-    }
-    // Model-prompt layers join the system prompt verbatim, so the same cap as
-    // a context file applies: an oversized layer is prompt input, not config.
-    let content = std::fs::read_to_string(path)?;
-    Ok(crate::resources::truncate_context_content_marked(
-        &content,
-        crate::resources::MAX_CONTEXT_FILE_BYTES,
-        "MODEL PROMPT LAYER",
-    ))
-}
-
 fn resolve_layer_files(
     rules: &[ParsedRule],
     source: &str,
@@ -159,7 +141,10 @@ fn resolve_layer_files(
                         "file resolves outside the agent directory",
                     ));
                 }
-                read_regular_file(&resolved)
+                // Model-prompt layers join the system prompt verbatim, so they are prompt
+                // input: the shared reader caps the read and refuses a FIFO before the open
+                // (#4, #29).
+                crate::resources::read_prompt_input_marked(&resolved, "MODEL PROMPT LAYER")
             });
             match content {
                 Ok(content) => {
@@ -200,9 +185,19 @@ fn resolve_model_prompts(
     errors.append(&mut layer_errors);
     let user_path = agent_dir.join(USER_MODEL_PROMPTS_TOML);
     let user_layer = user_path.display().to_string();
-    let user_rules = match read_regular_file(&user_path) {
-        Ok(text) => {
+    // The rule map is CONFIG, not prompt text: it is parsed, so a truncation marker would be
+    // a syntax error. The bounded read still stops at the cap and refuses a FIFO, and a cap
+    // that cuts a rule in half surfaces as the ordinary parse error naming the source (#4,
+    // #29).
+    let user_rules = match crate::resources::read_prompt_input_bounded(&user_path) {
+        Ok((text, truncated)) => {
             let (rules, mut layer_errors) = parse_layer(&text, &user_layer);
+            if truncated {
+                layer_errors.push(format!(
+                    "{user_layer}: exceeds {} bytes",
+                    crate::resources::MAX_CONTEXT_FILE_BYTES
+                ));
+            }
             errors.append(&mut layer_errors);
             rules
         }
