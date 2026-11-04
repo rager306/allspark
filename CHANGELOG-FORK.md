@@ -13,6 +13,36 @@ branch (`feat/allspark-identity`). `fork.3` points at the SAME commit as `fork.2
 (`375ad95cf`) and is a duplicate tag, not a separate release — it has no entry here
 because nothing shipped between them. `FORK.md` carries the same correction.
 
+## fork.015 — upstream v0.10.3-beta.15
+
+- Tag: `allspark-v0.10.3-beta.15-fork.015` (2026-11-03)
+- Base: the `v0.10.3-beta.15` upstream merge (2 conflicts resolved), 3 upstream
+  commits since the `v0.10.3-beta.13` merge (`e3a3d64b6`).
+- No FORK-ONLY crate was touched: the delta is two factory-runtime fixes and their
+  `.changes` fragments.
+
+### What the fork gained
+
+- **A design node's output is no longer cut at 8 KiB.** The settle-capture cap is
+  now the host's own collect bound (65,536 characters). A valid fenced JSON longer
+  than the old cap was truncated mid-object, and the producing state failed with
+  "no JSON object containing output" although the child had settled correctly.
+- **The answer scrape accepts a bare terminal JSON object**, or one followed by a
+  dirty tail, not only a fenced ```json block.
+
+### Fork work that survived the merge unchanged
+
+- `cancel_failures` on a run, and the restart limitation paragraph: a refused
+  `delete` no longer lets a "stopped" run hide a live child, and the docstring says
+  outright that a run is a kernel-lifetime object.
+- The audit F11 test keeps its shape (`test_failed_delete_does_not_claim_the_child_is_cancelled`),
+  and upstream's 151 new test lines landed beside it.
+
+### Verification
+
+- `prime-agent-runtime` `test_factory.py` 321 passed, 2 subtests.
+- `cargo check --workspace --all-targets` clean.
+
 ## fork.014 — upstream v0.10.3-beta.13
 
 - Tag: `allspark-v0.10.3-beta.13-fork.014` (2026-11-03)
