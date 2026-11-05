@@ -1818,6 +1818,15 @@ fi
 case "$env_socket" in
   *allspark*) fork_run="yes" ;;
 esac
+# The LAYOUT stamp is the same identity: a script rendered to install the fork
+# layout is a fork run, so it must not probe the upstream TS default either. This
+# gate existed before the stamp did, and the two disagreed — a plain `curl | sh`
+# of the published fork script installed the FORK layout while still classifying
+# itself as an upstream run and STOPPING the upstream daemon, exactly the
+# boundary the comment above says must never be crossed.
+case "${INSTALL_LAYOUT_DEFAULT:-}" in
+  fork) fork_run="yes" ;;
+esac
 # The upstream TS default socket: probed for an upstream run, skipped for a
 # fork run (a different product's daemon).
 ts_socket_probe="no"
@@ -2732,7 +2741,13 @@ stage="$(mktemp -d "${PREFIX}/share/prime-agent.stage.XXXXXX")"
 guard_preserved "$stage"
 # A bad tarball (a malformed --archive is the realistic one) leaves no
 # stage behind: the cleanup trap is not armed yet.
-if ! tar -xzf "$asset" -C "$stage"; then
+# --no-same-owner: the release tarball is built on a CI runner and its entries
+# carry THAT machine's uid (measured: `runner/runner`, uid 1001). As root, tar
+# restores them verbatim, so every installed file landed owned by a nonexistent
+# uid and the next `allspark update` — running as the real user — could not
+# replace its own payload. Ownership of an extracted tree is the extracting
+# user's; the archive's numbers are build-host noise.
+if ! tar -xzf "$asset" -C "$stage" --no-same-owner; then
   rm -rf "$stage"
   die "could not extract ${asset}"
 fi

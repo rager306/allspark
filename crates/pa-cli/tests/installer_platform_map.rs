@@ -1830,3 +1830,52 @@ fn an_unmarked_fork_payload_is_adopted_but_a_foreign_tree_is_not() {
         "every other answer must fail closed and let the refusal fire"
     );
 }
+
+/// Extracting the release tarball must not inherit the CI runner's uid.
+///
+/// The tarball is built on a GitHub runner, so every entry carries that machine's
+/// numeric uid (measured: `runner/runner`, uid 1001). As root, `tar -xzf` restores
+/// it verbatim, and the install landed with EVERY file owned by a uid that does not
+/// exist on the target machine — the payload could not be replaced by the user who
+/// owns the install. Ownership of an extracted tree belongs to the extracting user.
+#[test]
+fn the_release_tarball_is_extracted_without_foreign_ownership() {
+    let script =
+        std::fs::read_to_string(repo_root().join("install-rust.sh")).expect("read the installer");
+    let extract = script
+        .lines()
+        .find(|line| line.contains("tar -xzf \"$asset\""))
+        .expect("the tarball extraction line");
+    assert!(
+        extract.contains("--no-same-owner"),
+        "the extraction must pass --no-same-owner: the archive is built on a CI \
+         runner and carries ITS uid, which root restores verbatim — the install then \
+         lands owned by a nonexistent user. Line: {extract}"
+    );
+}
+
+/// A fork-layout install must not probe (or stop) the upstream daemon.
+///
+/// The stop gate's own comment states the rule: "probing across the boundary is
+/// exactly how a fork installer killed a co-installed upstream user's daemon". The
+/// gate classified a run by `PRIME_AGENT_FORK_BUILD` and an allspark socket — but
+/// not by the layout stamp, so a plain `curl | sh` of the published fork script
+/// installed the FORK layout while still classifying itself as an upstream run and
+/// stopping the upstream daemon.
+#[test]
+fn a_fork_layout_install_never_probes_the_upstream_daemon() {
+    let script =
+        std::fs::read_to_string(repo_root().join("install-rust.sh")).expect("read the installer");
+    let gate_start = script.find("fork_run=\"no\"").expect("the fork gate");
+    let gate = &script[gate_start..];
+    let gate = &gate[..gate.find("ts_socket_probe=").expect("the end of the gate")];
+    assert!(
+        gate.contains("INSTALL_LAYOUT_DEFAULT"),
+        "the fork gate must read the layout stamp: it is the same identity as the \
+         build marker, and without it a fork-layout install crosses its own boundary"
+    );
+    assert!(
+        gate.contains("fork) fork_run=\"yes\""),
+        "the stamp must set fork_run, which is what skips the upstream TS probe"
+    );
+}
