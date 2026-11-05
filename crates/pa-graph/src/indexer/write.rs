@@ -36,20 +36,23 @@ impl GraphStore {
                 ParseHealth::Clean => {}
             }
         }
-        // Clean AND empty: the extension is indexable, the grammar is compiled
-        // in, and nothing came out. Gated on `Clean` so a missing grammar (which
-        // is `skipped`) is not counted twice under two reasons.
-        if health == ParseHealth::Clean
-            && extracted.symbols.is_empty()
-            && extracted.calls.is_empty()
-            && extracted.imports.is_empty()
-        {
-            self.record_coverage(
-                project,
-                &work.rel,
-                crate::coverage::KIND_NO_SYMBOLS,
-                "parsed but yielded no symbols, calls or imports",
-            )?;
+        // Clean AND no DEFINITIONS. Gated on `Clean` so a missing grammar (which is
+        // `skipped`) is not counted twice under two reasons.
+        //
+        // The gate is on symbols alone, not on "symbols AND calls AND imports": the
+        // kind is called `no_symbols` and the report reads it as "the graph cannot
+        // answer for this file". A file whose definitions all live inside a macro the
+        // grammar does not expand has imports and no definitions — measured on
+        // `verus/vt_intersect.rs`, which is `verus! { … }` around the whole body: one
+        // import binding, zero symbols, and before this change NO note at all, so the
+        // file read as clean while holding no definition the graph could answer for.
+        if health == ParseHealth::Clean && extracted.symbols.is_empty() {
+            let detail = if extracted.calls.is_empty() && extracted.imports.is_empty() {
+                "parsed but yielded no symbols, calls or imports"
+            } else {
+                "parsed but yielded no symbols (calls/imports only)"
+            };
+            self.record_coverage(project, &work.rel, crate::coverage::KIND_NO_SYMBOLS, detail)?;
         }
         Ok(())
     }

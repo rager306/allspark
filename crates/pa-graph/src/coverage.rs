@@ -415,6 +415,40 @@ mod tests {
         );
     }
 
+    /// A file whose definitions are ALL inside a macro is not clean either.
+    ///
+    /// The note used to require symbols AND calls AND imports to be empty, so a file
+    /// with imports and no definitions passed as clean. `verus/vt_intersect.rs` is the
+    /// measured case: the whole body is one `verus! { … }` invocation, the grammar does
+    /// not expand it, and extraction returned one import binding and zero symbols — the
+    /// file read as clean while holding nothing the graph could answer for.
+    #[test]
+    fn a_file_with_imports_but_no_definitions_is_not_clean() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("only_imports.rs"),
+            "use std::collections::HashMap;\n\nmacro_rules! body {\n    () => { pub fn hidden() {} };\n}\nbody!();\n",
+        )
+        .expect("write");
+        std::fs::write(dir.path().join("real.rs"), "pub fn real() -> u32 { 1 }\n")
+            .expect("real.rs");
+
+        let mut store = crate::GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &crate::IndexOptions::new("p"))
+            .expect("index");
+        let report = coverage(&store, "p").expect("coverage");
+
+        let note = report
+            .notes
+            .iter()
+            .find(|n| n.rel_path == "only_imports.rs")
+            .expect("a file with no definitions must be noted");
+        assert_eq!(note.kind, KIND_NO_SYMBOLS, "{report:?}");
+        assert_eq!(report.no_symbols, 1, "{report:?}");
+        assert_eq!(report.parsed, 1, "only real.rs is clean: {report:?}");
+    }
+
     /// A language whose grammar is not compiled in is SKIPPED, not counted as an
     /// extractor gap: the two are different defects and one file must not
     /// appear under both.
