@@ -38,10 +38,46 @@ because nothing shipped between them. `FORK.md` carries the same correction.
 - The audit F11 test keeps its shape (`test_failed_delete_does_not_claim_the_child_is_cancelled`),
   and upstream's 151 new test lines landed beside it.
 
+### The fork's install and update path works for the first time
+
+Every earlier fork release shipped an installer that installed **upstream** Prime
+Agent, and an `allspark update` that 404'd before it could install anything. Four
+artifacts each assumed a different shape of one channel, and nothing compared them:
+
+- the launcher pinned the download base to a GitHub release;
+- the release published a FLAT, STABLE-ONLY asset set — no installer script, and no
+  `beta` / `beta.json`, although every fork version is `-beta.N` and therefore
+  NIGHTLY;
+- the updater derives `<base>/install-beta.sh`;
+- the installer derives `<base>/releases/v<version>/` — a path a GitHub release
+  cannot express, because its tag is the only path segment it has.
+
+Fixed on all four sides:
+
+- **The checked-in installer names this repository.** `DOWNLOAD_BASE_URL_DEFAULT`
+  and `INSTALL_LAYOUT_DEFAULT` now point at the fork's own channel and layout. The
+  repo copy is what `raw.githubusercontent.com` serves, so leaving upstream's values
+  there meant the documented one-liner installed upstream from the fork's repo.
+- **The release publishes the channel**: `install.sh` / `install-beta.sh` rendered
+  from this repo's own installer (stamps asserted, `sh -n` checked), plus `beta` and
+  `beta.json` beside `stable` and `latest.json`.
+- **The installer reads a flat release root**, keeping the R2 versioned prefix as
+  the first try so upstream installs stay byte-identical.
+- **The layout is a stamp**, not a guess from the URL: `INSTALL_LAYOUT_DEFAULT=fork`,
+  so the fork payload lands in `libexec/` + `bin/allspark` and never overwrites a
+  co-installed upstream install's `share/prime-agent`.
+
+Four regression tests pin the seams, each red-first proven by reverting its half.
+The layout test runs the script's own layout block in five environments — a
+`contains(...)` version stayed green with the arm disabled and was rewritten.
+
 ### Verification
 
 - `prime-agent-runtime` `test_factory.py` 321 passed, 2 subtests.
 - `cargo check --workspace --all-targets` clean.
+- `pa-cli` `installer_platform_map` 26 passed; the fork channel was exercised
+  end-to-end against a local HTTP channel (real `releases/v<version>/` tree plus a
+  flat root): beta pointer → flat fallback → sha cross-check → extraction.
 
 ## fork.014 — upstream v0.10.3-beta.13
 
