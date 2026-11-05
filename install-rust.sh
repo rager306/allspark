@@ -184,6 +184,12 @@ set -eu
 # the raw repo copy installs out of the box too.
 DOWNLOAD_BASE_URL_DEFAULT="https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev"
 RELEASE_CHANNEL_DEFAULT="stable"
+# WHICH LAYOUT THIS SCRIPT INSTALLS. The repo file is the upstream copy
+# ("no"); the fork's release pipeline re-renders it with "yes" beside the
+# download-base stamp. A stamp of its own is what makes the layout a property
+# of the SCRIPT rather than of a string match inside a URL — an operator
+# pointing the fork installer at a local mirror must still get the fork layout.
+INSTALL_LAYOUT_DEFAULT="no"
 BASE_URL="${PRIME_AGENT_DOWNLOAD_BASE_URL:-$DOWNLOAD_BASE_URL_DEFAULT}"
 CHANNEL="${PRIME_AGENT_RELEASE_CHANNEL:-$RELEASE_CHANNEL_DEFAULT}"
 PREFIX="${PRIME_AGENT_RUST_PREFIX:-$HOME/.local}"
@@ -1388,8 +1394,14 @@ esac
 # layout instead of writing the fork payload over an upstream install's
 # `share/prime-agent`. Without this, the documented one-liner installed the
 # UPSTREAM layout from the FORK script and left two half-installs behind.
+case "${INSTALL_LAYOUT_DEFAULT:-}" in
+  fork) fork_layout="yes" ;;
+esac
+# Backstop for a script published before the explicit stamp existed: the fork's
+# own release base still identifies it. Kept narrow — a bare "allspark" inside a
+# mirror URL is a hint, not a promise, and the stamp above is the contract.
 case "${DOWNLOAD_BASE_URL_DEFAULT:-}" in
-  *allspark*) fork_layout="yes" ;;
+  *allspark*releases*) fork_layout="yes" ;;
 esac
 # An explicit opt-out for the deliberate cross-install (installing the fork
 # payload into the upstream paths on purpose): PRIME_AGENT_UPSTREAM_LAYOUT=1.

@@ -1541,9 +1541,9 @@ fn the_installer_falls_back_to_a_flat_release_root() {
 #[test]
 fn the_published_fork_installer_selects_the_fork_layout_without_env() {
     // BEHAVIOURAL, not a string scan: run the script's own layout block with the
-    // environment a plain `curl | sh` has (no fork marker, no socket) and read
-    // which paths it chose. A `contains(...)` assertion would stay green when the
-    // case-arm is present but unreachable.
+    // environment a plain `curl | sh` has and read which paths it chose. A
+    // `contains(...)` assertion stayed green earlier with the case-arm present but
+    // disabled — this one cannot.
     let script =
         std::fs::read_to_string(repo_root().join("install-rust.sh")).expect("read the installer");
     let start = script.find("fork_layout=\"no\"").expect("the layout block");
@@ -1553,11 +1553,17 @@ fn the_published_fork_installer_selects_the_fork_layout_without_env() {
             .expect("the end of the layout block");
     let block = &script[start..end];
 
-    let probe = |base_default: &str, env: &[(&str, &str)]| -> String {
+    let probe = |base_default: &str, layout_default: &str, env: &[(&str, &str)]| -> String {
         let mut harness = String::from("set -u\nPREFIX=/probe\n");
-        harness.push_str("DOWNLOAD_BASE_URL_DEFAULT='");
-        harness.push_str(base_default);
-        harness.push_str("'\n");
+        for (key, value) in [
+            ("DOWNLOAD_BASE_URL_DEFAULT", base_default),
+            ("INSTALL_LAYOUT_DEFAULT", layout_default),
+        ] {
+            harness.push_str(key);
+            harness.push_str("='");
+            harness.push_str(value);
+            harness.push_str("'\n");
+        }
         for (key, value) in env {
             harness.push_str(key);
             harness.push_str("='");
@@ -1565,7 +1571,7 @@ fn the_published_fork_installer_selects_the_fork_layout_without_env() {
             harness.push_str("'\n");
         }
         harness.push_str(block);
-        harness.push_str("\nprintf '%s|%s\\n' \"$fork_layout\" \"$share_dir\"\n");
+        harness.push_str("\nprintf '%s|%s|%s\\n' \"$fork_layout\" \"$share_dir\" \"$launcher\"\n");
         let output = Command::new("sh")
             .arg("-c")
             .arg(&harness)
@@ -1579,38 +1585,54 @@ fn the_published_fork_installer_selects_the_fork_layout_without_env() {
         String::from_utf8_lossy(&output.stdout).trim().to_string()
     };
 
-    // A plain `curl | sh` of the PUBLISHED fork script: no env marker at all, but
-    // the stamped base names the fork's own release. This is the case the user hit.
+    // THE STAMP IS THE CONTRACT: the release pipeline re-renders the script with
+    // INSTALL_LAYOUT_DEFAULT=fork, so the layout is a property of the script and
+    // not of a substring inside a URL. An operator pointing the fork installer at
+    // a local mirror keeps the fork layout.
+    assert_eq!(
+        probe("http://mirror.internal/allspark", "fork", &[]),
+        "yes|/probe/libexec|/probe/bin/allspark",
+        "the explicit fork stamp must choose the fork layout whatever the base is"
+    );
+    // The published fork script's own base is the backstop for a copy rendered
+    // before the stamp existed.
     assert_eq!(
         probe(
             "https://github.com/rager306/allspark/releases/latest/download",
+            "no",
             &[]
         ),
-        "yes|/probe/libexec",
-        "the published fork installer must choose the FORK layout from its stamp alone"
+        "yes|/probe/libexec|/probe/bin/allspark",
+        "the fork release base must still select the fork layout"
     );
-    // The upstream script (upstream's own base) keeps the upstream layout.
+    // An upstream render keeps the upstream paths: two half-installs is the bug.
     assert_eq!(
-        probe("https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev", &[]),
-        "no|/probe/share/prime-agent",
+        probe(
+            "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev",
+            "no",
+            &[]
+        ),
+        "no|/probe/share/prime-agent|/probe/bin/prime-agent",
         "an upstream-stamped script must keep the upstream paths"
     );
     // The explicit marker still wins, whatever the stamp says.
     assert_eq!(
         probe(
             "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev",
+            "no",
             &[("PRIME_AGENT_FORK_BUILD", "fork.1")]
         ),
-        "yes|/probe/libexec",
+        "yes|/probe/libexec|/probe/bin/allspark",
         "PRIME_AGENT_FORK_BUILD must keep selecting the fork layout"
     );
     // The deliberate cross-install opt-out.
     assert_eq!(
         probe(
             "https://github.com/rager306/allspark/releases/latest/download",
+            "fork",
             &[("PRIME_AGENT_UPSTREAM_LAYOUT", "1")]
         ),
-        "no|/probe/share/prime-agent",
+        "no|/probe/share/prime-agent|/probe/bin/prime-agent",
         "PRIME_AGENT_UPSTREAM_LAYOUT=1 is the escape hatch for a deliberate cross-install"
     );
 }

@@ -272,12 +272,14 @@ jobs:
             out="dist/install-${channel}.sh"
             sed -e "s|^DOWNLOAD_BASE_URL_DEFAULT=.*|DOWNLOAD_BASE_URL_DEFAULT=\"${base}\"|" \
                 -e "s|^RELEASE_CHANNEL_DEFAULT=.*|RELEASE_CHANNEL_DEFAULT=${channel}|" \
+                -e "s|^INSTALL_LAYOUT_DEFAULT=.*|INSTALL_LAYOUT_DEFAULT=fork|" \
                 install-rust.sh > "$out"
             chmod +x "$out"
-            # A silent `sed` miss would ship the upstream default base, so both
-            # stamps are asserted rather than assumed.
+            # A silent `sed` miss would ship the upstream default base — or, worse,
+            # the upstream LAYOUT — so all three stamps are asserted, not assumed.
             grep -qF "DOWNLOAD_BASE_URL_DEFAULT=\"${base}\"" "$out"
             grep -qxF "RELEASE_CHANNEL_DEFAULT=${channel}" "$out"
+            grep -qxF "INSTALL_LAYOUT_DEFAULT=fork" "$out"
             sh -n "$out"
           }
           render beta
