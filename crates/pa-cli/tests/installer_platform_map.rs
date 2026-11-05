@@ -1708,3 +1708,47 @@ fn the_checked_in_installer_defaults_to_the_fork_channel() {
             .and_then(|rest| rest.strip_suffix("}\""))
     );
 }
+
+/// The render step's OUTPUT NAMES must be the names the upload lists.
+///
+/// The first tagged release failed at its own guard with "missing release asset:
+/// dist/install.sh": the render function wrote `dist/install-stable.sh` (channel
+/// name interpolated) while every upload and guard list named `dist/install.sh`.
+/// The test above checked the LIST against the reader; nothing checked the list
+/// against the step that CREATES the files.
+#[test]
+fn the_channel_installer_is_rendered_under_the_name_that_is_published() {
+    let workflow = std::fs::read_to_string(repo_root().join(".github/workflows/release-fork.yml"))
+        .expect("read the fork release workflow");
+
+    // Every `out="dist/install…"` the render step can produce. The arms sit on
+    // one line each (`stable) out="dist/install.sh" ;;`), so the prefix before
+    // `out=` is trimmed rather than required to be empty.
+    let rendered: Vec<&str> = workflow
+        .lines()
+        .filter_map(|line| line.split_once("out=\"dist/").map(|(_, rest)| rest))
+        .filter_map(|rest| rest.split('"').next())
+        .collect();
+    assert!(
+        rendered.contains(&"install.sh"),
+        "the render step must produce `install.sh` for the stable channel — the \
+         updater derives `<base>/install.sh` for a stable build and the upload lists \
+         it. Rendered names: {rendered:?}"
+    );
+    // The beta arm is templated (`install-${channel}.sh`); what matters is that the
+    // template can only ever yield `install-beta.sh` for the beta channel.
+    assert!(
+        rendered
+            .iter()
+            .any(|name| *name == "install-beta.sh" || *name == "install-${channel}.sh"),
+        "the render step must produce `install-beta.sh` for the nightly channel. \
+         Rendered names: {rendered:?}"
+    );
+    // And the published list must name exactly those files.
+    for published in ["dist/install.sh", "dist/install-beta.sh"] {
+        assert!(
+            workflow.contains(published),
+            "the release list must include {published}"
+        );
+    }
+}

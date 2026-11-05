@@ -269,7 +269,13 @@ jobs:
           base="${{ github.server_url }}/${{ github.repository }}/releases/latest/download"
           render() {
             channel="$1"
-            out="dist/install-${channel}.sh"
+            # The stable channel's entry point has NO suffix — `<base>/install.sh`
+            # is the name the upstream installer has always used and the one the
+            # updater derives for a stable build; only beta carries `-beta`.
+            case "$channel" in
+              stable) out="dist/install.sh" ;;
+              *) out="dist/install-${channel}.sh" ;;
+            esac
             sed -e "s|^DOWNLOAD_BASE_URL_DEFAULT=.*|DOWNLOAD_BASE_URL_DEFAULT=\"${base}\"|" \
                 -e "s|^RELEASE_CHANNEL_DEFAULT=.*|RELEASE_CHANNEL_DEFAULT=${channel}|" \
                 -e "s|^INSTALL_LAYOUT_DEFAULT=.*|INSTALL_LAYOUT_DEFAULT=fork|" \
