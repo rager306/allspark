@@ -275,7 +275,8 @@ impl GraphStore {
         }
         // Notes for files skipped before any hash existed have no hash row to sweep
         // (see `forget_stale_coverage`).
-        self.forget_stale_coverage(&opts.project, |rel| seen.contains(rel))?;
+        let walked: std::collections::HashSet<String> = seen.iter().cloned().collect();
+        self.forget_stale_coverage(&opts.project, &walked)?;
         if removed > 0 {
             reasons.insert(ReindexReason::Removed);
         }

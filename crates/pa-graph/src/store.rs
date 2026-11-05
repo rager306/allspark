@@ -1,6 +1,6 @@
 //! The SQLite-backed graph store: connections, node/edge writes, and reads.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -1348,22 +1348,17 @@ impl GraphStore {
     /// gone from disk and had no hash row — 73 files counted as unreadable forever,
     /// which is exactly the drift the note is supposed to prevent.
     ///
-    /// `seen` is the set this pass walked; it is a closure because the two passes keep
-    /// it in different containers (a `Vec` and a `BTreeSet`) and neither should have to
-    /// change its shape to call this.
+    /// `seen` is the set this pass walked, as a set: a note count times a walked-file
+    /// count is a product, not a sum, and the check runs on every pass.
     ///
     /// # Errors
     /// Propagates SQLite errors.
-    pub fn forget_stale_coverage(
-        &self,
-        project: &str,
-        seen: impl Fn(&str) -> bool,
-    ) -> Result<usize> {
+    pub fn forget_stale_coverage(&self, project: &str, seen: &HashSet<String>) -> Result<usize> {
         let stale: Vec<String> = self
             .coverage_rows(project)?
             .into_iter()
             .map(|(rel_path, _, _)| rel_path)
-            .filter(|rel_path| !seen(rel_path))
+            .filter(|rel_path| !seen.contains(rel_path))
             .collect();
         for rel_path in &stale {
             self.clear_file_coverage(project, rel_path)?;

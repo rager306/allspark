@@ -135,8 +135,11 @@ impl GraphStore {
         //
         // The universe is what the WALK saw, not what produced work: a skipped file is
         // walked and yields nothing, so `seen` would call every live note stale.
-        let walked = batches.walked();
-        self.forget_stale_coverage(&opts.project, |rel| walked.iter().any(|s| s == rel))?;
+        // A HashSet, not a scan per note: this runs on every pass, and a linear probe
+        // over 10^4 notes times 10^4 walked files is 10^8 comparisons on a mid-sized
+        // repo before it becomes unusable on a large one.
+        let walked: HashSet<String> = batches.walked().into_iter().collect();
+        self.forget_stale_coverage(&opts.project, &walked)?;
 
         // 4. Resolve cross-file edges now that every definition is known.
         let symbols = self.symbol_index(&opts.project)?;
