@@ -1654,3 +1654,57 @@ fn the_fork_layout_owns_libexec_and_the_allspark_launcher() {
         );
     }
 }
+
+/// The RAW install script must install the FORK, not upstream.
+///
+/// This is the failure that survived two rounds of fixes: the launcher pins the
+/// fork's release base, and the release pipeline re-renders the installer with the
+/// fork base — but the file sitting in the repo is still the UPSTREAM copy, whose
+/// `DOWNLOAD_BASE_URL_DEFAULT` is upstream's R2 bucket and whose layout default is
+/// `no`. The documented one-liner curls THAT file, so it installed upstream Prime
+/// Agent 0.10.2 with an upstream layout, from the fork's own repository.
+///
+/// The two defaults are the contract: a script a user can curl from this repo must
+/// already name this repo's channel.
+#[test]
+fn the_checked_in_installer_defaults_to_the_fork_channel() {
+    let script =
+        std::fs::read_to_string(repo_root().join("install-rust.sh")).expect("read the installer");
+
+    let value_of = |key: &str| -> Option<String> {
+        script
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}=\"")))
+            .and_then(|rest| rest.strip_suffix('"'))
+            .map(str::to_string)
+    };
+
+    let base = value_of("DOWNLOAD_BASE_URL_DEFAULT").expect("the installer's download base");
+    assert!(
+        base.contains("allspark"),
+        "install-rust.sh's own DOWNLOAD_BASE_URL_DEFAULT is {base}; the documented \
+         `curl .../allspark/main/install-rust.sh | sh` curls THIS file, so an upstream \
+         base here installs upstream Prime Agent from the fork's repository"
+    );
+    assert_eq!(
+        value_of("INSTALL_LAYOUT_DEFAULT").as_deref(),
+        Some("fork"),
+        "the checked-in installer must default to the FORK layout: the layout is a \
+         stamp on the script, and this is the script users curl"
+    );
+
+    // And it must agree with the launcher, which is what an installed fork runs.
+    let launcher = std::fs::read_to_string(repo_root().join("scripts/allspark-launcher.sh"))
+        .expect("read the launcher");
+    assert!(
+        launcher.contains(base.as_str()),
+        "the launcher and the installer must name the SAME channel: the launcher has \
+         {launcher_base:?}, the installer {base:?}",
+        launcher_base = launcher
+            .lines()
+            .find_map(|line| line.strip_prefix(
+                "export PRIME_AGENT_DOWNLOAD_BASE_URL=\"${ALLSPARK_DOWNLOAD_BASE_URL:-"
+            ))
+            .and_then(|rest| rest.strip_suffix("}\""))
+    );
+}

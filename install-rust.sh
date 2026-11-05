@@ -182,14 +182,20 @@ set -eu
 # vars.R2_PUBLIC_BASE_URL, and to <base>/install-beta.sh with the channel
 # default set to beta — the repo-file default IS the official domain, so
 # the raw repo copy installs out of the box too.
-DOWNLOAD_BASE_URL_DEFAULT="https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev"
-RELEASE_CHANNEL_DEFAULT="stable"
+# THE FORK'S OWN CHANNEL. This file lives in the allspark repository and is what
+# `curl .../rager306/allspark/main/install-rust.sh | sh` executes, so its defaults
+# must name THIS repository's release, not upstream's bucket. Upstream's release
+# pipeline re-renders its own copy with its own base and layout, so keeping those
+# values here only meant the fork's documented one-liner installed upstream Prime
+# Agent — without the fork crates — from the fork's own repository.
+DOWNLOAD_BASE_URL_DEFAULT="https://github.com/rager306/allspark/releases/latest/download"
+RELEASE_CHANNEL_DEFAULT="beta"
 # WHICH LAYOUT THIS SCRIPT INSTALLS. The repo file is the upstream copy
 # ("no"); the fork's release pipeline re-renders it with "yes" beside the
 # download-base stamp. A stamp of its own is what makes the layout a property
 # of the SCRIPT rather than of a string match inside a URL — an operator
 # pointing the fork installer at a local mirror must still get the fork layout.
-INSTALL_LAYOUT_DEFAULT="no"
+INSTALL_LAYOUT_DEFAULT="fork"
 BASE_URL="${PRIME_AGENT_DOWNLOAD_BASE_URL:-$DOWNLOAD_BASE_URL_DEFAULT}"
 CHANNEL="${PRIME_AGENT_RELEASE_CHANNEL:-$RELEASE_CHANNEL_DEFAULT}"
 PREFIX="${PRIME_AGENT_RUST_PREFIX:-$HOME/.local}"
