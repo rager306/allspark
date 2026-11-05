@@ -478,7 +478,12 @@ class TheGateRunsItsOwnTests(unittest.TestCase):
     def test_the_gate_runs_this_file(self):
         script = GATE.read_text()
         self.assertIn("scripts/test_prepush_gate.py", script)
-        for class_name in ("RunUnitVerdicts", "VerusAdvisoryLane", "VerusMirrorDriftReachability"):
+        for class_name in (
+            "RunUnitVerdicts",
+            "VerusAdvisoryLane",
+            "VerusMirrorDriftReachability",
+            "FastExitRespectsTheContractVerdict",
+        ):
             self.assertIn(class_name, script, f"the gate skips {class_name}")
 
     def test_the_fast_lanes_run_before_the_fast_exit(self):
@@ -495,6 +500,49 @@ class TheGateRunsItsOwnTests(unittest.TestCase):
             script.index('if [[ $FAST -eq 1 ]]; then'),
             "the gate's own contract check must run in --fast too",
         )
+
+
+class FastExitRespectsTheContractVerdict(unittest.TestCase):
+    """`--fast` printed GATE GREEN and returned 0 after its own contract tests failed.
+
+    The contract lane above it sets `fail=1`, and the fast exit never looked: fmt and
+    clippy were checked before that lane, so the only accumulated verdict at the exit
+    came from the gate's own tests — and it was ignored. A developer who ran the fast
+    gate was told the gate was green by a gate whose guard had just gone red, which is
+    the class this file exists to catch, one level up.
+
+    The test runs the exit's REAL text twice, with `fail` set each way, so the verdict
+    is observed rather than asserted about in a comment.
+    """
+
+    START = "# The accumulated verdict, not the formality of reaching this line"
+    END = "# Verification-ladder layers below clippy"
+
+    def run_exit(self, fail_value):
+        script = GATE.read_text()
+        self.assertIn(self.START, script, "the fast exit has no verdict block")
+        block = script[script.index(self.START) : script.index(self.END)]
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = pathlib.Path(tmp) / "exit.sh"
+            runner.write_text(
+                f"set -uo pipefail\nfail={fail_value}\nFAST=1\nOUT=/tmp/x\n"
+                + block
+                + 'echo "REACHED-THE-END\"\n'
+            )
+            result = subprocess.run(
+                ["bash", str(runner)], capture_output=True, text=True, timeout=60
+            )
+            return result.returncode, result.stdout + result.stderr
+
+    def test_a_failed_contract_makes_the_fast_gate_red(self):
+        code, out = self.run_exit(1)
+        self.assertEqual(code, 1, f"a red contract must fail the fast gate: {out}")
+        self.assertIn("GATE RED", out)
+
+    def test_a_green_contract_still_lets_the_fast_gate_pass(self):
+        code, out = self.run_exit(0)
+        self.assertEqual(code, 0, f"a green contract must not be turned red: {out}")
+        self.assertIn("GATE GREEN (fast", out)
 
 
 class VerusMirrorDriftReachability(unittest.TestCase):

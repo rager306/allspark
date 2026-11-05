@@ -171,6 +171,7 @@ step "gate contract (the gate's own tests)"
 # running.
 if python3 scripts/test_prepush_gate.py \
     RunUnitVerdicts VerusAdvisoryLane VerusMirrorDriftReachability TheGateRunsItsOwnTests \
+    FastExitRespectsTheContractVerdict \
     >"$OUT/gate-contract.log" 2>&1; then
   echo "gate contract: ok ($(grep -E '^Ran [0-9]+ tests' "$OUT/gate-contract.log"))"
 else
@@ -190,6 +191,16 @@ if python3 scripts/verus-mirror-check.py >"$OUT/verus-mirror.log" 2>&1; then
 else
   echo "verus-mirror: DRIFT (advisory — never blocks a merge; $OUT/verus-mirror.log)"
   grep -E 'DRIFT|not (found|resolvable)' "$OUT/verus-mirror.log" | sed 's/^/  /'
+fi
+
+# The accumulated verdict, not the formality of reaching this line: the gate's own
+# contract tests run above and set `fail` on a red verdict, and this exit used to ignore
+# it — `--fast` printed GATE GREEN and returned 0 with a broken gate contract. The
+# check is here rather than repeated per lane because the full gate has its own exits
+# and this one is the only path that skips them.
+if [[ $fail -ne 0 ]]; then
+  echo; echo "GATE RED (fast: fmt, clippy or the gate contract failed). Logs: $OUT"
+  exit 1
 fi
 
 if [[ $FAST -eq 1 ]]; then
