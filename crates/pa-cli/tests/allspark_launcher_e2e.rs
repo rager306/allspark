@@ -199,3 +199,71 @@ fn launcher_runs_the_real_fork_binary_version() {
          upstream base: {text}"
     );
 }
+
+/// Re-running the launcher from inside an allspark session must not nest the home.
+///
+/// `allspark` exports `HOME=$ALLSPARK_HOME`, so a launcher started from a session
+/// it created computes `$HOME/.allspark-home` =
+/// `…/.allspark-home/.allspark-home`: a second agent home with its own kernel venv,
+/// uv toolchain and sessions that the outer home cannot see. Measured on a live
+/// machine on 2026-11-06: 184 MB, one session, four days idle.
+///
+/// The fix must be idempotent — one nesting level and two both land in the SAME
+/// home — and must not touch a custom `ALLSPARK_HOME` that is not the default shape.
+#[test]
+fn a_launcher_run_from_inside_the_home_does_not_nest_it() {
+    let script = std::fs::read_to_string(launcher_script()).expect("read the launcher");
+    // Everything up to the payload lookup: the path resolution under test, with no
+    // exec and no payload needed.
+    let head = &script[..script.find("PAYLOAD_DIR=").expect("the payload lookup")];
+    let probe = format!("{head}\nprintf '%s\\n' \"$ALLSPARK_HOME\"\n");
+
+    let resolve = |home: &str, explicit: Option<&str>| -> String {
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(&probe)
+            .env("HOME", home)
+            .env_remove("ALLSPARK_HOME");
+        if let Some(explicit) = explicit {
+            command.env("ALLSPARK_HOME", explicit);
+        }
+        let output = command.output().expect("run the launcher head");
+        assert!(
+            output.status.success(),
+            "the launcher head runs: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+
+    // The normal case is unchanged.
+    assert_eq!(resolve("/home/u", None), "/home/u/.allspark-home");
+    // One level of nesting collapses to the outer home — this is the bug.
+    assert_eq!(
+        resolve("/home/u/.allspark-home", None),
+        "/home/u/.allspark-home",
+        "a launcher run from inside its own home must reuse that home, not nest a copy"
+    );
+    // Two levels collapse too: the walk is a loop, not a single trim.
+    assert_eq!(
+        resolve("/home/u/.allspark-home/.allspark-home", None),
+        "/home/u/.allspark-home",
+        "the collapse must repeat, not run once"
+    );
+    // An explicit, differently-shaped home is untouched.
+    assert_eq!(
+        resolve("/home/u", Some("/srv/allspark")),
+        "/srv/allspark",
+        "a custom ALLSPARK_HOME that does not nest must be used as given"
+    );
+    // And a custom home that IS nested still collapses to its own root.
+    assert_eq!(
+        resolve(
+            "/home/u",
+            Some("/srv/allspark/.allspark-home/.allspark-home")
+        ),
+        "/srv/allspark/.allspark-home",
+        "nesting collapses under a custom root too"
+    );
+}

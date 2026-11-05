@@ -12,6 +12,29 @@ if [ -z "${ALLSPARK_HOME:-}" ]; then
     ALLSPARK_HOME="$HOME/.allspark-home"
 fi
 
+# NEVER NEST. `allspark` launched from inside an allspark session inherits that
+# session's HOME (the launcher set it), so `$HOME/.allspark-home` becomes
+# `…/.allspark-home/.allspark-home`: a second agent home with its own kernel venv,
+# its own uv toolchain, and its own sessions, none of which the outer home can see
+# (measured: 184 MB of it, one session, discovered 2026-11-06). Re-running the
+# launcher must land in the SAME home, not a deeper copy of it.
+#
+# The check is on the RESOLVED path: `/root/.allspark-home/./`, a `..` segment, or
+# a symlinked spelling all name the same directory, and comparing the raw strings
+# would let each one through.
+# Strip until the PARENT is no longer an allspark home: check the parent, not the
+# path itself, or the first iteration breaks immediately (every nested path already
+# ends in `/.allspark-home`). The resolution above makes `./`, `..` and symlinked
+# spellings compare as the directory they name.
+ALLSPARK_HOME="$(cd "$ALLSPARK_HOME" 2>/dev/null && pwd -P || printf '%s' "$ALLSPARK_HOME")"
+while :; do
+    parent="${ALLSPARK_HOME%/.allspark-home}"
+    case "$parent" in
+        */.allspark-home) ALLSPARK_HOME="$parent" ;;
+        *) break ;;
+    esac
+done
+
 PAYLOAD_DIR="$(cd "$SELF_DIR/.." && pwd)/libexec"
 PAYLOAD="$PAYLOAD_DIR/prime-agent"
 
