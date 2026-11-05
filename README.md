@@ -74,6 +74,24 @@ built-in default, so it selects the **fork layout** on its own:
 The upstream paths (`~/.local/share/prime-agent`, `~/.local/bin/prime-agent`) are **left
 untouched**, so an installed upstream Prime Agent keeps working beside the fork.
 
+If that reports `could not resolve the latest beta version`, the fork's release channel has
+not been cut yet: the newest published release predates the channel (it carries no `beta`
+pointer and names its tarball `allspark-v<version>-linux-x86_64` instead of the channel's
+`prime-agent-<version>-linux-x64`), so neither the channel install nor a `PRIME_AGENT_VERSION`
+pin can resolve it. Install that release by hand instead:
+
+```bash
+V=0.10.2-beta.3-fork.010   # the tag's allspark-v prefix stripped
+curl -fsSLO "https://github.com/rager306/allspark/releases/download/allspark-v${V}/allspark-v${V}-linux-x86_64.tar.gz"
+tar -xzf "allspark-v${V}-linux-x86_64.tar.gz"
+# the archive already holds the fork layout: libexec/prime-agent + bin/allspark
+mkdir -p ~/.local && cp -a "allspark-v${V}-linux-x86_64/." ~/.local/
+~/.local/bin/allspark --version
+```
+
+Once a release cut from the fixed workflow exists, the one-liner above installs the current
+channel and `allspark update` works.
+
 #### Update
 
 ```bash
