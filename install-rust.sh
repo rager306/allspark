@@ -3190,6 +3190,60 @@ if [ -d "$share_dir" ] && ts_managed "$share_dir"; then
   say "  rollback: ${ts_takeover_undo}"
 fi
 
+# Whether an UNMARKED tree at $1 is one of OURS: its payload answers the fork
+# identity line. A fork build prints
+#   allspark <version> (fork build fork.NNN; upstream prime-agent <version>)
+# so the first field alone identifies the product. Bounded, and any failure —
+# no payload, an unreadable one, a hang — is a NO: the caller then refuses as it
+# always did, which is the safe answer for a tree this run does not own.
+is_fork_payload_at() {
+  tree="$1"
+  probe="${tree}/${BINARY_NAME}"
+  [ -f "$probe" ] && [ -x "$probe" ] || return 1
+  # The SAME bounded shape the archive probe uses: a runner owns the payload as
+  # ITS child (a sibling's `wait` cannot reap it), publishes the pid, and writes
+  # a done marker the loop polls. Any failure — no answer, a hang, a nonzero
+  # exit, a non-fork line — is a NO, and the caller then refuses the way it always
+  # has. Never adopt a tree on a guess.
+  tree_probe_out="$dl/.tree-probe.out"
+  tree_probe_done="$dl/.tree-probe.done"
+  tree_probe_pid="$dl/.tree-probe.pid"
+  rm -f "$tree_probe_out" "$tree_probe_done" "$tree_probe_pid"
+  (
+    unset PI_PACKAGE_DIR || true
+    ulimit -f 64 2>/dev/null || true
+    "$probe" --version >"$tree_probe_out" 2>/dev/null &
+    printf '%s\n' "$!" >"$tree_probe_pid"
+    wait "$!" || true
+    printf 'done\n' >"$tree_probe_done"
+  ) &
+  tree_probe_runner=$!
+  tree_probe_waited=0
+  while [ ! -f "$tree_probe_done" ]; do
+    tree_probe_waited=$((tree_probe_waited + 1))
+    if [ "$tree_probe_waited" -gt 5 ]; then
+      tree_probe_pid_val="$(cat "$tree_probe_pid" 2>/dev/null || true)"
+      if [ -n "$tree_probe_pid_val" ]; then
+        kill "$tree_probe_pid_val" 2>/dev/null || true
+        sleep 1
+        kill -9 "$tree_probe_pid_val" 2>/dev/null || true
+      else
+        kill -9 "$tree_probe_runner" 2>/dev/null || true
+      fi
+      rm -f "$tree_probe_out" "$tree_probe_done" "$tree_probe_pid"
+      return 1
+    fi
+    sleep 1
+  done
+  wait "$tree_probe_runner" 2>/dev/null || true
+  tree_probe_line="$(head -n 1 "$tree_probe_out" 2>/dev/null || true)"
+  rm -f "$tree_probe_out" "$tree_probe_done" "$tree_probe_pid"
+  case "$tree_probe_line" in
+    allspark\ *) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Refuse to take ownership of a share dir that is neither this installer's
 # marked payload tree nor the TS managed root (the TS installer's own rule:
 # never adopt a nonempty directory you do not own). Only a tree carrying the
@@ -3200,6 +3254,14 @@ if [ -d "$share_dir" ]; then
     :   # this installer's own previous tree: the normal update path below
   elif [ -z "$(ls -A "$share_dir" 2>/dev/null)" ]; then
     rmdir "$share_dir"
+  elif [ "$fork_layout" = "yes" ] && is_fork_payload_at "$share_dir"; then
+    # A fork tree installed BEFORE this installer wrote its marker into the
+    # published tree (fork.015 and every earlier build): the payload beside it is
+    # ours — its own `--version` answers `allspark … (fork build …)`. Refusing it
+    # meant the FIRST update after such an install could never run; the user had
+    # to move the tree aside by hand. Asking the payload who it is keeps the
+    # original rule intact: an unrelated directory is still never adopted.
+    say "adopting the existing allspark payload at ${share_dir} (installed before the marker moved here)"
   else
     die "refusing to take ownership of ${share_dir}: it is neither this
 installer's marked payload tree (.prime-agent-install) nor the TypeScript

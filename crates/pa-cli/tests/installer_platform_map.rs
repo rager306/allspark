@@ -1783,3 +1783,50 @@ fn the_ownership_marker_rides_the_published_tree() {
         "the installer must still know both layouts"
     );
 }
+
+/// An UNMARKED fork tree is adopted, so the first update after it can run.
+///
+/// `fork.015` and every earlier build published their payload without the
+/// ownership marker (it was written to the staging root, not the published tree).
+/// `fork.016` fixed the write, but the machines that already HAVE such a tree —
+/// including the one this was reported from — then hit
+///
+///     refusing to take ownership of …/libexec: it is neither this installer's
+///     marked payload tree (.prime-agent-install) nor the TypeScript managed root
+///
+/// and could never update without moving the tree aside by hand. The refusal must
+/// still fire for a tree that is NOT ours; the difference is the payload's own
+/// `--version`, which answers `allspark … (fork build …)` for a fork build.
+#[test]
+fn an_unmarked_fork_payload_is_adopted_but_a_foreign_tree_is_not() {
+    let script =
+        std::fs::read_to_string(repo_root().join("install-rust.sh")).expect("read the installer");
+
+    // The adoption arm exists, is gated on the fork layout, and asks the payload.
+    assert!(
+        script
+            .contains("elif [ \"$fork_layout\" = \"yes\" ] && is_fork_payload_at \"$share_dir\";"),
+        "an unmarked tree in the fork layout must be adopted when its payload \
+         answers the fork identity line; otherwise the machines already running \
+         fork.015 or earlier can never update"
+    );
+    // The probe is BOUNDED and fails closed.
+    let helper_start = script
+        .find("is_fork_payload_at() {")
+        .expect("the payload probe");
+    let helper = &script[helper_start..];
+    let helper = &helper[..helper.find("\n}\n").expect("the probe's end")];
+    assert!(
+        helper.contains("tree_probe_waited\" -gt 5"),
+        "the probe must be bounded: an unrelated binary that hangs on --version \
+         would otherwise hang the install"
+    );
+    assert!(
+        helper.contains("allspark\\ *) return 0"),
+        "only the fork identity line may adopt a tree"
+    );
+    assert!(
+        helper.contains("*) return 1"),
+        "every other answer must fail closed and let the refusal fire"
+    );
+}
