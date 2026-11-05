@@ -1382,6 +1382,20 @@ fi
 case "${PRIME_AGENT_DAEMON_SOCKET:-}" in
   *allspark*) fork_layout="yes" ;;
 esac
+# The PUBLISHED script knows it is the fork's: the release pipeline stamps
+# DOWNLOAD_BASE_URL_DEFAULT with the fork repository's own release URL, so a run
+# that has no env marker at all (a plain `curl | sh`) still lands in the fork
+# layout instead of writing the fork payload over an upstream install's
+# `share/prime-agent`. Without this, the documented one-liner installed the
+# UPSTREAM layout from the FORK script and left two half-installs behind.
+case "${DOWNLOAD_BASE_URL_DEFAULT:-}" in
+  *allspark*) fork_layout="yes" ;;
+esac
+# An explicit opt-out for the deliberate cross-install (installing the fork
+# payload into the upstream paths on purpose): PRIME_AGENT_UPSTREAM_LAYOUT=1.
+if [ "${PRIME_AGENT_UPSTREAM_LAYOUT:-}" = "1" ]; then
+  fork_layout="no"
+fi
 
 if [ "$fork_layout" = "yes" ]; then
   # Fork layout: the payload rides libexec/ (its own tree, beside the
@@ -1565,13 +1579,39 @@ ROW_PY
 done
 fi
 
-# --- the tarball + SHA256SUMS from the versioned release prefix -------------
+# --- the tarball + SHA256SUMS: R2 prefix first, FLAT release second ----------
+#
+# Two servers publish this channel and they lay the same assets out differently:
+#
+#   R2 (upstream's shape)   <base>/releases/v<version>/<tarball> + SHA256SUMS
+#   GitHub release (flat)   <base>/<tarball> + SHA256SUMS, at the release root
+#
+# A GitHub release URL CANNOT express `<base>/releases/v<ver>/` — the tag is the
+# only path segment it has — so asking only for the R2 shape 404s on every fork
+# update. Trying the prefix first keeps upstream/R2 installs byte-identical, and
+# the flat retry is what makes a GitHub-hosted fork release installable at all.
+#
+# Both branches verify the same way below: the manifest's sha256 is
+# cross-checked against the SHA256SUMS line, so a lying manifest refuses
+# whichever base served it.
 RELEASE_PREFIX="releases/v${VERSION#v}"
 step_start "Downloading"
-fetch "${BASE_URL}/${RELEASE_PREFIX}/${asset_name}" "$dl/${asset_name}" 1800 bar \
-  || die "could not download ${BASE_URL}/${RELEASE_PREFIX}/${asset_name} (3 attempts${fetch_error:+, last error: $fetch_error}; check the network and re-run)"
-fetch "${BASE_URL}/${RELEASE_PREFIX}/SHA256SUMS" "$dl/SHA256SUMS" 30 \
-  || die "could not download ${BASE_URL}/${RELEASE_PREFIX}/SHA256SUMS (3 attempts${fetch_error:+, last error: $fetch_error}; check the network and re-run)"
+release_base="${BASE_URL}/${RELEASE_PREFIX}"
+if ! fetch "${release_base}/${asset_name}" "$dl/${asset_name}.probe" 30 >/dev/null 2>&1; then
+  # No versioned prefix here: a FLAT release root. Confirm with the checksums,
+  # so a genuinely broken R2 base still fails with the R2 path in the message.
+  if fetch "${BASE_URL}/SHA256SUMS" "$dl/SHA256SUMS.probe" 30 >/dev/null 2>&1; then
+    release_base="${BASE_URL}"
+    say "flattened release layout: ${release_base}"
+  else
+    die "could not find ${asset_name} at ${BASE_URL}/${RELEASE_PREFIX}/ or ${BASE_URL}/ (check the download base and the channel; set PRIME_AGENT_DOWNLOAD_BASE_URL to the release's own URL)"
+  fi
+fi
+rm -f "$dl/${asset_name}.probe" "$dl/SHA256SUMS.probe"
+fetch "${release_base}/${asset_name}" "$dl/${asset_name}" 1800 bar \
+  || die "could not download ${release_base}/${asset_name} (3 attempts${fetch_error:+, last error: $fetch_error}; check the network and re-run)"
+fetch "${release_base}/SHA256SUMS" "$dl/SHA256SUMS" 30 \
+  || die "could not download ${release_base}/SHA256SUMS (3 attempts${fetch_error:+, last error: $fetch_error}; check the network and re-run)"
 asset="$dl/${asset_name}"
 step_ok "Downloaded" "$(ui_mb "$(wc -c < "$asset" | tr -d ' ')")"
 

@@ -50,6 +50,76 @@ The binary deliberately keeps the upstream name `prime-agent`; the user-facing e
 points, and where to read next. Everything below this banner documents upstream Prime Agent,
 and all of it still applies to the fork.
 
+### Installing and updating the fork
+
+The commands below are the **only** supported way to install or update allspark. Upstream's
+installer (`app.primeintellect.ai/.../install.sh`) is not one of them: it installs Prime Agent
+without the fork crates.
+
+#### Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rager306/allspark/main/install-rust.sh | sh
+```
+
+That is safe to run as-is. The published script carries the fork's own release URL as its
+built-in default, so it selects the **fork layout** on its own:
+
+| | path |
+|---|---|
+| payload | `~/.local/libexec/prime-agent` |
+| launcher | `~/.local/bin/allspark` |
+| user settings, sessions, auth | `$HOME/.allspark-home` (never `~/.prime`) |
+
+The upstream paths (`~/.local/share/prime-agent`, `~/.local/bin/prime-agent`) are **left
+untouched**, so an installed upstream Prime Agent keeps working beside the fork.
+
+#### Update
+
+```bash
+allspark update
+```
+
+If it reports `404` for an installer URL, the release you are on predates the fork's update
+channel; re-run the install command above instead. Do not run `prime-agent update` — that is the
+upstream binary's own updater and would replace the fork payload.
+
+#### Upgrade from a manual or archived install
+
+Read the version from the release's `stable` pointer, then fetch that tarball:
+
+```bash
+VERSION="$(curl -fsSL https://github.com/rager306/allspark/releases/latest/download/stable)"
+curl -fsSL -o /tmp/allspark.tar.gz \
+  "https://github.com/rager306/allspark/releases/latest/download/prime-agent-${VERSION}-linux-x64.tar.gz"
+sh install-rust.sh --archive /tmp/allspark.tar.gz
+```
+
+#### Uninstall
+
+```bash
+rm -rf ~/.local/libexec/prime-agent ~/.local/bin/allspark ~/.allspark-home
+```
+
+#### What NOT to do
+
+| don't | why |
+|---|---|
+| `curl … \| sh` with upstream's URL | installs Prime Agent without the fork crates |
+| `prime-agent update` | the upstream payload's updater; replaces the fork binary |
+| `allspark update` on a pre-channel release | known: the channel assets did not exist; re-install instead |
+| copy `~/.prime` into `~/.allspark-home` | rotating OAuth refresh tokens invalidate each other |
+
+#### Checking what you have
+
+```bash
+allspark --version
+# allspark 0.10.2-beta.10 (fork build fork.012; build f541ea75f94c; upstream prime-agent 0.10.2-beta.10)
+```
+
+`--version` names the fork, the fork build, the content hash, and the upstream base it merged.
+A plain `0.10.2` with no `(fork build …)` is an upstream install, not this one.
+
 ---
 
 Prime Agent is an open-source coding and research agent for general and long-running work. It is designed around two core abstractions:

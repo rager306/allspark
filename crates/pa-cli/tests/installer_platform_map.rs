@@ -1382,80 +1382,39 @@ fn the_socket_dedup_keeps_the_fork_owner_when_the_paths_coincide() {
 // ─── The fork update channel is self-consistent (regression) ───────────────
 //
 // `allspark update` on a fork build asked for
-// `.../releases/latest/download/install-beta.sh` and got 404. Three artifacts each
-// assume a different shape of the same channel, and nothing checked them against
-// each other:
+// `.../releases/latest/download/install-beta.sh` and got 404 — the whole update
+// path was dead. Four artifacts each assumed a different shape of the same
+// channel and nothing compared them:
 //
-//   1. the launcher pins PRIME_AGENT_DOWNLOAD_BASE_URL to a GITHUB release
-//      (`.../releases/latest/download`);
-//   2. the release publishes a FLAT asset set (`<tarball>`, `SHA256SUMS`,
-//      `stable`, `latest.json` at the release root);
-//   3. both readers derive R2-shaped paths from that base — the updater appends
-//      `/<install-beta.sh>` and the planner/installer append `/releases/v<ver>/`.
+//   1. the launcher pins the base to a GITHUB release (`releases/latest/download`);
+//   2. the release published a FLAT, STABLE-ONLY asset set — no installer script,
+//      no `beta`/`beta.json` (and a `-beta` build is NIGHTLY, so it asks for those);
+//   3. the reader derives `<base>/install-beta.sh`;
+//   4. the installer derives `<base>/releases/v<version>/` — a path a GitHub
+//      release cannot express, because its tag is the only path segment it has.
 //
-// Any two of those are individually reasonable; together they cannot resolve. This
-// test pins the invariant at the seam, where a future edit to one artifact cannot
-// silently break the other two.
+// These tests pin each seam so one artifact cannot drift from the others again.
 
 /// Every path a fork update reads, derived exactly as the product derives them.
-fn fork_update_paths(base: &str, version: &str, archive: &str) -> Vec<String> {
+fn fork_update_paths(base: &str, archive: &str) -> Vec<String> {
     let base = base.trim_end_matches('/');
     vec![
         // `installer_script_url`: the nightly branch (a `-beta` build is nightly).
         format!("{base}/install-beta.sh"),
-        // `plan.rs`: the archive URL the staged flow downloads.
-        format!("{base}/releases/v{version}/{archive}"),
-        // `install-rust.sh`: RELEASE_PREFIX, for the tarball and the checksums.
-        format!("{base}/releases/v{version}/SHA256SUMS"),
-        // The channel pointer and manifest ride the base directly.
-        format!("{base}/stable"),
-        format!("{base}/latest.json"),
+        // The channel pointer + manifest the installer reads for `beta`.
+        format!("{base}/beta"),
+        format!("{base}/beta.json"),
+        // The payload: flat at the release root (R2's versioned prefix is tried
+        // first by the installer, but a GitHub release cannot serve it).
+        format!("{base}/{archive}"),
+        format!("{base}/SHA256SUMS"),
     ]
 }
 
-/// The assets the fork release actually publishes, at the release root.
-fn fork_release_assets(version: &str, archive: &str) -> Vec<String> {
-    vec![
-        archive.to_string(),
-        "SHA256SUMS".to_string(),
-        "stable".to_string(),
-        "latest.json".to_string(),
-        // The version the pointer file names (checked by the workflow).
-        version.to_string(),
-    ]
-}
-
-/// The three artifacts must agree, or `allspark update` cannot work at all.
-///
-/// IGNORED, and the reason is the defect this test exists for. Run it with
-/// `cargo test -p pa-cli --test installer_platform_map -- --ignored` and it fails:
-///
-///   the fork update reads .../releases/latest/download/install-beta.sh, but the
-///   release publishes only [...tar.gz, SHA256SUMS, stable, latest.json]
-///
-/// The launcher pins the base to a GitHub `releases/latest/download` URL. That
-/// serves a FLAT asset set, while both readers derive R2-shaped paths from it —
-/// `installer_script_url` appends `/install-beta.sh`, and `plan.rs` /
-/// `install-rust.sh` append `/releases/v<version>/`. Three artifacts, three
-/// assumptions, no agreement: `allspark update` 404s before it installs anything.
-///
-/// Making this green is a CHANNEL DECISION, not a test fix, so it is left to the
-/// owner rather than guessed here:
-///   - publish `install.sh` / `install-beta.sh` as release assets AND teach both
-///     readers the flat layout (a GitHub release cannot carry a `releases/v<ver>/`
-///     path, so the R2 shape is impossible there); or
-///   - point the launcher's base at an R2 bucket that already serves the R2 shape.
-///
-/// The second is what `install-rust.sh`'s header documents and what the fork
-/// does not yet have.
-#[test]
-#[ignore = "the fork update channel is inconsistent: the launcher's GitHub base serves a\
-            flat asset set while the readers ask for install-beta.sh and\
-            releases/v<version>/ — see this test's doc for the two ways to fix it"]
-fn the_fork_update_channel_is_self_consistent() {
+fn launcher_download_base() -> String {
     let launcher = std::fs::read_to_string(repo_root().join("scripts/allspark-launcher.sh"))
         .expect("read the launcher");
-    let base = launcher
+    launcher
         .lines()
         .find_map(|line| {
             line.strip_prefix(
@@ -1463,31 +1422,213 @@ fn the_fork_update_channel_is_self_consistent() {
             )
             .and_then(|rest| rest.strip_suffix("}\""))
         })
-        .expect("the launcher pins the fork download base");
+        .expect("the launcher pins the fork download base")
+        .to_string()
+}
 
-    // Every path the product derives from that base.
-    let paths = fork_update_paths(
-        base,
-        "0.10.3-beta.15",
-        "prime-agent-0.10.3-beta.15-linux-x64.tar.gz",
-    );
-    // Every asset the release publishes, as a path under the base.
-    let published: Vec<String> = fork_release_assets(
-        "0.10.3-beta.15",
-        "prime-agent-0.10.3-beta.15-linux-x64.tar.gz",
-    )
-    .into_iter()
-    .map(|asset| format!("{}/{asset}", base.trim_end_matches('/')))
-    .collect();
+/// The launcher's base and the release's asset set must describe the same channel.
+///
+/// Red-first: before the fix the release published only
+/// `[<tarball>, SHA256SUMS, stable, latest.json]` — no installer script and no
+/// `beta` pair — while the reader asked for `install-beta.sh`.
+#[test]
+fn the_release_publishes_every_asset_the_fork_update_reads() {
+    let workflow = std::fs::read_to_string(repo_root().join(".github/workflows/release-fork.yml"))
+        .expect("read the fork release workflow");
+    let base = launcher_download_base();
+    let version = "0.10.3-beta.15";
+    let archive = format!("prime-agent-{version}-linux-x64.tar.gz");
 
-    // The installer script and the archive are the two the run cannot proceed
-    // without; both must be reachable at the URL the product derives.
-    for required in [&paths[0], &paths[1], &paths[2]] {
+    // Every asset the workflow names in one of its upload/create lists. The
+    // commands wrap across lines with a trailing backslash, so a line-at-a-time
+    // scan sees only the first third of the list — it must join continuations
+    // first, or the assertion passes/fails on formatting rather than content.
+    let mut commands: Vec<String> = Vec::new();
+    let mut pending = false;
+    for line in workflow.lines() {
+        let trimmed = line.trim_end();
+        let starts = trimmed.contains("gh release upload") || trimmed.contains("gh release create");
+        if !pending && !starts {
+            continue;
+        }
+        let continued = trimmed.ends_with('\\');
+        let body = trimmed.trim_end_matches('\\');
+        match commands.last_mut() {
+            Some(command) if pending => command.push_str(body),
+            _ => commands.push(body.to_string()),
+        }
+        pending = continued;
+    }
+    // Only the UPLOAD/CREATE argument lists count: the names also appear in the
+    // asset-existence guards and the render step, and a test that scans the whole
+    // file would stay green while nothing is actually published.
+    let uploaded: Vec<&str> = commands
+        .iter()
+        .flat_map(|command| command.split_whitespace())
+        .filter(|token| token.starts_with("dist/"))
+        .collect();
+    for required in [
+        "dist/install.sh",
+        "dist/install-beta.sh",
+        "dist/beta",
+        "dist/beta.json",
+        "dist/stable",
+        "dist/latest.json",
+        "dist/SHA256SUMS",
+    ] {
         assert!(
-            published.iter().any(|asset| asset == required),
-            "the fork update reads {required}, but the release publishes only \
-             {published:?} — the base ({base}) and the asset layout disagree, so \
-             `allspark update` 404s before it can install anything"
+            uploaded.contains(&required),
+            "the release never uploads {required}; `allspark update` reads a URL derived \
+             from it and would 404. Uploaded: {uploaded:?}"
+        );
+    }
+    // And the reader's own derived paths all land on an asset name the release has.
+    for path in fork_update_paths(&base, &archive) {
+        let name = path.rsplit('/').next().unwrap_or_default();
+        let published = uploaded.iter().any(|asset| {
+            let published_name = asset.rsplit('/').next().unwrap_or_default();
+            published_name == name
+                || (name.starts_with("prime-agent-") && published_name.ends_with(".tar.gz"))
+        });
+        assert!(
+            published,
+            "the fork update reads {path}, which no published asset matches; \
+             uploaded: {uploaded:?}"
+        );
+    }
+}
+
+/// The installer must accept a FLAT release root, not only R2's versioned prefix.
+///
+/// This is the half that cannot be fixed by publishing more assets: a GitHub
+/// release URL has no `releases/v<version>/` segment, so the R2 shape is
+/// unreachable there. Red-first: with only `RELEASE_PREFIX` in the script this
+/// assertion fails — the string `BASE_URL}/SHA256SUMS` (the flat fallback) is absent.
+#[test]
+fn the_installer_falls_back_to_a_flat_release_root() {
+    let script =
+        std::fs::read_to_string(repo_root().join("install-rust.sh")).expect("read the installer");
+    assert!(
+        script.contains("RELEASE_PREFIX=\"releases/v${VERSION#v}\""),
+        "the R2 versioned prefix must stay the FIRST try: upstream installs read it"
+    );
+    assert!(
+        script.contains("release_base=\"${BASE_URL}\""),
+        "the installer must fall back to the FLAT release root — a GitHub release \
+         cannot serve `<base>/releases/v<version>/`, so without this every fork \
+         update 404s on the tarball"
+    );
+    assert!(
+        script.contains(
+            "could not find ${asset_name} at ${BASE_URL}/${RELEASE_PREFIX}/ or ${BASE_URL}/"
+        ),
+        "a total miss must name BOTH layouts it tried, or the operator cannot tell \
+         a wrong base from a wrong layout"
+    );
+}
+
+/// The PUBLISHED fork installer must land in the FORK layout with no env at all.
+///
+/// This is the failure the user hit: `curl -fsSL .../allspark/main/install-rust.sh | sh`
+/// printed "installing allspark …" and then wrote the payload to
+/// `~/.local/share/prime-agent` with a `bin/prime-agent` launcher — the UPSTREAM
+/// layout. `fork_layout` only consulted `PRIME_AGENT_FORK_BUILD` and the allspark
+/// socket, so a plain run looked like an upstream one and put the fork payload on
+/// top of the upstream paths (leaving two half-installs behind).
+///
+/// The published script is stamped with the fork's own release base, and that
+/// stamp is the signal a plain `curl | sh` carries.
+#[test]
+fn the_published_fork_installer_selects_the_fork_layout_without_env() {
+    // BEHAVIOURAL, not a string scan: run the script's own layout block with the
+    // environment a plain `curl | sh` has (no fork marker, no socket) and read
+    // which paths it chose. A `contains(...)` assertion would stay green when the
+    // case-arm is present but unreachable.
+    let script =
+        std::fs::read_to_string(repo_root().join("install-rust.sh")).expect("read the installer");
+    let start = script.find("fork_layout=\"no\"").expect("the layout block");
+    let end = start
+        + script[start..]
+            .find("old_layout_dir=")
+            .expect("the end of the layout block");
+    let block = &script[start..end];
+
+    let probe = |base_default: &str, env: &[(&str, &str)]| -> String {
+        let mut harness = String::from("set -u\nPREFIX=/probe\n");
+        harness.push_str("DOWNLOAD_BASE_URL_DEFAULT='");
+        harness.push_str(base_default);
+        harness.push_str("'\n");
+        for (key, value) in env {
+            harness.push_str(key);
+            harness.push_str("='");
+            harness.push_str(value);
+            harness.push_str("'\n");
+        }
+        harness.push_str(block);
+        harness.push_str("\nprintf '%s|%s\\n' \"$fork_layout\" \"$share_dir\"\n");
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(&harness)
+            .output()
+            .expect("run the layout block");
+        assert!(
+            output.status.success(),
+            "the layout block runs: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+
+    // A plain `curl | sh` of the PUBLISHED fork script: no env marker at all, but
+    // the stamped base names the fork's own release. This is the case the user hit.
+    assert_eq!(
+        probe(
+            "https://github.com/rager306/allspark/releases/latest/download",
+            &[]
+        ),
+        "yes|/probe/libexec",
+        "the published fork installer must choose the FORK layout from its stamp alone"
+    );
+    // The upstream script (upstream's own base) keeps the upstream layout.
+    assert_eq!(
+        probe("https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev", &[]),
+        "no|/probe/share/prime-agent",
+        "an upstream-stamped script must keep the upstream paths"
+    );
+    // The explicit marker still wins, whatever the stamp says.
+    assert_eq!(
+        probe(
+            "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev",
+            &[("PRIME_AGENT_FORK_BUILD", "fork.1")]
+        ),
+        "yes|/probe/libexec",
+        "PRIME_AGENT_FORK_BUILD must keep selecting the fork layout"
+    );
+    // The deliberate cross-install opt-out.
+    assert_eq!(
+        probe(
+            "https://github.com/rager306/allspark/releases/latest/download",
+            &[("PRIME_AGENT_UPSTREAM_LAYOUT", "1")]
+        ),
+        "no|/probe/share/prime-agent",
+        "PRIME_AGENT_UPSTREAM_LAYOUT=1 is the escape hatch for a deliberate cross-install"
+    );
+}
+
+/// And the layout choice drives BOTH paths it names, not only the launcher.
+#[test]
+fn the_fork_layout_owns_libexec_and_the_allspark_launcher() {
+    let script =
+        std::fs::read_to_string(repo_root().join("install-rust.sh")).expect("read the installer");
+    for required in [
+        "share_dir=\"${PREFIX}/libexec\"",
+        "launcher=\"${bin_dir}/allspark\"",
+    ] {
+        assert!(
+            script.contains(required),
+            "the fork layout must keep {required}; writing to the upstream \
+             share/prime-agent tree replaces a co-installed upstream binary with one \
+             that lacks the fork crates"
         );
     }
 }

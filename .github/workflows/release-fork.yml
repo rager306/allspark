@@ -197,7 +197,13 @@ jobs:
           # channel instead of refusing (no upstream channel serves fork
           # builds) or silently keeping the old payload.
           version="${tag#allspark-v}"
+          # BOTH channel names point at this release. A fork version is always
+          # `-beta.N`, and `resolve_update_channel` reads that as NIGHTLY — so
+          # the updater asks for `beta` / `beta.json`, not `stable` /
+          # `latest.json`. Publishing only the stable pair made every fork
+          # update 404 on the pointer before it reached the installer.
           printf '%s\n' "$version" > dist/stable
+          printf '%s\n' "$version" > dist/beta
           sha_row=$(grep "${root}.tar.gz" dist/SHA256SUMS | awk '{print $1}')
           python3 - "$version" "$sha_row" "${root}.tar.gz" <<'PY'
           import json, pathlib, sys
@@ -210,9 +216,12 @@ jobs:
                   "sha256": sha,
               }],
           }
-          pathlib.Path("dist/latest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          body = json.dumps(manifest, indent=2) + "\n"
+          pathlib.Path("dist/latest.json").write_text(body)
+          # The nightly manifest the updater actually reads for a `-beta` build.
+          pathlib.Path("dist/beta.json").write_text(body)
           PY
-          echo "channel assets: dist/stable dist/latest.json"
+          echo "channel assets: dist/stable dist/beta dist/latest.json dist/beta.json"
           cat dist/SHA256SUMS
       - name: Prove the packaged launcher runs
         run: |
@@ -241,14 +250,53 @@ jobs:
           test -f "unpack/${root}/libexec/prime-agent-runtime/pyproject.toml"
           test -d "unpack/${root}/libexec/skills"
           test -n "$(ls -A "unpack/${root}/libexec/skills")"
+      - name: Publish the channel installer
+        # The updater fetches `<base>/install-beta.sh` (nightly) or
+        # `<base>/install.sh` (stable) and EXECS it — that script is the update
+        # path, not the tarball. Without these two assets the release cannot be
+        # updated from at all: `allspark update` 404s on the script before it
+        # ever asks for a payload.
+        #
+        # Both are rendered from the repo's own install-rust.sh, exactly as
+        # upstream renders install.sh/install-beta.sh into its bucket: the
+        # published copy differs only in its two stamped defaults (download
+        # base, channel), so the script the user curls and the script the
+        # updater execs are the same file.
+        run: |
+          set -euo pipefail
+          tag="${{ needs.tag-check.outputs.tag }}"
+          version="${tag#allspark-v}"
+          base="${{ github.server_url }}/${{ github.repository }}/releases/latest/download"
+          render() {
+            channel="$1"
+            out="dist/install-${channel}.sh"
+            sed -e "s|^DOWNLOAD_BASE_URL_DEFAULT=.*|DOWNLOAD_BASE_URL_DEFAULT=\"${base}\"|" \
+                -e "s|^RELEASE_CHANNEL_DEFAULT=.*|RELEASE_CHANNEL_DEFAULT=${channel}|" \
+                install-rust.sh > "$out"
+            chmod +x "$out"
+            # A silent `sed` miss would ship the upstream default base, so both
+            # stamps are asserted rather than assumed.
+            grep -qF "DOWNLOAD_BASE_URL_DEFAULT=\"${base}\"" "$out"
+            grep -qxF "RELEASE_CHANNEL_DEFAULT=${channel}" "$out"
+            sh -n "$out"
+          }
+          render beta
+          # A release tagged from a `-beta.N` version IS the nightly channel, so
+          # the stable entry point serves the same script: the beta pointer is
+          # the one the fork's own versions resolve to (a `-beta` build is
+          # nightly in `resolve_update_channel`).
+          render stable
+          echo "channel installers: $(ls dist/install-*.sh | tr "\n" " ") for ${version}"
       - name: Assert the complete release asset set before upload
         run: |
           set -euo pipefail
           tag="${{ needs.tag-check.outputs.tag }}"
           root="prime-agent-${tag#allspark-v}-linux-x64"
           # A partial artifact set is the failure mode this guard exists for:
-          # one matched glob proves nothing about the rest.
-          for asset in "dist/${root}.tar.gz" dist/SHA256SUMS dist/stable dist/latest.json; do
+          # one matched glob proves nothing about the rest. The installers are in
+          # this list because the update path 404s without them.
+          for asset in "dist/${root}.tar.gz" dist/SHA256SUMS dist/stable dist/latest.json \
+                       dist/beta dist/beta.json dist/install.sh dist/install-beta.sh; do
             test -s "$asset" || { echo "::error::missing release asset: $asset"; exit 1; }
           done
           test "$(wc -l < dist/SHA256SUMS)" -ge 1
@@ -281,7 +329,8 @@ jobs:
           set -euo pipefail
           tag="${{ needs.tag-check.outputs.tag }}"
           root="prime-agent-${tag#allspark-v}-linux-x64"
-          for asset in "dist/${root}.tar.gz" dist/SHA256SUMS dist/stable dist/latest.json; do
+          for asset in "dist/${root}.tar.gz" dist/SHA256SUMS dist/stable dist/latest.json \
+                       dist/beta dist/beta.json dist/install.sh dist/install-beta.sh; do
             test -s "$asset" || { echo "::error::downloaded artifact is missing $asset"; exit 1; }
           done
           # The archive the channel names must be the archive that arrived, with
@@ -311,7 +360,8 @@ jobs:
           set -euo pipefail
           if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             echo "release ${TAG} already exists: uploading assets over it"
-            gh release upload "${TAG}" dist/*.tar.gz dist/SHA256SUMS dist/stable dist/latest.json \
+            gh release upload "${TAG}" dist/*.tar.gz dist/SHA256SUMS dist/stable dist/beta dist/latest.json \
+              dist/beta.json dist/install.sh dist/install-beta.sh \
               --repo "${GITHUB_REPOSITORY}" --clobber
             gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" \
               --notes-file release-body.md
@@ -320,5 +370,6 @@ jobs:
               --repo "${GITHUB_REPOSITORY}" \
               --title "allspark ${TAG#allspark-v}" \
               --notes-file release-body.md \
-              dist/*.tar.gz dist/SHA256SUMS dist/stable dist/latest.json
+              dist/*.tar.gz dist/SHA256SUMS dist/stable dist/beta dist/latest.json \
+              dist/beta.json dist/install.sh dist/install-beta.sh
           fi
