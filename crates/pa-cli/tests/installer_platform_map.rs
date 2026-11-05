@@ -1379,3 +1379,115 @@ fn the_socket_dedup_keeps_the_fork_owner_when_the_paths_coincide() {
          the rust pin is a DIFFERENT path and keeps its probe, got {text:?}"
     );
 }
+// ─── The fork update channel is self-consistent (regression) ───────────────
+//
+// `allspark update` on a fork build asked for
+// `.../releases/latest/download/install-beta.sh` and got 404. Three artifacts each
+// assume a different shape of the same channel, and nothing checked them against
+// each other:
+//
+//   1. the launcher pins PRIME_AGENT_DOWNLOAD_BASE_URL to a GITHUB release
+//      (`.../releases/latest/download`);
+//   2. the release publishes a FLAT asset set (`<tarball>`, `SHA256SUMS`,
+//      `stable`, `latest.json` at the release root);
+//   3. both readers derive R2-shaped paths from that base — the updater appends
+//      `/<install-beta.sh>` and the planner/installer append `/releases/v<ver>/`.
+//
+// Any two of those are individually reasonable; together they cannot resolve. This
+// test pins the invariant at the seam, where a future edit to one artifact cannot
+// silently break the other two.
+
+/// Every path a fork update reads, derived exactly as the product derives them.
+fn fork_update_paths(base: &str, version: &str, archive: &str) -> Vec<String> {
+    let base = base.trim_end_matches('/');
+    vec![
+        // `installer_script_url`: the nightly branch (a `-beta` build is nightly).
+        format!("{base}/install-beta.sh"),
+        // `plan.rs`: the archive URL the staged flow downloads.
+        format!("{base}/releases/v{version}/{archive}"),
+        // `install-rust.sh`: RELEASE_PREFIX, for the tarball and the checksums.
+        format!("{base}/releases/v{version}/SHA256SUMS"),
+        // The channel pointer and manifest ride the base directly.
+        format!("{base}/stable"),
+        format!("{base}/latest.json"),
+    ]
+}
+
+/// The assets the fork release actually publishes, at the release root.
+fn fork_release_assets(version: &str, archive: &str) -> Vec<String> {
+    vec![
+        archive.to_string(),
+        "SHA256SUMS".to_string(),
+        "stable".to_string(),
+        "latest.json".to_string(),
+        // The version the pointer file names (checked by the workflow).
+        version.to_string(),
+    ]
+}
+
+/// The three artifacts must agree, or `allspark update` cannot work at all.
+///
+/// IGNORED, and the reason is the defect this test exists for. Run it with
+/// `cargo test -p pa-cli --test installer_platform_map -- --ignored` and it fails:
+///
+///   the fork update reads .../releases/latest/download/install-beta.sh, but the
+///   release publishes only [...tar.gz, SHA256SUMS, stable, latest.json]
+///
+/// The launcher pins the base to a GitHub `releases/latest/download` URL. That
+/// serves a FLAT asset set, while both readers derive R2-shaped paths from it —
+/// `installer_script_url` appends `/install-beta.sh`, and `plan.rs` /
+/// `install-rust.sh` append `/releases/v<version>/`. Three artifacts, three
+/// assumptions, no agreement: `allspark update` 404s before it installs anything.
+///
+/// Making this green is a CHANNEL DECISION, not a test fix, so it is left to the
+/// owner rather than guessed here:
+///   - publish `install.sh` / `install-beta.sh` as release assets AND teach both
+///     readers the flat layout (a GitHub release cannot carry a `releases/v<ver>/`
+///     path, so the R2 shape is impossible there); or
+///   - point the launcher's base at an R2 bucket that already serves the R2 shape.
+///
+/// The second is what `install-rust.sh`'s header documents and what the fork
+/// does not yet have.
+#[test]
+#[ignore = "the fork update channel is inconsistent: the launcher's GitHub base serves a\
+            flat asset set while the readers ask for install-beta.sh and\
+            releases/v<version>/ — see this test's doc for the two ways to fix it"]
+fn the_fork_update_channel_is_self_consistent() {
+    let launcher = std::fs::read_to_string(repo_root().join("scripts/allspark-launcher.sh"))
+        .expect("read the launcher");
+    let base = launcher
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix(
+                "export PRIME_AGENT_DOWNLOAD_BASE_URL=\"${ALLSPARK_DOWNLOAD_BASE_URL:-",
+            )
+            .and_then(|rest| rest.strip_suffix("}\""))
+        })
+        .expect("the launcher pins the fork download base");
+
+    // Every path the product derives from that base.
+    let paths = fork_update_paths(
+        base,
+        "0.10.3-beta.15",
+        "prime-agent-0.10.3-beta.15-linux-x64.tar.gz",
+    );
+    // Every asset the release publishes, as a path under the base.
+    let published: Vec<String> = fork_release_assets(
+        "0.10.3-beta.15",
+        "prime-agent-0.10.3-beta.15-linux-x64.tar.gz",
+    )
+    .into_iter()
+    .map(|asset| format!("{}/{asset}", base.trim_end_matches('/')))
+    .collect();
+
+    // The installer script and the archive are the two the run cannot proceed
+    // without; both must be reachable at the URL the product derives.
+    for required in [&paths[0], &paths[1], &paths[2]] {
+        assert!(
+            published.iter().any(|asset| asset == required),
+            "the fork update reads {required}, but the release publishes only \
+             {published:?} — the base ({base}) and the asset layout disagree, so \
+             `allspark update` 404s before it can install anything"
+        );
+    }
+}
