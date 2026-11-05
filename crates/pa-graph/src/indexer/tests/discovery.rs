@@ -150,3 +150,63 @@ fn the_extension_filter_applies_in_both_ignore_modes() {
         );
     }
 }
+
+/// A file that LEAVES the tree must not leave a coverage note behind.
+///
+/// `coverage` subtracts every noted path from `parsed`, so a note for a file that no
+/// longer exists is not inert bookkeeping: it keeps `complete` false forever and makes
+/// the printed ratio wrong in the direction a reader cannot see. Both sweeps ran
+/// `clear_file` + `clear_call_sites` + the hash/surface deletes and neither touched
+/// `index_coverage` — measured on a live store, 73 notes for files that were gone.
+///
+/// The fixture uses a SKIP (an oversized file), because that is the note the drift was
+/// found on: a skipped file is recorded during the batch read, before any node exists.
+#[test]
+fn a_removed_file_takes_its_coverage_note_with_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("a.rs"), "pub fn kept() {}\n").expect("a.rs");
+    std::fs::write(dir.path().join("big.json"), "x".repeat(4096)).expect("big");
+    let tiny = || IndexOptions::new("p").with_max_file_bytes(64);
+    // The note is written by the FULL pass alone: the incremental one skips an
+    // oversized file before recording anything. Restore the tree each round so both
+    // sweeps start from the same store.
+    let oversized_source = "x".repeat(4096);
+
+    for full_pass in [true, false] {
+        std::fs::write(dir.path().join("big.json"), &oversized_source).expect("big");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &tiny())
+            .expect("first index");
+        let before = crate::coverage::coverage(&store, "p").expect("coverage");
+        assert_eq!(
+            before.skipped, 1,
+            "the fixture must record the note it loses (full_pass={full_pass}): {before:?}"
+        );
+
+        std::fs::remove_file(dir.path().join("big.json")).expect("remove");
+        if full_pass {
+            store
+                .index_project(dir.path(), &tiny())
+                .expect("second index");
+        } else {
+            store
+                .reindex_incremental(dir.path(), &tiny())
+                .expect("incremental");
+        }
+
+        let after = crate::coverage::coverage(&store, "p").expect("coverage");
+        assert_eq!(
+            after.notes.len(),
+            0,
+            "a removed file's coverage note must not outlive it (full_pass={full_pass}): {:?}",
+            after.notes
+        );
+        assert_eq!(after.total, 1, "only a.rs is left: {after:?}");
+        assert_eq!(after.parsed, 1, "and it parsed cleanly: {after:?}");
+        assert!(
+            after.complete,
+            "a clean tree must read as complete (full_pass={full_pass}): {after:?}"
+        );
+    }
+}

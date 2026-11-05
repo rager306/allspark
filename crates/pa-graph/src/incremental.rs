@@ -266,18 +266,16 @@ impl GraphStore {
         let mut removed = 0usize;
         for rel in stored_hashes.keys() {
             if !seen.contains(rel) {
-                self.clear_file(&opts.project, rel)?;
-                // `call_sites` keys on the file, not on a node id, so `clear_file`
-                // leaves its rows behind — the incremental sweep is the one place
-                // that forgot, while the full pass clears them beside the file
-                // (review #38).
-                self.clear_call_sites(&opts.project, rel)?;
-                self.remove_file_hash(&opts.project, rel)?;
-                self.remove_file_surface(&opts.project, rel)?;
-                self.remove_lsp_surface(&opts.project, rel)?;
+                // Same single owner as the full pass: a removed file takes all six row
+                // families. This sweep used to keep `index_coverage`, so a skipped file
+                // that vanished went on depressing `parsed` (see `forget_file`).
+                self.forget_file(&opts.project, rel)?;
                 removed += 1;
             }
         }
+        // Notes for files skipped before any hash existed have no hash row to sweep
+        // (see `forget_stale_coverage`).
+        self.forget_stale_coverage(&opts.project, |rel| seen.contains(rel))?;
         if removed > 0 {
             reasons.insert(ReindexReason::Removed);
         }

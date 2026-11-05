@@ -1339,6 +1339,63 @@ impl GraphStore {
         }
     }
 
+    /// Drop coverage notes for files this pass did not see.
+    ///
+    /// The removal sweep walks `file_hashes`, which is the wrong universe for the
+    /// notes: a file skipped BEFORE any hash exists (oversized, unreadable, grammar
+    /// unavailable) is recorded in `index_coverage` and never gets a hash row, so no
+    /// sweep could reach it. Measured on a live store: 73 notes for paths that were
+    /// gone from disk and had no hash row — 73 files counted as unreadable forever,
+    /// which is exactly the drift the note is supposed to prevent.
+    ///
+    /// `seen` is the set this pass walked; it is a closure because the two passes keep
+    /// it in different containers (a `Vec` and a `BTreeSet`) and neither should have to
+    /// change its shape to call this.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    pub fn forget_stale_coverage(
+        &self,
+        project: &str,
+        seen: impl Fn(&str) -> bool,
+    ) -> Result<usize> {
+        let stale: Vec<String> = self
+            .coverage_rows(project)?
+            .into_iter()
+            .map(|(rel_path, _, _)| rel_path)
+            .filter(|rel_path| !seen(rel_path))
+            .collect();
+        for rel_path in &stale {
+            self.clear_file_coverage(project, rel_path)?;
+        }
+        Ok(stale.len())
+    }
+
+    /// Forget every row a removed file owns.
+    ///
+    /// A file that left the tree must take all six of its row families with it, and
+    /// they are keyed differently — `nodes`/`edges`/FTS by node id, `call_sites`,
+    /// `file_surfaces`, `lsp_surface`, `file_hashes` and `index_coverage` by
+    /// `(project, rel_path)`. Written out at each sweep, the list drifted: the full
+    /// pass kept `lsp_surface` rows and never dropped `index_coverage`, and the
+    /// incremental pass forgot the coverage too. A stale coverage note is not inert —
+    /// `coverage` subtracts every noted path from `parsed`, so a skipped file that
+    /// vanished kept depressing the ratio and kept `complete` false forever (measured
+    /// on a live store: 73 notes for files that were gone, 222 reported parsed where
+    /// the truth was 295).
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    pub fn forget_file(&self, project: &str, rel_path: &str) -> Result<()> {
+        self.clear_file(project, rel_path)?;
+        self.clear_call_sites(project, rel_path)?;
+        self.clear_file_coverage(project, rel_path)?;
+        self.remove_file_hash(project, rel_path)?;
+        self.remove_file_surface(project, rel_path)?;
+        self.remove_lsp_surface(project, rel_path)?;
+        Ok(())
+    }
+
     /// Remove a stored file hash.
     ///
     /// # Errors

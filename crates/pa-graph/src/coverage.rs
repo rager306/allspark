@@ -317,8 +317,17 @@ pub fn coverage(store: &GraphStore, project: &str) -> Result<CoverageReport> {
     let mut call_sites_unresolved = 0usize;
     for site in &sites {
         match site.resolution.as_str() {
-            "resolved" => call_sites_resolved += 1,
+            // A recursive call DID resolve: to the caller's own definition. It fell
+            // into the catch-all below and was counted as a miss, so a known target
+            // appeared in the number the tool prints as "unresolved" and depressed
+            // `resolution_ratio`. Measured on the `kutha-graph` store: 8 389 rows
+            // marked `unresolved` were reported as 8 445 — the 56 extra were
+            // recursive self-calls, every one of them resolved.
+            "resolved" | "recursive" => call_sites_resolved += 1,
             "dependency" => call_sites_dependency += 1,
+            // Any other spelling is a genuine miss: the row exists and names no
+            // definition the graph knows. `CallSiteVerdict` is the only writer and
+            // its four spellings are the two arms above plus this one.
             _ => call_sites_unresolved += 1,
         }
     }
@@ -452,6 +461,49 @@ mod tests {
             report.clean_ratio(),
             report.resolution_ratio()
         );
+    }
+
+    /// A RECURSIVE call names a definition the graph knows: its own.
+    ///
+    /// `CallSiteVerdict::Recursive` exists because a self-call has a known target
+    /// and a known reason for the self-loop. The report bucketed it with the misses,
+    /// so the number the tool prints as `unresolved` included calls that resolved —
+    /// measured on a live store, 56 of them, and `resolution_ratio` was correspondingly
+    /// low. Three spellings, three buckets, and the fourth must be the miss.
+    #[test]
+    fn a_recursive_call_counts_as_resolved_not_as_a_miss() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "pub fn walk(n: u32) -> u32 { walk(n - 1) }\npub fn caller() { missing(); }\n",
+        )
+        .expect("write");
+        let mut store = crate::GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &crate::IndexOptions::new("p"))
+            .expect("index");
+
+        let verdicts: Vec<String> = store
+            .call_sites("p")
+            .expect("sites")
+            .into_iter()
+            .map(|site| format!("{}:{}", site.callee, site.resolution))
+            .collect();
+        let report = coverage(&store, "p").expect("coverage");
+
+        assert_eq!(
+            report.call_sites, 2,
+            "one self-call and one miss: {verdicts:?}"
+        );
+        assert_eq!(
+            report.call_sites_resolved, 1,
+            "the recursive call resolved to its own definition: {verdicts:?}"
+        );
+        assert_eq!(
+            report.call_sites_unresolved, 1,
+            "only the call naming no definition is unresolved: {verdicts:?}"
+        );
+        assert_eq!(report.resolution_ratio(), 0.5, "{verdicts:?}");
     }
 
     /// A store with no call sites must not claim full resolution as a fact.

@@ -120,16 +120,23 @@ impl GraphStore {
         // every removal (measured: 4 reported for 2 files).
         for rel in stored.keys() {
             if !seen.contains(rel) {
-                self.clear_file(&opts.project, rel)?;
-                // `call_sites` keys on the file, and `clear_file` only walks the
-                // node/edge/FTS tables — its rows would outlive the file and keep
-                // answering impact questions about call sites that no longer exist.
-                self.clear_call_sites(&opts.project, rel)?;
-                self.remove_file_hash(&opts.project, rel)?;
-                self.remove_file_surface(&opts.project, rel)?;
+                // One call, because the row families are keyed differently and a list
+                // written out at each sweep drifts: this pass kept `lsp_surface` rows
+                // and never dropped `index_coverage`, the incremental pass dropped the
+                // coverage but not the surfaces. See `forget_file`.
+                self.forget_file(&opts.project, rel)?;
                 report.removed += 1;
             }
         }
+        // A file skipped before any hash existed (oversized, unreadable, grammar
+        // unavailable) is noted in `index_coverage` and never gets a hash row, so the
+        // sweep above cannot reach it. Without this its note depresses `parsed` and
+        // keeps `complete` false for the rest of the project's life.
+        //
+        // The universe is what the WALK saw, not what produced work: a skipped file is
+        // walked and yields nothing, so `seen` would call every live note stale.
+        let walked = batches.walked();
+        self.forget_stale_coverage(&opts.project, |rel| walked.iter().any(|s| s == rel))?;
 
         // 4. Resolve cross-file edges now that every definition is known.
         let symbols = self.symbol_index(&opts.project)?;

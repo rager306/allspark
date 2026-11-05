@@ -53,6 +53,23 @@ pub(crate) struct SourceBatches<'a> {
     cursor: usize,
 }
 
+impl SourceBatches<'_> {
+    /// Every file the walk discovered, relative to the root.
+    ///
+    /// NOT the same set as the work the batches yielded: a file the pass could not
+    /// read, could not admit by size, or whose grammar is missing produced no work item
+    /// but was still WALKED, and it is the only universe in which "the file is gone"
+    /// can be told apart from "the file is here and still skipped". `next_batch` records
+    /// a coverage note for exactly those files, so a sweep over the work set would
+    /// delete the note it had just written.
+    pub(super) fn walked(&self) -> Vec<String> {
+        self.files
+            .iter()
+            .map(|abs| rel_path(&self.root, abs))
+            .collect()
+    }
+}
+
 impl GraphStore {
     /// Discover, read, and hash every candidate file, recording a coverage
     /// note for each file that is skipped before parsing (oversized/unreadable)
