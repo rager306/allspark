@@ -13,6 +13,36 @@ branch (`feat/allspark-identity`). `fork.3` points at the SAME commit as `fork.2
 (`375ad95cf`) and is a duplicate tag, not a separate release — it has no entry here
 because nothing shipped between them. `FORK.md` carries the same correction.
 
+## fork.016 — the fork layout keeps its ownership marker
+
+- Tag: `allspark-v0.10.3-beta.15-fork.016` (2026-11-05)
+- Base: no upstream change; a fork-only installer fix on top of `fork.015`.
+
+### What was broken
+
+A fresh install of `fork.015` worked, and every `allspark update` after it failed:
+
+```
+install-rust.sh: refusing to take ownership of …/libexec: it is neither this
+installer's marked payload tree (.prime-agent-install) nor the TypeScript
+installer's managed root; move it aside and re-run
+```
+
+The ownership marker was written to the STAGING root, while the publish renames
+`$stage/libexec` to `$PREFIX/libexec` in the fork layout. The marker therefore never
+reached the published tree, and the next install refused to adopt its own previous
+payload. The upstream layout hid the bug: there `payload_root == stage`.
+
+### Fix
+
+The marker now rides `$payload_root`, the directory the publish actually renames, so
+it lands beside the payload in both layouts.
+
+Verified end-to-end: fresh install → marker present in `libexec/` → `allspark update`
+completes ("updated to the latest build"). `installer_platform_map` 28 passed;
+`the_ownership_marker_rides_the_published_tree` is red-first (writing the marker to
+`$stage` fails it).
+
 ## fork.015 — upstream v0.10.3-beta.15
 
 - Tag: `allspark-v0.10.3-beta.15-fork.015` (2026-11-03)

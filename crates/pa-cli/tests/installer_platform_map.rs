@@ -1752,3 +1752,34 @@ fn the_channel_installer_is_rendered_under_the_name_that_is_published() {
         );
     }
 }
+
+/// The ownership marker must land in the tree the publish RENAMES.
+///
+/// The fork layout publishes `$stage/libexec` as `$PREFIX/libexec`, so a marker
+/// written to `$stage` never reaches the published tree. The next install then
+/// refuses to adopt its OWN previous payload — "refusing to take ownership of
+/// …/libexec: it is neither this installer's marked payload tree" — and every
+/// `allspark update` fails after a fresh install. The upstream layout hides this
+/// because there `payload_root == stage`.
+#[test]
+fn the_ownership_marker_rides_the_published_tree() {
+    let script =
+        std::fs::read_to_string(repo_root().join("install-rust.sh")).expect("read the installer");
+
+    assert!(
+        script.contains("> \"${payload_root}/.prime-agent-install\""),
+        "the marker must be written to the payload root — the directory the publish \
+         renames — not to the staging root: with the fork layout those differ, and a \
+         marker left behind means the next install refuses to adopt its own payload"
+    );
+    assert!(
+        !script.contains("> \"${stage}/.prime-agent-install\""),
+        "the staging root is not what gets published in the fork layout"
+    );
+    // Both layouts must be representable, or the marker fix only moves the bug.
+    assert!(
+        script.contains("share_dir=\"${PREFIX}/libexec\"")
+            && script.contains("share_dir=\"${PREFIX}/share/prime-agent\""),
+        "the installer must still know both layouts"
+    );
+}

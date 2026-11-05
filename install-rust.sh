@@ -2934,8 +2934,14 @@ fi
 # unrelated directory that happens to contain a `prime-agent` entry is never
 # adopted, moved aside, or swept (the refusal below sends it back to the
 # user instead).
+# The marker rides the tree the publish RENAMES, not the staging root: for the
+# fork layout `payload_root` is `<stage>/libexec`, so a marker written to `$stage`
+# stayed outside the published tree — the next install then refused to adopt its
+# own previous payload ("neither this installer's marked payload tree nor the
+# TypeScript managed root") and every `allspark update` failed after a fresh
+# install.
 printf 'install-rust.sh channel %s\nversion %s\n' "$CHANNEL" "$VERSION" \
-  > "${stage}/.prime-agent-install"
+  > "${payload_root}/.prime-agent-install"
 fi
 
 # A lock left by the pre-takeover installer (name .prime-agent-rust-install.lock):
