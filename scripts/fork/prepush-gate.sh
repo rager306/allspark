@@ -171,7 +171,7 @@ step "gate contract (the gate's own tests)"
 # running.
 if python3 scripts/test_prepush_gate.py \
     RunUnitVerdicts VerusAdvisoryLane VerusMirrorDriftReachability TheGateRunsItsOwnTests \
-    FastExitRespectsTheContractVerdict \
+    FastExitRespectsTheContractVerdict ParitySkipsAreCounted \
     >"$OUT/gate-contract.log" 2>&1; then
   echo "gate contract: ok ($(grep -E '^Ran [0-9]+ tests' "$OUT/gate-contract.log"))"
 else
@@ -548,6 +548,23 @@ else
   if [[ "$ran_skip" -gt "$ran_no_tests" ]]; then
     grep -v '(the target lists no tests)' "$OUT/tests/summary.log" | grep '^skip '
   fi
+fi
+
+# A parity test with no TS reference returns NORMALLY: it prints its own SKIPPED line
+# and exits 0, so the runner counts it as passed and the per-unit verdict above says
+# `ok` although no comparison happened (review #1). Cargo has no runtime skip, so the
+# honest surface is a count: 15 tests across five units are in this shape, and their
+# SKIPPED lines are captured by normal cargo/nextest runs and never read.
+#
+# Advisory, not red: the parity gate is advisory since 2026-10-19 and the skip contract
+# is deliberate. What was wrong is that the absence read as a green.
+# `$NF`, not `$2`: with ONE log file grep -c prints a bare count, with several it prints
+# `path:count`, and a two-file gate would otherwise sum zero.
+parity_skips=$(grep -c 'SKIPPED: TS prime-agent binary not found' "$OUT"/tests/*.log 2>/dev/null \
+  | awk -F: '{ s += $NF } END { print s + 0 }')
+if [ "${parity_skips:-0}" -gt 0 ]; then
+  echo "parity: $parity_skips test(s) made NO comparison (no TS reference: set PA_TS_BINARY)"
+  echo "        counted as ok by the runner, so their units above are green without a diff"
 fi
 
 if [[ $fail -ne 0 ]]; then

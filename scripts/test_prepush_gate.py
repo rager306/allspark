@@ -483,6 +483,7 @@ class TheGateRunsItsOwnTests(unittest.TestCase):
             "VerusAdvisoryLane",
             "VerusMirrorDriftReachability",
             "FastExitRespectsTheContractVerdict",
+            "ParitySkipsAreCounted",
         ):
             self.assertIn(class_name, script, f"the gate skips {class_name}")
 
@@ -500,6 +501,55 @@ class TheGateRunsItsOwnTests(unittest.TestCase):
             script.index('if [[ $FAST -eq 1 ]]; then'),
             "the gate's own contract check must run in --fast too",
         )
+
+
+class ParitySkipsAreCounted(unittest.TestCase):
+    """A parity test with no TS reference exits 0, so the gate counted it as a pass.
+
+    Cargo has no runtime skip. The differential corpus, the daemon-command corpus and
+    three more units return normally when `PA_TS_BINARY` is unset, print a SKIPPED line,
+    and the runner reports the unit as `ok` — so a reader of the gate's summary believes
+    a comparison happened. The parity lane is advisory, so this must NOT be red; what it
+    must do is say how many comparisons were not made.
+    """
+
+    COUNT_STEP = "# A parity test with no TS reference returns NORMALLY"
+
+    def run_block(self, logs):
+        script = GATE.read_text()
+        self.assertIn(self.COUNT_STEP, script, "the gate has no parity-skip counter")
+        start = script.index(self.COUNT_STEP)
+        # The end marker is searched AFTER the start: `if [[ $fail -ne 0 ]]` appears
+        # earlier in the file (after fmt/clippy), and a plain `index` would slice backwards
+        # into an empty string — a test that then asserts nothing about anything.
+        block = script[start : script.index('if [[ $fail -ne 0 ]]; then', start)]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp)
+            (out / "tests").mkdir()
+            for name, body in logs.items():
+                (out / "tests" / name).write_text(body)
+            result = subprocess.run(
+                ["bash", "-c", f"OUT={out}; " + block],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            return result.returncode, result.stdout + result.stderr
+
+    def test_the_skipped_comparisons_are_named(self):
+        code, out = self.run_block(
+            {
+                "pa-cli-test-differential_cli.log": "SKIPPED: TS prime-agent binary not found (set PA_TS_BINARY)\n",
+                "pa-cli-lib-pa_cli.log": "test result: ok. 12 passed;\n",
+            }
+        )
+        self.assertEqual(code, 0, out)
+        self.assertIn("1 test(s) made NO comparison", out)
+
+    def test_a_run_with_no_skips_says_nothing(self):
+        code, out = self.run_block({"pa-cli-lib-pa_cli.log": "test result: ok. 12 passed;\n"})
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("made NO comparison", out)
 
 
 class FastExitRespectsTheContractVerdict(unittest.TestCase):
