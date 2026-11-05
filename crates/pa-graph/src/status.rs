@@ -106,13 +106,22 @@ pub struct Coverage {
     pub unusable: usize,
     /// Files skipped before parsing (unsupported language, oversized).
     pub skipped: usize,
+    /// Files that parsed CLEANLY and yielded no symbols, calls or imports.
+    ///
+    /// Present here for the same reason it is present in
+    /// [`crate::coverage::CoverageReport`]: for the graph, an empty extraction answers
+    /// the same as a failed parse, so folding it into the clean count is what let a
+    /// Ruby repository read as `complete` over an empty graph. The coverage ACTION
+    /// counts it; this status line did not, so the two disagreed about one project —
+    /// measured: 2 100 files with no symbols and the line still claiming completeness.
+    pub no_symbols: usize,
 }
 
 impl Coverage {
-    /// Whether every indexed file parsed cleanly.
+    /// Whether every indexed file parsed cleanly AND yielded something.
     #[must_use]
     pub const fn is_complete(&self) -> bool {
-        self.partial == 0 && self.unusable == 0 && self.skipped == 0
+        self.partial == 0 && self.unusable == 0 && self.skipped == 0 && self.no_symbols == 0
     }
 }
 
@@ -222,12 +231,19 @@ impl Report {
                 partial,
                 unusable,
                 skipped,
+                no_symbols,
                 ..
             } = &self.coverage;
             let _ = write!(
                 out,
                 ", {partial} partial, {unusable} unusable, {skipped} skipped"
             );
+            // Only when it happens: most trees have a README and a manifest that yield
+            // nothing, so an unconditional segment would be permanent noise on every
+            // answer. A tree where it is common says so, which is the point.
+            if *no_symbols > 0 {
+                let _ = write!(out, ", {no_symbols} yielded nothing");
+            }
         }
         if self.depth != Depth::Full {
             let _ = write!(out, ", {} depth", self.depth.as_str());
@@ -425,12 +441,14 @@ pub fn report(store: &GraphStore, project: &str, root: &Path) -> Result<Report> 
         partial: 0,
         unusable: 0,
         skipped: 0,
+        no_symbols: 0,
     };
     for (_, kind, _) in &rows {
         match kind.as_str() {
             "parse_partial" => coverage.partial += 1,
             "parse_unusable" => coverage.unusable += 1,
             "skipped" => coverage.skipped += 1,
+            "no_symbols" => coverage.no_symbols += 1,
             _ => {}
         }
     }
@@ -445,21 +463,26 @@ pub fn report(store: &GraphStore, project: &str, root: &Path) -> Result<Report> 
     })
 }
 
-/// Count the unresolved call sites of `project`, split by stored reason.
+/// Count the unresolved call SITES of `project`, split by stored reason.
 ///
-/// One grouped query over the `USAGE` edges: the reason is already a stored
-/// property, so this adds no scan of the tree. An unrecognised stored reason
-/// (a store written by a newer indexer) counts toward the total under the
-/// fallback rather than being dropped — a miss that happened is still a miss.
+/// One grouped query over `call_sites`: the reason is already a stored column, so
+/// this adds no scan of the tree. An unrecognised stored reason (a store written by a
+/// newer indexer) counts toward the total under the fallback rather than being
+/// dropped — a miss that happened is still a miss.
+///
+/// `call_sites`, not the `USAGE` edges. The edge is an AGGREGATE — every unresolved
+/// call from one symbol collapses into a single self-loop — so counting edges counted
+/// CALLERS while this number is read as sites and is printed beside
+/// `coverage`'s per-site count. Measured on a live store: 2 349 edges against 8 389
+/// site rows for the same project, two numbers with one name.
 ///
 /// # Errors
 /// Propagates SQLite errors.
 pub fn misses(store: &GraphStore, project: &str) -> Result<Misses> {
     let mut stmt = store.connection().prepare(
-        "SELECT coalesce(json_extract(props_json, '$.reason'), ''),
-                count(*)
-         FROM edges
-         WHERE project = ?1 AND edge_type = 'USAGE'
+        "SELECT coalesce(reason, ''), count(*)
+         FROM call_sites
+         WHERE project = ?1 AND resolution = 'unresolved'
          GROUP BY 1",
     )?;
     let rows = stmt.query_map([project], |row| {
@@ -551,6 +574,7 @@ mod tests {
                 partial: 0,
                 unusable: 0,
                 skipped: 0,
+                no_symbols: 0,
             },
         );
         assert_eq!(r.line(), "[graph: fresh | 12 files]");
@@ -565,6 +589,7 @@ mod tests {
                 partial: 0,
                 unusable: 0,
                 skipped: 0,
+                no_symbols: 0,
             },
         );
         assert_eq!(
@@ -582,6 +607,7 @@ mod tests {
                 partial: 2,
                 unusable: 1,
                 skipped: 5,
+                no_symbols: 0,
             },
         );
         assert_eq!(
@@ -599,6 +625,7 @@ mod tests {
                 partial: 0,
                 unusable: 0,
                 skipped: 0,
+                no_symbols: 0,
             },
         );
         r.chain_ok = false;
@@ -617,6 +644,7 @@ mod tests {
                 partial: 0,
                 unusable: 0,
                 skipped: 0,
+                no_symbols: 0,
             },
         );
         r.misses = Misses {
@@ -650,6 +678,7 @@ mod tests {
                 partial: 0,
                 unusable: 0,
                 skipped: 0,
+                no_symbols: 0,
             },
         );
         let line = r.line();
@@ -657,8 +686,9 @@ mod tests {
         assert_eq!(line, "[graph: fresh | 12 files]");
     }
 
-    /// The counts come from the stored `USAGE` edges, so a store written before
-    /// the split still counts — under the fallback, never dropped.
+    /// An unrecognised stored reason counts UNDER THE FALLBACK, never dropped: a miss
+    /// that happened is still a miss, and a store written by a newer indexer must not
+    /// read as a clean one.
     #[test]
     fn misses_are_counted_from_the_stored_reasons() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -677,9 +707,8 @@ mod tests {
         store
             .connection()
             .execute(
-                "UPDATE edges SET props_json = json_set(props_json, '$.reason', 'legacy_reason')
-                 WHERE project = 'p' AND edge_type = 'USAGE'
-                   AND json_extract(props_json, '$.callee') = 'other_unknown'",
+                "UPDATE call_sites SET reason = 'legacy_reason'
+                 WHERE project = 'p' AND callee = 'other_unknown'",
                 [],
             )
             .expect("rewrite");
@@ -703,6 +732,67 @@ mod tests {
             report.line().contains("3 unresolved ("),
             "{}",
             report.line()
+        );
+    }
+
+    /// The two halves of one project must not disagree about it.
+    ///
+    /// `coverage` counts a file that parsed cleanly and yielded nothing as NOT clean —
+    /// for the graph, an empty extraction answers the same as a failed parse. The status
+    /// line read the same notes and dropped that kind, so on a live store the action said
+    /// 2 100 files yielded nothing while the line carried on every answer said the graph
+    /// was complete. The line is the surface an agent reads most, so its version is the
+    /// one that misleads.
+    #[test]
+    fn files_that_yielded_nothing_make_the_line_incomplete() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("lib.rs"), "pub fn real() -> u32 { 1 }\n").expect("rs");
+        std::fs::write(dir.path().join("empty.rs"), "// only a comment\n").expect("empty");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("index");
+
+        let report = super::report(&store, "p", dir.path()).expect("report");
+        assert_eq!(report.coverage.no_symbols, 1, "{report:?}");
+        assert!(
+            !report.coverage.is_complete(),
+            "one file yielded nothing: {report:?}"
+        );
+        assert!(
+            report.line().contains("1 yielded nothing"),
+            "the line must say it: {}",
+            report.line()
+        );
+    }
+
+    /// One caller with two unresolved calls is TWO misses, not one.
+    ///
+    /// `USAGE` is an aggregate: every unresolved call from one symbol collapses into a
+    /// single self-loop (`types.rs`), which is the right shape for an edge and the wrong
+    /// one for a count. The status line read that aggregate, so its total was a count of
+    /// CALLERS wearing the label of a count of SITES — measured on a live store, 2 349
+    /// reported where the store held 8 389 rows, and the coverage report beside it printed
+    /// a number computed the other way. Two numbers with one name and no way to tell them
+    /// apart.
+    #[test]
+    fn two_unresolved_calls_from_one_caller_are_two_misses() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "pub fn caller() { missing_one(); missing_two(); }\n",
+        )
+        .expect("a.rs");
+        let mut store = GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &IndexOptions::new("p"))
+            .expect("index");
+
+        let misses = super::misses(&store, "p").expect("misses");
+        assert_eq!(
+            misses.total(),
+            2,
+            "the two call sites are two misses: {misses:?}"
         );
     }
 
@@ -792,6 +882,7 @@ mod tests {
                 partial: 0,
                 unusable: 0,
                 skipped: 0,
+                no_symbols: 0,
             },
         );
         assert_eq!(r.line(), "[graph: unindexed | 0 files | next: index]");
