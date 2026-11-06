@@ -3415,6 +3415,18 @@ if [ "$fork_layout" = "yes" ]; then
 if [ -z "\${ALLSPARK_HOME:-}" ]; then
     ALLSPARK_HOME="\$HOME/.allspark-home"
 fi
+# NEVER NEST (same rule as scripts/allspark-launcher.sh, which must stay in step):
+# this launcher exports HOME, so a run started from inside an allspark session
+# computes \$HOME/.allspark-home = .../.allspark-home/.allspark-home — a second agent
+# home with its own kernel venv and sessions, invisible to the outer one.
+ALLSPARK_HOME="\$(cd "\$ALLSPARK_HOME" 2>/dev/null && pwd -P || printf '%s' "\$ALLSPARK_HOME")"
+while :; do
+    parent="\${ALLSPARK_HOME%/.allspark-home}"
+    case "\$parent" in
+        */.allspark-home) ALLSPARK_HOME="\$parent" ;;
+        *) break ;;
+    esac
+done
 mkdir -p "\$ALLSPARK_HOME"
 export HOME="\$ALLSPARK_HOME"
 export PRIME_AGENT_CODING_AGENT_DIR="\$ALLSPARK_HOME/.prime/agent"

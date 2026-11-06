@@ -267,3 +267,77 @@ fn a_launcher_run_from_inside_the_home_does_not_nest_it() {
         "nesting collapses under a custom root too"
     );
 }
+
+/// The RELEASE launcher and the tracked launcher are the same contract twice.
+///
+/// `scripts/allspark-launcher.sh` is the source install's entry point;
+/// `install-rust.sh` writes a second launcher into the release prefix. Nothing checked
+/// that they agree, and they had already drifted: the embedded one lacked the
+/// never-nest collapse, so a tarball install re-created the nested homedir the tracked
+/// script had just been fixed against (184 MB measured, one level down and invisible to
+/// the outer home).
+///
+/// The two are not textually equal on purpose — the release one is a heredoc with its
+/// payload path substituted — so the test pins the CONTRACT: both resolve their home to
+/// the outermost `…/.allspark-home` from the same five environments.
+#[test]
+fn the_release_launcher_and_the_tracked_one_resolve_the_same_home() {
+    let installer = fs::read_to_string(repo_root().join("install-rust.sh")).expect("installer");
+    let start = installer
+        .find("cat > \"$launcher_tmp\" <<EOF")
+        .expect("the fork launcher heredoc");
+    let end = installer[start..]
+        .find("\nEOF\n")
+        .map(|at| start + at)
+        .expect("the heredoc ends");
+    let embedded = installer[start..end]
+        .split("<<EOF\n")
+        .nth(1)
+        .expect("the heredoc body")
+        .replace("\\$", "$");
+    // Everything up to the payload exec: the path resolution under test.
+    let head = embedded
+        .split("mkdir -p \"$ALLSPARK_HOME\"")
+        .next()
+        .expect("the home resolution");
+    let probe = format!("{head}\nprintf '%s\\n' \"$ALLSPARK_HOME\"\n");
+
+    let resolve = |home: &str, explicit: Option<&str>| -> String {
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(&probe)
+            .env("HOME", home)
+            .env_remove("ALLSPARK_HOME");
+        if let Some(explicit) = explicit {
+            command.env("ALLSPARK_HOME", explicit);
+        }
+        let output = command.output().expect("run the embedded launcher head");
+        assert!(
+            output.status.success(),
+            "the embedded launcher head runs: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+
+    assert_eq!(resolve("/home/u", None), "/home/u/.allspark-home");
+    assert_eq!(
+        resolve("/home/u/.allspark-home", None),
+        "/home/u/.allspark-home",
+        "a release install must not nest either: the same bug the tracked script fixed"
+    );
+    assert_eq!(
+        resolve("/home/u/.allspark-home/.allspark-home", None),
+        "/home/u/.allspark-home",
+        "the collapse repeats, as in the tracked launcher"
+    );
+    assert_eq!(resolve("/home/u", Some("/srv/allspark")), "/srv/allspark");
+    assert_eq!(
+        resolve(
+            "/home/u",
+            Some("/srv/allspark/.allspark-home/.allspark-home")
+        ),
+        "/srv/allspark/.allspark-home"
+    );
+}
