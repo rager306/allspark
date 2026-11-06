@@ -95,19 +95,12 @@ pub async fn plan(
         }
     };
     let base_url = download_base_url(download_base_override, &installation.base_url);
-    // The download base builds the manifest and archive URLs, and the manifest is UNSIGNED —
-    // the archive's sha comes FROM it, so a network attacker serving a manifest over plain
-    // http also supplies a matching hash and the updater installs their bytes (review #6).
-    //
-    // The installer path already refused this (`ensure_https_url`), which is why the hole was
-    // invisible: the funnel that EXECS a script was guarded, the funnel that FETCHES an archive
-    // and swaps the binary was not. One rule, both surfaces: `installer_url_refusal`.
-    if let Some(refusal) = pa_core::update::installer::installer_url_refusal(
-        &base_url,
-        pa_core::update::installer::allow_http(),
-    ) {
-        anyhow::bail!("the update download base must be https: {refusal}");
-    }
+    // ROLLBACK FIRST, and before the URL check on purpose: a rollback downloads nothing —
+    // it validates the PREVIOUS release already on disk and hands its executable to the
+    // coordinator. Refusing it for a recorded http base made recovery from a bad update
+    // depend on a network policy about a transfer that never happens (review #25): the
+    // install was already on this machine, and the operator's only way out was to open
+    // plaintext access first.
     if rollback {
         let previous = read_rollback_installation(install_root)
             .map_err(|_| anyhow!("No valid previous compiled release is available."))?;
@@ -125,6 +118,22 @@ pub async fn plan(
             coordinator_exe: previous.executable().to_path_buf(),
             candidate_dir: previous.target.release_dir.clone(),
         });
+    }
+    // The download base builds the manifest and archive URLs, and the manifest is UNSIGNED —
+    // the archive's sha comes FROM it, so a network attacker serving a manifest over plain
+    // http also supplies a matching hash and the updater installs their bytes (review #6).
+    //
+    // The installer path already refused this (`ensure_https_url`), which is why the hole was
+    // invisible: the funnel that EXECS a script was guarded, the funnel that FETCHES an archive
+    // and swaps the binary was not. One rule, both surfaces: `installer_url_refusal`.
+    //
+    // Below the rollback branch, never above it: this check is about a DOWNLOAD, and a
+    // rollback does not download (review #25).
+    if let Some(refusal) = pa_core::update::installer::installer_url_refusal(
+        &base_url,
+        pa_core::update::installer::allow_http(),
+    ) {
+        anyhow::bail!("the update download base must be https: {refusal}");
     }
     // The baseline anchor: the running binary's release. The active launcher must
     // name the same release (a launcher pointing elsewhere selected an obsolete
@@ -248,6 +257,106 @@ mod tests {
             None,
             "the explicitly-named hatch opens it, for a local channel the operator controls"
         );
+    }
+
+    /// A rollback must not be blocked by the network policy of a download it never makes.
+    ///
+    /// The https refusal sat ABOVE the rollback branch, so an installation whose recorded
+    /// base is plaintext could not roll back to a release already on disk — and rollback is
+    /// the way out of a bad update. The only escape was to enable plaintext access for a
+    /// transfer that never happens (review #25).
+    ///
+    /// The fixture is a real install root: two releases, the launcher links between them,
+    /// the previous release's own `--version` stub, and a recorded `http://` base. Rolling
+    /// back must plan, with the hatch CLOSED.
+    #[tokio::test]
+    async fn a_rollback_plans_even_when_the_recorded_base_is_plaintext() {
+        let root = staged_install_root("http://mirror.example.com");
+        assert!(
+            std::env::var("PRIME_AGENT_ALLOW_HTTP").is_err(),
+            "this test asserts the CLOSED hatch; the ambient environment must not open it"
+        );
+
+        let planned = plan(
+            &root, /*force*/ false, /*rollback*/ true, None, None,
+        )
+        .await
+        .expect("a rollback needs no download, so the plaintext base must not refuse it");
+        match planned {
+            UpdatePlan::Rollback { version, .. } => assert_eq!(version, "9.9.8"),
+            UpdatePlan::Skipped { reason } => {
+                panic!("expected a rollback plan, got Skipped: {reason}")
+            }
+            UpdatePlan::Update { version, .. } | UpdatePlan::Direct { version, .. } => {
+                panic!("expected a rollback plan, got an install of {version}")
+            }
+        }
+
+        // The same base still refuses a DOWNLOAD: the rule did not move, it only stopped
+        // standing in front of a branch that does not download.
+        let Err(refusal) = plan(&root, false, false, None, None).await else {
+            panic!("an update from a plaintext base must still be refused");
+        };
+        assert!(
+            refusal.to_string().contains("https"),
+            "the refusal must name the rule: {refusal}"
+        );
+    }
+
+    /// An install root with two managed releases and a launcher link to each.
+    ///
+    /// Shaped exactly as `pa_core::update::install` reads it: `bin/<link>` is a SYMLINK to
+    /// `../releases/<version>-<platform>-<sha>/prime-agent`, every `RELEASE_ASSETS` file
+    /// exists, `.archive-sha256` matches the digest in the directory name, and
+    /// `.install-source` is the recorded base.
+    fn staged_install_root(base_url: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::TempDir::new().unwrap().keep();
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        // The managed-install marker: `read_installation` refuses a tree without it.
+        std::fs::write(
+            root.join(".managed"),
+            pa_core::update::install::MANAGED_MARKER,
+        )
+        .unwrap();
+        let sha = "a".repeat(64);
+        for (version, link) in [
+            ("9.9.9", pa_core::update::install::CURRENT_LAUNCHER),
+            ("9.9.8", pa_core::update::install::PREVIOUS_LAUNCHER),
+        ] {
+            let release = root.join("releases").join(format!(
+                "{version}-{}-{sha}",
+                pa_core::update::install::current_platform_alias()
+            ));
+            std::fs::create_dir_all(&release).unwrap();
+            for asset in pa_core::update::install::RELEASE_ASSETS {
+                if *asset == "prime-agent" {
+                    let binary = release.join(asset);
+                    std::fs::write(
+                        &binary,
+                        format!("#!/bin/sh\nif [ \"$1\" = --version ]; then echo {version}; fi\nexit 0\n"),
+                    )
+                    .unwrap();
+                    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))
+                        .unwrap();
+                } else {
+                    std::fs::write(release.join(asset), "").unwrap();
+                }
+            }
+            std::fs::write(release.join(".archive-sha256"), &sha).unwrap();
+            std::fs::write(release.join(".install-source"), base_url).unwrap();
+            let launcher = root.join("bin").join(link);
+            std::os::unix::fs::symlink(
+                format!(
+                    "../releases/{version}-{}-{sha}/prime-agent",
+                    pa_core::update::install::current_platform_alias()
+                ),
+                &launcher,
+            )
+            .unwrap();
+        }
+        root
     }
 
     #[test]
