@@ -1276,7 +1276,7 @@ fn the_fork_run_skips_the_upstream_ts_socket_and_probes_the_fork_socket() {
 /// The socket dedup must not drop both candidates when the fork and rust
 /// paths coincide (review #40).
 ///
-/// A fork tarball install pins `${TMPDIR}/allspark-daemon.sock`; an upstream
+/// A fork tarball install pins a socket under its own private home; an upstream
 /// rust install pins `${TMPDIR}/prime-agent-rust-<uid>/daemon.sock`. They
 /// coincide only when an operator pointed one at the other, and then the
 /// running fork process is the one that owns it. Deduping rust-first dropped

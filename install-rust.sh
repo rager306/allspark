@@ -1805,7 +1805,7 @@ install_payload_dir="${PRIME_AGENT_INSTALL_PAYLOAD_DIR:-}"
 # a FORK run when either (a) the fork build marker is set (the fork's Rust
 # update funnel exports PRIME_AGENT_FORK_BUILD), or (b) a candidate socket is
 # already in the fork's own namespace — the launcher pins
-# PRIME_AGENT_DAEMON_SOCKET to .../allspark-daemon.sock, and the fork's Rust
+# PRIME_AGENT_DAEMON_SOCKET to <allspark home>/run/daemon.sock, and the fork's Rust
 # default dir is allspark-<uid>. The fork run probes the fork/rust sockets and
 # leaves the upstream TS default (`prime-agent-<uid>`) alone; the upstream run
 # (neither signal) keeps the TS takeover and leaves the fork socket alone.
@@ -1842,7 +1842,7 @@ fi
 # The fork socket: OURS, for a fork run only, deduped against the others.
 #
 # When the fork socket equals the pinned rust socket, the fork run is the one
-# that owns it: a fork tarball install pins `${TMPDIR}/allspark-daemon.sock`
+# that owns it: a fork tarball install pins `<allspark home>/run/daemon.sock`
 # while an upstream rust install pins `${TMPDIR}/prime-agent-rust-<uid>/`, so
 # the two coincide only when the operator pointed one at the other — and the
 # fork run is the process that is updating. Deduping in the rust-first order
@@ -1852,7 +1852,7 @@ fi
 # same path and this is a fork run.
 #
 # The env socket yields the same way. An operator who exports the fork's own
-# path (`PRIME_AGENT_DAEMON_SOCKET=${TMPDIR}/allspark-daemon.sock`, which the
+# path (`PRIME_AGENT_DAEMON_SOCKET=<allspark home>/run/daemon.sock`, which the
 # launcher also pins) used to collide with BOTH conditions at once: the env
 # candidate requires `env != fork` and the fork candidate requires
 # `fork != env`, so neither probe fired and the path vanished from the report

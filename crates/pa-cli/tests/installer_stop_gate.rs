@@ -662,7 +662,10 @@ fn the_installer_carries_a_fork_layout_branch() {
     // because this launcher is what a release install runs.
     for needle in [
         "ALLSPARK_HOME",
-        "allspark-daemon.sock",
+        // The socket lives in a private per-user directory now; the file name is what the
+        // pin resolves to, so both halves of the rule are named (review #17).
+        "ALLSPARK_SOCKET_DIR",
+        "/daemon.sock",
         "PRIME_AGENT_DOWNLOAD_BASE_URL",
     ] {
         assert!(
