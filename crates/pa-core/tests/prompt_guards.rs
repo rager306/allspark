@@ -806,3 +806,114 @@ fn usage_layer_ends_turns_on_the_done_notification_not_an_await_rule() {
         "the no-polling rule keeps the collect-on-notice turn-end contract"
     );
 }
+
+// ─── The review mirror: BUGBOT.md must not silently lose a rule ───────────────
+//
+// `AGENTS.md` says the Cursor Bugbot rules "mirror the standards in this file — update both
+// whenever either changes", and NOTHING checked that. The fourth reverify wave found the
+// mirror had already lost four families of rule (style, prompt caps, critical path,
+// branding) before a sweep put them back, and the only thing preventing the next loss was
+// that somebody remembered. A rule file with no reader is a rule file that rots.
+//
+// The check is not "the files are equal" — they are written for different readers and word
+// the same rule differently. It is: every AGENTS.md section that states a REVIEWABLE
+// standard has a counterpart section in BUGBOT.md. The mapping is explicit, because the
+// names differ on purpose (`Style and structure` → `Style` + `Module organization`).
+
+/// The AGENTS.md sections that hold a standard a reviewer enforces, with the BUGBOT.md
+/// sections that must carry it. A section added to one file without the other is the defect.
+const REVIEWED_AGENTS_SECTIONS: &[(&str, &[&str])] = &[
+    ("Change hygiene", &["Change hygiene"]),
+    ("Lint discipline", &["Lint discipline"]),
+    (
+        "Performance and the critical path",
+        &["Performance and the critical path"],
+    ),
+    ("Adoption telemetry", &["Adoption telemetry"]),
+    ("Live-system safety", &["Live-system safety"]),
+    (
+        "Parallel agents share one working tree",
+        &["Parallel agents share one tree"],
+    ),
+    ("Branding", &["Branding"]),
+    ("Tests", &["Tests"]),
+    ("Formal verification", &["Formal verification"]),
+];
+
+fn repo_file(relative: &str) -> String {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("workspace root");
+    std::fs::read_to_string(root.join(relative)).unwrap_or_else(|error| {
+        panic!("read {relative}: {error}");
+    })
+}
+
+fn section_titles(markdown: &str) -> BTreeSet<String> {
+    markdown
+        .lines()
+        .filter_map(|line| line.strip_prefix("## "))
+        .map(|title| title.trim().to_string())
+        .collect()
+}
+
+/// Every reviewable AGENTS.md section has a BUGBOT.md counterpart.
+///
+/// Red on the tree before the sweep that restored the four lost families: `Style`,
+/// `Prompt-input caps`, `Performance and the critical path` and `Branding` were all missing.
+#[test]
+fn every_reviewable_agents_section_has_a_bugbot_counterpart() {
+    let bugbot = section_titles(&repo_file(".cursor/BUGBOT.md"));
+    let mut missing: Vec<String> = Vec::new();
+    for (agents_section, counterparts) in REVIEWED_AGENTS_SECTIONS {
+        for required in *counterparts {
+            if !bugbot.contains(*required) && !bugbot.contains(&format!("{required} (advisory)")) {
+                missing.push(format!(
+                    "`{agents_section}` needs a `{required}` section in BUGBOT.md"
+                ));
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "the review mirror has drifted from AGENTS.md:\n  {}",
+        missing.join("\n  ")
+    );
+}
+
+/// And the reverse: a BUGBOT.md section that names no AGENTS.md standard is a rule nobody
+/// maintains. `No legacy or migration scaffolding`, `Comments`, `Generated files` and the
+/// rest are deliberately narrower than an AGENTS.md section, so the assertion is that every
+/// BUGBOT.md section is either mapped above or listed as an allowed addition.
+#[test]
+fn every_bugbot_section_is_mapped_or_declared() {
+    const STANDALONE: &[&str] = &[
+        "No legacy or migration scaffolding",
+        "Comments",
+        "Style",
+        "Prompt-input caps",
+        "Module organization",
+        "File size",
+        "Dependency direction",
+        "Repo hygiene",
+        "Generated files",
+    ];
+    let mapped: BTreeSet<&str> = REVIEWED_AGENTS_SECTIONS
+        .iter()
+        .flat_map(|(_, counterparts)| counterparts.iter().copied())
+        .collect();
+    let unmapped: Vec<String> = section_titles(&repo_file(".cursor/BUGBOT.md"))
+        .into_iter()
+        .filter(|title| {
+            let base = title.trim_end_matches(" (advisory)");
+            !mapped.contains(base) && !STANDALONE.contains(&base)
+        })
+        .collect();
+    assert!(
+        unmapped.is_empty(),
+        "these BUGBOT.md sections name no AGENTS.md standard and are not declared \
+         standalone:\n  {}",
+        unmapped.join("\n  ")
+    );
+}
