@@ -1305,6 +1305,7 @@ fn the_socket_dedup_keeps_the_fork_owner_when_the_paths_coincide() {
              fork_socket={fork_socket}\n\
              fork_run={fork_run}\n\
              env_socket=\n\
+             fork_home_socket=/tmp/fork-home.sock\n\
              {block}\n\
              printf '%s %s\\n' \"$rust_socket_probe\" \"$fork_socket_probe\""
         );
@@ -1359,6 +1360,7 @@ fn the_socket_dedup_keeps_the_fork_owner_when_the_paths_coincide() {
          fork_socket={shared}\n\
          fork_run=yes\n\
          env_socket={shared}\n\
+         fork_home_socket=/tmp/fork-home.sock\n\
          {block}\n\
          printf '%s %s %s\\n' \"$env_socket_probe\" \"$rust_socket_probe\" \"$fork_socket_probe\""
     );

@@ -93,13 +93,24 @@ if ! mkdir -p -m 700 "$ALLSPARK_SOCKET_DIR" 2>/dev/null; then
     echo "allspark: cannot create the socket directory $ALLSPARK_SOCKET_DIR" >&2
     exit 1
 fi
-# A directory that already existed keeps its mode; refuse rather than run with a socket dir
-# another user can write to, because that is the impersonation this block exists to stop.
-case "$(stat -c %a "$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo unknown)" in
-    700|750|755) : ;;
+# A directory that already existed keeps its mode, so it is CHECKED — but mode alone is not
+# the property that matters: a 0755 directory owned by ANOTHER user is readable by us and
+# writable only by them, which is exactly the impersonation window (they bind the socket, we
+# connect to it). The check is ownership first, then the mode bits another user could write
+# through (0700 and 0750 are ours alone; 0755 lets anyone traverse and read, which is a
+# weaker but real exposure on a multi-user host, so it is refused too).
+socket_dir_owner="$(stat -c %u "$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo unknown)"
+socket_dir_mode="$(stat -c %a "$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo unknown)"
+if [ "$socket_dir_owner" != "$(id -u)" ]; then
+    echo "allspark: $ALLSPARK_SOCKET_DIR belongs to uid $socket_dir_owner, not $(id -u):" \
+         "a socket another user owns is a socket another user answers on" >&2
+    exit 1
+fi
+case "$socket_dir_mode" in
+    700|750) : ;;
     *)
-        echo "allspark: $ALLSPARK_SOCKET_DIR must be a private directory (mode 700) but is" \
-             "$(stat -c %a "$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo 'unreadable')" >&2
+        echo "allspark: $ALLSPARK_SOCKET_DIR must be a private directory (mode 700 or 750)" \
+             "but is $socket_dir_mode" >&2
         exit 1
         ;;
 esac

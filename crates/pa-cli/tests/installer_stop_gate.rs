@@ -675,6 +675,30 @@ fn the_installer_carries_a_fork_layout_branch() {
     }
 }
 
+/// The stop gate must know the LAUNCHER's socket, not only the compiled default.
+///
+/// Both launchers put the socket in `$ALLSPARK_HOME/run/daemon.sock` and export
+/// `PRIME_AGENT_DAEMON_SOCKET` to their children — a daemon started by `allspark` lives
+/// there, not at `$TMPDIR/allspark-<uid>/daemon.sock`. A `curl | sh` install from a plain
+/// shell inherits no variable, so the compiled default was the only candidate and the update
+/// left the real daemon running (the fourth reverify wave).
+#[test]
+fn the_stop_gate_probes_the_launcher_pinned_socket() {
+    let text = installer_script_text();
+    assert!(
+        text.contains("fork_home_socket="),
+        "the stop gate must compute the launcher's socket path"
+    );
+    assert!(
+        text.contains("/run/daemon.sock"),
+        "the launcher's socket lives in <home>/run/, which the gate must name"
+    );
+    assert!(
+        text.contains("fork_home_socket_probe"),
+        "the candidate needs its own probe flag, like every other candidate"
+    );
+}
+
 /// Both shipped archive layouts must be accepted, and the published tree must be
 /// the payload's own directory (never the whole stage, which would nest another
 /// bin/ + libexec/ under libexec/).

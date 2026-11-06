@@ -1745,6 +1745,14 @@ fork_socket="${TMPDIR:-/tmp}/allspark-$(id -u)/daemon.sock"
 if [ "$OS" != "Linux" ] && [ "$(printf '%s' "$fork_socket" | wc -c)" -gt 103 ]; then
   fork_socket="/tmp/allspark-$(id -u)/daemon.sock"
 fi
+# AND the launcher's own pin, which is a DIFFERENT path: both launchers (the tracked one and
+# the one this installer writes) put the socket in `$ALLSPARK_HOME/run/`, a private 0700
+# directory, and export PRIME_AGENT_DAEMON_SOCKET to every child. A daemon started by
+# `allspark` lives THERE, not at the compiled default above — so a `curl | sh` install from a
+# plain shell (no inherited variable, which is the normal case) would have left it running
+# through the update. Kept as a second candidate rather than replacing the first: an install
+# started without the launcher really does live at the compiled default.
+fork_home_socket="${ALLSPARK_HOME:-${HOME}/.allspark-home}/run/daemon.sock"
 env_socket="${PRIME_AGENT_DAEMON_SOCKET:-}"
 # THE TILDE EXPANSION (the CLI's own spelling: the products' clients
 # expand a leading ~/ in PRIME_AGENT_DAEMON_SOCKET before connecting, so
@@ -1870,6 +1878,17 @@ fork_socket_probe="no"
 if [ "$fork_run" = "yes" ] && [ "$fork_socket" != "$ts_socket" ]; then
   fork_socket_probe="yes"
 fi
+# The launcher-pinned socket: a fork run stops it too, deduped against every candidate above
+# (a launcher export of the compiled default makes them the same path, and probing it twice
+# would report two stops for one daemon).
+fork_home_socket_probe="no"
+if [ "$fork_run" = "yes" ] \
+  && [ "$fork_home_socket" != "$ts_socket" ] \
+  && [ "$fork_home_socket" != "$rust_socket" ] \
+  && [ "$fork_home_socket" != "$fork_socket" ] \
+  && [ "$fork_home_socket" != "$env_socket" ]; then
+  fork_home_socket_probe="yes"
+fi
 # ts_candidate_report: the candidates actually probed, in probe order, for the
 # no-silent-skips report line.
 ts_candidate_report=""
@@ -1884,6 +1903,9 @@ if [ "$rust_socket_probe" = "yes" ]; then
 fi
 if [ "$fork_socket_probe" = "yes" ]; then
   ts_candidate_report="${ts_candidate_report:+$ts_candidate_report, }$fork_socket"
+fi
+if [ "$fork_home_socket_probe" = "yes" ]; then
+  ts_candidate_report="${ts_candidate_report:+$ts_candidate_report, }$fork_home_socket"
 fi
 if [ "$fork_run" = "yes" ]; then
   ts_candidate_report="${ts_candidate_report} (fork run: the upstream TS socket ${ts_socket} is left alone)"
@@ -3445,11 +3467,21 @@ if ! mkdir -p -m 700 "\$ALLSPARK_SOCKET_DIR" 2>/dev/null; then
     echo "allspark: cannot create the socket directory \$ALLSPARK_SOCKET_DIR" >&2
     exit 1
 fi
-case "\$(stat -c %a "\$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo unknown)" in
-    700|750|755) : ;;
+# Ownership FIRST, then the mode: a 0755 directory owned by another user is readable by us
+# and writable only by them — they bind the socket, we connect to it. Mode alone would pass
+# that, which is why both checks exist (see scripts/allspark-launcher.sh, same rule).
+socket_dir_owner="\$(stat -c %u "\$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo unknown)"
+socket_dir_mode="\$(stat -c %a "\$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo unknown)"
+if [ "\$socket_dir_owner" != "\$(id -u)" ]; then
+    echo "allspark: \$ALLSPARK_SOCKET_DIR belongs to uid \$socket_dir_owner, not \$(id -u):" \
+         "a socket another user owns is a socket another user answers on" >&2
+    exit 1
+fi
+case "\$socket_dir_mode" in
+    700|750) : ;;
     *)
-        echo "allspark: \$ALLSPARK_SOCKET_DIR must be a private directory (mode 700) but is" \
-             "\$(stat -c %a "\$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo 'unreadable')" >&2
+        echo "allspark: \$ALLSPARK_SOCKET_DIR must be a private directory (mode 700 or 750)" \
+             "but is \$socket_dir_mode" >&2
         exit 1
         ;;
 esac
@@ -3617,6 +3649,11 @@ if [ "$WINDOWS" != "yes" ] && [ "${PRIME_AGENT_DEFER_DAEMON_STOP:-0}" != 1 ]; th
     ts_stop_stopped_rust="$last_stop_recorded"
     ts_stop_was_rust_rust="$last_stop_was_rust"
   fi
+  if [ "$fork_home_socket_probe" = "yes" ]; then
+    stop_daemon_candidate "$fork_home_socket" ours
+    ts_stop_stopped_fork_home="$last_stop_recorded"
+    ts_stop_was_rust_fork_home="$last_stop_was_rust"
+  fi
   if [ "$fork_socket_probe" = "yes" ]; then
     stop_daemon_candidate "$fork_socket" ours
     ts_stop_stopped_fork="$last_stop_recorded"
@@ -3652,6 +3689,9 @@ if [ "$WINDOWS" != "yes" ]; then
   fi
   if [ "${ts_stop_stopped_rust:-}" = "yes" ]; then
     verify_stopped_socket "$rust_socket" "$ts_stop_was_rust_rust"
+  fi
+  if [ "${ts_stop_stopped_fork_home:-}" = "yes" ]; then
+    verify_stopped_socket "$fork_home_socket" "$ts_stop_was_rust_fork_home"
   fi
   if [ "${ts_stop_stopped_fork:-}" = "yes" ]; then
     verify_stopped_socket "$fork_socket" "$ts_stop_was_rust_fork"

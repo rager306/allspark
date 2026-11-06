@@ -359,6 +359,98 @@ fn the_release_launcher_and_the_tracked_one_resolve_the_same_home() {
     );
 }
 
+/// A 0755 socket directory is refused even when WE own it.
+///
+/// The mode check accepted 700, 750 and 755 on the reasoning that only the mode decided who
+/// could write. It does not: on a multi-user host 0755 lets anyone traverse and read, and the
+/// ownership check is what catches a directory another user created — so both are needed, and
+/// 0755 is refused once the owner is known to be us (the fourth reverify wave's point).
+///
+/// The ownership arm cannot be exercised as root — every directory on this host is ours — so
+/// it is pinned in `the_launcher_refuses_a_socket_directory_it_does_not_own` by giving the
+/// launcher a different `id`.
+#[test]
+fn a_world_readable_socket_directory_is_refused() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    let run_dir = home.join(".allspark-home").join("run");
+    fs::create_dir_all(&run_dir).expect("run dir");
+    fs::set_permissions(&run_dir, fs::Permissions::from_mode(0o755)).expect("widen");
+
+    let launcher = deploy_launcher(tmp.path(), Path::new(env!("CARGO_BIN_EXE_prime-agent")));
+    let probe = tmp.path().join("libexec").join("prime-agent");
+    write_env_probe_payload_at(&probe);
+    let out = Command::new(&launcher)
+        .env("HOME", &home)
+        .env_remove("ALLSPARK_HOME")
+        .env_remove("ALLSPARK_DAEMON_SOCKET_DIR")
+        .output()
+        .expect("run launcher");
+
+    assert!(
+        !out.status.success(),
+        "a world-readable socket dir must refuse the launch: {out:?}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("must be a private directory"),
+        "the refusal must say why: {stderr}"
+    );
+    assert!(
+        stderr.contains("755"),
+        "the refusal must name the mode it found: {stderr}"
+    );
+}
+
+/// Ownership is checked, not just the mode.
+///
+/// A 0755 directory owned by ANOTHER user passes a mode-only check — they own it and can
+/// bind the socket in it, we connect. The launcher therefore reads the owner first. Simulated
+/// by putting a fake `id` on PATH: the launcher compares the directory's real uid against
+/// what `id -u` reports, so a launcher that thinks it is another user must refuse its own
+/// directory.
+#[test]
+fn the_launcher_refuses_a_socket_directory_it_does_not_own() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    let run_dir = home.join(".allspark-home").join("run");
+    fs::create_dir_all(&run_dir).expect("run dir");
+    fs::set_permissions(&run_dir, fs::Permissions::from_mode(0o700)).expect("tighten");
+
+    let launcher = deploy_launcher(tmp.path(), Path::new(env!("CARGO_BIN_EXE_prime-agent")));
+    let probe = tmp.path().join("libexec").join("prime-agent");
+    write_env_probe_payload_at(&probe);
+    // A stand-in for "this process is somebody else": `stat` still reports the real owner.
+    let stubs = tmp.path().join("stubs");
+    fs::create_dir_all(&stubs).expect("stub dir");
+    let fake_id = stubs.join("id");
+    fs::write(&fake_id, "#!/bin/sh\necho 4242\n").expect("fake id");
+    fs::set_permissions(&fake_id, fs::Permissions::from_mode(0o755)).expect("chmod the stub");
+    let path = format!(
+        "{}:{}",
+        stubs.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let out = Command::new(&launcher)
+        .env("HOME", &home)
+        .env("PATH", path)
+        .env_remove("ALLSPARK_HOME")
+        .env_remove("ALLSPARK_DAEMON_SOCKET_DIR")
+        .output()
+        .expect("run launcher");
+
+    assert!(
+        !out.status.success(),
+        "a directory this process does not own must refuse the launch: {out:?}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("belongs to uid"),
+        "the refusal must name the owner: {stderr}"
+    );
+}
+
 /// A socket directory somebody else widened is refused, not reused.
 ///
 /// The launch creates the directory with mode 0700, but a directory that ALREADY exists
