@@ -87,3 +87,47 @@ same suite was green minutes earlier and green again after the space came back.
 product one. Read the first panic; if it mentions the disk, check `df -h /` before
 touching code. Freeing someone else's scratch is not yours to do — say so and wait, or
 move your own run under `TMPDIR=<repo>/.tmp` as the gate does.
+
+## 7. A fixture that cannot distinguish the wrong implementation
+
+**Seen:** five times in one session (2026-11-06), each caught by an independent verifier rather
+than by the author.
+
+- `cycle_model` must filter judgment-only dialects. The fixture put `subq/snap` LAST in the
+  catalog, so "step the unfiltered list and wrap" and "filter only the returned model" both
+  produced an acceptable answer. Moving the trap between two chat models made all three
+  implementations distinguishable.
+- The startup flush must not be joined before the run. The guard read the source and forbade
+  `.await` at the binding — hoisting the bounded join above `run.await` passed it. The fix was
+  structural: make the join TAKE the run's result, so the hoisted call cannot be written.
+- The alias repair must handle a group. The fixture had one `as` per line, so a scan that
+  stopped at the first one passed.
+- The credential redactor must cover bare values and fragments. Neither shape had a fixture
+  until the verifier named them.
+- The socket directory must be private. A mode-only check admitted a 0755 directory owned by
+  another user — the fixture only ever created directories we owned.
+
+**Caught by:** writing the wrong implementation on purpose and running the test. Three of the
+five passed on first contact.
+
+**Rule:** for each guard, name the wrong implementations it must reject, put one of them in the
+fixture's way, and run it. A test that has only ever been run against the correct code is a
+hypothesis. This is the same rule as §1 with the emphasis moved: §1 asks "does it fail on the
+OLD code", this one asks "does it fail on the PLAUSIBLE code".
+
+## 8. A fix that makes the common path pay for the rare case
+
+**Seen:** once (2026-11-06), caught by a measurement that did not finish.
+
+The pa-graph alias repair read and PARSED every file holding an unresolved call site on every
+incremental pass — 1756 of 2250 files in this repo. The repair itself was right, and every test
+passed; a run on the real tree did not complete in 25 minutes. Two changes fixed it: an empty
+pass returns immediately (nothing arrived, nothing left ⇒ no verdict can change), and the
+bindings come from a text scan instead of a parse. Measured after: 46 ms with the guard, 64 ms
+without, over 400 files.
+
+**Caught by:** trying to measure the real tree and noticing that "no result" is a result.
+
+**Rule:** a repair that runs on every pass is a cost on every pass. Measure the COMMON case
+(nothing changed), not the case the fix was written for. If the measurement does not finish,
+that is the finding.
