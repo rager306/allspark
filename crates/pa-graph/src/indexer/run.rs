@@ -505,14 +505,25 @@ mod tests {
         // The interrupted run must not have claimed the files it re-parsed. A
         // stored hash over a graph that has no edges for the file is exactly the
         // state that made the loss permanent.
-        let stale = store.file_hash("p", "m0.rs").expect("hash").expect("row");
-        let on_disk = crate::hash::hash_file(&dir.path().join("m0.rs"))
-            .expect("hash on disk")
-            .sha256;
-        assert_ne!(
-            stale.sha256, on_disk,
-            "the failed run claimed a file whose edges it never wrote"
-        );
+        //
+        // Since review #13's fix the claim is WITHDRAWN by the clear rather than left as a
+        // stale row, so the honest assertion is "no claim", and a stale row that still
+        // agreed with the disk would be the defect. The old form of this check (a row whose
+        // digest differs from the disk) only covered files whose CONTENT changed; an
+        // unchanged file re-parsed for another reason kept a matching digest and the next
+        // pass skipped it.
+        match store.file_hash("p", "m0.rs").expect("hash") {
+            None => {}
+            Some(stale) => {
+                let on_disk = crate::hash::hash_file(&dir.path().join("m0.rs"))
+                    .expect("hash on disk")
+                    .sha256;
+                assert_ne!(
+                    stale.sha256, on_disk,
+                    "the failed run claimed a file whose edges it never wrote"
+                );
+            }
+        }
 
         // Recovery: remove the trigger and run again. The files are re-parsed
         // because the failed run left their previous hashes in place.

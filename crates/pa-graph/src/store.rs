@@ -975,6 +975,19 @@ impl GraphStore {
         // re-parse removed (review #38). Deleting by file is safe here because the
         // caller re-extracts the whole file right after.
         self.clear_call_sites(project, rel_path)?;
+        // WITHDRAW the hash claim with the rows it vouched for (review #13).
+        //
+        // The hash is committed by the caller in the RESOLUTION transaction, so a run
+        // that rewrote the file and then failed left the previous hash in place. For a
+        // CHANGED file that costs nothing — the old digest no longer matches the bytes,
+        // so the retry re-parses. For an UNCHANGED file (a forced or closure-triggered
+        // rewrite) it still matches, and the retry took the unchanged-hash skip: the
+        // call sites cleared here were never rebuilt.
+        //
+        // Removing it here is the same statement the clear makes: this file's
+        // contribution is no longer whole. The resolution transaction puts it back, and
+        // an interrupted run leaves the file needing a re-parse, which is the truth.
+        self.remove_file_hash(project, rel_path)?;
         Ok(())
     }
 

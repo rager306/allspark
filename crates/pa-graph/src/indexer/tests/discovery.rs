@@ -263,3 +263,71 @@ fn verdicts(store: &GraphStore) -> std::collections::BTreeMap<String, String> {
         .map(|site| (site.callee.clone(), site.resolution))
         .collect()
 }
+
+/// A FORCED re-parse of an UNCHANGED file must not be skippable after a crash.
+///
+/// The hash is committed only with the resolution transaction, so a run that rewrote the
+/// file and then died left the PREVIOUS hash behind. For a changed file that costs nothing:
+/// the old digest no longer matches the bytes, so the retry re-parses. For an UNCHANGED
+/// file — the forced or closure-triggered rewrite — it still matched, so the retry classified
+/// the file as `Unchanged`, skipped it, and never rebuilt the rows the clear had removed
+/// (review #13's surviving half).
+///
+/// The failure is injected where the real one happens: `call_sites` refuses a row, so the
+/// resolution transaction rolls back whole. The files were re-parsed and their rows are gone;
+/// the question is what the store now claims.
+#[test]
+fn an_interrupted_rewrite_of_an_unchanged_file_is_re_parsed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("a.rs"),
+        "pub fn helper() {}\npub fn caller() { helper(); }\n",
+    )
+    .expect("a.rs");
+    std::fs::write(dir.path().join("b.rs"), "pub fn other() {}\n").expect("b.rs");
+    let mut store = GraphStore::open_in_memory().expect("store");
+    store
+        .index_project(dir.path(), &IndexOptions::new("p"))
+        .expect("first index");
+
+    store
+        .connection()
+        .execute_batch(
+            "CREATE TRIGGER refuse_resolution BEFORE INSERT ON call_sites
+             WHEN NEW.caller_qn = 'a::caller'
+             BEGIN SELECT RAISE(ABORT, 'injected: resolution fails mid-run'); END",
+        )
+        .expect("trigger");
+    assert!(
+        store
+            .index_project(dir.path(), &IndexOptions::new("p").with_force(true))
+            .is_err(),
+        "the injected failure must abort the pass"
+    );
+
+    // Nothing may claim the re-parsed file: the run produced rows and threw them away.
+    assert!(
+        store.file_hash("p", "a.rs").expect("hash").is_none(),
+        "the failed run must not leave a hash over a graph it rolled back"
+    );
+
+    store
+        .connection()
+        .execute_batch("DROP TRIGGER refuse_resolution")
+        .expect("drop the trigger");
+    let retry = store
+        .index_project(dir.path(), &IndexOptions::new("p"))
+        .expect("retry");
+    assert!(
+        retry.parsed > 0,
+        "the retry must re-parse what the failed run withdrew: {retry:?}"
+    );
+    assert!(
+        store
+            .call_sites("p")
+            .expect("sites")
+            .iter()
+            .any(|site| site.callee == "helper" && site.resolution == "resolved"),
+        "the retry restored the call sites"
+    );
+}
