@@ -413,7 +413,13 @@ mod tests {
         std::fs::write(agent_dir.join("models.json"), models).unwrap();
     }
 
-    /// A judgment-only model (`typesafe`, the `subq` dialect) beside the chat model.
+    /// A judgment-only model (`typesafe`, the `subq` dialect) between two chat models.
+    ///
+    /// The ORDER is the fixture: `battery/mock-1` (the session's model) is followed by the
+    /// judgment dialect, which is followed by `tail/mock-2`. That shape is what makes the test
+    /// discriminating — an implementation that steps over the UNFILTERED list lands on
+    /// `subq`, and one that wraps to the first entry on meeting a judgment model lands on the
+    /// catalog's first chat model instead of the entry AFTER the current one.
     fn write_judgment_model_json(agent_dir: &std::path::Path) {
         let models = format!(
             r#"{{"providers":{{"{TEST_PROVIDER}":{{"api":"openai-completions",
@@ -422,7 +428,10 @@ mod tests {
             "contextWindow":128000,"maxTokens":4096}}]}},
             "subq":{{"api":"typesafe","baseUrl":"{TEST_BASE_URL}","apiKey":"sk-subq",
             "models":[{{"id":"snap","name":"Snap","api":"typesafe",
-            "contextWindow":128000,"maxTokens":4096}}]}}}}}}"#
+            "contextWindow":128000,"maxTokens":4096}}]}},
+            "tail":{{"api":"openai-completions","baseUrl":"{TEST_BASE_URL}",
+            "apiKey":"sk-tail","models":[{{"id":"mock-2","name":"Mock 2",
+            "api":"openai-completions","contextWindow":128000,"maxTokens":4096}}]}}}}}}"#
         );
         std::fs::write(agent_dir.join("models.json"), models).unwrap();
     }
@@ -469,36 +478,82 @@ mod tests {
     /// Cycling must not land on a model that cannot serve the next turn.
     ///
     /// `apply_model_selection` (the shared tail) never asked `serves_chat_turns`; only
-    /// `set_model` did, one call at a time. So `cycle_model` installed a judgment dialect
-    /// and the session's next message failed (review #33).
+    /// `set_model` did, one call at a time. So `cycle_model` installed a judgment dialect and
+    /// the session's next message failed (review #33).
+    ///
+    /// The assertions are exact, not "some chat model": the verifier found that the earlier
+    /// version would pass several wrong implementations — including one that filters only the
+    /// RETURNED model while still stepping over the unfiltered list, or one that wraps to the
+    /// first entry on meeting a judgment model. So the test pins three facts:
+    ///   1. the judgment model is the IMMEDIATE successor of the current model in the
+    ///      unfiltered catalog (otherwise a no-filter implementation would not land on it and
+    ///      the test would prove nothing);
+    ///   2. the answer is EXACTLY the next chat-serving model, computed here from the same
+    ///      filtered list;
+    ///   3. the answer is not the current model (a "wrap to the start on refusal"
+    ///      implementation lands back where it began).
     #[tokio::test]
     async fn cycling_skips_a_judgment_only_model() {
         let dir = tempfile::TempDir::new().unwrap();
         let state = test_state(dir.path()).await;
         write_judgment_model_json(&state.agent_dir);
+        let registry = super::registry(&state);
 
-        // The trap must be IN the catalog, or the assertion below is vacuous: the
-        // unfiltered set — what the cycle used to walk — offers the judgment dialect.
-        let unfiltered: Vec<String> = {
-            let unfiltered = super::registry(&state);
-            unfiltered
-                .get_available()
-                .into_iter()
-                .map(|model| format!("{}/{} ({})", model.provider, model.id, model.api))
-                .collect()
+        let unfiltered: Vec<(String, String, String)> = registry
+            .get_available()
+            .into_iter()
+            .map(|model| (model.provider.clone(), model.id.clone(), model.api.clone()))
+            .collect();
+        let (current_provider, current_id) = {
+            let handle = state.session.handle().await;
+            (handle.model.provider.clone(), handle.model.id.clone())
         };
-        assert!(
-            unfiltered.iter().any(|entry| entry.contains("(typesafe)")),
-            "the fixture's judgment model must reach the catalog: {unfiltered:?}"
+        let position = |list: &[(String, String, String)]| {
+            list.iter()
+                .position(|(provider, id, _)| *provider == current_provider && *id == current_id)
+                .unwrap_or_else(|| panic!("the current model is in the catalog: {list:?}"))
+        };
+
+        // (1) The trap sits exactly where the old code would step.
+        let current_at = position(&unfiltered);
+        let next_unfiltered = unfiltered
+            .get(current_at + 1)
+            .unwrap_or_else(|| panic!("the fixture needs a successor: {unfiltered:?}"));
+        assert_eq!(
+            next_unfiltered.2, "typesafe",
+            "the fixture must place the judgment dialect immediately after the current \
+             model, or a no-filter implementation would pass: {unfiltered:?}"
         );
+
+        // (2) The answer is the next CHAT-SERVING model, computed here.
+        let filtered: Vec<(String, String, String)> = unfiltered
+            .iter()
+            .filter(|(_, _, api)| pa_ai::serves_chat_turns(api))
+            .cloned()
+            .collect();
+        let filtered_at = position(&filtered);
+        let expected = &filtered[(filtered_at + 1) % filtered.len()];
 
         let ResponseData::Present(next) = cycle_model(&state).await.expect("cycle") else {
             panic!("a cycle must answer with the next model");
         };
-        let api = next["model"]["api"].as_str().unwrap_or_default();
-        assert!(
-            pa_ai::serves_chat_turns(api),
-            "cycling must land on a chat-serving model, never a judgment dialect: {next}"
+        assert_eq!(
+            (
+                next["model"]["provider"].as_str().unwrap_or_default(),
+                next["model"]["id"].as_str().unwrap_or_default(),
+            ),
+            (expected.0.as_str(), expected.1.as_str()),
+            "cycling must land on the next chat-serving model: {next}"
+        );
+
+        // (3) Not the model it started from.
+        assert_ne!(
+            (
+                next["model"]["provider"].as_str().unwrap_or_default(),
+                next["model"]["id"].as_str().unwrap_or_default(),
+            ),
+            (current_provider.as_str(), current_id.as_str()),
+            "a cycle that returns the current model proved nothing: {next}"
         );
     }
 }
