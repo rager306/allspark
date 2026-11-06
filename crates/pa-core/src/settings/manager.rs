@@ -132,6 +132,24 @@ pub(super) fn load_scope(
         other => other,
     };
     let (settings, ignored) = from_value_lenient_reporting(&migrated);
+    // Unknown keys, not just wrong-typed values. `Settings` flattens only at the ROOT, so
+    // a key nested one level down (or in a block that is itself known) was read as
+    // nothing at all: no value, no warning, no error. `retry.provider.waitForUsage.enabled`
+    // is the measured case — review #31, where "silently accepted and ignored" was the
+    // finding's own wording and the type alone could not close it.
+    let mut ignored = ignored;
+    let wrong_typed: std::collections::HashSet<String> =
+        ignored.iter().map(|dropped| dropped.path.clone()).collect();
+    for path in super::load::keys_outside_the_schema(&migrated, &settings) {
+        // A key reported as the wrong type is the same key, one message.
+        if wrong_typed.contains(&path) {
+            continue;
+        }
+        ignored.push(crate::settings::load::IgnoredSetting {
+            path,
+            reason: "no field of that name in the settings schema".to_string(),
+        });
+    }
     for dropped in ignored {
         let scope_name = match scope {
             SettingsScope::Global => "global",
@@ -410,6 +428,49 @@ mod tests {
         let manager = SettingsManager::from_storage(storage);
         assert_eq!(manager.get_steering_mode(), QueueModeSetting::All);
         assert!(manager.get_telemetry_enabled());
+    }
+
+    /// The operator must be TOLD, not merely not-harmed.
+    ///
+    /// `load_scope` is the shipping path: it is what turns a dropped value into a
+    /// `SettingsError` the CLI prints and a `tracing::warn!` the log keeps. The unit test
+    /// in `load.rs` proves the PATH LIST is right; this one proves the path reaches a
+    /// reader — the half that a fix can silently omit, since an unused `Vec` compiles and
+    /// every value still loads correctly.
+    #[test]
+    fn an_unknown_nested_key_reaches_the_error_list() {
+        let storage: Arc<dyn SettingsStorage> =
+            Arc::new(super::super::storage::InMemorySettingsStorage::default());
+        storage
+            .with_lock(SettingsScope::Global, &mut |_| {
+                Some(
+                    r#"{ "retry": { "provider": { "waitForUsage": {
+                        "maxWaitMs": 12345, "enabled": true } } } }"#
+                        .into(),
+                )
+            })
+            .unwrap();
+        let mut errors = Vec::new();
+        let (settings, _, load_error) =
+            super::load_scope(&*storage, SettingsScope::Global, &mut errors);
+
+        assert_eq!(load_error, None, "an unknown key is not a load failure");
+        assert_eq!(
+            settings
+                .retry
+                .as_ref()
+                .and_then(|retry| retry.provider.as_ref())
+                .and_then(|provider| provider.wait_for_usage.as_ref())
+                .and_then(|wait| wait.max_wait_ms),
+            Some(12_345),
+            "the known sibling still loads"
+        );
+        assert!(
+            errors.iter().any(|error| error
+                .message
+                .contains("retry.provider.waitForUsage.enabled")),
+            "the dropped key must be named in the error list: {errors:?}"
+        );
     }
 
     #[test]

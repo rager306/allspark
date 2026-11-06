@@ -53,6 +53,51 @@ pub fn from_value_lenient_reporting(value: &Value) -> (Settings, Vec<IgnoredSett
     }
 }
 
+/// Dotted paths in `document` that the settings schema does not know.
+///
+/// The lenient load reports a value whose TYPE is wrong and keeps every unknown key it
+/// does not recognise — nested ones silently, because `Settings` has a flatten only at
+/// the ROOT. So `retry.provider.waitForUsage.enabled` parsed as nothing at all: no value,
+/// no warning, no error, and an operator who set it saw no change (review #31 — the last
+/// of the four removed keys, and the mechanism the finding names).
+///
+/// Measured by round-trip instead of by a second schema: parse the document, serialize
+/// the result back, and report every OBJECT path the input had and the output does not.
+/// Two deliberate limits keep it honest:
+///   * arrays are not descended — `packages`, `mcpServers` and `skills` hold arbitrary
+///     user data whose shape the schema does not describe, so a key inside one is not an
+///     unknown setting;
+///   * a value already reported as wrong-typed is not reported again here (the caller
+///     filters by path), so one key produces one message.
+#[must_use]
+pub fn keys_outside_the_schema(document: &Value, settings: &Settings) -> Vec<String> {
+    let Ok(round_trip) = serde_json::to_value(settings) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    collect_missing_keys(document, &round_trip, &[], &mut out);
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn collect_missing_keys(input: &Value, parsed: &Value, spine: &[&str], out: &mut Vec<String>) {
+    let (Some(input), Some(parsed)) = (input.as_object(), parsed.as_object()) else {
+        return;
+    };
+    for (key, value) in input {
+        let Some(known) = parsed.get(key) else {
+            let mut path: Vec<&str> = spine.to_vec();
+            path.push(key);
+            out.push(path.join("."));
+            continue;
+        };
+        let mut path: Vec<&str> = spine.to_vec();
+        path.push(key);
+        collect_missing_keys(value, known, &path, out);
+    }
+}
+
 /// Keep the values of one JSON object that fit the settings schema, descending into a nested
 /// object whose own value did not fit instead of discarding the whole block.
 ///
@@ -131,6 +176,64 @@ fn fits_settings(spine: &[&str], value: &Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A key nested inside a KNOWN block was invisible: it is not in `extra`, because the
+    /// flatten is only at the root, and it is not wrong-typed, so the lenient load had
+    /// nothing to say about it. The operator sets it, nothing reads it, and nothing says
+    /// so — the exact mechanism review #31 names ("silently accepted and ignored").
+    #[test]
+    fn a_key_nested_inside_a_known_block_is_reported() {
+        let document: Value = serde_json::json!({
+            "retry": { "provider": { "waitForUsage": {
+                "maxWaitMs": 12_345,
+                "enabled": true,
+                "baseDelayMs": 500,
+                "maxDelayMs": 9_000,
+                "maxAttempts": 3
+            }}}
+        });
+        let (settings, _) = from_value_lenient_reporting(&document);
+        let unknown = keys_outside_the_schema(&document, &settings);
+
+        assert_eq!(
+            unknown,
+            vec![
+                "retry.provider.waitForUsage.baseDelayMs".to_string(),
+                "retry.provider.waitForUsage.enabled".to_string(),
+                "retry.provider.waitForUsage.maxAttempts".to_string(),
+                "retry.provider.waitForUsage.maxDelayMs".to_string(),
+            ],
+            "every unknown nested key is named, and the known one is not"
+        );
+        // The known sibling still lands: the report must not cost a valid value.
+        assert_eq!(
+            settings
+                .retry
+                .as_ref()
+                .and_then(|retry| retry.provider.as_ref())
+                .and_then(|provider| provider.wait_for_usage.as_ref())
+                .and_then(|wait| wait.max_wait_ms),
+            Some(12_345)
+        );
+    }
+
+    /// User data inside an ARRAY is not a setting, whatever the schema says.
+    ///
+    /// `packages`, `mcpServers` and `skills` hold arbitrary user objects; descending into
+    /// them would report every key of every entry as unknown, which is the same failure
+    /// as silence, one turn later: an operator learns to ignore the warning.
+    #[test]
+    fn keys_inside_arrays_are_not_reported() {
+        let document: Value = serde_json::json!({
+            "packages": [{ "whatever": 1, "nested": { "deep": true } }],
+            "mcpServers": { "s": { "command": "x", "args": ["a"] } }
+        });
+        let (settings, _) = from_value_lenient_reporting(&document);
+        assert_eq!(
+            keys_outside_the_schema(&document, &settings),
+            Vec::<String>::new()
+        );
+    }
 
     #[test]
     fn wrong_typed_fields_load_as_none() {
