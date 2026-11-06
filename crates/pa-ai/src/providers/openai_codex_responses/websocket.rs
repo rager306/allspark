@@ -731,7 +731,49 @@ mod ws_wire_tests {
         frame
     }
 
+    /// One complete masked client frame, or `None` when the client went away first.
+    ///
+    /// The client's frames are masked (RFC 6455), and the mock only needs the LENGTH to know
+    /// a whole request arrived: the payload is validated by the client's own tests, and a
+    /// half-read attempt to parse it would reintroduce the timing dependence this replaces.
+    async fn read_client_frame(socket: &mut TcpStream) -> Option<Vec<u8>> {
+        let mut header = [0u8; 2];
+        socket.read_exact(&mut header).await.ok()?;
+        let masked = header[1] & 0x80 != 0;
+        assert!(masked, "a client frame must be masked");
+        let mut length = u64::from(header[1] & 0x7F);
+        if length == 126 {
+            let mut extended = [0u8; 2];
+            socket.read_exact(&mut extended).await.ok()?;
+            length = u64::from(u16::from_be_bytes(extended));
+        } else if length == 127 {
+            let mut extended = [0u8; 8];
+            socket.read_exact(&mut extended).await.ok()?;
+            length = u64::from_be_bytes(extended);
+        }
+        // The masking key, then the payload: reading both is what makes "the request
+        // arrived" a fact rather than a hope.
+        let mut mask = [0u8; 4];
+        socket.read_exact(&mut mask).await.ok()?;
+        let mut payload = vec![0u8; usize::try_from(length).ok()?];
+        socket.read_exact(&mut payload).await.ok()?;
+        Some(payload)
+    }
+
     async fn spawn_ws_mock(action: MockAction) -> String {
+        spawn_ws_mock_with(action, None).await
+    }
+
+    /// [`spawn_ws_mock`], reporting whether the client's request frame was READ.
+    ///
+    /// The flag is the ordering fact itself: without it, a mock that closes immediately
+    /// still produces SOME terminal error, so every existing test passes with the defect in
+    /// place (measured — removing the read left all 15 green). The observer is what makes
+    /// "the socket closed after the request" observable.
+    async fn spawn_ws_mock_with(
+        action: MockAction,
+        saw_request: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    ) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("mock bind");
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move {
@@ -768,8 +810,19 @@ mod ws_wire_tests {
                 )
                 .await
                 .expect("mock write");
-            // The client sends its response.create; give it time to arrive.
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            // Wait for the client's `response.create` frame, then answer. A fixed sleep
+            // gave no causal order: under scheduler contention the mock closed the socket
+            // BEFORE the client sent its request, so a test expecting a read-phase transport
+            // error failed during `send_request` instead (review #21). Reading the frame is
+            // the ordering itself — and it is what the mock is standing in for.
+            let frame = read_client_frame(&mut socket).await;
+            assert!(
+                frame.is_some(),
+                "the client closes after its request; the mock sees one frame"
+            );
+            if let Some(saw_request) = &saw_request {
+                saw_request.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
             match action {
                 MockAction::CloseCode { code, reason } => {
                     let mut payload = code.to_be_bytes().to_vec();
@@ -842,6 +895,50 @@ mod ws_wire_tests {
             Err(CodexStreamError::Transport(error)) => error,
             Err(other) => panic!("expected a transport error, got {other}"),
         }
+    }
+
+    /// The transport error must come from the READ phase, and only after the request
+    /// arrived (review #21).
+    ///
+    /// The mock used to sleep 50 ms and then close, which gave no causal order: under
+    /// scheduler contention it closed before `response.create` was sent, and a test expecting
+    /// a read-phase error failed inside `send_request` instead. The fixed behaviour waits for
+    /// the frame, so the request has ARRIVED by the time the socket closes — asserted through
+    /// an observer, because every existing test passes either way.
+    #[tokio::test]
+    async fn the_mock_closes_after_the_request_arrives() {
+        let saw_request = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let url = spawn_ws_mock_with(
+            MockAction::CloseCode {
+                code: 1000,
+                reason: "scripted",
+            },
+            Some(std::sync::Arc::clone(&saw_request)),
+        )
+        .await;
+        let connection = acquire_websocket(&url, &[], None, None)
+            .await
+            .expect("handshake succeeds");
+        // The send must SUCCEED: the socket is still open because the mock is waiting for it.
+        let mut events = connection
+            .send_request(&serde_json::json!({ "model": "gpt" }), None)
+            .await
+            .expect("the mock waits for the request, so sending it cannot fail");
+        let terminal = loop {
+            match events.recv().await.expect("worker stays alive") {
+                WorkerEvent::Event(_) => {}
+                WorkerEvent::Terminal(result) => break result.expect_err("scripted close"),
+            }
+        };
+        assert!(
+            saw_request.load(std::sync::atomic::Ordering::SeqCst),
+            "the mock must have READ the request frame before closing; terminal={terminal:?}"
+        );
+        // And the failure is the read phase's, which is what the test above it asserts.
+        assert!(
+            matches!(terminal, CodexStreamError::Transport(_)),
+            "the close is a transport error, not a send failure: {terminal:?}"
+        );
     }
 
     #[tokio::test]
