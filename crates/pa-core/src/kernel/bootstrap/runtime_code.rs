@@ -125,6 +125,9 @@ except Exception as _prime_agent_rlm_error:
         async def rename(self, new_name, *, session_id=None):
             self._raise_missing()
 
+        async def end_turn(self):
+            self._raise_missing()
+
         def get_harness_state(self, state_dir=None, *, global_=False, **kwargs):
             self._raise_missing()
 

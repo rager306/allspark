@@ -239,8 +239,10 @@ fn kernel_mcp_tokens() -> BTreeSet<String> {
 }
 
 /// The harness-state API of the vendored runtime (`rlm.harness` CRUD and
-/// `rlm.get_harness_state`). Update together with the runtime sidecar.
+/// `rlm.get_harness_state`). Update together with the runtime sidecar. plus its sanctioned terminal turn call
+/// (`rlm.end_turn`). Update together with the runtime sidecar.
 const HARNESS_TOKENS: &[&str] = &[
+    "rlm.end_turn",
     "rlm.harness.create_memory",
     "rlm.harness.update_memory",
     "rlm.harness.delete_memory",

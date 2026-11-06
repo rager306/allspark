@@ -709,13 +709,25 @@ impl Worker {
             return response;
         }
         let core = self.core.lock().unwrap();
-        // The last assistant row AND whether it is a terminal failure. A parent
-        // watcher settles a child on idle and used to record every idle child as
-        // `done`, so a turn that died with "retry failed" reached the parent as a
-        // SUCCESS with an empty answer — the failure was erased at the boundary.
-        // The error lives in `errorMessage`, a field `message_text` does not read,
-        // so the row is reported alongside the text rather than inferred from it.
-        let (text, failed, error) = core.store.as_ref().map_or((None, false, None), |store| {
+        // Two facts from one store, and both are needed:
+        //   * `text` is the newest NON-EMPTY assistant text. An ended turn's final
+        //     assistant row may hold only the tool call, so the answer sits in the last
+        //     assistant row that has any (the file fallback's rule).
+        //   * `failed`/`error` describe the last assistant ROW. A parent watcher settles a
+        //     child on idle and used to record every idle child as `done`, so a turn that
+        //     died with "retry failed" reached the parent as a SUCCESS with an empty
+        //     answer — the failure was erased at the boundary. The error lives in
+        //     `errorMessage`, a field `message_text` does not read.
+        let text = core.store.as_ref().and_then(|store| {
+            store
+                .messages()
+                .into_iter()
+                .rev()
+                .filter(|message| crate::types::message_role(message) == Some("assistant"))
+                .map(|message| crate::types::message_text(&message))
+                .find(|text| !text.is_empty())
+        });
+        let (failed, error) = core.store.as_ref().map_or((false, None), |store| {
             let last = store
                 .messages()
                 .into_iter()
@@ -731,7 +743,7 @@ impl Worker {
             } else {
                 None
             };
-            (last.as_ref().map(crate::types::message_text), failed, error)
+            (failed, error)
         });
         response_success(
             None,

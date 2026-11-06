@@ -70,6 +70,10 @@ pub struct ExecuteResult {
     pub transcript_reads: Vec<serde_json::Value>,
     /// The time limit that interrupted this cell, if one did.
     pub timed_out_after_ms: Option<u64>,
+    /// The cell ended the turn via the sanctioned `rlm.end_turn()` call:
+    /// the host marked the execution, and this result terminates the tool
+    /// batch (the "turn ended" note on the tool-result text).
+    pub ended_turn: bool,
 }
 
 /// The wire form of one sent agent message (TS `KernelSentAgentMessage`):
@@ -518,8 +522,15 @@ pub async fn execute_ipython(
             format!("{}\n\n{}", kernel_restart_notice(), text)
         };
     }
-    // The arbiter note rides AFTER the cell's own text (appended, never a
-    // replacement: the cell already ran).
+    // The sanctioned turn-end confirmation: short, and it lands in the transcript for
+    // replay of the ended turn. It comes FIRST because it is the tool's own outcome; a
+    // harness note about the same call is an annotation on it, not a replacement.
+    if r.ended_turn {
+        let separator = if text.is_empty() { "" } else { "\n" };
+        let _ = write!(text, "{separator}turn ended");
+    }
+    // The arbiter note rides AFTER the cell's own text (appended, never a replacement:
+    // the cell already ran).
     if let Some(note) = &arbiter_note {
         let separator = if text.is_empty() { "" } else { "\n\n" };
         let _ = write!(text, "{separator}{}", note.text);
@@ -601,10 +612,13 @@ pub async fn execute_ipython(
             .collect::<Vec<_>>());
     }
 
+    // The flagged cell ends the turn: the batch rule terminates the run's
+    // turn once every call in the message has executed.
     Ok(ToolExecutionResult {
         content,
         details: Some(details),
         is_error: r.status == ExecuteStatus::Error || r.status == ExecuteStatus::Aborted,
+        terminate: r.ended_turn.then_some(true),
     })
 }
 

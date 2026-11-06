@@ -28,6 +28,7 @@ The harness often sends messages to the agent. These are user messages starting 
 - `graph.route(question: str) -> dict`: routes an architectural question to the right `graph` action (`trace` with a direction, `architecture` with a view, or `search`), returning the ready-to-issue parameters plus a `why` note. The routing table — callers go `direction: in`, blast radius goes `direction: out`, shapes go `architecture` — lives in the `graph` skill.
 - `graph.format_call(call: dict) -> str`: renders a routed call as the JSON the `graph` tool expects, with the `why` detached as a comment.
 - `attach_image(*paths: str) -> str`: loads images directly into context if the agent's model is vision-capable, errors otherwise
+- `rlm.end_turn()`: async; the sanctioned terminal programmatic call — returns the turn to the user; the turn ends when the batch's end-turn call finishes Ok (any other tool calls in the same message still execute first, one end-turn is enough, no further assistant response follows); background work keeps running after the turn returns, and the remaining jobs' completion notices collect the results; raises where the host does not support it, never a silent no-op
 
 ## Subagents
 

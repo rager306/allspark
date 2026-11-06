@@ -217,6 +217,7 @@ impl Inner {
                 transcript_reads: (!buffers.transcript_reads.is_empty())
                     .then(|| std::mem::take(&mut buffers.transcript_reads)),
                 background_output: (!background_output.is_empty()).then_some(background_output),
+                ended_turn: buffers.ended_turn,
                 status,
                 // The settle cap covers the error payload like result text
                 // (the fork's kernel-error cap): `ename` and `evalue` each

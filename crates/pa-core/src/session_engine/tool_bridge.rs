@@ -110,14 +110,16 @@ impl AgentTool for ToolDefinitionBridge {
             let result: ToolExecutionResult =
                 f(&tool_call_id, params, Some(abort), tool_on_update).await?;
             let details = result.details.clone().unwrap_or(serde_json::Value::Null);
-            // Carry the tool's own error flag across the bridge: a failing
-            // cell or an aborted bash run must reach the model as an error
-            // result, not be recorded as a success.
+            // Both flags travel: `terminate` is upstream's early-stop hint, and
+            // `is_error` is the fork's tool-reported failure. Returning `terminate: None`
+            // while the tool asked to stop silently ignores the request; dropping
+            // `is_error` records a failing cell as a success.
+            let terminate = result.terminate;
             let is_error = result.is_error;
             Ok(AgentToolResult {
                 content: convert_content(result),
                 details,
-                terminate: None,
+                terminate,
                 is_error,
             })
         })

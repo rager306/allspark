@@ -13,6 +13,67 @@ branch (`feat/allspark-identity`). `fork.3` points at the SAME commit as `fork.2
 (`375ad95cf`) and is a duplicate tag, not a separate release — it has no entry here
 because nothing shipped between them. `FORK.md` carries the same correction.
 
+## fork.017 — upstream v0.10.3-beta.17
+
+- Tag: `allspark-v0.10.3-beta.17-fork.017`
+- Base: the `v0.10.3-beta.17` upstream merge (9 conflicts resolved), 2 upstream
+  commits since the `v0.10.3-beta.15` merge (`418f394fa`).
+
+### What upstream brought
+
+- **`rlm.end_turn()`** (#3830): a sanctioned terminal programmatic call. The kernel marks
+  the executing cell, the tool result carries `terminate`, and the batch ends the turn once
+  that call finishes Ok — other tool calls in the same message still execute first. The
+  reason it needs honouring rather than tolerating: the agent loop's batch rule was `ALL`
+  (`every` result must terminate), so a message pairing work calls with `end_turn` would
+  ignore the yield and stream another assistant message — the no-op churn the call exists
+  to stop. Upstream flipped it to `ANY`; this fork keeps that.
+- **Incomplete-reply retry** (#3968): a final reply cut off at the output limit, or a clean
+  stop with no visible text, no longer ends the turn as if it were the answer. It becomes a
+  `provider_stream_failure` with kind `incomplete_reply`, retried once, then the turn fails.
+- `get_last_assistant_text` now returns the newest NON-EMPTY assistant text: an ended
+  turn's final row may hold only the tool call.
+
+### Conflicts, and how each was resolved
+
+Nine files. Two were mechanical (`Cargo.toml`/`Cargo.lock` version, and a doc comment), and
+the rest were places where the fork and upstream changed the same function:
+
+| file | resolution |
+|---|---|
+| `Cargo.toml`, `Cargo.lock` | upstream version `0.10.3-beta.17`; the seven FORK-ONLY crates bumped with it |
+| `venv/probe.rs` | upstream's `rlm.end_turn` assertion **plus** the fork's `pid`/`command` BashResult fields |
+| `bedrock/convert.rs` | upstream's `push_user_turn` (it consumes `mut content` and opens its own turn for tool results) **plus** the fork's whole `mod tests`; the new `convert_messages_tests` module gets the fork's `system_prompt_cache_prefix` field |
+| `tool_bridge.rs` | BOTH flags: `terminate` from upstream, `is_error` from the fork — either one alone drops a signal the other side added |
+| `ipython.rs` | `turn ended` (upstream) first, arbiter note (fork) second: the tool's own outcome precedes a harness annotation on it |
+| `headless.rs` | both test helpers (`text_assistant_with_error`, `assistant_of`, `error_assistant`) |
+| `prompt_guards.rs` | the fork's derived `kernel_mcp_tokens()` plus upstream's `rlm.end_turn` in `HARNESS_TOKENS` |
+| `worker/commands.rs` | upstream's newest-non-empty `text` plus the fork's `failed`/`error` facts from the last row |
+
+### What the fork had to add
+
+`runtime_code.rs`'s degraded stub enumerates the runtime's members and fails if one is
+missing: the test `degraded_stub_covers_the_runtime_namespace` went red the moment `end_turn`
+existed in the runtime and not in the stub, which is exactly what it is for. `end_turn` was
+added there.
+
+`agent_engine/tests/incomplete_reply.rs` (upstream's new file) did not compile against this
+tree: `AgentEngineConfig` gained `admission` in the fork's cross-session plane. Filled with
+`AdmissionClient::Disabled`, the same value every other scripted test uses.
+
+### Verification
+
+`prepush-gate.sh --fast` GREEN (fmt, clippy, 29 gate-contract tests, verus-mirror).
+`pa-core --lib` 1757 passed / 3 ignored; `pa-daemon --lib` 1312 passed / 8 ignored;
+`pa-graph --lib` 584 passed / 2 ignored. Upstream's own new tests pass here:
+`end_turn_kernel` (1), `incomplete_reply` (6), `last_answer` (1), and the runtime's
+`test_end_turn.py` (1, via `PYTHONPATH=src`).
+
+One test needed a serial run: `pa-daemon --lib` with the default thread count leaves
+`abort::abort_in_flight_turn_cancels_a_running_kernel_cell` waiting past 60 s (it drives a
+real kernel cell); with `--test-threads=4` the whole suite is green. It passes alone in 13 s,
+so it is contention, not a regression — recorded rather than papered over.
+
 ## fork.016 — the fork layout keeps its ownership marker
 
 - Tag: `allspark-v0.10.3-beta.15-fork.016` (2026-11-05)

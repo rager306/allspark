@@ -170,21 +170,21 @@ pub fn build_system_prompt(
     Some(blocks)
 }
 
-/// Append user blocks to the trailing user turn, or start a new one.
-///
-/// Converse rejects two consecutive `user` messages (review #5, upstream #3683). They arise
-/// from a run of user messages in the history and from an EMPTY assistant turn, which
-/// `convert_messages` skips — removing the very message that would have separated the users.
-fn push_user_turn(result: &mut Vec<Value>, content_blocks: Vec<Value>) {
-    if let Some(last) = result.last_mut() {
-        if last.get("role").and_then(Value::as_str) == Some("user") {
-            if let Some(array) = last.get_mut("content").and_then(Value::as_array_mut) {
-                array.extend(content_blocks);
-                return;
-            }
-        }
+/// Bedrock Converse rejects consecutive user messages ("A conversation must alternate between user
+/// and assistant roles"). A user turn that follows another one joins it: this happens when an
+/// assistant reply with no content (a turn ended with no text) is dropped, or when a user message
+/// follows tool results. Tool results always follow their assistant turn, so they open their own
+/// user turn.
+fn push_user_turn(result: &mut Vec<Value>, mut content: Vec<Value>) {
+    if let Some(blocks) = result
+        .last_mut()
+        .filter(|message| message["role"] == "user")
+        .and_then(|message| message["content"].as_array_mut())
+    {
+        blocks.append(&mut content);
+        return;
     }
-    result.push(json!({ "role": "user", "content": content_blocks }));
+    result.push(json!({ "role": "user", "content": content }));
 }
 
 // Long by design: mirrors the provider's stream shape.
@@ -222,11 +222,7 @@ pub fn convert_messages(
                         })
                         .collect(),
                 };
-                // Converse rejects two consecutive `user` messages. They arise two ways: a
-                // run of user messages in the history, and the `assistant.content.is_empty()`
-                // skip below, which removes the turn that would have separated them (review
-                // #5, upstream #3683). Appending to the trailing user message is what the
-                // API expects; pushing a new one fails the whole request.
+
                 push_user_turn(&mut result, content_blocks);
                 i += 1;
             }
@@ -642,6 +638,106 @@ mod tests {
             roles(&converted),
             vec!["user", "assistant", "user"],
             "alternation is preserved"
+        );
+    }
+}
+
+#[cfg(test)]
+mod convert_messages_tests {
+    use serde_json::{json, Value};
+
+    use super::convert_messages;
+    use crate::types::{CacheRetention, Context, Message, Model};
+
+    fn model() -> Model {
+        Model {
+            id: "us.anthropic.claude-opus-5-5-v1".into(),
+            name: "Claude Opus 5.5".into(),
+            api: "bedrock-converse-stream".into(),
+            provider: "amazon-bedrock".into(),
+            base_url: String::new(),
+            reasoning: true,
+            thinking_level_map: None,
+            input: vec![crate::types::ModelInput::Text],
+            cost: crate::types::zero_model_cost(),
+            context_window: 200_000,
+            max_tokens: 8192,
+            max_tokens_explicit: false,
+            featured: None,
+            headers: None,
+            compat: None,
+        }
+    }
+
+    fn assistant(content: &Value) -> Value {
+        json!({
+            "role": "assistant",
+            "content": content,
+            "api": "bedrock-converse-stream",
+            "provider": "amazon-bedrock",
+            "model": "us.anthropic.claude-opus-5-5-v1",
+            "usage": {
+                "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0 },
+            },
+            "stopReason": "stop",
+            "timestamp": 2,
+        })
+    }
+
+    fn convert(messages: Vec<Value>) -> Vec<Value> {
+        let messages: Vec<Message> = messages
+            .into_iter()
+            .map(|message| serde_json::from_value(message).unwrap())
+            .collect();
+        convert_messages(
+            &Context {
+                system_prompt: None,
+                system_prompt_cache_prefix: None,
+                messages,
+                tools: None,
+            },
+            &model(),
+            CacheRetention::None,
+        )
+    }
+
+    /// `rlm.end_turn()` ends a turn on a tool result, so the next request's history is
+    /// `[..., toolResult, user]`. The tool results and the next prompt must join one user
+    /// turn (tool results first): Bedrock Converse rejects two user messages in a row.
+    #[test]
+    fn a_user_message_after_an_ended_turns_tool_results_joins_their_turn() {
+        let converted = convert(vec![
+            json!({ "role": "user", "content": "run it", "timestamp": 1 }),
+            assistant(&json!([
+                { "type": "toolCall", "id": "call_1", "name": "python_repl", "arguments": { "code": "await rlm.end_turn()" } },
+            ])),
+            json!({
+                "role": "toolResult",
+                "toolCallId": "call_1",
+                "toolName": "python_repl",
+                "content": [{ "type": "text", "text": "turn ended" }],
+                "isError": false,
+                "timestamp": 3,
+            }),
+            json!({ "role": "user", "content": "next turn", "timestamp": 4 }),
+        ]);
+        assert_eq!(
+            converted,
+            vec![
+                json!({ "role": "user", "content": [{ "text": "run it" }] }),
+                json!({
+                    "role": "assistant",
+                    "content": [{ "toolUse": { "toolUseId": "call_1", "name": "python_repl", "input": { "code": "await rlm.end_turn()" } } }],
+                }),
+                json!({
+                    "role": "user",
+                    "content": [
+                        { "toolResult": { "toolUseId": "call_1", "content": [{ "text": "turn ended" }], "status": "success" } },
+                        { "text": "next turn" },
+                    ],
+                }),
+            ]
         );
     }
 }
