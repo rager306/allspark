@@ -11,6 +11,7 @@ use crate::store::GraphStore;
 use crate::types::CallStrategy;
 
 /// Call-edge resolver implementing the confidence ladder.
+#[derive(Clone)]
 pub(crate) struct Resolver {
     by_qn: HashMap<String, i64>,
     by_name: HashMap<String, Vec<String>>,

@@ -423,7 +423,7 @@ impl GraphStore {
         //
         // Cost: one pass over `call_sites` for the files this run did NOT touch. The
         // touched files have already been re-resolved above, so their rows are current.
-        self.resolve_newly_satisfiable(&resolver, &opts.project, &reindexed_rels)?;
+        self.resolve_newly_satisfiable(&resolver, &opts.project, &reindexed_rels, &root)?;
 
         let reason = pick_reason(&reasons);
         let report = IncrementalReport {
@@ -476,12 +476,42 @@ impl GraphStore {
         resolver: &Resolver,
         project: &str,
         reindexed: &std::collections::HashSet<String>,
+        root: &Path,
     ) -> Result<usize> {
         let candidates: Vec<crate::types::CallSiteRow> = self
             .call_sites(project)?
             .into_iter()
             .filter(|site| site.resolution == "unresolved" && !reindexed.contains(&site.rel_path))
             .collect();
+        // The aliases of the files these sites live in. A resolver built during this run
+        // knows the imports of the files the run RE-PARSED; a site in a file it did not
+        // touch was written through an alias this resolver has never seen, so
+        // `resolve_call` looked up the local name and found nothing — the definition it
+        // names had just appeared, and the repair still could not see it (review #36).
+        //
+        // The bindings come back from the store, not from a fresh parse: the `IMPORTS`
+        // edges already carry `local_name` and `module`, so no file is read twice and the
+        // repair works on the same evidence the full pass would have used.
+        // The aliases of the files these sites live in, read from DISK: an `IMPORTS` edge
+        // exists only for an import that RESOLVED, and the case this repair exists for is
+        // precisely an import that did not resolve until now (`use crate::c::thing as
+        // alias;` with no `c.rs`). So the stored edges cannot supply the binding, and
+        // without it `resolve_call` looks up `alias` among the definition names and finds
+        // nothing (review #36).
+        let mut resolver = resolver.clone();
+        let mut aliased: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for site in &candidates {
+            if aliased.insert(site.rel_path.clone()) {
+                let Ok(source) = std::fs::read_to_string(root.join(&site.rel_path)) else {
+                    continue;
+                };
+                let Some(lang) = pa_ast::SupportLang::from_path(&root.join(&site.rel_path)) else {
+                    continue;
+                };
+                let extracted = crate::extract::extract(&source, lang, &module_of(&site.rel_path));
+                resolver.note_imports(&site.rel_path, &extracted.imports);
+            }
+        }
         let mut repaired = 0usize;
         for site in candidates {
             // The same resolver and the same writer the full index uses, so a repaired row
@@ -509,7 +539,7 @@ impl GraphStore {
             // the new CALLS edge does not replace it (different target), so without this the
             // graph carries both: a resolved call and the same call's "no idea" row.
             self.clear_unresolved_edge(project, &site.rel_path, &site.caller_qn, &site.callee)?;
-            self.record_call_edge(resolver, project, &site.rel_path, &site.caller_qn, &call)?;
+            self.record_call_edge(&resolver, project, &site.rel_path, &site.caller_qn, &call)?;
             let _ = source;
             repaired += 1;
         }

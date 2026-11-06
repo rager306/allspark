@@ -184,7 +184,7 @@ impl GraphStore {
             // a call spelled in a file it did NOT touch. Only the touched files
             // were re-resolved above, and the untouched caller never changes
             // again, so its stale miss would outlive every later pass.
-            store.resolve_newly_satisfiable(&resolver, &opts.project, &reparsed)?;
+            store.resolve_newly_satisfiable(&resolver, &opts.project, &reparsed, &root)?;
             Ok(())
         })?;
 

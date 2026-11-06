@@ -387,3 +387,67 @@ fn a_caller_of_a_removed_file_is_re_resolved() {
         "the caller must be repaired through the closure: {report:?}"
     );
 }
+
+/// A call written through an ALIAS, in a file the run did not touch, must repair too.
+///
+/// `resolve_newly_satisfiable` covers the unaliased case. With an alias the repair looked
+/// up the LOCAL name (`alias`) among the definition names and found nothing, because the
+/// resolver it was handed knew only the imports of the files this run re-parsed — and the
+/// caller had not changed (review #36). The binding cannot come from the `IMPORTS` edges
+/// either: an edge exists only for an import that already resolved, and the whole point is
+/// that it did not.
+///
+/// The assertion is a COMPARISON with a full index of the same tree, which is what the
+/// divergence means: the two write paths must produce the same verdicts.
+#[test]
+fn an_aliased_caller_of_a_new_definition_is_repaired() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("a.rs"),
+        "use crate::c::thing as alias;\npub fn caller() { alias(); }\n",
+    )
+    .expect("a.rs");
+    let mut store = GraphStore::open_in_memory().expect("store");
+    store
+        .index_project(dir.path(), &IndexOptions::new("p"))
+        .expect("first index");
+    assert!(
+        store
+            .call_sites("p")
+            .expect("sites")
+            .iter()
+            .all(|site| site.resolution == "unresolved"),
+        "the fixture starts with the alias unresolved"
+    );
+
+    // The definition appears; `a.rs` is untouched, so nothing re-parses it directly.
+    std::fs::write(dir.path().join("c.rs"), "pub fn thing() {}\n").expect("c.rs");
+    store
+        .reindex_incremental(dir.path(), &IndexOptions::new("p"))
+        .expect("reindex");
+
+    let incremental = verdicts(&store);
+    let mut full = GraphStore::open_in_memory().expect("store");
+    full.index_project(dir.path(), &IndexOptions::new("p"))
+        .expect("full index");
+    assert_eq!(
+        incremental,
+        verdicts(&full),
+        "an incremental pass must not leave a verdict a full index does not"
+    );
+    assert_eq!(
+        incremental.get("alias").map(String::as_str),
+        Some("resolved"),
+        "the alias resolves once its target exists: {incremental:?}"
+    );
+}
+
+/// `callee -> resolution` for one project, the comparable shape.
+fn verdicts(store: &GraphStore) -> std::collections::BTreeMap<String, String> {
+    store
+        .call_sites("p")
+        .expect("sites")
+        .into_iter()
+        .map(|site| (site.callee.clone(), site.resolution))
+        .collect()
+}
