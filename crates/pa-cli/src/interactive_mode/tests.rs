@@ -1114,70 +1114,51 @@ fn interactive_resume_restores_saved_cwd_and_project_settings_unless_overridden(
     }
 }
 
-/// The flush must not be AWAITED at the composition root — the site, not the helper.
+/// The flush must not be awaited before the run — made STRUCTURAL, not textual.
 ///
-/// `track_startup_ready` is covered by `the_startup_flush_never_blocks_the_first_frame`
-/// (a hanging sink must not delay it). That test cannot see the caller: the launch path
-/// could `await` the returned handle and the helper would still be correct — the paint
-/// would block anyway (review #24, the half the payload test left). This checks the CALL
-/// SITE: the handle is bound and joined LATER, and the binding is never awaited inline.
+/// The previous version of this test read the source and forbade `.await` in the binding
+/// statement. It could not see the real defect: move the bounded join ABOVE `run.await` and
+/// every assertion still passes, while the paint path waits out delivery (review #24's
+/// surviving half).
+///
+/// The join now takes the run's result as an argument, so it CANNOT be called before the run
+/// completes — there is no result to pass. This test pins that shape, and pins the bound:
+/// `join_startup_flush` is the only place the handle is awaited, and its await is inside a
+/// `timeout`.
 #[test]
-fn the_launch_path_never_awaits_the_startup_flush() {
+fn the_startup_flush_is_joined_only_with_the_finished_run() {
     let source = include_str!("../interactive_mode.rs");
-    let launch = source
-        .split("fn run_interactive_interactive_mode")
-        .nth(1)
-        .or_else(|| source.split("pub async fn run_interactive").nth(1))
-        .unwrap_or(source);
-    let call = launch
-        .find("track_startup_ready(client, startup_started, startup_kind)")
-        .expect("the launch path emits the tracked startup events");
-    // The whole statement the call sits in: from the binding to the semicolon that ends it.
-    // The enclosing STATEMENT: back to the previous `;` (the binding's start) and forward to
-    // the next one. A line-based window would miss a multi-line `let … = …\n .map(…)` and,
-    // worse, could hide an `.await` on the continuation line.
-    let statement_start = launch[..call].rfind(';').map_or(0, |at| at + 1);
-    let statement_end = launch[call..]
-        .find(';')
-        .map_or(launch.len(), |at| call + at);
-    let statement = &launch[statement_start..statement_end];
+
+    // The join takes the result: a future cannot be passed before it resolves.
+    let join_at = source
+        .find("join_startup_flush(startup_flush, result)")
+        .expect("the composition root joins the flush with the run's result");
+    let signature = source
+        .find("pub(super) async fn join_startup_flush<T>(")
+        .expect("the join is its own function");
+    let signature_body = &source[signature..];
+    let params_end = signature_body
+        .find(") -> T {")
+        .expect("the signature ends with the result type");
+    let params = &signature_body[..params_end];
     assert!(
-        !statement.contains(".await"),
-        "the startup flush is awaited at the launch site, which puts delivery on the paint \
-         path: {statement}"
-    );
-    assert!(
-        statement.contains("startup_flush"),
-        "the handle must be bound so a later join can bound a quick exit: {statement}"
+        params.contains("result: T"),
+        "the join must TAKE the run's result, so it cannot run before the run: {params}"
     );
 
-    // And the ONE place the handle is awaited must be the bounded exit join. An awaited
-    // flush placed anywhere else on this path blocks the frame it was handed off to spare,
-    // and a test that only looked at the binding statement would not see it.
-    // The await that touches the handle must be BOUNDED, and the two unbounded shapes are
-    // exact strings: `flush.await` (a direct wait) and `.await` right after the binding
-    // expression (a wait at the launch site). Both are greppable, so neither can hide in a
-    // reformat.
+    // The bound lives inside that function, once.
+    let body_start = signature + params_end;
+    let body_end = source[body_start..]
+        .find("\n}\n")
+        .map(|at| body_start + at)
+        .expect("the join body ends");
+    let body = &source[body_start..body_end];
     assert!(
-        !launch.contains("flush.await"),
-        "the startup flush is awaited directly: delivery would run on the exit path with no bound"
-    );
-    let exit = &launch[statement_end..];
-    let timeout_at = exit
-        .find("timeout(")
-        .expect("the exit join bounds the flush with a timeout");
-    let flush_arg = exit[timeout_at..]
-        .find("flush")
-        .expect("the timeout joins the flush handle");
-    let await_at = exit[timeout_at + flush_arg..]
-        .find(".await")
-        .expect("the bounded join is awaited");
-    assert!(
-        exit[..timeout_at].len() < exit.len(),
-        "the bounded join is inside the launch path"
+        body.contains("timeout(") && body.contains("TELEMETRY_EXIT_TIMEOUT_MS"),
+        "the join must be bounded: {body}"
     );
     assert!(
-        timeout_at + flush_arg < timeout_at + flush_arg + await_at + 4,
-        "the await follows the timeout call"
+        !source[..join_at].contains("flush.await"),
+        "no unbounded await of the flush handle before the join"
     );
 }

@@ -166,14 +166,11 @@ pub fn run_interactive_mode(options: &RunOptions) -> Result<i32> {
         // `tui exit` and the agents-view exit report already join under
         // applies here: the drain delivers (typical ~150ms) or drops,
         // bounded — never cut mid-POST.
-        if let Some(flush) = startup_flush {
-            let _ = tokio::time::timeout(
-                Duration::from_millis(pa_tui::interactive::TELEMETRY_EXIT_TIMEOUT_MS),
-                flush,
-            )
-            .await;
-        }
-        result
+        // The join takes the run's RESULT as an argument, so it cannot be written before the
+        // run: awaiting the flush first would block the very frame the hand-off spared, and
+        // a test that only checks "the await is bounded" cannot see the difference
+        // (review #24's surviving half — moving this block above `run.await` passed).
+        join_startup_flush(startup_flush, result).await
     })?;
     // tmux (verified on 3.2a) can drop the pane's final output when the process
     // dies immediately after writing it; holding briefly lets the terminal apply it.
@@ -199,6 +196,26 @@ pub(super) fn flush_startup_telemetry(
     tokio::spawn(async move {
         let _ = client.shutdown().await;
     })
+}
+
+/// Await the startup flush under the shared exit bound, then hand `result` back.
+///
+/// The ORDER is the point, and it is structural: the result exists only after the run has
+/// finished, so this function cannot be called before `run.await`. A join placed there would
+/// wait out delivery on the paint path — the #3288 regression this file exists to prevent —
+/// while every assertion about "the await is bounded" would still pass.
+pub(super) async fn join_startup_flush<T>(
+    flush: Option<tokio::task::JoinHandle<()>>,
+    result: T,
+) -> T {
+    if let Some(flush) = flush {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(pa_tui::interactive::TELEMETRY_EXIT_TIMEOUT_MS),
+            flush,
+        )
+        .await;
+    }
+    result
 }
 
 /// Track the two `startup`-era events and hand the client's final flush to the
