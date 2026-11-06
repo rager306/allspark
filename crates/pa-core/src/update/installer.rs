@@ -170,14 +170,28 @@ const SECRET_QUERY_PARAMS: [&str; 8] = [
     "auth",
 ];
 
-/// Replace the VALUE of every credential-bearing query parameter with `<redacted>`.
+/// Replace the VALUE of every credential-bearing query parameter with `<redacted>`, and
+/// drop the fragment.
+///
+/// Three shapes the first version missed, all named by the fourth reverify wave:
+///   * a **bare value** with no `=` (`?ghp_abc123`) carries a credential and has no name to
+///     match, so it is redacted whole;
+///   * a **fragment** (`#access_token=…`) is never sent to a server but IS printed, and an
+///     OAuth-style URL keeps its token there;
+///   * a pair that is neither named nor bare is left ALONE on purpose: a query also carries
+///     the diagnostic half (`?channel=beta`), and erasing it makes the message useless.
 fn redact_secret_query_params(url: &mut String) {
+    // The fragment first: it is not part of the query and its content is never diagnostic.
+    if let Some(fragment) = url.find('#') {
+        url.truncate(fragment);
+        url.push_str("#<redacted>");
+    }
     let Some(query_start) = url.find('?') else {
         return;
     };
-    let query_end = url[query_start..]
-        .find('#')
-        .map_or(url.len(), |at| query_start + at);
+    // The query ends where the (already redacted) fragment starts: taking `url.len()` here
+    // swallowed the marker into the last pair's VALUE and dropped it from the output.
+    let query_end = url.find('#').unwrap_or(url.len());
     let query = url[query_start + 1..query_end].to_string();
     let mut changed = false;
     let redacted: Vec<String> = query
@@ -188,13 +202,25 @@ fn redact_secret_query_params(url: &mut String) {
                 None => (pair, None),
             };
             let lowered = name.to_ascii_lowercase();
-            let secret = SECRET_QUERY_PARAMS
-                .iter()
-                .any(|needle| lowered.contains(needle));
-            match (secret, value) {
-                (true, Some(_)) if !lowered.is_empty() => {
+            match (value, lowered.is_empty()) {
+                // A bare token with no `=` at all.
+                (None, _) if !pair.is_empty() => {
+                    changed = true;
+                    "<redacted>".to_string()
+                }
+                // A NAMED parameter whose name says credential.
+                (Some(_), false)
+                    if SECRET_QUERY_PARAMS
+                        .iter()
+                        .any(|needle| lowered.contains(needle)) =>
+                {
                     changed = true;
                     format!("{name}=<redacted>")
+                }
+                // `?=value`: a value with no name at all, so no name can vouch for it.
+                (Some(_), true) => {
+                    changed = true;
+                    "=<redacted>".to_string()
                 }
                 _ => pair.to_string(),
             }
@@ -435,8 +461,13 @@ pub async fn run_installer_from(
         message: format!("{error:#}"),
     })?;
     let (script, handle) = fetch_script(url).await.map_err(|error| UpdateFailure {
+        // The TOP-LEVEL message only, never `{error:#}`: the alternate form walks reqwest's
+        // error chain, and a chain can carry the URL in a nested source that no wrapper of
+        // ours ever saw — so the redacted URL above would sit beside a raw one
+        // (review #32's last shape). The top message names the failure kind, which is what
+        // an operator acts on.
         message: format!(
-            "could not download the installer from {}: {error:#}",
+            "could not download the installer from {}: {error}",
             redact_url_credentials(url)
         ),
     })?;
@@ -1984,14 +2015,56 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
                 "https://u:p@h/a?token=t",
                 "https://<redacted>@h/a?token=<redacted>",
             ),
-            // A fragment is not part of the query.
+            // A fragment is DROPPED, not preserved: it is printed but never sent, so its
+            // content is never diagnostic and an OAuth-style `#access_token=` lives there.
             (
                 "https://h/a?token=t#frag",
-                "https://h/a?token=<redacted>#frag",
+                "https://h/a?token=<redacted>#<redacted>",
             ),
         ] {
             assert_eq!(redact_url_credentials(input), expected, "input: {input}");
         }
+    }
+
+    /// The shapes the name-matching redactor could not see.
+    ///
+    /// A BARE value has no name to match (`?ghp_abc123`), a FRAGMENT is printed but never
+    /// sent (`#access_token=…`), and a value with an empty name has nothing that could vouch
+    /// for it. The fourth reverify wave named all three after the name-list fix landed.
+    #[test]
+    fn url_redaction_covers_bare_values_and_fragments() {
+        for (input, expected) in [
+            ("https://h/a?ghp_abc123", "https://h/a?<redacted>"),
+            ("https://h/a#access_token=secret", "https://h/a#<redacted>"),
+            ("https://h/a?=sometoken", "https://h/a?=<redacted>"),
+            // A named diagnostic parameter still survives: the message must stay usable.
+            ("https://h/a?channel=beta", "https://h/a?channel=beta"),
+            // Name and bare value together: each is handled on its own.
+            (
+                "https://h/a?channel=beta&ghp_abc123&token=t",
+                "https://h/a?channel=beta&<redacted>&token=<redacted>",
+            ),
+        ] {
+            assert_eq!(redact_url_credentials(input), expected, "input: {input}");
+        }
+    }
+
+    /// A reqwest error chain can carry the raw URL in a nested source.
+    ///
+    /// The wrapper redacted the URL it was given and then formatted `{error:#}`, whose
+    /// alternate form walks the chain — so a raw URL inside a nested `source()` sat beside
+    /// the redacted one (review #32's last shape). The message now uses the TOP-level error
+    /// only.
+    #[test]
+    fn the_download_error_path_does_not_walk_the_cause_chain() {
+        let source = include_str!("installer.rs");
+        let marker = "could not download the installer from";
+        let at = source.find(marker).expect("the download failure message");
+        let window = &source[at..(at + 400).min(source.len())];
+        assert!(
+            !window.contains("{error:#}"),
+            "the download failure must not walk the error chain: {window}"
+        );
     }
 
     /// The archive download redacted nothing: the same funnel leaked from its other half.
