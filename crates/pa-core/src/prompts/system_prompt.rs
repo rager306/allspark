@@ -406,11 +406,21 @@ fn native_tools_section(tools: &[&str], options: &BuildSystemPromptOptions<'_>) 
             line.push_str("; it also accepts ");
             line.push_str(&others.join(", "));
         }
+        // The `sed` ban is mode-neutral; the REASON is not. Fuzzy whitespace matching and a
+        // unique-match error are `replace` semantics, and a hashline-only session reads
+        // instructions about a mode it cannot use — the surviving half of review #28, after
+        // the default was unified. Each mode's own reasons come from its own description;
+        // the sentence below claims only what every mode does.
         line.push_str(
             ". NEVER issue an individual edit with `sed`/`perl`/`python` through `bash` — this \
-             engine matches fuzzily on whitespace, reports a unique-match error you can refine, \
-             previews the diff, and detects no-op loops that a silent `sed` would hide.",
+             engine previews the diff and detects no-op loops that a silent `sed` would hide.",
         );
+        if default == pa_edit::EditMode::Replace || allowed.contains(&pa_edit::EditMode::Replace) {
+            line.push_str(
+                " In `replace` mode it also matches fuzzily on whitespace and reports a \
+                 unique-match error you can refine.",
+            );
+        }
         lines.push(line);
         // The instructions for the modes THIS session accepts, default first.
         lines.push(pa_edit::description(default).to_string());
@@ -1380,6 +1390,50 @@ mod tests {
     /// and always appended the hashline instructions, so a session that rejects
     /// `sloppy` still promised it, and one whose default is `replace` still read
     /// hashline instructions.
+    /// A mode-specific reason must not be advertised to a session that cannot use it.
+    ///
+    /// `replace` matches fuzzily on whitespace and errors on a non-unique `old_string`; a
+    /// hashline-only session reads those sentences and then finds them untrue of its own tool
+    /// (review #28's last half — the default was unified, the instruction stayed
+    /// unconditional).
+    #[test]
+    fn a_mode_specific_reason_does_not_leak_into_a_session_without_that_mode() {
+        use pa_edit::EditMode;
+
+        let hashline_only = [EditMode::Hashline];
+        let options = BuildSystemPromptOptions {
+            edit_modes: Some(&hashline_only),
+            edit_default_mode: Some(EditMode::Hashline),
+            ..BuildSystemPromptOptions::default()
+        };
+        let section = native_tools_section(&["edit"], &options);
+        assert!(
+            section.contains("`hashline` is this session's default mode"),
+            "the session's own mode is named: {section}"
+        );
+        assert!(
+            !section.contains("matches fuzzily on whitespace"),
+            "`replace`'s matching rule was advertised to a session that cannot request it: {section}"
+        );
+        assert!(
+            section.contains("previews the diff"),
+            "the mode-neutral reasons stay: {section}"
+        );
+
+        // With `replace` available the sentence comes back, because it is then true.
+        let with_replace = [EditMode::Hashline, EditMode::Replace];
+        let options = BuildSystemPromptOptions {
+            edit_modes: Some(&with_replace),
+            edit_default_mode: Some(EditMode::Hashline),
+            ..BuildSystemPromptOptions::default()
+        };
+        let section = native_tools_section(&["edit"], &options);
+        assert!(
+            section.contains("matches fuzzily on whitespace"),
+            "a session that accepts `replace` gets its matching rule: {section}"
+        );
+    }
+
     /// The prompt's default must be the TOOL's default, not a similar one computed beside it.
     ///
     /// With `allowModes: ["hashline", "replace"]` and no `defaultMode`, the prompt took
