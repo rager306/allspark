@@ -5,13 +5,33 @@ use uuid::Uuid;
 
 use super::state::normalize_optional_label;
 use super::{
-    iso_from_millis, now_millis, AgentCronJobStore, CreateAgentCronJobInput,
+    iso_from_millis, now_millis, AgentCronJobStore, CreateAgentCronJobInput, CronJobsState,
     HeartbeatManagementAction,
 };
 use crate::cron::{
     is_heartbeat_cron_job, next_run_at_for_schedule, parse_agent_cron_schedule, parse_iso_millis,
     AgentCronJob, JobStatus, ScheduleKind, DEFAULT_HEARTBEAT_DELIVERY_MODE,
 };
+
+/// The id of the heartbeat row that is CURRENT for `active_session_id`, in one state.
+///
+/// The one predicate `get_heartbeat` uses, expressed over a state the caller already
+/// holds under lock. Management calls must select with THIS, not with a pre-lock read:
+/// a create landing between the read and the lock supersedes the row, and a
+/// pause/resume/clear of the superseded row acks an action on a heartbeat that no longer
+/// exists while the live one keeps firing (review #2).
+fn current_heartbeat_id(state: &CronJobsState, active_session_id: &str) -> Option<String> {
+    state
+        .jobs
+        .iter()
+        .filter(|job| {
+            job.active_session_id == active_session_id
+                && job.source.as_deref() == Some("heartbeat")
+                && matches!(job.status, JobStatus::Active | JobStatus::Paused)
+        })
+        .max_by_key(|job| parse_iso_millis(&job.updated_at).unwrap_or(0))
+        .map(|job| job.id.clone())
+}
 
 impl AgentCronJobStore {
     pub fn get_heartbeat(&self, active_session_id: &str) -> Option<AgentCronJob> {
@@ -109,20 +129,22 @@ impl AgentCronJobStore {
         active_session_id: &str,
         now: u64,
     ) -> anyhow::Result<Option<AgentCronJob>> {
-        let Some(current) = self.get_heartbeat(active_session_id) else {
-            return Ok(None);
-        };
         let now_iso = iso_from_millis(now);
-        // The read and the write happen under ONE lock. Reading the jobs, building
-        // the new list and rewriting the file as separate steps left a window in
-        // which another writer's job (a concurrent add, a scheduler claim) was read
-        // into `jobs` and then dropped by the rewrite — and a timestamp tie made the
-        // merge keep the stale row, so the management call acknowledged a pause that
-        // was never persisted (review #2).
+        // The SELECTION and the write happen under ONE lock. Writing under the lock
+        // was not enough: the row was chosen by `get_heartbeat` BEFORE the lock was
+        // taken, so a create_heartbeat landing in the window left this call editing a
+        // row that had just been superseded — it acknowledged a pause of a heartbeat
+        // that no longer existed while the new one kept firing (review #2, the half
+        // that survived the first fix). The same predicate `get_heartbeat` uses is
+        // applied in-loop, so "the row I edited" and "the row that was current" cannot
+        // disagree.
         let mut paused = None;
         self.mutate_states_only(|state| {
+            let Some(current_id) = current_heartbeat_id(state, active_session_id) else {
+                return Vec::new();
+            };
             for job in &mut state.jobs {
-                if job.id != current.id {
+                if job.id != current_id {
                     continue;
                 }
                 let paused_job = AgentCronJob {
@@ -151,33 +173,44 @@ impl AgentCronJobStore {
         active_session_id: &str,
         now: u64,
     ) -> anyhow::Result<Option<AgentCronJob>> {
-        let Some(current) = self.get_heartbeat(active_session_id) else {
-            return Ok(None);
-        };
-        let Some(next_run_at) = next_run_at_for_schedule(&current.schedule, now)? else {
-            anyhow::bail!("Heartbeat schedule must be recurring");
-        };
         let now_iso = iso_from_millis(now);
-        // One lock for the read and the write (review #2): read-then-write lost a
-        // concurrent writer's job, and a timestamp tie kept the stale row.
+        // Selection inside the lock, as in `pause_heartbeat`. The schedule is read from
+        // the row being edited, not from a copy taken before the lock: a heartbeat
+        // re-created with a different schedule in the window would otherwise resume to
+        // the OLD schedule's next run.
         let mut resumed = None;
+        let mut failure: Option<anyhow::Error> = None;
         self.mutate_states_only(|state| {
+            let Some(current_id) = current_heartbeat_id(state, active_session_id) else {
+                return Vec::new();
+            };
             for job in &mut state.jobs {
-                if job.id != current.id {
+                if job.id != current_id {
                     continue;
                 }
-                let resumed_job = AgentCronJob {
-                    status: JobStatus::Active,
-                    next_run_at: Some(iso_from_millis(next_run_at)),
-                    updated_at: now_iso.clone(),
-                    ..job.clone()
-                };
-                *job = resumed_job.clone();
-                resumed = Some(resumed_job);
+                match next_run_at_for_schedule(&job.schedule, now) {
+                    Ok(Some(next_run_at)) => {
+                        let resumed_job = AgentCronJob {
+                            status: JobStatus::Active,
+                            next_run_at: Some(iso_from_millis(next_run_at)),
+                            updated_at: now_iso.clone(),
+                            ..job.clone()
+                        };
+                        *job = resumed_job.clone();
+                        resumed = Some(resumed_job);
+                    }
+                    Ok(None) => {
+                        failure = Some(anyhow::anyhow!("Heartbeat schedule must be recurring"));
+                    }
+                    Err(error) => failure = Some(error),
+                }
                 break;
             }
             Vec::new()
         })?;
+        if let Some(error) = failure {
+            return Err(error);
+        }
         Ok(resumed)
     }
 
@@ -189,14 +222,15 @@ impl AgentCronJobStore {
         active_session_id: &str,
         now: u64,
     ) -> anyhow::Result<Option<AgentCronJob>> {
-        let Some(current) = self.get_heartbeat(active_session_id) else {
-            return Ok(None);
-        };
         let now_iso = iso_from_millis(now);
+        // Selection inside the lock (review #2): see `pause_heartbeat`.
         let mut cleared = None;
         self.mutate_states_only(|state| {
+            let Some(current_id) = current_heartbeat_id(state, active_session_id) else {
+                return Vec::new();
+            };
             for job in &mut state.jobs {
-                if job.id != current.id {
+                if job.id != current_id {
                     continue;
                 }
                 let cleared_job = AgentCronJob {
@@ -292,6 +326,20 @@ impl AgentCronJobStore {
 }
 
 #[cfg(test)]
+impl AgentCronJobStore {
+    /// The whole state as stored, for a test that must land a competing write between
+    /// another call's selection and its lock.
+    fn read_state_for_test(&self) -> CronJobsState {
+        crate::cron::store::state::read_jobs_state(&self.require_file_path())
+    }
+
+    fn write_state_for_test(&self, state: &CronJobsState) {
+        crate::cron::store::state::write_jobs_state(&self.require_file_path(), state)
+            .expect("write the competing state");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::cron::store::input;
@@ -343,6 +391,120 @@ mod tests {
         assert!(store
             .create_heartbeat(&input("nope", "in 10m", now))
             .is_err());
+    }
+
+    /// The predicate the three management calls select with: newest live heartbeat.
+    ///
+    /// One owner for "which row is current", so `get_heartbeat` (a read, outside any
+    /// lock) and the in-lock selection of pause/resume/clear cannot drift apart. The
+    /// three filters are the ones the finding turns on: a heartbeat source, a live
+    /// status, and the newest stamp — a cancelled row is not current however recent.
+    #[test]
+    fn the_current_heartbeat_is_the_newest_live_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = AgentCronJobStore::new(dir.path().join("jobs.json"));
+        let now = 1_700_000_000_000_u64;
+        let first = store
+            .create_heartbeat(&input("first", "every 5m", now))
+            .unwrap();
+        let second = store
+            .create_heartbeat(&input("second", "every 5m", now + 1000))
+            .unwrap();
+
+        let state = store.read_state_for_test();
+        assert_eq!(
+            current_heartbeat_id(&state, "live-1").as_deref(),
+            Some(second.id.as_str()),
+            "the newest live heartbeat is current; the one it replaced is cancelled"
+        );
+        assert_ne!(first.id, second.id);
+
+        // A session with no heartbeat has no current row.
+        assert!(current_heartbeat_id(&state, "other-session").is_none());
+    }
+
+    /// The selection happens INSIDE the state lock, not before it.
+    ///
+    /// This is the mechanism the finding is about, and it is not observable from a
+    /// single-threaded call: writing under the lock while choosing the row before it
+    /// looks identical from outside until a competing writer lands in the window. So the
+    /// check is on the mechanism — the three management calls must not select with
+    /// `get_heartbeat`, which takes no lock. Red on the pre-fix code, where each of the
+    /// three began with `let Some(current) = self.get_heartbeat(..)`.
+    #[test]
+    fn management_calls_select_under_the_lock_not_before_it() {
+        let source = include_str!("heartbeat.rs");
+        let body_start = source
+            .find("pub fn pause_heartbeat(")
+            .expect("pause exists");
+        let body_end = source
+            .find("pub fn manage_heartbeat(")
+            .expect("manage exists");
+        let management = &source[body_start..body_end];
+        assert!(
+            !management.contains("get_heartbeat("),
+            "pause/resume/clear still select their row with the UNLOCKED read: \n{management}"
+        );
+        assert!(
+            management.contains("current_heartbeat_id(state"),
+            "the selection must run on the state held under the lock"
+        );
+    }
+
+    /// With the lock held by another writer, a pause still pauses the LIVE heartbeat.
+    ///
+    /// The competing write lands while this thread holds the state lock, so the pause
+    /// cannot read state until it is released — and then it must act on what it finds,
+    /// not on a copy taken beforehand. No fixed sleep: the lock itself orders the two.
+    #[test]
+    fn a_pause_after_a_competing_write_pauses_the_live_row() {
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.json");
+        let now = 1_700_000_000_000_u64;
+        let store = AgentCronJobStore::new(path.clone());
+        let first = store
+            .create_heartbeat(&input("continue", "every 5m", now))
+            .unwrap();
+
+        let held =
+            crate::platform::lock_dir::LockDir::acquire(&path, Duration::from_secs(30)).unwrap();
+        let pauser = std::thread::spawn(move || {
+            AgentCronJobStore::new(path)
+                .pause_heartbeat("live-1", now + 2)
+                .unwrap()
+        });
+
+        // The replacement, written while the pauser cannot hold the lock.
+        let mut state = store.read_state_for_test();
+        for job in &mut state.jobs {
+            if job.id == first.id {
+                job.status = JobStatus::Cancelled;
+                job.next_run_at = None;
+                job.updated_at = iso_from_millis(now + 1);
+            }
+        }
+        let mut replacement = first;
+        replacement.id = "replacement".to_string();
+        replacement.status = JobStatus::Active;
+        replacement.updated_at = iso_from_millis(now + 1);
+        replacement.next_run_at = Some(iso_from_millis(now + 300_000));
+        state.jobs.push(replacement);
+        store.write_state_for_test(&state);
+        drop(held);
+
+        pauser.join().unwrap();
+        let live = store
+            .read_jobs()
+            .into_iter()
+            .find(|job| job.id == "replacement")
+            .expect("the replacement exists");
+        assert_eq!(
+            live.status,
+            JobStatus::Paused,
+            "the pause must act on the live heartbeat, not on a pre-lock copy"
+        );
     }
 
     /// A management call stamped BEHIND the row it edits is refused, not acked.
