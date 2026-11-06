@@ -118,8 +118,23 @@ impl GraphStore {
         // 3. Removed files: stored but not seen in ANY batch. A property of the pass,
         // not of a batch — inside the loop it ran once per batch, which double-counted
         // every removal (measured: 4 reported for 2 files).
+        // Who called into a file that is leaving — read BEFORE the sweep, because
+        // `forget_file` deletes the nodes and edges that answer it. This pass re-parses only
+        // CHANGED files, so a caller that did not change keeps its verdict, and that verdict
+        // now names a definition which no longer exists (review #35: the same defect the
+        // incremental pass had, in the pass that skips unchanged files even more often).
+        let mut removed_dependents: HashSet<String> = HashSet::new();
         for rel in stored.keys() {
             if !seen.contains(rel) {
+                // "Not the removed file itself", never "not seen": the dependent is
+                // normally a file this pass WALKED (that is what "unchanged" means), so
+                // filtering on `seen` would drop every one — the mistake the incremental
+                // pass made first, caught by the same probe.
+                for dependent in self.incoming_source_files(&opts.project, rel)? {
+                    if dependent != *rel {
+                        removed_dependents.insert(dependent);
+                    }
+                }
                 // One call, because the row families are keyed differently and a list
                 // written out at each sweep drifts: this pass kept `lsp_surface` rows
                 // and never dropped `index_coverage`, the incremental pass dropped the
@@ -184,7 +199,13 @@ impl GraphStore {
             // a call spelled in a file it did NOT touch. Only the touched files
             // were re-resolved above, and the untouched caller never changes
             // again, so its stale miss would outlive every later pass.
-            store.resolve_newly_satisfiable(&resolver, &opts.project, &reparsed, &root)?;
+            store.resolve_newly_satisfiable(
+                &resolver,
+                &opts.project,
+                &reparsed,
+                &root,
+                &removed_dependents,
+            )?;
             Ok(())
         })?;
 

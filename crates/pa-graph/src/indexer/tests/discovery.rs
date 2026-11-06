@@ -210,3 +210,56 @@ fn a_removed_file_takes_its_coverage_note_with_it() {
         );
     }
 }
+
+/// The FULL pass must repair a caller whose target file disappeared.
+///
+/// `#35` was found in the incremental pass, and the full pass has the same hole for a
+/// different reason: it re-parses only files whose content CHANGED, so an unchanged caller
+/// keeps a verdict about a file that is gone. Measured before the fix: the full pass
+/// reported `removed=1, parsed=0` and the site still said `resolved`, while a fresh index of
+/// the same tree said `unresolved` — the two write paths disagreed about one tree.
+///
+/// The assertion is the COMPARISON (a fresh index of the same tree), because "resolved" on
+/// its own is not the defect: the defect is the disagreement.
+#[test]
+fn the_full_pass_re_verdicts_a_caller_of_a_removed_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("a.rs"), "pub fn caller() { helper(); }\n").expect("a.rs");
+    std::fs::write(dir.path().join("b.rs"), "pub fn helper() {}\n").expect("b.rs");
+    let mut store = GraphStore::open_in_memory().expect("store");
+    store
+        .index_project(dir.path(), &IndexOptions::new("p"))
+        .expect("first index");
+
+    std::fs::remove_file(dir.path().join("b.rs")).expect("remove the target");
+    let report = store
+        .index_project(dir.path(), &IndexOptions::new("p"))
+        .expect("second index");
+    assert_eq!(report.removed, 1, "{report:?}");
+    assert_eq!(
+        report.parsed, 0,
+        "the caller did not change, so nothing was re-parsed: {report:?}"
+    );
+
+    let stale = verdicts(&store);
+    let mut fresh = GraphStore::open_in_memory().expect("store");
+    fresh
+        .index_project(dir.path(), &IndexOptions::new("p"))
+        .expect("a fresh index of the same tree");
+    assert_eq!(
+        stale,
+        verdicts(&fresh),
+        "a second pass must not leave a verdict a fresh index does not"
+    );
+    assert_eq!(stale.get("helper").map(String::as_str), Some("unresolved"));
+}
+
+/// `callee -> resolution` for the fixture's one project.
+fn verdicts(store: &GraphStore) -> std::collections::BTreeMap<String, String> {
+    store
+        .call_sites("p")
+        .expect("sites")
+        .into_iter()
+        .map(|site| (site.callee.clone(), site.resolution))
+        .collect()
+}

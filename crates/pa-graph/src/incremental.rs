@@ -423,7 +423,25 @@ impl GraphStore {
         //
         // Cost: one pass over `call_sites` for the files this run did NOT touch. The
         // touched files have already been re-resolved above, so their rows are current.
-        self.resolve_newly_satisfiable(&resolver, &opts.project, &reindexed_rels, &root)?;
+        // The dependents of every REMOVED file: their verdicts name a file that no longer
+        // exists, whatever those verdicts currently say (review #35).
+        let mut invalidated: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for rel in stored_hashes.keys() {
+            if !seen.contains(rel) {
+                for dependent in self.incoming_source_files(&opts.project, rel)? {
+                    if dependent != *rel {
+                        invalidated.insert(dependent);
+                    }
+                }
+            }
+        }
+        self.resolve_newly_satisfiable(
+            &resolver,
+            &opts.project,
+            &reindexed_rels,
+            &root,
+            &invalidated,
+        )?;
 
         let reason = pick_reason(&reasons);
         let report = IncrementalReport {
@@ -477,11 +495,24 @@ impl GraphStore {
         project: &str,
         reindexed: &std::collections::HashSet<String>,
         root: &Path,
+        invalidated: &std::collections::HashSet<String>,
     ) -> Result<usize> {
+        // Two kinds of row need repair, and they are repaired the same way — by
+        // re-resolving the call against the CURRENT definition set and rewriting the
+        // verdict:
+        //   * `unresolved` in a file this run did not touch: a definition may have arrived
+        //     that satisfies it (review #37);
+        //   * ANY verdict in a file whose target was removed: `resolved` is now a lie, and
+        //     `unresolved` may still be one if a different definition took the name
+        //     (review #35 — the full pass hit this because it re-parses only CHANGED files,
+        //     so an unchanged caller kept a verdict about a file that no longer exists).
         let candidates: Vec<crate::types::CallSiteRow> = self
             .call_sites(project)?
             .into_iter()
-            .filter(|site| site.resolution == "unresolved" && !reindexed.contains(&site.rel_path))
+            .filter(|site| {
+                !reindexed.contains(&site.rel_path)
+                    && (site.resolution == "unresolved" || invalidated.contains(&site.rel_path))
+            })
             .collect();
         // The aliases of the files these sites live in. A resolver built during this run
         // knows the imports of the files the run RE-PARSED; a site in a file it did not
@@ -523,24 +554,25 @@ impl GraphStore {
                 line: site.line,
                 args: Vec::new(),
             };
-            let Some((source, _target, props)) =
-                resolver.resolve_call(&site.caller_qn, &site.rel_path, &call)
-            else {
-                continue;
-            };
-            // Only a call that resolves to a REAL definition is a repair: a self-loop
-            // would be the same unresolved fact with a different label.
-            if props.get("strategy").and_then(serde_json::Value::as_str)
-                == Some(crate::types::CallStrategy::Recursive.as_str())
-            {
+            let is_repair = resolver
+                .resolve_call(&site.caller_qn, &site.rel_path, &call)
+                .is_some_and(|(_, _, props)| {
+                    // A self-loop is the same unresolved fact with a different label, so it
+                    // is not a repair.
+                    props.get("strategy").and_then(serde_json::Value::as_str)
+                        != Some(crate::types::CallStrategy::Recursive.as_str())
+                });
+            if !is_repair && site.resolution == "unresolved" {
+                // Still a miss, and it already says so: nothing to rewrite.
                 continue;
             }
-            // Drop the stale UNRESOLVED marker first. `edges` keeps it as a self-loop, and
-            // the new CALLS edge does not replace it (different target), so without this the
-            // graph carries both: a resolved call and the same call's "no idea" row.
+            // Drop the STALE verdict first, in both shapes. `edges` keeps a miss as a
+            // self-loop and a hit as a CALLS edge; the writer will not replace either
+            // across the two, so without this the graph carries both the old verdict and
+            // the new one.
             self.clear_unresolved_edge(project, &site.rel_path, &site.caller_qn, &site.callee)?;
+            self.clear_resolved_call_edge(project, &site.rel_path, &site.caller_qn, &site.callee)?;
             self.record_call_edge(&resolver, project, &site.rel_path, &site.caller_qn, &call)?;
-            let _ = source;
             repaired += 1;
         }
         Ok(repaired)

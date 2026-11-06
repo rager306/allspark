@@ -1089,6 +1089,39 @@ impl GraphStore {
         let _ = rel_path;
         Ok(removed)
     }
+    /// Remove one file's RESOLVED edge for `caller -> callee`.
+    ///
+    /// The mirror of [`GraphStore::clear_unresolved_edge`], needed because the aggregate
+    /// `edges` row is not rewritten across verdicts: a call that resolved to `b::helper`
+    /// and no longer resolves leaves a CALLS edge pointing at a node that may itself be
+    /// gone, so the repair must drop it before recording the miss.
+    ///
+    /// Matched on the caller's `caller_qn` and the stored `callee` prop, exactly like the
+    /// unresolved marker: a different call from the same symbol is a different fact.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    pub(crate) fn clear_resolved_call_edge(
+        &self,
+        project: &str,
+        rel_path: &str,
+        caller_qn: &str,
+        callee: &str,
+    ) -> Result<usize> {
+        let removed = self.conn.execute(
+            "DELETE FROM edges
+             WHERE project = ?1
+               AND edge_type = 'CALLS'
+               AND json_extract(props_json, '$.callee') = ?3
+               AND source IN (
+                   SELECT id FROM nodes WHERE project = ?1 AND qualified_name = ?2
+               )",
+            params![project, caller_qn, callee],
+        )?;
+        let _ = rel_path;
+        Ok(removed)
+    }
+
     /// Delete a file's recorded call sites.
     ///
     /// `call_sites` is keyed by `rel_path` because a site belongs to the file
