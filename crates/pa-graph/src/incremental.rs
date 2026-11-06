@@ -160,47 +160,62 @@ fn extract_import_aliases(
     }
     let mut out = Vec::new();
     for line in source.lines() {
-        let Some(as_at) = line.find(" as ") else {
-            continue;
-        };
-        let after = line[as_at + 4..].trim_start();
-        let local: String = after
-            .chars()
-            .take_while(|c| c.is_alphanumeric() || *c == '_')
-            .collect();
-        if local.is_empty() {
-            continue;
+        // EVERY `as` on the line, not the first: `use crate::c::{thing as first, other as
+        // second};` declares two bindings, and a scan that stopped at the first repaired
+        // `first` while `second` stayed unresolved (the grouped-alias case the reverify
+        // found).
+        let mut search_from = 0usize;
+        while let Some(offset) = line[search_from..].find(" as ") {
+            let as_at = search_from + offset;
+            search_from = as_at + 4;
+            let after = line[search_from..].trim_start();
+            let local: String = after
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if local.is_empty() {
+                continue;
+            }
+            let before = line[..as_at].trim_end();
+            // The imported name: the last identifier before `as`. Only the identifier —
+            // taking the path separators too reversed the whole clause into the target.
+            let target: String = before
+                .chars()
+                .rev()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            if target.is_empty() || target == local {
+                continue;
+            }
+            // The module: the path the entry came from. Inside a brace group the group's
+            // prefix owns it (`use crate::c::{…}` → `crate::c`), so the LAST `{` wins over
+            // whatever an earlier entry left behind. The resolver uses this only to break a
+            // tie between same-named candidates; an empty one costs a confidence step, never
+            // a wrong edge.
+            let module = match before.rfind('{') {
+                Some(brace) => before[..brace]
+                    .trim_end_matches("::")
+                    .trim_start_matches("use ")
+                    .trim_start_matches("from ")
+                    .trim()
+                    .to_string(),
+                None => before
+                    .trim_end_matches(|c: char| c.is_alphanumeric() || c == '_')
+                    .trim_end_matches("::")
+                    .trim_start_matches("use ")
+                    .trim_start_matches("from ")
+                    .trim_matches(|c: char| c == ',' || c == ' ')
+                    .to_string(),
+            };
+            out.push(crate::extract::ImportDef {
+                local_name: local,
+                target_name: target,
+                module,
+            });
         }
-        let before = line[..as_at].trim_end();
-        // The imported name: the last identifier of the path/import clause.
-        // The last identifier only: `use crate::c::thing` gives `thing`, not `c::thing`.
-        // Taking the path separators too reversed the whole clause into the target.
-        let target: String = before
-            .chars()
-            .rev()
-            .take_while(|c| c.is_alphanumeric() || *c == '_')
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect();
-        if target.is_empty() || target == local {
-            continue;
-        }
-        // The module is the path before the imported name; the resolver only uses it to
-        // break ties between same-named candidates, and an empty one costs a confidence
-        // step rather than a wrong edge.
-        let module = before
-            .trim_end_matches(|c: char| c.is_alphanumeric() || c == '_')
-            .trim_end_matches("::")
-            .trim_start_matches("use ")
-            .trim_start_matches("from ")
-            .trim_matches(|c: char| c == '{' || c == ' ' || c == ',')
-            .to_string();
-        out.push(crate::extract::ImportDef {
-            local_name: local,
-            target_name: target,
-            module,
-        });
     }
     out
 }
@@ -231,6 +246,38 @@ mod alias_scan_tests {
         assert_eq!(python.len(), 1, "{python:?}");
         assert_eq!(python[0].local_name, "alias");
         assert_eq!(python[0].target_name, "thing");
+    }
+
+    /// A brace group declares SEVERAL aliases on one line, and every one is a binding.
+    ///
+    /// The scan stopped at the first `as`, so `use crate::c::{thing as first, other as
+    /// second};` repaired `first` and left `second` unresolved while a full index resolved
+    /// both — the divergence the repair exists to remove, in a form one line long (found by
+    /// the fourth reverify wave).
+    #[test]
+    fn the_alias_scan_reads_every_binding_in_a_brace_group() {
+        let aliases = extract_import_aliases(
+            "use crate::c::{thing as first, other as second};\n",
+            pa_ast::SupportLang::Rust,
+        );
+        let pairs: Vec<(&str, &str, &str)> = aliases
+            .iter()
+            .map(|a| {
+                (
+                    a.local_name.as_str(),
+                    a.target_name.as_str(),
+                    a.module.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("first", "thing", "crate::c"),
+                ("second", "other", "crate::c")
+            ],
+            "both bindings, and both owned by the group's module"
+        );
     }
 
     /// A plain import is not an alias: it binds the name it imports.

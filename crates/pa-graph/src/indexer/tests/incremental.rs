@@ -493,3 +493,47 @@ fn a_second_incremental_pass_changes_nothing() {
         "the second pass must not move a verdict"
     );
 }
+
+/// Every binding of a brace group must repair, not just the first.
+///
+/// `use crate::c::{thing as first, other as second};` is ONE line and TWO bindings. The scan
+/// behind the repair stopped at the first `as`, so `first` resolved and `second` stayed
+/// unresolved — while a full index resolved both. Found by the fourth reverify wave; the
+/// assertion is the comparison with a full index, which is what the divergence means.
+#[test]
+fn a_grouped_alias_repairs_every_binding() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("a.rs"),
+        "use crate::c::{thing as first, other as second};\npub fn caller() { first(); second(); }\n",
+    )
+    .expect("a.rs");
+    let mut store = GraphStore::open_in_memory().expect("store");
+    store
+        .index_project(dir.path(), &IndexOptions::new("p"))
+        .expect("first index");
+
+    std::fs::write(
+        dir.path().join("c.rs"),
+        "pub fn thing() {}\npub fn other() {}\n",
+    )
+    .expect("c.rs");
+    store
+        .reindex_incremental(dir.path(), &IndexOptions::new("p"))
+        .expect("reindex");
+
+    let incremental = verdicts(&store);
+    let mut full = GraphStore::open_in_memory().expect("store");
+    full.index_project(dir.path(), &IndexOptions::new("p"))
+        .expect("full index");
+    assert_eq!(
+        incremental,
+        verdicts(&full),
+        "every binding of the group must repair"
+    );
+    assert_eq!(
+        incremental.get("second").map(String::as_str),
+        Some("resolved"),
+        "the SECOND binding is the one the first scan version dropped: {incremental:?}"
+    );
+}
