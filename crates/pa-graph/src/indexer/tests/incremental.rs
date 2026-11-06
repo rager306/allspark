@@ -451,3 +451,45 @@ fn verdicts(store: &GraphStore) -> std::collections::BTreeMap<String, String> {
         .map(|site| (site.callee.clone(), site.resolution))
         .collect()
 }
+
+/// Two incremental passes in a row must agree with each other, not just with a full index.
+///
+/// The #35/#36 fixes repair a caller when its target vanishes or appears. A repair that runs
+/// only once would leave the SECOND pass looking at a store its own first pass made
+/// inconsistent — and "run reindex twice" is a normal operator action after a bad merge.
+#[test]
+fn a_second_incremental_pass_changes_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("a.rs"),
+        "use crate::c::thing as alias;\npub fn caller() { alias(); helper(); }\n",
+    )
+    .expect("a.rs");
+    std::fs::write(dir.path().join("b.rs"), "pub fn helper() {}\n").expect("b.rs");
+    let mut store = GraphStore::open_in_memory().expect("store");
+    store
+        .index_project(dir.path(), &IndexOptions::new("p"))
+        .expect("first index");
+
+    // An arrival and a removal in one pass: the alias target appears, the plain target goes.
+    std::fs::write(dir.path().join("c.rs"), "pub fn thing() {}\n").expect("c.rs");
+    std::fs::remove_file(dir.path().join("b.rs")).expect("remove b.rs");
+    store
+        .reindex_incremental(dir.path(), &IndexOptions::new("p"))
+        .expect("reindex");
+    let after_first = verdicts(&store);
+
+    let second = store
+        .reindex_incremental(dir.path(), &IndexOptions::new("p"))
+        .expect("second reindex");
+    assert_eq!(
+        second.reindexed_paths,
+        Vec::<String>::new(),
+        "a settled store has nothing to reindex: {second:?}"
+    );
+    assert_eq!(
+        verdicts(&store),
+        after_first,
+        "the second pass must not move a verdict"
+    );
+}
