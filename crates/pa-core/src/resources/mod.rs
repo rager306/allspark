@@ -117,10 +117,7 @@ pub fn read_prompt_input_marked(path: &Path, what: &str) -> io::Result<String> {
 fn read_prompt_input(path: &Path) -> io::Result<(String, u64)> {
     let file = open_regular_file(path)?;
     let size = file.metadata()?.len();
-    let mut bytes = Vec::new();
-    std::io::BufReader::new(file)
-        .take(MAX_CONTEXT_FILE_BYTES as u64 + MAX_SCALAR_BYTES)
-        .read_to_end(&mut bytes)?;
+    let bytes = read_bounded(file)?;
     let text = match String::from_utf8(bytes) {
         Ok(text) => text,
         // A scalar straddling the cap is the one tolerable UTF-8 error: those bytes were never
@@ -139,6 +136,27 @@ fn read_prompt_input(path: &Path) -> io::Result<(String, u64)> {
         }
     };
     Ok((text, size))
+}
+
+/// Read at most the cap plus one UTF-8 scalar's slack, and no more.
+///
+/// A separate function so the BOUND is testable: the caller sees only the bytes that were
+/// kept, and a reader that quietly consumed the whole file looks identical from outside.
+/// The test hands this its own reader and reads the position back (review #4's remaining
+/// half — the cap bounded the prompt and nothing checked that it bounded the READ).
+fn read_bounded(mut source: impl std::io::Read) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    // `take` on the READER itself, not on a `BufReader` wrapped around it: a
+    // `BufReader` fills its whole 8 KiB buffer from the underlying reader on every refill,
+    // so the file advanced past the cap even though `take` refused to hand the bytes on
+    // (measured: 270 336 consumed for a 262 148 cap). Bounded memory either way, but the
+    // bound was the buffer's, not the cap's — and `read_to_end` through `take` on a `File`
+    // sizes each syscall to what is left, so nothing pays for the missing buffer.
+    source
+        .by_ref()
+        .take(MAX_CONTEXT_FILE_BYTES as u64 + MAX_SCALAR_BYTES)
+        .read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 /// Open `path` read-only without trusting its type; see [`read_prompt_input_bounded`].
@@ -826,5 +844,99 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         writer.join().unwrap();
         assert!(found.is_none(), "a FIFO is not a context file: {found:?}");
+    }
+
+    /// The read stops at the cap, not past it.
+    ///
+    /// `read_prompt_input` wraps the file in a `BufReader` and takes `cap + MAX_SCALAR`,
+    /// so the buffer can hold up to a scalar beyond the cap — that is deliberate (a
+    /// multi-byte character straddling the boundary must not fail the file). What must
+    /// NOT happen is a read that pulls the whole file into memory anyway, and that is
+    /// invisible from the returned string: the test counts the bytes the reader
+    /// CONSUMED, through a reader that reports its own position.
+    ///
+    /// Review #4's remaining half: the capped reader was shared, and nothing checked
+    /// that the cap is where the reading actually stopped.
+    #[test]
+    fn the_read_stops_at_the_cap_not_past_it() {
+        let limit = MAX_CONTEXT_FILE_BYTES as u64 + MAX_SCALAR_BYTES;
+        let source: Vec<u8> = vec![b'a'; limit as usize * 4];
+        // A reader that reports how much of the source it actually handed out.
+        let mut cursor = std::io::Cursor::new(source);
+        let kept = read_bounded(&mut cursor).unwrap();
+        let consumed = cursor.position();
+        assert_eq!(kept.len() as u64, limit, "the cap is the amount kept");
+        assert_eq!(
+            consumed, limit,
+            "the read consumed past the cap: {consumed} > {limit}"
+        );
+
+        // And the same through the public helper: a file far larger than the cap comes
+        // back capped and MARKED, without the whole body being kept.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("huge.md");
+        std::fs::write(&path, "a".repeat(MAX_CONTEXT_FILE_BYTES * 8)).unwrap();
+        let marked = read_prompt_input_marked(&path, "PROMPT INPUT").unwrap();
+        assert!(
+            marked.len() < MAX_CONTEXT_FILE_BYTES * 2,
+            "{}",
+            marked.len()
+        );
+        assert!(
+            marked.contains("TRUNCATED"),
+            "a truncated read must say so: {}",
+            &marked[..marked.len().min(200)]
+        );
+    }
+
+    /// A refused candidate must not stop the walk: the NEXT one is still read.
+    ///
+    /// The FIFO test above proves the hang is gone. It does not prove the loader keeps
+    /// going — a loader that refused the FIFO *and returned* would pass it while quietly
+    /// dropping a repository whose `AGENTS.md` is a pipe and whose `CLAUDE.md` is fine.
+    /// Review #29's remaining half.
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_candidate_falls_back_to_the_next_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fifo = tmp.path().join("AGENTS.md");
+        nix::unistd::mkfifo(
+            &fifo,
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )
+        .unwrap();
+        // The next candidate in `CONTEXT_FILE_CANDIDATES` order is a real file.
+        std::fs::write(tmp.path().join("CLAUDE.md"), "the real instructions\n").unwrap();
+        // Keep a writer so a regression fails the assertion instead of hanging.
+        let writer_path = fifo.clone();
+        let writer = std::thread::spawn(move || {
+            use std::os::unix::fs::OpenOptionsExt;
+            loop {
+                if let Ok(file) = std::fs::OpenOptions::new()
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&writer_path)
+                {
+                    drop(file);
+                    break;
+                }
+                if !writer_path.exists() {
+                    break;
+                }
+                std::thread::yield_now();
+            }
+        });
+
+        let found = load_context_file_from_dir(tmp.path());
+        std::fs::remove_file(&fifo).unwrap();
+        writer.join().unwrap();
+
+        let found = found.expect("the next candidate must be read after a refusal");
+        assert_eq!(
+            found.path.file_name().unwrap(),
+            "CLAUDE.md",
+            "the loader fell back to the wrong file: {found:?}"
+        );
+        assert!(found.content.contains("the real instructions"), "{found:?}");
     }
 }
