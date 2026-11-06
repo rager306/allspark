@@ -179,3 +179,95 @@ async fn differential_prime_inference_glm_53_flash() {
     assert_eq!(expected["stopReason"], json!("stop"));
     let _ = StopReason::Stop;
 }
+
+#[cfg(test)]
+mod self_test_tests {
+    //! The isolation rule, exercised from Rust so the ordinary `cargo test` lane sees it.
+    //!
+    //! `tests/differential/run.sh` is a shell script with no runner outside an operator's
+    //! hands, and the two defects it had (a shared baseline path, one fixed port) were races
+    //! between two CONCURRENT runs — invisible to a single serial run. `PA_DIFF_SELFTEST=1`
+    //! checks both on any machine; these tests check the same two properties from the lane
+    //! that actually runs, so a regression cannot hide behind "nobody runs that script".
+
+    use std::path::PathBuf;
+    use std::process::{Command, Stdio};
+
+    fn repo_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("repo root")
+            .to_path_buf()
+    }
+
+    /// Two servers started at once must report DIFFERENT ports, and each must print the
+    /// port it actually bound (port 0 means the caller cannot know it any other way).
+    #[test]
+    fn two_replay_servers_bind_different_ports_and_report_them() {
+        let script = repo_root().join("crates/pa-ai/tests/differential/replay_server.py");
+        let spawn = || {
+            Command::new("python3")
+                .arg(&script)
+                .arg("0")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn the replay server")
+        };
+        let first = spawn();
+        let second = spawn();
+
+        let read_port = |mut child: std::process::Child| {
+            use std::io::{BufRead, BufReader};
+            let stdout = child.stdout.take().expect("stdout is piped");
+            let line = BufReader::new(stdout)
+                .lines()
+                .next()
+                .expect("the server prints its port")
+                .expect("the line reads");
+            let _ = child.kill();
+            let _ = child.wait();
+            line.strip_prefix("REPLAY_PORT=")
+                .expect("the port line is the contract the runner parses")
+                .parse::<u16>()
+                .expect("a port number")
+        };
+        let port_a = read_port(first);
+        let port_b = read_port(second);
+
+        assert_ne!(
+            port_a, port_b,
+            "two concurrent runs must not share a replay port"
+        );
+        assert_ne!(port_a, 0, "the kernel's own port is reported, not 0");
+    }
+
+    /// The runner must give each run its own scratch directory and never a fixed path.
+    ///
+    /// Both halves are read from the script because they are what the script IS: a shared
+    /// `/tmp/pa_diff_ts.json` baseline let one run read another's bytes, and the selftest
+    /// that exists to prove isolation must be reachable without a TS checkout.
+    #[test]
+    fn the_runner_isolates_its_baseline_and_is_self_testable() {
+        let script =
+            std::fs::read_to_string(repo_root().join("crates/pa-ai/tests/differential/run.sh"))
+                .expect("the differential runner");
+        assert!(
+            !script.contains("pa_diff_ts.json"),
+            "a shared baseline path is the race the finding is about"
+        );
+        assert!(
+            script.contains("mktemp -d") && script.contains("RUN_DIR"),
+            "each run needs its own scratch directory: {script}"
+        );
+        assert!(
+            script.contains("REPLAY_PORT="),
+            "the port must come from the server's own line, not from the request"
+        );
+        assert!(
+            script.contains("PA_DIFF_SELFTEST"),
+            "the isolation rule must be checkable without a TS checkout"
+        );
+    }
+}
