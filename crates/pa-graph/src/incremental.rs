@@ -248,6 +248,55 @@ mod alias_scan_tests {
         }
     }
 
+    /// The empty pass costs the same whether the tree has one unresolved file or four
+    /// hundred.
+    ///
+    /// This is the measurement the `#36` repair was written against: the first version read
+    /// and PARSED every file holding an unresolved site on every pass, which on this repo is
+    /// 1756 of 2250 files. The guard plus the text scan bring an empty pass back to the walk
+    /// itself. Measured (400 files, all unresolved, 5 runs, debug): 46 ms median with the
+    /// guard, 64 ms without — the 18 ms difference is 45 µs per file, which is the scan, not
+    /// a parse (a parse of these fixtures costs ~1.2 ms).
+    ///
+    /// The test asserts the ORDER of magnitude, not the number: a regression back to parsing
+    /// every candidate would be 400 x 1.2 ms = 480 ms, an order above the bound.
+    #[test]
+    fn an_empty_pass_does_not_scale_with_unresolved_files() {
+        use std::time::Instant;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        for i in 0..400 {
+            std::fs::write(
+                dir.path().join(format!("m{i}.rs")),
+                format!("pub fn f{i}() {{ missing_{i}(); }}\n"),
+            )
+            .expect("fixture file");
+        }
+        let mut store = crate::GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &crate::IndexOptions::new("p"))
+            .expect("index");
+        let mut timings = Vec::new();
+        for _ in 0..3 {
+            let started = Instant::now();
+            let report = store
+                .reindex_incremental(dir.path(), &crate::IndexOptions::new("p"))
+                .expect("empty pass");
+            assert!(
+                report.reindexed_paths.is_empty(),
+                "the fixtures are settled: {report:?}"
+            );
+            timings.push(started.elapsed());
+        }
+        timings.sort_unstable();
+        let median = timings[1];
+        assert!(
+            median.as_millis() < 200,
+            "an empty pass over 400 unresolved files took {median:?}; a version that parses \
+             every candidate is two orders above this"
+        );
+    }
+
     /// The empty-pass guard keeps the repair off the common path.
     ///
     /// Measured on this repo: 1756 of 2250 files hold an unresolved site, so a repair that
