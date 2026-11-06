@@ -4,7 +4,7 @@
 //!
 //! 1. substitution — `HOME` moves to `<upstream HOME>/.allspark-home`
 //!    (`ALLSPARK_HOME` wins when set) and the daemon socket is pinned to the
-//!    fork's own `/tmp/allspark-daemon.sock`;
+//!    fork's own `$ALLSPARK_HOME/run/daemon.sock`, in a private 0700 directory;
 //! 2. seeding — first run copies upstream `settings.json`/`models.json` into
 //!    the isolated home (`auth.json` deliberately not copied);
 //! 3. the real fork binary answers `--version` with the fork-branded line.
@@ -16,6 +16,9 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 /// The repo root (`crates/pa-cli` -> `crates` -> root).
 fn repo_root() -> PathBuf {
@@ -102,9 +105,23 @@ fn launcher_substitutes_home_and_pins_the_socket() {
         .lines()
         .find(|l| l.starts_with("SOCKET="))
         .expect("SOCKET in probe output");
-    assert!(
-        socket_line.ends_with("allspark-daemon.sock"),
-        "the daemon socket must pin to the fork's own file: {socket_line}"
+    // A PRIVATE per-user directory, not the shared temp dir: a predictable path in /tmp is
+    // bindable by any local user before us, and the client trusts the kernel's peer-uid
+    // answer only (review #17, CWE-290).
+    let socket = socket_line.trim_start_matches("SOCKET=");
+    assert_eq!(
+        Path::new(socket),
+        expected_home.join("run").join("daemon.sock"),
+        "the daemon socket must live in the fork's private run directory: {socket_line}"
+    );
+    let dir_mode = fs::metadata(expected_home.join("run"))
+        .expect("the socket directory exists")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        dir_mode, 0o700,
+        "the socket directory must be private (0700), not {dir_mode:o}"
     );
     // An ambient upstream agent-dir override must be pinned to the isolated
     // home: otherwise the fork reads the upstream models.json/auth (the
@@ -339,5 +356,141 @@ fn the_release_launcher_and_the_tracked_one_resolve_the_same_home() {
             Some("/srv/allspark/.allspark-home/.allspark-home")
         ),
         "/srv/allspark/.allspark-home"
+    );
+}
+
+/// A socket directory somebody else widened is refused, not reused.
+///
+/// The launch creates the directory with mode 0700, but a directory that ALREADY exists
+/// keeps whatever mode it has — and a socket dir another local user can write is the
+/// impersonation window itself (bind a socket there before the daemon does, answer with
+/// the public hello fields, receive the session's prompts). So the launcher checks the mode
+/// it actually got and refuses, which is the only honest answer: it cannot re-mode a
+/// directory it did not create without guess-then-act.
+#[test]
+fn a_world_writable_socket_directory_is_refused() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    let run_dir = home.join(".allspark-home").join("run");
+    fs::create_dir_all(&run_dir).expect("run dir");
+    fs::set_permissions(&run_dir, fs::Permissions::from_mode(0o777)).expect("widen the dir");
+
+    let launcher = deploy_launcher(tmp.path(), Path::new(env!("CARGO_BIN_EXE_prime-agent")));
+    // A probe payload: the refusal happens before the payload runs, and the real binary
+    // would spend its one-time kernel setup proving nothing about the socket directory.
+    let probe = tmp.path().join("libexec").join("prime-agent");
+    write_env_probe_payload_at(&probe);
+    let out = Command::new(&launcher)
+        .env("HOME", &home)
+        .env_remove("ALLSPARK_HOME")
+        .env_remove("ALLSPARK_DAEMON_SOCKET_DIR")
+        .output()
+        .expect("run launcher");
+
+    assert!(
+        !out.status.success(),
+        "a world-writable socket dir must refuse the launch: {out:?}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("must be a private directory"),
+        "the refusal must say why: {stderr}"
+    );
+}
+
+/// The release launcher carries the same private-socket rule.
+///
+/// `install-rust.sh` writes its own launcher; the two had already drifted once (the
+/// nesting fix landed in one). Pinned as a contract, not as text: the embedded launcher's
+/// socket block, extracted and run, creates a 0700 directory and refuses a 0777 one.
+#[test]
+fn the_release_launcher_creates_and_checks_a_private_socket_directory() {
+    let installer = fs::read_to_string(repo_root().join("install-rust.sh")).expect("installer");
+    let start = installer
+        .find("cat > \"$launcher_tmp\" <<EOF")
+        .expect("the fork launcher heredoc");
+    let end = installer[start..]
+        .find("\nEOF\n")
+        .map(|at| start + at)
+        .expect("the heredoc ends");
+    let embedded = installer[start..end]
+        .split("<<EOF\n")
+        .nth(1)
+        .expect("the heredoc body")
+        .replace("\\$", "$");
+    let home_resolution = embedded
+        .split("export HOME=\"$ALLSPARK_HOME\"")
+        .next()
+        .expect("the home resolution");
+    // From the socket-directory assignment to the exec: the block under test. Keyed on the
+    // ASSIGNMENT, not on a comment, because the comment is prose that may be reworded.
+    let socket_block = embedded
+        .split("ALLSPARK_SOCKET_DIR=")
+        .nth(1)
+        .expect("the socket block exists");
+    let socket_block = format!(
+        "ALLSPARK_SOCKET_DIR={}\n",
+        socket_block
+            .split("exec ")
+            .next()
+            .expect("ends before exec")
+    );
+    let parts = [
+        "#!/bin/sh",
+        home_resolution,
+        "export HOME=\"$ALLSPARK_HOME\"",
+        &socket_block,
+        "printf '%s\\n' \"$PRIME_AGENT_DAEMON_SOCKET\"",
+    ];
+    let script = parts.join("\n");
+
+    let run = |home: &Path| {
+        Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .env("HOME", home)
+            .env_remove("ALLSPARK_HOME")
+            .env_remove("ALLSPARK_DAEMON_SOCKET")
+            .env_remove("ALLSPARK_DAEMON_SOCKET_DIR")
+            .output()
+            .expect("run the embedded socket block")
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).expect("home");
+    let out = run(&home);
+    assert!(
+        out.status.success(),
+        "the embedded launcher runs: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let socket = String::from_utf8_lossy(&out.stdout);
+    let run_dir = home.join(".allspark-home").join("run");
+    assert_eq!(
+        Path::new(socket.trim()),
+        run_dir.join("daemon.sock"),
+        "the release launcher must pin the private socket: {socket}"
+    );
+    assert_eq!(
+        fs::metadata(&run_dir)
+            .expect("run dir")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700,
+        "created 0700, not merely chmodded later"
+    );
+
+    // And the refusal: a widened directory is not reused.
+    let other = tempfile::tempdir().expect("tempdir");
+    let widened_home = other.path().join("home");
+    let widened_run = widened_home.join(".allspark-home").join("run");
+    fs::create_dir_all(&widened_run).expect("run dir");
+    fs::set_permissions(&widened_run, fs::Permissions::from_mode(0o777)).expect("widen");
+    let out = run(&widened_home);
+    assert!(
+        !out.status.success(),
+        "the release launcher must refuse a world-writable socket dir: {out:?}"
     );
 }

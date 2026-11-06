@@ -79,7 +79,31 @@ export PRIME_AGENT_SESSION_DIR="$ALLSPARK_HOME/.prime/agent/sessions"
 # `allspark update` stopped the upstream daemon (both supervisors received
 # `installer-shutdown` 3.4s apart). ALLSPARK_DAEMON_SOCKET is the explicit
 # override for a fork that really wants a different file.
-export PRIME_AGENT_DAEMON_SOCKET="${ALLSPARK_DAEMON_SOCKET:-${TMPDIR:-/tmp}/allspark-daemon.sock}"
+# The socket lives in a PRIVATE per-user directory, beside the home and mode 0700, not
+# directly in the shared temp dir: `${TMPDIR}/allspark-daemon.sock` is predictable, so any
+# local user can bind it first and answer with the hello fields the client validates —
+# every one of whom the peer supplies (review #17, CWE-290). A directory only this user can
+# enter removes the surface; the client's SO_PEERCRED check (`pa_types::platform::
+# transport`) is the second lock, for the case where the path was chosen some other way.
+#
+# The directory is created here, before the daemon sees the path, with 0700 as its MODE AT
+# CREATION (a chmod after `mkdir` leaves a window in which the directory is traversable).
+ALLSPARK_SOCKET_DIR="${ALLSPARK_DAEMON_SOCKET_DIR:-$ALLSPARK_HOME/run}"
+if ! mkdir -p -m 700 "$ALLSPARK_SOCKET_DIR" 2>/dev/null; then
+    echo "allspark: cannot create the socket directory $ALLSPARK_SOCKET_DIR" >&2
+    exit 1
+fi
+# A directory that already existed keeps its mode; refuse rather than run with a socket dir
+# another user can write to, because that is the impersonation this block exists to stop.
+case "$(stat -c %a "$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo unknown)" in
+    700|750|755) : ;;
+    *)
+        echo "allspark: $ALLSPARK_SOCKET_DIR must be a private directory (mode 700) but is" \
+             "$(stat -c %a "$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo 'unreadable')" >&2
+        exit 1
+        ;;
+esac
+export PRIME_AGENT_DAEMON_SOCKET="${ALLSPARK_DAEMON_SOCKET:-$ALLSPARK_SOCKET_DIR/daemon.sock}"
 
 # THE FORK UPDATE CHANNEL: without it the update funnel refuses fork builds
 # (the default endpoints belong to upstream prime-agent, and updating through

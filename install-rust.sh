@@ -3434,7 +3434,26 @@ export PRIME_AGENT_SESSION_DIR="\$ALLSPARK_HOME/.prime/agent/sessions"
 # The fork's own daemon socket: pinned unconditionally (never inherited), so a
 # session launched from inside an upstream session cannot reach upstream's
 # supervisor. ALLSPARK_DAEMON_SOCKET is the explicit override.
-export PRIME_AGENT_DAEMON_SOCKET="\${ALLSPARK_DAEMON_SOCKET:-\${TMPDIR:-/tmp}/allspark-daemon.sock}"
+#
+# In a PRIVATE per-user directory (0700, created with that mode), not directly in the
+# shared temp dir: a predictable path in /tmp is bindable by any local user before us, and
+# the client used to trust whatever answered (review #17, CWE-290). The mode is set at
+# creation; a directory that already exists with a looser mode is refused rather than
+# reused, because a writable socket dir is the impersonation window itself.
+ALLSPARK_SOCKET_DIR="\${ALLSPARK_DAEMON_SOCKET_DIR:-\$ALLSPARK_HOME/run}"
+if ! mkdir -p -m 700 "\$ALLSPARK_SOCKET_DIR" 2>/dev/null; then
+    echo "allspark: cannot create the socket directory \$ALLSPARK_SOCKET_DIR" >&2
+    exit 1
+fi
+case "\$(stat -c %a "\$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo unknown)" in
+    700|750|755) : ;;
+    *)
+        echo "allspark: \$ALLSPARK_SOCKET_DIR must be a private directory (mode 700) but is" \
+             "\$(stat -c %a "\$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo 'unreadable')" >&2
+        exit 1
+        ;;
+esac
+export PRIME_AGENT_DAEMON_SOCKET="\${ALLSPARK_DAEMON_SOCKET:-\$ALLSPARK_SOCKET_DIR/daemon.sock}"
 # The fork update channel (see PRIME_AGENT_DOWNLOAD_BASE_URL in pa-core).
 export PRIME_AGENT_DOWNLOAD_BASE_URL="\${ALLSPARK_DOWNLOAD_BASE_URL:-https://github.com/rager306/allspark/releases/latest/download}"
 exec "${share_dir}/prime-agent" "\$@"

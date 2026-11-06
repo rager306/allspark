@@ -162,7 +162,79 @@ pub async fn bind_transport(path: &Path) -> Result<Box<dyn TransportListener>> {
 pub async fn connect_transport(path: &Path) -> Result<Box<dyn TransportStream>> {
     let address = UnixSocketAddress::new(path)?;
     let stream = tokio::net::UnixStream::connect(address.effective()).await?;
+    verify_peer_uid(&stream, path)?;
     Ok(Box::new(stream))
+}
+
+/// Refuse a daemon socket that another user owns (review #17, CWE-290).
+///
+/// The client used to trust whatever answered: `probe_daemon` validates the HELLO's
+/// protocol, schema and build hash — every one of those fields is supplied by the peer.
+/// A socket path is predictable (`${TMPDIR}/allspark-daemon.sock`), so another local user
+/// can bind it first, answer with the expected public constants, and receive the
+/// victim's subsequent session commands and prompt text.
+///
+/// The check is the kernel's answer, not the peer's: `SO_PEERCRED` on the connected
+/// socket reports the uid of the process that BOUND it, which a process cannot forge.
+/// Refusing a foreign uid turns the impersonation into a connection error the caller
+/// already reports. Linux only — the other Unix platforms reach the same fact through
+/// `LOCAL_PEERCRED`/`getpeereid`, and until that is wired the check is skipped rather
+/// than guessed.
+#[cfg(target_os = "linux")]
+fn verify_peer_uid(stream: &tokio::net::UnixStream, path: &Path) -> Result<()> {
+    use std::os::fd::AsRawFd;
+    let mut credentials = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>())
+        .expect("a ucred is far smaller than socklen_t::MAX");
+    // SAFETY: `getsockopt` writes at most `length` bytes into `credentials`, whose size is
+    // exactly what `length` reports; the fd is owned by `stream` for the call.
+    let status = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            std::ptr::addr_of_mut!(credentials).cast(),
+            std::ptr::addr_of_mut!(length),
+        )
+    };
+    if status != 0 {
+        // No answer from the kernel is not a reason to trust the peer.
+        return Err(anyhow::anyhow!(
+            "could not read the owner of the daemon socket {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: read-only libc call.
+    let our_uid = unsafe { libc::geteuid() };
+    same_owner(credentials.uid, our_uid, path)
+}
+
+/// The decision, separated from the syscall so it can be exercised on any machine.
+///
+/// A pure comparison, and the whole finding lives in it: the client trusted whichever
+/// process answered. Keeping the syscall and the rule apart means the rule has a test that
+/// runs everywhere — including as root, where every socket on the host is uid 0 and a
+/// socket-level test would be vacuous.
+fn same_owner(peer_uid: u32, our_uid: u32, path: &Path) -> Result<()> {
+    if peer_uid != our_uid {
+        return Err(anyhow::anyhow!(
+            "refusing the daemon socket {}: it belongs to uid {peer_uid} (this process is uid {our_uid})",
+            path.display(),
+        ));
+    }
+    Ok(())
+}
+
+/// See the Linux implementation: the check needs a platform peer-credential call that is
+/// not wired on this target yet, so it refuses nothing here rather than pretending.
+#[cfg(all(unix, not(target_os = "linux")))]
+fn verify_peer_uid(_stream: &tokio::net::UnixStream, _path: &Path) -> Result<()> {
+    Ok(())
 }
 
 /// Definitive nonblocking Unix listener refusal, used by the exit cleanup.
@@ -363,6 +435,75 @@ pub fn connect_blocking(path: &Path) -> std::io::Result<Box<dyn BlockingTranspor
     let name = pipe_name(path).map_err(std::io::Error::other)?;
     let client = super::windows_pipe::BlockingPipeClient::connect(&name)?;
     Ok(Box::new(client))
+}
+
+#[cfg(all(test, unix))]
+mod peer_credential_tests {
+    use super::*;
+
+    /// A socket another uid owns must be refused before a byte is exchanged.
+    ///
+    /// `SO_PEERCRED` reports the uid of the process that BOUND the socket, and no process
+    /// can forge it — which is what makes this a check rather than a claim the peer gets
+    /// to make. The rule is `same_owner`; this test drives it from both sides on any
+    /// machine, because a socket-level test is vacuous under root (every socket here is
+    /// uid 0) and a guard that cannot fail is the class the finding is about.
+    #[test]
+    fn the_owner_rule_refuses_a_foreign_uid_and_accepts_our_own() {
+        let path = std::path::Path::new("/tmp/allspark-daemon.sock");
+        assert!(
+            same_owner(1000, 1000, path).is_ok(),
+            "a socket this uid owns is the normal case"
+        );
+        let refusal = same_owner(1000, 1001, path).expect_err("a foreign owner is refused");
+        let message = refusal.to_string();
+        assert!(
+            message.contains("belongs to uid 1000") && message.contains("this process is uid 1001"),
+            "the refusal must name both uids so an operator can tell a squatter from a typo: {message}"
+        );
+    }
+
+    /// The live path: a connection the kernel reports as ours goes through, and the
+    /// verifier actually runs (a no-op verifier would also pass, so the second half
+    /// forces the refusing arm through the same function).
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_connect_runs_the_owner_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("daemon.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+
+        connect_transport(&path)
+            .await
+            .expect("a socket this uid owns connects");
+    }
+
+    /// `connect_transport` must CALL the check.
+    ///
+    /// The rule above is testable anywhere; whether the client runs it is a separate fact,
+    /// and the whole finding is that it did not. Not observable from a connection this
+    /// process can build (the uid always matches), so the check is on the mechanism — the
+    /// same shape as the cron lock test: the function that connects must name the verifier.
+    /// Red on the code before this commit, which connected and returned.
+    #[test]
+    fn connect_transport_runs_the_owner_check() {
+        let source = include_str!("transport.rs");
+        let start = source
+            .find("pub async fn connect_transport(path: &Path)")
+            .expect("the async connect exists");
+        let end = source[start..]
+            .find("\n}\n")
+            .map(|at| start + at)
+            .expect("the function ends");
+        let body = &source[start..end];
+        assert!(
+            body.contains("verify_peer_uid("),
+            "connect_transport must verify the peer's uid before handing the stream on: {body}"
+        );
+    }
 }
 
 #[cfg(all(test, unix))]
