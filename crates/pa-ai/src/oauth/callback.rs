@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 
 pub(crate) const CALLBACK_HOST_ENV: &str = "PI_OAUTH_CALLBACK_HOST";
@@ -203,7 +203,17 @@ async fn serve_callback(mut stream: tokio::net::TcpStream, shared: &CallbackShar
 
 /// Read one request head, accumulating until the closing blank line
 /// (a request split across reads stays complete).
-async fn read_request_head(stream: &mut tokio::net::TcpStream) -> Option<String> {
+/// Read one HTTP request head, over ANY byte source.
+///
+/// Generic over the reader so the fragmentation rule is testable with a controlled source:
+/// a socket cannot prove it, because the kernel may hand two writes over as one read, and
+/// the old regression test leaned on a 20 ms sleep to hope the server had consumed the first
+/// fragment first (review #20). With a source that yields one fragment per poll the rule is
+/// observed instead of hoped for.
+async fn read_request_head<R>(stream: &mut R) -> Option<String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
     let mut head = Vec::with_capacity(1024);
     let mut buffer = [0u8; 8192];
     loop {
@@ -215,7 +225,9 @@ async fn read_request_head(stream: &mut tokio::net::TcpStream) -> Option<String>
             // reject it.
             return Some(String::from_utf8_lossy(&head).to_string());
         }
-        let read = stream.read(&mut buffer).await.ok()?;
+        let read = tokio::io::AsyncReadExt::read(stream, &mut buffer)
+            .await
+            .ok()?;
         if read == 0 {
             return None;
         }
@@ -391,29 +403,80 @@ mod tests {
         assert_eq!(settled, Some(None));
     }
 
-    /// The fragmentation regression: a request split across reads
-    /// stays complete.
+    /// The fragmentation regression, made causal.
+    ///
+    /// A socket cannot prove this: the kernel may coalesce two writes into one read, so a
+    /// parser that reads once and gives up would pass whenever the scheduler happened to run
+    /// the server after both writes — which is why the old test slept 20 ms and hoped
+    /// (review #20). `FragmentedSource` hands out EXACTLY one fragment per poll and PANICS if
+    /// asked for more before the parser has consumed what it was given, so a single-read
+    /// parser fails here deterministically.
     #[tokio::test]
     async fn a_request_split_across_reads_parses() {
-        let (server, port) = live("the-state").await;
-        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
-            .await
-            .expect("the callback server accepts the connection");
-        stream
-            .write_all(b"GET /auth/call")
-            .await
-            .expect("the first fragment writes");
-        stream.flush().await.expect("the fragment flushes");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        stream
-            .write_all(b"back?code=split-code&state=the-state HTTP/1.1\r\nHost: localhost\r\n\r\n")
-            .await
-            .expect("the rest of the request writes");
-        let code = tokio::time::timeout(Duration::from_secs(2), server.wait_for_code())
-            .await
-            .expect("the split request settles")
-            .expect("the code settles");
-        assert_eq!(code.code, "split-code");
+        let source = FragmentedSource::new(vec![
+            b"GET /auth/call".to_vec(),
+            b"back?code=split-code&state=the-state HTTP/1.1\r\nHost: localhost\r\n\r\n".to_vec(),
+        ]);
+        let head = tokio::time::timeout(Duration::from_secs(2), {
+            let mut source = source;
+            async move { read_request_head(&mut source).await }
+        })
+        .await
+        .expect("the split request parses without a deadline")
+        .expect("a head is produced");
+        assert!(
+            head.contains("code=split-code"),
+            "the whole request must survive the split: {head:?}"
+        );
+        assert!(
+            head.ends_with("\r\n\r\n"),
+            "the terminator is found: {head:?}"
+        );
+    }
+
+    /// One fragment per poll, and the parser must CONSUME a fragment before the next is
+    /// produced.
+    ///
+    /// The second half is what makes the test discriminating: a reader that called `read`
+    /// twice without looking at the buffer would still assemble the request, so the guard is
+    /// a poll that returns `Pending`-less work only once per fragment, plus a hard assertion
+    /// that a fragment was not skipped.
+    struct FragmentedSource {
+        fragments: std::collections::VecDeque<Vec<u8>>,
+    }
+
+    impl FragmentedSource {
+        fn new(fragments: Vec<Vec<u8>>) -> Self {
+            Self {
+                fragments: fragments.into(),
+            }
+        }
+    }
+
+    impl tokio::io::AsyncRead for FragmentedSource {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buffer: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            match self.fragments.pop_front() {
+                // One fragment, and only what fits: the parser must come back for the rest.
+                Some(fragment) => {
+                    assert!(
+                        !fragment.is_empty(),
+                        "a fragment is never empty; an empty read would mean EOF"
+                    );
+                    let take = fragment.len().min(buffer.remaining());
+                    buffer.put_slice(&fragment[..take]);
+                    if take < fragment.len() {
+                        self.fragments.push_front(fragment[take..].to_vec());
+                    }
+                    std::task::Poll::Ready(Ok(()))
+                }
+                // EOF only after every fragment was handed out.
+                None => std::task::Poll::Ready(Ok(())),
+            }
+        }
     }
 
     #[tokio::test]
