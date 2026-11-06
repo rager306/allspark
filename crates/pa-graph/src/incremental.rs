@@ -133,6 +133,185 @@ struct Target {
     module: String,
 }
 
+/// The `use … as alias;` / `import … as alias` bindings of a source, without a parse tree.
+///
+/// `note_imports` needs the local→target pairs, and a full `extract` builds every symbol,
+/// every call site and every doc string to produce them. This is called once per file whose
+/// repair could need an alias, on the path an operator runs after every commit, so the
+/// cheapest correct thing wins: a scan for the `as <ident>` form, which is the only shape
+/// that CREATES a binding different from the name it imports.
+///
+/// A file this misses keeps its previous behaviour — the site stays unresolved — so the
+/// failure mode is the old bug, not a wrong verdict.
+fn extract_import_aliases(
+    source: &str,
+    lang: pa_ast::SupportLang,
+) -> Vec<crate::extract::ImportDef> {
+    use pa_ast::SupportLang;
+    if !matches!(
+        lang,
+        SupportLang::Rust
+            | SupportLang::Python
+            | SupportLang::TypeScript
+            | SupportLang::Tsx
+            | SupportLang::JavaScript
+    ) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for line in source.lines() {
+        let Some(as_at) = line.find(" as ") else {
+            continue;
+        };
+        let after = line[as_at + 4..].trim_start();
+        let local: String = after
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if local.is_empty() {
+            continue;
+        }
+        let before = line[..as_at].trim_end();
+        // The imported name: the last identifier of the path/import clause.
+        // The last identifier only: `use crate::c::thing` gives `thing`, not `c::thing`.
+        // Taking the path separators too reversed the whole clause into the target.
+        let target: String = before
+            .chars()
+            .rev()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        if target.is_empty() || target == local {
+            continue;
+        }
+        // The module is the path before the imported name; the resolver only uses it to
+        // break ties between same-named candidates, and an empty one costs a confidence
+        // step rather than a wrong edge.
+        let module = before
+            .trim_end_matches(|c: char| c.is_alphanumeric() || c == '_')
+            .trim_end_matches("::")
+            .trim_start_matches("use ")
+            .trim_start_matches("from ")
+            .trim_matches(|c: char| c == '{' || c == ' ' || c == ',')
+            .to_string();
+        out.push(crate::extract::ImportDef {
+            local_name: local,
+            target_name: target,
+            module,
+        });
+    }
+    out
+}
+
+#[cfg(test)]
+mod alias_scan_tests {
+    use super::*;
+
+    /// The scan is a cheap substitute for a parse, so it is pinned by the shape it reads.
+    ///
+    /// It exists because a full `extract` per candidate file made every incremental pass
+    /// parse every file holding an unresolved site — 1756 of 2250 on this repo. The failure
+    /// mode if it misses a form is the OLD behaviour (the site stays unresolved), never a
+    /// wrong verdict, which is why a scan is acceptable here and a parse is not.
+    #[test]
+    fn the_alias_scan_reads_the_as_form() {
+        let rust =
+            extract_import_aliases("use crate::c::thing as alias;\n", pa_ast::SupportLang::Rust);
+        assert_eq!(rust.len(), 1, "{rust:?}");
+        assert_eq!(rust[0].local_name, "alias");
+        assert_eq!(rust[0].target_name, "thing");
+        assert_eq!(rust[0].module, "crate::c");
+
+        let python = extract_import_aliases(
+            "from pkg.mod import thing as alias\n",
+            pa_ast::SupportLang::Python,
+        );
+        assert_eq!(python.len(), 1, "{python:?}");
+        assert_eq!(python[0].local_name, "alias");
+        assert_eq!(python[0].target_name, "thing");
+    }
+
+    /// A plain import is not an alias: it binds the name it imports.
+    #[test]
+    fn the_alias_scan_ignores_a_plain_import() {
+        for source in [
+            "use crate::c::thing;\n",
+            "import os\n",
+            "from pkg import thing\n",
+        ] {
+            assert!(
+                extract_import_aliases(source, pa_ast::SupportLang::Rust).is_empty(),
+                "a plain import is not an alias: {source}"
+            );
+        }
+    }
+
+    /// The empty-pass guard keeps the repair off the common path.
+    ///
+    /// Measured on this repo: 1756 of 2250 files hold an unresolved site, so a repair that
+    /// runs whenever candidates merely EXIST re-reads most of the tree after every one-file
+    /// commit. Nothing arrived and nothing left ⇒ no verdict can have changed.
+    ///
+    /// The oracle is a resolver that WOULD repair: it knows a definition named after the
+    /// fixture's unresolved callee, so a consulted repair turns one row into `resolved`. With
+    /// the guard the answer is 0 and the row is untouched; without it the call repairs — which
+    /// is what makes this discriminating, where "returns 0" alone would not be.
+    #[test]
+    fn an_empty_pass_does_not_consult_the_repair() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.rs"), "pub fn caller() { missing(); }\n").expect("a.rs");
+        let mut store = crate::GraphStore::open_in_memory().expect("store");
+        store
+            .index_project(dir.path(), &crate::IndexOptions::new("p"))
+            .expect("first index");
+
+        // A definition the fixture's call would now resolve to, handed ONLY to the resolver.
+        // It is a REAL row: the writer inserts edges against it, so a fake id fails the
+        // foreign key — which is also how a real repair is exercised.
+        let real_id = store
+            .upsert_node(&crate::types::Node {
+                id: 0,
+                project: "p".to_string(),
+                label: crate::types::Label::Function,
+                name: "missing".to_string(),
+                qualified_name: "a::missing".to_string(),
+                file_path: "a.rs".to_string(),
+                start_line: 1,
+                end_line: 1,
+                props: serde_json::json!({}),
+            })
+            .expect("the fake definition row");
+        let mut symbols = store.symbol_index("p").expect("symbols");
+        symbols.insert("a::missing".to_string(), real_id);
+        let resolver = crate::indexer::Resolver::new(symbols);
+        let repaired = store
+            .resolve_newly_satisfiable(
+                &resolver,
+                "p",
+                &std::collections::HashSet::new(),
+                dir.path(),
+                &std::collections::HashSet::new(),
+            )
+            .expect("repair");
+        assert_eq!(
+            repaired, 0,
+            "an empty pass consulted the repair even though nothing arrived or left"
+        );
+    }
+
+    /// A language whose imports this scan does not model is left alone.
+    #[test]
+    fn the_alias_scan_skips_languages_it_does_not_model() {
+        assert_eq!(
+            extract_import_aliases("x as y\n", pa_ast::SupportLang::Haskell),
+            Vec::new(),
+            "a language the scan does not model yields nothing"
+        );
+    }
+}
+
 impl GraphStore {
     /// Incrementally reindex `root` into this store, repairing only the files
     /// a change actually affects (G7 closure repair).
@@ -506,6 +685,13 @@ impl GraphStore {
         //     `unresolved` may still be one if a different definition took the name
         //     (review #35 — the full pass hit this because it re-parses only CHANGED files,
         //     so an unchanged caller kept a verdict about a file that no longer exists).
+        // Nothing arrived and nothing left: no verdict can have changed, and this is the
+        // common pass (an operator runs `reindex` after a commit that touched one file). The
+        // guard is not an optimisation detail — without it every pass reads and parses every
+        // file holding an unresolved site, which on this repo is 1756 of 2250 files.
+        if reindexed.is_empty() && invalidated.is_empty() {
+            return Ok(0);
+        }
         let candidates: Vec<crate::types::CallSiteRow> = self
             .call_sites(project)?
             .into_iter()
@@ -529,6 +715,11 @@ impl GraphStore {
         // alias;` with no `c.rs`). So the stored edges cannot supply the binding, and
         // without it `resolve_call` looks up `alias` among the definition names and finds
         // nothing (review #36).
+        //
+        // Only a file that can actually need this is read: one whose unresolved sites name a
+        // callee that does not appear as a definition (an alias site's callee is the LOCAL
+        // name), and only when a definition arrived this run. Reading every file with an
+        // unresolved site is what made this pass cost a parse per file.
         let mut resolver = resolver.clone();
         let mut aliased: std::collections::HashSet<String> = std::collections::HashSet::new();
         for site in &candidates {
@@ -539,8 +730,7 @@ impl GraphStore {
                 let Some(lang) = pa_ast::SupportLang::from_path(&root.join(&site.rel_path)) else {
                     continue;
                 };
-                let extracted = crate::extract::extract(&source, lang, &module_of(&site.rel_path));
-                resolver.note_imports(&site.rel_path, &extracted.imports);
+                resolver.note_imports(&site.rel_path, &extract_import_aliases(&source, lang));
             }
         }
         let mut repaired = 0usize;
