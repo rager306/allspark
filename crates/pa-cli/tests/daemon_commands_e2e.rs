@@ -30,13 +30,13 @@
 //! $ prime-agent stop <id>
 //! ok
 //!
-//! $ prime-agent rename <id> gamma
+//! $ allspark rename <id> gamma
 //! Renamed 0f04b31cb2b6 to gamma
 //!
-//! $ prime-agent schedule add gamma "every 5 minutes" -- "do the thing"
+//! $ allspark schedule add gamma "every 5 minutes" -- "do the thing"
 //! Scheduled 0451e5a9-951c-457b-ae76-ea3142ea5d25 next=2026-09-16T18:36:59.287Z
 //!
-//! $ prime-agent schedule list
+//! $ allspark schedule list
 //! 0451e5a9-951c-457b-ae76-ea3142ea5d25 active next=9/16/2026, 6:36:59 PM last=- runs=0 schedule="every 5 minutes" prompt="do the thing"
 //! ```
 #![cfg(unix)]
@@ -703,19 +703,19 @@ fn schedule_usage_errors_and_valid_invocations() {
     let usage_shapes = [
         (
             vec!["schedule", "cancel"],
-            "Error: Usage: prime-agent schedule cancel <job-id>\n",
+            "Error: Usage: allspark schedule cancel <job-id>\n",
         ),
         (
             vec!["schedule", "cancel", "a", "b"],
-            "Error: Usage: prime-agent schedule cancel <job-id>\n",
+            "Error: Usage: allspark schedule cancel <job-id>\n",
         ),
         (
             vec!["schedule", "list", "--bogus-flag"],
-            "Error: Usage: prime-agent schedule list [--all] [agent] [--json]\n",
+            "Error: Usage: allspark schedule list [--all] [agent] [--json]\n",
         ),
         (
             vec!["--daemon-socket", rotated_socket, "schedule", "list"],
-            "Error: Usage: prime-agent schedule list [--all] [agent] [--json]\n",
+            "Error: Usage: allspark schedule list [--all] [agent] [--json]\n",
         ),
         (
             vec![
@@ -725,7 +725,7 @@ fn schedule_usage_errors_and_valid_invocations() {
                 "cancel",
                 "id",
             ],
-            "Error: Usage: prime-agent schedule cancel <job-id>\n",
+            "Error: Usage: allspark schedule cancel <job-id>\n",
         ),
     ];
     for (args, golden) in usage_shapes {
@@ -798,9 +798,16 @@ fn ts_daemon_differential_cli_output() {
         .to_string(),
     )
     .expect("fixture model settings");
-    // `schedule` cannot take --daemon-socket (TS parity); the daemon uses the default path.
-    std::env::set_var("TMPDIR", dir.path());
-    let socket = pa_daemon::socket::default_daemon_socket_path();
+    // `schedule` cannot take --daemon-socket (TS parity), so the daemon uses the DEFAULT
+    // socket path — but it is computed HERE, from the temp dir this test already owns,
+    // instead of by mutating the parent process's `TMPDIR`.
+    //
+    // The mutation was a cross-test hazard, not a convenience: `TMPDIR` is process-wide, so
+    // every concurrently running test in this binary (the TS differential tests activate
+    // exactly here) started creating its temporary directories INSIDE this one's, and this
+    // test's cleanup then deleted them mid-run (review #26). The daemon is a child process,
+    // so the variable is set on ITS command below, where the blast radius is one process.
+    let socket = dir.path().join("allspark-0").join("daemon.sock");
     // The TS daemon does not create the socket's parent on bind (the Rust
     // supervisor does), so the parent must exist first.
     std::fs::create_dir_all(socket.parent().expect("socket parent")).expect("socket parent dir");
@@ -1051,7 +1058,6 @@ fn ts_daemon_differential_cli_output() {
 
     let _ = daemon.kill();
     let _ = daemon.wait();
-    std::env::remove_var("TMPDIR");
     assert!(
         failures.is_empty(),
         "TS differential mismatches:\n{}",
