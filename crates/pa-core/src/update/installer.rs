@@ -137,14 +137,72 @@ pub fn redact_url_credentials(url: &str) -> String {
     let authority_end = url[authority_start..]
         .find(['/', '?', '#'])
         .map_or(url.len(), |at| authority_start + at);
-    let Some(userinfo_end) = url[authority_start..authority_end].rfind('@') else {
-        return url.to_string();
+    // Strip the userinfo when there is one, then redact credential-bearing query
+    // parameters — a presigned mirror URL puts its secret there instead (`?token=`,
+    // `?X-Amz-Signature=`), and it leaks by exactly the same path (review #32, the
+    // half the first fix left: userinfo only).
+    let mut out = match url[authority_start..authority_end].rfind('@') {
+        Some(userinfo_end) => format!(
+            "{}<redacted>@{}",
+            &url[..authority_start],
+            &url[authority_start + userinfo_end + 1..]
+        ),
+        None => url.to_string(),
     };
-    format!(
-        "{}<redacted>@{}",
-        &url[..authority_start],
-        &url[authority_start + userinfo_end + 1..]
-    )
+    redact_secret_query_params(&mut out);
+    out
+}
+
+/// Query parameter names whose VALUE is a credential.
+///
+/// Matched case-insensitively as a substring of the name, so `access_token`,
+/// `X-Amz-Signature` and `sig` all land. Deliberately a list and not "the whole query":
+/// a query also carries the diagnostic part of a URL (a channel name, a page number),
+/// and erasing it turns an error message into one nobody can act on.
+const SECRET_QUERY_PARAMS: [&str; 8] = [
+    "token",
+    "signature",
+    "credential",
+    "password",
+    "secret",
+    "sig",
+    "key",
+    "auth",
+];
+
+/// Replace the VALUE of every credential-bearing query parameter with `<redacted>`.
+fn redact_secret_query_params(url: &mut String) {
+    let Some(query_start) = url.find('?') else {
+        return;
+    };
+    let query_end = url[query_start..]
+        .find('#')
+        .map_or(url.len(), |at| query_start + at);
+    let query = url[query_start + 1..query_end].to_string();
+    let mut changed = false;
+    let redacted: Vec<String> = query
+        .split('&')
+        .map(|pair| {
+            let (name, value) = match pair.split_once('=') {
+                Some((name, value)) => (name, Some(value)),
+                None => (pair, None),
+            };
+            let lowered = name.to_ascii_lowercase();
+            let secret = SECRET_QUERY_PARAMS
+                .iter()
+                .any(|needle| lowered.contains(needle));
+            match (secret, value) {
+                (true, Some(_)) if !lowered.is_empty() => {
+                    changed = true;
+                    format!("{name}=<redacted>")
+                }
+                _ => pair.to_string(),
+            }
+        })
+        .collect();
+    if changed {
+        url.replace_range(query_start + 1..query_end, &redacted.join("&"));
+    }
 }
 
 /// The refusal for a non-`https` installer URL or download base, unless the
@@ -706,17 +764,24 @@ async fn fetch_script(url: &str) -> Result<(PathBuf, std::fs::File)> {
         .timeout(SCRIPT_FETCH_TIMEOUT)
         .send()
         .await
-        .with_context(|| format!("request {url}"))?;
+        // The URL carries the mirror's credentials (userinfo) on every error path, and
+        // this one reaches the daemon log, the update status file and the TUI's error
+        // row: `request https://user:token@host/install.sh`. Redacted at the source, so
+        // a new caller cannot reintroduce the leak by forgetting to wrap it (review #32).
+        .with_context(|| format!("request {}", redact_url_credentials(url)))?;
     let status = response.status();
     let bytes = response
         .bytes()
         .await
         .with_context(|| "read the installer script")?;
     if !status.is_success() {
-        anyhow::bail!("download {url} returned {status}");
+        anyhow::bail!("download {} returned {status}", redact_url_credentials(url));
     }
     if bytes.is_empty() {
-        anyhow::bail!("the installer script at {url} was empty");
+        anyhow::bail!(
+            "the installer script at {} was empty",
+            redact_url_credentials(url)
+        );
     }
     write_script(&bytes)
 }
@@ -1882,6 +1947,75 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
             ("https://h/x@y", "https://h/x@y"),
         ] {
             assert_eq!(redact_url_credentials(input), expected, "input: {input}");
+        }
+    }
+
+    /// A query parameter can carry the credential instead of the userinfo.
+    ///
+    /// The first fix redacted the authority only. A presigned mirror URL puts its secret
+    /// in the query (`?token=`, `?X-Amz-Signature=`, `?access_key=`), and every message
+    /// in this funnel — refusal, request error, download failure, the tracing field —
+    /// formats the whole URL, so that half leaked by exactly the same path (review #32).
+    ///
+    /// The diagnostic part of a query survives: erasing everything after `?` would make
+    /// the message unactionable, and the finding is about credentials, not queries.
+    #[test]
+    fn url_redaction_covers_credential_query_parameters() {
+        for (input, expected) in [
+            (
+                "https://h/install.sh?token=abc123",
+                "https://h/install.sh?token=<redacted>",
+            ),
+            (
+                "https://h/a.tar.gz?X-Amz-Signature=deadbeef&X-Amz-Credential=k",
+                "https://h/a.tar.gz?X-Amz-Signature=<redacted>&X-Amz-Credential=<redacted>",
+            ),
+            (
+                "https://h/a?channel=stable&api_key=s3cret",
+                "https://h/a?channel=stable&api_key=<redacted>",
+            ),
+            // A query value that is NOT a credential stays: the message must stay useful.
+            (
+                "https://h/a?channel=beta&page=2",
+                "https://h/a?channel=beta&page=2",
+            ),
+            // Userinfo AND a query secret at once.
+            (
+                "https://u:p@h/a?token=t",
+                "https://<redacted>@h/a?token=<redacted>",
+            ),
+            // A fragment is not part of the query.
+            (
+                "https://h/a?token=t#frag",
+                "https://h/a?token=<redacted>#frag",
+            ),
+        ] {
+            assert_eq!(redact_url_credentials(input), expected, "input: {input}");
+        }
+    }
+
+    /// The archive download redacted nothing: the same funnel leaked from its other half.
+    ///
+    /// `download_archive` and `download_once` formatted `{url}` into four messages. The
+    /// installer path was wrapped by the first fix; these were missed because the finding
+    /// cited the installer file. Checked in the SOURCE, so a message written in a
+    /// different function cannot reintroduce the leak.
+    #[test]
+    fn no_update_message_formats_a_raw_url() {
+        for (file, body) in [
+            ("download.rs", include_str!("download.rs")),
+            ("installer.rs", include_str!("installer.rs")),
+        ] {
+            for line in body.lines() {
+                let trimmed = line.trim();
+                assert!(
+                    !(trimmed.contains("{url}")
+                        && (trimmed.contains("format!(\"")
+                            || trimmed.contains("bail!(\"")
+                            || trimmed.contains("anyhow!(\""))),
+                    "{file} formats a raw URL into a message: {trimmed}"
+                );
+            }
         }
     }
 }

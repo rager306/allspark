@@ -47,7 +47,12 @@ pub async fn download_archive(
             }
         }
     }
-    Err(last_error).with_context(|| format!("download {url} within the update budget"))
+    Err(last_error).with_context(|| {
+        format!(
+            "download {} within the update budget",
+            super::installer::redact_url_credentials(url)
+        )
+    })
 }
 
 async fn download_once(
@@ -69,9 +74,17 @@ async fn download_once(
         .timeout(timeout)
         .send()
         .await
-        .with_context(|| format!("request {url}"))?;
+        // Redacted at the source: the archive URL can carry userinfo for a private
+        // mirror, and these two messages reach the daemon log and the status file
+        // (review #32 — the installer path was wrapped, this one was not, so the same
+        // credential leaked from the other half of the same funnel).
+        .with_context(|| format!("request {}", super::installer::redact_url_credentials(url)))?;
     if !response.status().is_success() {
-        anyhow::bail!("download {url} returned {}", response.status());
+        anyhow::bail!(
+            "download {} returned {}",
+            super::installer::redact_url_credentials(url),
+            response.status()
+        );
     }
     let temporary = destination.with_extension("part");
     let mut digest = Sha256::new();
