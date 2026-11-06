@@ -732,28 +732,15 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let active_tool_names: Vec<String> = tools.iter().map(|tool| tool.name().to_string()).collect();
     // The `edit` tool's resolved policy, for the prompt: only meaningful when the
     // tool survived the profile filter above.
+    // The SAME resolution the tool registration used (review #28): the prompt describes
+    // the policy the tool enforces, never a similar one computed beside it.
     let (edit_prompt_modes, edit_prompt_default) =
         if active_tool_names.iter().any(|name| name == "edit") {
-            let allow: Vec<pa_edit::EditMode> = if edit_hybrid_allow_modes.is_empty() {
-                vec![
-                    pa_edit::EditMode::Replace,
-                    pa_edit::EditMode::Patch,
-                    pa_edit::EditMode::ApplyPatch,
-                    pa_edit::EditMode::Hashline,
-                    pa_edit::EditMode::Sloppy,
-                ]
-            } else {
-                edit_hybrid_allow_modes
-                    .iter()
-                    .filter_map(|mode| pa_edit::EditMode::parse(mode))
-                    .collect()
-            };
-            let default = edit_hybrid_default_mode
-                .as_deref()
-                .and_then(pa_edit::EditMode::parse)
-                .filter(|mode| allow.contains(mode))
-                .or_else(|| allow.first().copied());
-            (Some(allow), default)
+            let policy = pa_edit::EditPolicy::resolve(
+                edit_hybrid_default_mode.as_deref(),
+                &edit_hybrid_allow_modes,
+            );
+            (Some(policy.allowed), Some(policy.default))
         } else {
             (None, None)
         };

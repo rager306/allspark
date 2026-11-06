@@ -1380,6 +1380,42 @@ mod tests {
     /// and always appended the hashline instructions, so a session that rejects
     /// `sloppy` still promised it, and one whose default is `replace` still read
     /// hashline instructions.
+    /// The prompt's default must be the TOOL's default, not a similar one computed beside it.
+    ///
+    /// With `allowModes: ["hashline", "replace"]` and no `defaultMode`, the prompt took
+    /// `allowed.first()` = `hashline` while the tool used `replace`, so a bare call did
+    /// something other than what the prompt promised (review #28's surviving half). Both now
+    /// call `pa_edit::EditPolicy::resolve`, and this test pins the agreement through the
+    /// PROMPT's own surface — the string a model reads — rather than through the shared
+    /// function in isolation.
+    #[test]
+    fn the_prompts_default_mode_is_the_tools_default_mode() {
+        use pa_edit::EditMode;
+
+        let allow_raw = vec!["hashline".to_string(), "replace".to_string()];
+        let policy = pa_edit::EditPolicy::resolve(None, &allow_raw);
+        let options = BuildSystemPromptOptions {
+            edit_modes: Some(&policy.allowed),
+            edit_default_mode: Some(policy.default),
+            ..BuildSystemPromptOptions::default()
+        };
+        let section = native_tools_section(&["edit"], &options);
+
+        assert_eq!(
+            policy.default,
+            EditMode::Replace,
+            "the shared resolution: {policy:?}"
+        );
+        assert!(
+            section.contains("`replace` is this session's default mode"),
+            "the prompt must name the TOOL's default: {section}"
+        );
+        assert!(
+            !section.contains("`hashline` is this session's default mode"),
+            "the prompt must not promise the mode the tool does not use: {section}"
+        );
+    }
+
     #[test]
     fn the_edit_block_states_the_configured_mode_policy() {
         use pa_edit::EditMode;

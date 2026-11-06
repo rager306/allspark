@@ -194,42 +194,19 @@ pub(crate) fn register_native_tools(
         // The store is in-memory and `Clone`; the tool holds one shared
         // instance so seen-line / no-op guards live for the whole session.
         let store = Arc::new(std::sync::Mutex::new(pa_edit::EditStore::new()));
-        let default_mode = settings
-            .edit_hybrid_default_mode
-            .as_deref()
-            .and_then(pa_edit::EditMode::parse)
-            .unwrap_or(pa_edit::EditMode::Replace);
-        let allow_modes: Vec<pa_edit::EditMode> = if settings.edit_hybrid_allow_modes.is_empty() {
-            vec![
-                pa_edit::EditMode::Replace,
-                pa_edit::EditMode::Patch,
-                pa_edit::EditMode::ApplyPatch,
-                pa_edit::EditMode::Hashline,
-                pa_edit::EditMode::Sloppy,
-            ]
-        } else {
-            settings
-                .edit_hybrid_allow_modes
-                .iter()
-                .filter_map(|mode| pa_edit::EditMode::parse(mode))
-                .collect()
-        };
-        // The default mode must be requestable; otherwise fall back to the
-        // first allowed mode so a misconfigured pair never drops the tool.
-        let default_mode = if allow_modes.contains(&default_mode) {
-            default_mode
-        } else {
-            allow_modes
-                .first()
-                .copied()
-                .unwrap_or(pa_edit::EditMode::Replace)
-        };
+        // ONE resolution, shared with the prompt (review #28): two owners of "which mode is
+        // the default" disagreed, so a bare call did something other than what the prompt
+        // promised. `EditPolicy` is the only place that decides.
+        let policy = pa_edit::EditPolicy::resolve(
+            settings.edit_hybrid_default_mode.as_deref(),
+            &settings.edit_hybrid_allow_modes,
+        );
         tools.push(Arc::new(pa_edit::tool::EditHybridTool::new(
             store,
             lsp_manager.clone(),
             cwd.to_path_buf(),
-            default_mode,
-            allow_modes,
+            policy.default,
+            policy.allowed,
         )));
         native_tool_names.push("edit".to_string());
     }

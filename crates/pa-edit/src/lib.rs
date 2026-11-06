@@ -88,8 +88,8 @@ pub mod text;
 pub mod tool;
 
 pub use engine::{
-    EditMode, FileOp, FileOpIntent, HeaderKind, Inspection, ModeEngine, PreviewFile, Resolved,
-    StagedFile,
+    EditMode, EditPolicy, FileOp, FileOpIntent, HeaderKind, Inspection, ModeEngine, PreviewFile,
+    Resolved, StagedFile,
 };
 pub use error::{EditError, EditResult, PartialWrite};
 pub use path_policy::{PathPolicy, UrlResolution};

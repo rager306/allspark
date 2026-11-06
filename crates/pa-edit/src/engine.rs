@@ -46,6 +46,57 @@ impl EditMode {
     }
 }
 
+/// The modes a bare `edit` call may use, and the one it does — resolved once.
+///
+/// Two owners computed this and disagreed: the TOOL took `editHybrid.defaultMode`
+/// (defaulting to `replace`) and fell back to the first ALLOWED mode only when the default
+/// was not in the set, while the PROMPT took the first allowed mode whenever no default was
+/// configured. With `allowModes: ["hashline", "replace"]` and no default, the tool used
+/// `replace` and the prompt told the model `hashline` was the default — so every bare call
+/// did something other than what the prompt promised (review #28, the half the first fix
+/// left). One function, two callers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditPolicy {
+    /// Modes a call may request, in the configured order.
+    pub allowed: Vec<EditMode>,
+    /// The mode a call omitting `mode` uses. Always a member of `allowed`.
+    pub default: EditMode,
+}
+
+impl EditPolicy {
+    /// Resolve from the raw settings spellings.
+    ///
+    /// `allow` empty or unparseable means "every mode"; a `default` outside `allow` (or an
+    /// unparseable one) falls back to the FIRST allowed mode, so the pair is never
+    /// inconsistent and the tool is never dropped.
+    #[must_use]
+    pub fn resolve(default: Option<&str>, allow: &[String]) -> Self {
+        let mut allowed: Vec<EditMode> = allow
+            .iter()
+            .filter_map(|mode| EditMode::parse(mode))
+            .collect();
+        if allowed.is_empty() {
+            allowed = vec![
+                EditMode::Replace,
+                EditMode::Patch,
+                EditMode::ApplyPatch,
+                EditMode::Hashline,
+                EditMode::Sloppy,
+            ];
+        }
+        let requested = default.and_then(EditMode::parse);
+        let default = match requested {
+            Some(mode) if allowed.contains(&mode) => mode,
+            // No default configured: `replace` is the documented one, and it is honoured
+            // whenever it is requestable. Taking `allowed.first()` here is what made the
+            // prompt and the tool disagree.
+            None if allowed.contains(&EditMode::Replace) => EditMode::Replace,
+            _ => allowed.first().copied().unwrap_or(EditMode::Replace),
+        };
+        Self { allowed, default }
+    }
+}
+
 /// What a staged file does to the filesystem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileOp {
@@ -223,4 +274,58 @@ pub trait ModeEngine: Send + Sync {
 
     /// Static projection of the payload (no file reads).
     fn inspect(&self, args: &ArgSnapshot) -> Inspection;
+}
+
+#[cfg(test)]
+mod edit_policy_tests {
+    use super::*;
+
+    /// The pair the two owners disagreed on: `allowModes: [hashline, replace]`, no default.
+    ///
+    /// The TOOL used `replace` (its own front-loaded default) while the PROMPT took
+    /// `allowed.first()` = `hashline`, so a bare call did something other than what the
+    /// prompt promised (review #28's surviving half). One resolution now answers both.
+    #[test]
+    fn an_unset_default_is_replace_when_replace_is_allowed() {
+        let policy = EditPolicy::resolve(None, &["hashline".to_string(), "replace".to_string()]);
+        assert_eq!(
+            policy.default,
+            EditMode::Replace,
+            "the documented default wins over the configured order: {policy:?}"
+        );
+        assert_eq!(policy.allowed.len(), 2);
+    }
+
+    /// When `replace` is not requestable the first allowed mode is the only honest answer.
+    #[test]
+    fn an_unset_default_falls_back_to_the_first_allowed_mode() {
+        let policy = EditPolicy::resolve(None, &["hashline".to_string()]);
+        assert_eq!(policy.default, EditMode::Hashline);
+    }
+
+    /// A configured default outside `allow` cannot be enforced, so it does not win.
+    #[test]
+    fn a_default_outside_the_allowed_set_falls_back() {
+        let policy = EditPolicy::resolve(Some("sloppy"), &["hashline".to_string()]);
+        assert_eq!(policy.default, EditMode::Hashline);
+        assert_eq!(policy.allowed, vec![EditMode::Hashline]);
+    }
+
+    /// A configured default inside the set is honoured, in any order.
+    #[test]
+    fn a_requestable_default_is_honoured() {
+        let policy = EditPolicy::resolve(
+            Some("hashline"),
+            &["replace".to_string(), "hashline".to_string()],
+        );
+        assert_eq!(policy.default, EditMode::Hashline);
+    }
+
+    /// An empty (or wholly unparseable) allow list means every mode, not none.
+    #[test]
+    fn an_empty_allow_list_means_every_mode() {
+        let policy = EditPolicy::resolve(None, &[]);
+        assert_eq!(policy.allowed.len(), 5);
+        assert_eq!(policy.default, EditMode::Replace);
+    }
 }
