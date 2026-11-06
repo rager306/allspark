@@ -263,9 +263,23 @@ impl GraphStore {
         }
 
         // ── 2. removed files ────────────────────────────────────────────
+        // A removed file's DEPENDENTS are closure seeds, and they must be read BEFORE the
+        // sweep: `forget_file` deletes the nodes and edges, so afterwards nothing records
+        // who called into the file that left. Those callers then keep a `resolved` verdict
+        // for a definition that no longer exists — impact answers "0 callers" for a symbol
+        // and the graph still claims the call is fine (review #35).
+        let mut removed_dependents: BTreeSet<String> = BTreeSet::new();
         let mut removed = 0usize;
         for rel in stored_hashes.keys() {
             if !seen.contains(rel) {
+                // The dependent is normally a file this pass WALKED (it is unchanged), so
+                // the filter is "not the removed file itself", never "not seen": the walked
+                // set is almost every live file, and filtering on it would drop all of them.
+                for dependent in self.incoming_source_files(&opts.project, rel)? {
+                    if dependent != *rel {
+                        removed_dependents.insert(dependent);
+                    }
+                }
                 // Same single owner as the full pass: a removed file takes all six row
                 // families. This sweep used to keep `index_coverage`, so a skipped file
                 // that vanished went on depressing `parsed` (see `forget_file`).
@@ -291,6 +305,15 @@ impl GraphStore {
                 if dep != *seed && !already.contains(&dep) {
                     closure.insert(dep);
                 }
+            }
+        }
+        // The dependents of a REMOVED file are closure seeds too (review #35): their call
+        // sites name a definition that is gone, and no surface hash changed to pull them
+        // in — the file they referred to simply stopped existing. They are collected above,
+        // before the sweep destroyed the edges that identified them.
+        for dependent in removed_dependents {
+            if !already.contains(&dependent) {
+                closure.insert(dependent);
             }
         }
         let mut closure_targets: Vec<Target> = Vec::new();

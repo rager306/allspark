@@ -343,3 +343,47 @@ fn a_reparse_replaces_the_files_call_sites() {
         "the call site of the removed function outlived the re-parse: {sites:?}"
     );
 }
+
+/// A caller whose target file DISAPPEARED must not keep a `resolved` verdict.
+///
+/// The sweep deleted the removed file's nodes and edges, then nothing knew who had called
+/// into it: the caller kept `resolved` for a definition that no longer exists, so `impact`
+/// answered "0 callers" for the gone symbol while the graph still claimed the call was
+/// fine (review #35). The dependents are now collected BEFORE the sweep — the only moment
+/// the edges still name them — and pulled into the closure.
+#[test]
+fn a_caller_of_a_removed_file_is_re_resolved() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("a.rs"), "pub fn caller() { helper(); }\n").expect("a.rs");
+    std::fs::write(dir.path().join("b.rs"), "pub fn helper() {}\n").expect("b.rs");
+    let mut store = GraphStore::open_in_memory().expect("store");
+    store
+        .index_project(dir.path(), &IndexOptions::new("p"))
+        .expect("index");
+    let before = store.call_sites("p").expect("sites");
+    assert!(
+        before
+            .iter()
+            .any(|site| site.callee == "helper" && site.resolution == "resolved"),
+        "the fixture must start resolved: {before:?}"
+    );
+
+    std::fs::remove_file(dir.path().join("b.rs")).expect("remove the target");
+    let report = store
+        .reindex_incremental(dir.path(), &IndexOptions::new("p"))
+        .expect("reindex");
+
+    let after = store.call_sites("p").expect("sites");
+    let site = after
+        .iter()
+        .find(|site| site.callee == "helper")
+        .unwrap_or_else(|| panic!("the caller's site survives as a MISS: {after:?}"));
+    assert_eq!(
+        site.resolution, "unresolved",
+        "the call now names a definition that does not exist: {after:?}"
+    );
+    assert!(
+        report.closure_paths.iter().any(|path| path == "a.rs"),
+        "the caller must be repaired through the closure: {report:?}"
+    );
+}
