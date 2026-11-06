@@ -1344,6 +1344,35 @@ mod tests {
         );
     }
 
+    /// The heartbeat block must state the condition AND the surface must answer
+    /// "unavailable" where the condition fails (#27's second half).
+    ///
+    /// The text half was fixed (`76be236ce`). What it could not do is make the two agree: a
+    /// prompt that says "scheduler-backed only" while a scheduler-less session's kernel still
+    /// advertises `rlm_heartbeat.create` is the same contradiction the other way round, and
+    /// the registration is what a model actually calls. The rule is owned by
+    /// `runtime_wiring` and pinned there by
+    /// `without_cron_wiring_the_rlm_heartbeat_handlers_stay_unregistered`; this test states
+    /// the pairing so the prompt and the registry cannot drift apart in different crates
+    /// without one of the two naming it.
+    #[test]
+    fn the_prompt_condition_and_the_registry_agree() {
+        let layer = layers::CORE_LAYER;
+        let start = layer.find("## Heartbeat").expect("a heartbeat section");
+        let block = &layer[start..];
+        let end = block[3..].find("\n## ").map_or(block.len(), |at| at + 3);
+        let section = &block[..end];
+        assert!(
+            section.contains("no scheduler") || section.contains("without a scheduler"),
+            "the block must name the scheduler-less case it is denying: {section}"
+        );
+        assert!(
+            section.contains("unavailable"),
+            "the block must say what those sessions answer, because that is the behaviour \
+             `runtime_wiring` implements: {section}"
+        );
+    }
+
     /// The edit block advertises the CONFIGURED policy, not every mode (#28).
     ///
     /// `editHybrid.allowModes` decides which modes the tool accepts and
