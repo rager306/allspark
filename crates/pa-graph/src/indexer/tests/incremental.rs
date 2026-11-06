@@ -537,3 +537,54 @@ fn a_grouped_alias_repairs_every_binding() {
         "the SECOND binding is the one the first scan version dropped: {incremental:?}"
     );
 }
+
+/// The INCREMENTAL in-place rewrite must withdraw its hash claim too.
+///
+/// The full path's `clear_file_for_reparse` does it (review #13); this path clears its rows
+/// in `reindex_file_in_place` and left the previous hash, so a failed resolution after a
+/// body-only re-parse kept a digest that still matched the bytes. The retry then took the
+/// unchanged skip and the cleared call sites were gone for good — the same defect, reached
+/// through the other writer.
+#[test]
+fn an_interrupted_incremental_rewrite_withdraws_its_hash() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("a.rs"),
+        "pub fn helper() {}\npub fn caller() { helper(); }\n",
+    )
+    .expect("a.rs");
+    std::fs::write(dir.path().join("b.rs"), "pub fn other() {}\n").expect("b.rs");
+    let mut store = GraphStore::open_in_memory().expect("store");
+    store
+        .index_project(dir.path(), &IndexOptions::new("p"))
+        .expect("first index");
+    assert!(
+        store.file_hash("p", "a.rs").expect("hash").is_some(),
+        "the fixture starts with a hash row"
+    );
+
+    // A BODY-only edit: the content changes, the surface does not, so the pass re-parses in
+    // place. The failure is injected where a real one happens — the call-site writer.
+    std::fs::write(
+        dir.path().join("a.rs"),
+        "pub fn helper() {}\npub fn caller() { helper(); helper(); }\n",
+    )
+    .expect("a.rs");
+    store
+        .connection()
+        .execute_batch(
+            "CREATE TRIGGER refuse_incremental_resolution BEFORE INSERT ON call_sites
+             BEGIN SELECT RAISE(ABORT, 'injected: resolution fails mid-run'); END",
+        )
+        .expect("trigger");
+    let _ = store.reindex_incremental(dir.path(), &IndexOptions::new("p"));
+    store
+        .connection()
+        .execute_batch("DROP TRIGGER refuse_incremental_resolution")
+        .expect("drop trigger");
+
+    assert!(
+        store.file_hash("p", "a.rs").expect("hash").is_none(),
+        "an interrupted in-place rewrite must not leave a hash over the rows it withdrew"
+    );
+}

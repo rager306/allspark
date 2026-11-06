@@ -921,6 +921,13 @@ impl GraphStore {
             // back. `edges` deletes by `source`; `call_sites` keys on the file, so
             // a symbol that disappeared takes its sites with it here.
             store.clear_call_sites(project, &t.rel)?;
+            // And the hash claim goes with them (review #13's other half): the caller
+            // commits the hash in the RESOLUTION transaction, so a run that rewrote this
+            // file and then failed kept the PREVIOUS hash. For a body-only or forced
+            // re-parse the content is unchanged, so that hash still matches and the retry
+            // takes the unchanged skip with the cleared rows gone for good. Withdrawing it
+            // here is the same statement the clear makes.
+            store.remove_file_hash(project, &t.rel)?;
             // 3. Upsert the File node, symbol nodes, FTS rows, CONTAINS edges.
             store.write_file(project, &t.rel, &extracted)?;
             // 4. Remove symbols that no longer exist (cascades their edges).
@@ -1176,16 +1183,22 @@ mod tests {
             .execute_batch("DROP TRIGGER refuse_the_site")
             .expect("drop trigger");
 
-        // The failed run must not have claimed b.rs: a stored hash over call sites
-        // that never landed is what made the next run skip the repair.
-        let stale = store.file_hash("p", "b.rs").expect("hash").expect("row");
-        let on_disk = crate::hash::hash_file(&dir.path().join("b.rs"))
-            .expect("hash on disk")
-            .sha256;
-        assert_ne!(
-            stale.sha256, on_disk,
-            "the failed reindex claimed a file whose call sites it never wrote"
-        );
+        // The failed run must not have claimed b.rs: a stored hash over call sites that
+        // never landed is what made the next run skip the repair. Since review #13's fix the
+        // claim is WITHDRAWN by the clear rather than left as a stale row, so "no claim" is
+        // the honest outcome and a row that still agrees with the disk is the defect.
+        match store.file_hash("p", "b.rs").expect("hash") {
+            None => {}
+            Some(stale) => {
+                let on_disk = crate::hash::hash_file(&dir.path().join("b.rs"))
+                    .expect("hash on disk")
+                    .sha256;
+                assert_ne!(
+                    stale.sha256, on_disk,
+                    "the failed reindex claimed a file whose call sites it never wrote"
+                );
+            }
+        }
 
         store
             .reindex_incremental(dir.path(), &IndexOptions::new("p"))
