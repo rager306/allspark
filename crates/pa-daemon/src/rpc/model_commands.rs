@@ -37,9 +37,18 @@ pub(crate) async fn set_model(
         .and_then(Value::as_str)
         .ok_or_else(|| "set_model requires a modelId".to_string())?;
     let mut registry = registry(state);
+    // DISCOVERABLE, not available. `get_available_models` lists the discovery set — which
+    // deliberately includes native free models, because they carry their own public
+    // credential and need no sign-in — while `get_available` stays narrow for default
+    // selection and failover. Resolving a switch against the narrow set made an RPC client
+    // able to LIST a model and then receive `Model not found` for that exact pair
+    // (review #34). This is the switch a caller names explicitly, so the picker's set is
+    // the right universe; the chat-turn check below still refuses a dialect that cannot
+    // serve a turn.
     let model = registry
-        .get_available()
+        .get_discoverable_models()
         .into_iter()
+        // The catalog is owned by the registry; a switch needs its own copy to install.
         .find(|candidate| candidate.provider == provider && candidate.id == model_id)
         .cloned()
         .ok_or_else(|| format!("Model not found: {provider}/{model_id}"))?;
@@ -129,7 +138,18 @@ async fn apply_model_selection(
 pub(crate) async fn cycle_model(state: &Arc<RpcState>) -> Result<ResponseData, String> {
     let _ops = state.model_ops.lock().await;
     let mut registry = registry(state);
-    let available: Vec<Model> = registry.get_available().into_iter().cloned().collect();
+    // Only models that can SERVE a turn. The catalog also carries judgment-only dialects
+    // (`typesafe`/SubQ) that are authenticated and would otherwise be reachable by
+    // cycling: `set_model` refuses them one line at a time, and the cycle then installed
+    // one through the shared tail, so the session switched to a model that cannot answer
+    // its next message (review #33). The filter lives here rather than in the tail
+    // because the tail is also the path for an explicit choice, which reports the refusal.
+    let available: Vec<Model> = registry
+        .get_available()
+        .into_iter()
+        .filter(|model| pa_ai::serves_chat_turns(&model.api))
+        .cloned()
+        .collect();
     if available.len() <= 1 {
         return Ok(ResponseData::Present(Value::Null));
     }
@@ -371,5 +391,114 @@ mod tests {
         );
         assert_eq!(live.provider, TEST_PROVIDER);
         assert_eq!(live.id, TEST_MODEL_ID);
+    }
+
+    /// A native free model beside the configured test model.
+    ///
+    /// The shape `native_free_api_key` accepts: `opencode` + `openai-completions` +
+    /// an `-free` id + `https://opencode.ai:443/inference/v1` with no userinfo. It needs
+    /// no provider auth, which is exactly why the discovery set offers it and
+    /// `get_available` does not.
+    fn write_free_model_json(agent_dir: &std::path::Path) {
+        let models = format!(
+            r#"{{"providers":{{"{TEST_PROVIDER}":{{"api":"openai-completions",
+            "baseUrl":"{TEST_BASE_URL}","apiKey":"sk-battery","models":[{{
+            "id":"{TEST_MODEL_ID}","name":"Mock 1","api":"openai-completions",
+            "contextWindow":128000,"maxTokens":4096}}]}},
+            "opencode":{{"models":[{{
+            "id":"grok-code-free","name":"Grok Free","api":"openai-completions",
+            "baseUrl":"https://opencode.ai/inference/v1",
+            "contextWindow":256000,"maxTokens":8192}}]}}}}}}"#
+        );
+        std::fs::write(agent_dir.join("models.json"), models).unwrap();
+    }
+
+    /// A judgment-only model (`typesafe`, the `subq` dialect) beside the chat model.
+    fn write_judgment_model_json(agent_dir: &std::path::Path) {
+        let models = format!(
+            r#"{{"providers":{{"{TEST_PROVIDER}":{{"api":"openai-completions",
+            "baseUrl":"{TEST_BASE_URL}","apiKey":"sk-battery","models":[{{
+            "id":"{TEST_MODEL_ID}","name":"Mock 1","api":"openai-completions",
+            "contextWindow":128000,"maxTokens":4096}}]}},
+            "subq":{{"api":"typesafe","baseUrl":"{TEST_BASE_URL}","apiKey":"sk-subq",
+            "models":[{{"id":"snap","name":"Snap","api":"typesafe",
+            "contextWindow":128000,"maxTokens":4096}}]}}}}}}"#
+        );
+        std::fs::write(agent_dir.join("models.json"), models).unwrap();
+    }
+
+    /// `set_model` must accept every model `get_available_models` offered.
+    ///
+    /// The listing is the discovery set (native free models included); the switch resolved
+    /// against the narrow set, so an RPC client could read a model out of the list and be
+    /// told `Model not found` for the same provider/id pair (review #34).
+    #[tokio::test]
+    async fn a_listed_native_free_model_can_be_selected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let state = test_state(dir.path()).await;
+        write_free_model_json(&state.agent_dir);
+
+        let ResponseData::Present(listed) = get_available_models(&state).await.expect("list")
+        else {
+            panic!("the listing answers with a body");
+        };
+        let listed_pairs: Vec<(String, String)> = listed["models"]
+            .as_array()
+            .expect("models array")
+            .iter()
+            .map(|model| {
+                (
+                    model["provider"].as_str().unwrap_or_default().to_string(),
+                    model["id"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect();
+        assert!(
+            listed_pairs.contains(&("opencode".to_string(), "grok-code-free".to_string())),
+            "the fixture's free model must be listed first: {listed_pairs:?}"
+        );
+
+        set_model(
+            &state,
+            &json!({ "provider": "opencode", "modelId": "grok-code-free" }),
+        )
+        .await
+        .expect("a listed model must be selectable, not `Model not found`");
+    }
+
+    /// Cycling must not land on a model that cannot serve the next turn.
+    ///
+    /// `apply_model_selection` (the shared tail) never asked `serves_chat_turns`; only
+    /// `set_model` did, one call at a time. So `cycle_model` installed a judgment dialect
+    /// and the session's next message failed (review #33).
+    #[tokio::test]
+    async fn cycling_skips_a_judgment_only_model() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let state = test_state(dir.path()).await;
+        write_judgment_model_json(&state.agent_dir);
+
+        // The trap must be IN the catalog, or the assertion below is vacuous: the
+        // unfiltered set — what the cycle used to walk — offers the judgment dialect.
+        let unfiltered: Vec<String> = {
+            let unfiltered = super::registry(&state);
+            unfiltered
+                .get_available()
+                .into_iter()
+                .map(|model| format!("{}/{} ({})", model.provider, model.id, model.api))
+                .collect()
+        };
+        assert!(
+            unfiltered.iter().any(|entry| entry.contains("(typesafe)")),
+            "the fixture's judgment model must reach the catalog: {unfiltered:?}"
+        );
+
+        let ResponseData::Present(next) = cycle_model(&state).await.expect("cycle") else {
+            panic!("a cycle must answer with the next model");
+        };
+        let api = next["model"]["api"].as_str().unwrap_or_default();
+        assert!(
+            pa_ai::serves_chat_turns(api),
+            "cycling must land on a chat-serving model, never a judgment dialect: {next}"
+        );
     }
 }
