@@ -504,16 +504,26 @@ class TheGateRunsItsOwnTests(unittest.TestCase):
 
 
 class ParitySkipsAreCounted(unittest.TestCase):
-    """A parity test with no TS reference exits 0, so the gate counted it as a pass.
+    """Finding #1: a parity test with no TS reference exits 0, so the gate read it as a pass.
 
-    Cargo has no runtime skip. The differential corpus, the daemon-command corpus and
-    three more units return normally when `PA_TS_BINARY` is unset, print a SKIPPED line,
-    and the runner reports the unit as `ok` — so a reader of the gate's summary believes
-    a comparison happened. The parity lane is advisory, so this must NOT be red; what it
-    must do is say how many comparisons were not made.
+    Three separate defects, each measured, each pinned here:
+
+    1. The unit is reported `ok` although no comparison happened — the tests return
+       normally and print their own SKIPPED line (cargo has no runtime skip).
+    2. The FIRST fix grepped that line out of the unit logs and counted zero forever:
+       `eprintln!` from a PASSING test is captured by nextest and by cargo test and never
+       written to the log. Measured on `pa-cli#test:differential_cli`: 0 `SKIPPED` lines
+       by default, 3 with `--success-output=final` (nextest) or `-- --nocapture` (cargo).
+       So the revealing flag has to be passed for exactly these units.
+    3. `package_e2e` prints a DIFFERENT sentence ("binary not installed", no
+       "set PA_TS_BINARY"), so a pattern tight enough to name one text finds four of five.
+
+    The count stays advisory (the parity lane is advisory and the skip contract is
+    deliberate); what must not happen is the absence reading as a green.
     """
 
     COUNT_STEP = "# A parity test with no TS reference returns NORMALLY"
+    END = 'if [[ $fail -ne 0 ]]; then'
 
     def run_block(self, logs):
         script = GATE.read_text()
@@ -522,7 +532,7 @@ class ParitySkipsAreCounted(unittest.TestCase):
         # The end marker is searched AFTER the start: `if [[ $fail -ne 0 ]]` appears
         # earlier in the file (after fmt/clippy), and a plain `index` would slice backwards
         # into an empty string — a test that then asserts nothing about anything.
-        block = script[start : script.index('if [[ $fail -ne 0 ]]; then', start)]
+        block = script[start : script.index(self.END, start)]
         with tempfile.TemporaryDirectory() as tmp:
             out = pathlib.Path(tmp)
             (out / "tests").mkdir()
@@ -536,6 +546,42 @@ class ParitySkipsAreCounted(unittest.TestCase):
             )
             return result.returncode, result.stdout + result.stderr
 
+    def run_unit_argv(self, unit):
+        """The exact argv `run_unit` hands the runner, captured by a stub `cargo`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "out" / "tests").mkdir(parents=True)
+            (root / "bin").mkdir()
+            argv_file = root / "argv.txt"
+            cargo = root / "bin" / "cargo"
+            cargo.write_text(
+                "#!/bin/bash\n"
+                f"printf '%s\\n' \"$@\" > '{argv_file}'\n"
+                "echo 'test result: ok. 3 passed; 0 failed; 0 ignored'\n"
+                "exit 0\n"
+            )
+            cargo.chmod(0o755)
+            # Both runners present: the nextest branch is the one the gate takes for a
+            # `test` unit, and it is the branch with the reveal flag.
+            nextest = root / "bin" / "cargo-nextest"
+            nextest.write_text("#!/bin/bash\nexit 0\n")
+            nextest.chmod(0o755)
+            script = root / "run_unit.sh"
+            script.write_text("set -uo pipefail\n" + run_unit_source() + f"run_unit '{unit}'\n")
+            subprocess.run(
+                ["bash", str(script)],
+                capture_output=True,
+                text=True,
+                env={
+                    "PATH": f"{root / 'bin'}:/usr/bin:/bin",
+                    "ROOT": str(root),
+                    "OUT": str(root / "out"),
+                    "UNIT_MIN_FREE_GB": "0",
+                },
+                timeout=120,
+            )
+            return argv_file.read_text().splitlines()
+
     def test_the_skipped_comparisons_are_named(self):
         code, out = self.run_block(
             {
@@ -546,10 +592,52 @@ class ParitySkipsAreCounted(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("1 test(s) made NO comparison", out)
 
+    def test_both_skip_sentences_are_counted(self):
+        """`package_e2e` says "not installed". A counter that names one sentence misses it."""
+        code, out = self.run_block(
+            {
+                "pa-cli-test-package_e2e.log": "SKIPPED: TS prime-agent binary not installed\n",
+                "pa-cli-test-differential_cli.log": "SKIPPED: TS prime-agent binary not found (set PA_TS_BINARY)\n",
+            }
+        )
+        self.assertEqual(code, 0, out)
+        self.assertIn("2 test(s) made NO comparison", out)
+
+    def test_the_count_survives_a_single_log(self):
+        """`grep -c` over ONE file prints a bare count with no colon; `$2` summed zero."""
+        code, out = self.run_block(
+            {"pa-cli-test-differential_cli.log": "SKIPPED: TS prime-agent binary not found (set PA_TS_BINARY)\n"}
+        )
+        self.assertEqual(code, 0, out)
+        self.assertIn("1 test(s) made NO comparison", out)
+
     def test_a_run_with_no_skips_says_nothing(self):
         code, out = self.run_block({"pa-cli-lib-pa_cli.log": "test result: ok. 12 passed;\n"})
         self.assertEqual(code, 0, out)
         self.assertNotIn("made NO comparison", out)
+
+    def test_the_parity_units_reveal_a_passing_tests_output(self):
+        """Without the flag the SKIPPED line is captured and the counter counts zero."""
+        for unit in (
+            "pa-cli#test:differential_cli",
+            "pa-cli#test:daemon_commands_e2e",
+            "pa-cli#test:lock_compat_e2e",
+            "pa-cli#test:package_e2e",
+            "pa-cli#test:export_live_differential",
+        ):
+            argv = self.run_unit_argv(unit)
+            self.assertTrue(
+                any(arg.startswith("--success-output") for arg in argv),
+                f"{unit} does not reveal a passing test's output: {argv}",
+            )
+
+    def test_an_ordinary_unit_pays_nothing_for_it(self):
+        """Measured: the flag takes a unit's log x4 and its wall clock +12%."""
+        argv = self.run_unit_argv("pa-graph#lib:pa_graph")
+        self.assertFalse(
+            any(arg.startswith("--success-output") for arg in argv),
+            f"an ordinary unit was made to pay for the parity counter: {argv}",
+        )
 
 
 class FastExitRespectsTheContractVerdict(unittest.TestCase):

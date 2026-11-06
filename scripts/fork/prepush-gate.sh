@@ -403,6 +403,19 @@ run_unit() {
     *) return 0;;
   esac
   local log="$OUT/tests/${pkg}-${kind}-${name//\//_}.log"
+  # The parity units print their own SKIPPED line from a PASSING test, and both runners
+  # CAPTURE the stdout/stderr of a passing test — the line never reaches `$log`, so the
+  # counter at the end of this script greps a string that was never written. Measured on
+  # `pa-cli#test:differential_cli`: 0 `SKIPPED` lines by default, 3 with the flag below.
+  # The flag is scoped to these five units because it is not free: on `pa-graph#lib` it
+  # took the log from 56 KiB to 233 KiB (x4) and the unit from 2.95 s to 3.30 s, and the
+  # gate has 287 units.
+  local reveal=0
+  case "$unit" in
+    pa-cli#test:differential_cli|pa-cli#test:daemon_commands_e2e|\
+    pa-cli#test:lock_compat_e2e|pa-cli#test:package_e2e|\
+    pa-cli#test:export_live_differential) reveal=1;;
+  esac
   # Free-space floor PER UNIT, not just at the gate's start: a long parallel run fills the
   # disk mid-flight, and an ENOSPC then reads as a code failure in whichever unit happened
   # to be writing (2026-10-21: thirteen "failures" that were all `No space left on
@@ -418,17 +431,23 @@ run_unit() {
   # 1195 tests). nextest reuses the artifacts cargo already built and keeps its own state
   # under target/nextest, so it neither rebuilds nor perturbs the unit's dependencies.
   # Doc/bin/example units stay on cargo test: nextest does not run doctests.
-  local ok=0
+  local ok=0 reveal_flag=""
+  if (( reveal )); then reveal_flag="--success-output=final"; fi
   if [[ "$kind" == "lib" || "$kind" == "test" ]] && command -v cargo-nextest >/dev/null 2>&1; then
     # `--color never`: nextest colourises each word, which splits "Starting 0 tests"
     # into escape-interleaved fragments, so the zero-test check below never matched
     # in the gate's own log while matching in a clean one.
     # `--no-tests=warn` states the "every test is #[ignore]d" case directly: warn
     # and exit 0, instead of exit 4 that has to be told apart from a failure.
+    # The reveal flag is LAST: `--success-output` takes a value, and a bare `$reveal_flag`
+    # before `-p` reads as `--success-output=final -p pkg`, which is fine, but extending
+    # the string later is a trap — one more word and the value is a flag.
     if [[ "$kind" == "lib" ]]; then
-      cargo nextest run --locked --no-tests=warn --color never -p "$pkg" --lib >"$log" 2>&1
+      cargo nextest run --locked --no-tests=warn --color never -p "$pkg" --lib \
+        $reveal_flag >"$log" 2>&1
     else
-      cargo nextest run --locked --no-tests=warn --color never -p "$pkg" --test "$name" >"$log" 2>&1
+      cargo nextest run --locked --no-tests=warn --color never -p "$pkg" --test "$name" \
+        $reveal_flag >"$log" 2>&1
     fi
     local status=$?
     # Exit 0 alone does NOT mean the unit passed: `--no-tests=warn` turns "nothing ran"
@@ -453,7 +472,10 @@ run_unit() {
       ok=1
     fi
   else
-    cargo test --locked -p "$pkg" "${args[@]}" >"$log" 2>&1 && ok=1
+    # `-- --nocapture` on the cargo-test path: the same capture rule, the same reveal.
+    local nocapture=()
+    if (( reveal )); then nocapture=(-- --nocapture); fi
+    cargo test --locked -p "$pkg" "${args[@]}" "${nocapture[@]}" >"$log" 2>&1 && ok=1
     # The same rule on the cargo-test path, so "nothing executed" is a skip whichever
     # runner produced it: `0 passed; 0 failed; N ignored` is "the tests exist and every
     # one was skipped", and `0 passed; 0 failed; 0 ignored` is a target with nothing to
@@ -553,15 +575,24 @@ fi
 # A parity test with no TS reference returns NORMALLY: it prints its own SKIPPED line
 # and exits 0, so the runner counts it as passed and the per-unit verdict above says
 # `ok` although no comparison happened (review #1). Cargo has no runtime skip, so the
-# honest surface is a count: 15 tests across five units are in this shape, and their
-# SKIPPED lines are captured by normal cargo/nextest runs and never read.
+# honest surface is a count.
 #
-# Advisory, not red: the parity gate is advisory since 2026-10-19 and the skip contract
-# is deliberate. What was wrong is that the absence read as a green.
-# `$NF`, not `$2`: with ONE log file grep -c prints a bare count, with several it prints
-# `path:count`, and a two-file gate would otherwise sum zero.
-parity_skips=$(grep -c 'SKIPPED: TS prime-agent binary not found' "$OUT"/tests/*.log 2>/dev/null \
-  | awk -F: '{ s += $NF } END { print s + 0 }')
+# Two facts the first version of this counter got wrong, both measured:
+#   * `eprintln!` from a PASSING test is captured by nextest and by cargo test and never
+#     written to the log. Verified: the same unit logs 0 `SKIPPED` lines by default and 3
+#     with `--success-output=final` / `-- --nocapture`. That is why PARITY_UNITS below
+#     makes run_unit pass the revealing flag for exactly these units — a counter over
+#     logs nobody wrote to counts zero forever.
+#   * `package_e2e` prints a DIFFERENT sentence ("binary not installed", no
+#     "set PA_TS_BINARY"), so the pattern stops before the tail: the two texts share only
+#     the prefix. A pattern tight enough to name one finds four of five files.
+#
+# Advisory, not red: the parity lane has been advisory since 2026-10-19 and its skip
+# contract is deliberate. What was wrong is that the absence READ as a green.
+# `$NF`, not `$2`: with ONE log file `grep -c` prints a bare count, with several it
+# prints `path:count`, and a two-file gate would otherwise sum zero.
+parity_skips=$(grep -hc 'SKIPPED: TS prime-agent binary not' "$OUT"/tests/*.log 2>/dev/null \
+  | awk '{ s += $NF } END { print s + 0 }')
 if [ "${parity_skips:-0}" -gt 0 ]; then
   echo "parity: $parity_skips test(s) made NO comparison (no TS reference: set PA_TS_BINARY)"
   echo "        counted as ok by the runner, so their units above are green without a diff"
