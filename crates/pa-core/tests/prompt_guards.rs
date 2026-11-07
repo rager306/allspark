@@ -926,3 +926,104 @@ fn every_bugbot_section_is_mapped_or_declared() {
         unmapped.join("\n  ")
     );
 }
+
+// ─── Test hygiene: no test redirects a path the whole process shares ────────
+//
+// Review #26: a daemon test called `std::env::set_var("TMPDIR", …)` to move the default
+// socket path into its own scratch. `TMPDIR` is PROCESS-WIDE, so every other test in that
+// binary — the TS differential corpus ran concurrently — created its temporary directories
+// inside this one's, and this one's cleanup deleted them mid-run.
+//
+// Two rules, and the split matters:
+//   * `TMPDIR` — NEVER. `TempDir::new()` reads it, so moving it moves every neighbour's
+//     fixtures, and the damage is silent (their files vanish, not their assertions).
+//   * `HOME` — allowed, because some paths are resolved through it and a test that wants
+//     them must be able to say so; but only in a file that SERIALISES those tests behind
+//     its own mutex, or two of them race with each other.
+//
+// A scanning test is the honest tier here: the regression IS a pattern in test source, and
+// a runtime assertion cannot see it — the test that reintroduces the call is the one that
+// breaks, not this one.
+#[test]
+fn no_test_redirects_a_path_the_whole_process_shares() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("workspace root");
+    let mut offenders: Vec<String> = Vec::new();
+    for entry in walk_rs_files(&root.join("crates")) {
+        let Ok(text) = std::fs::read_to_string(&entry) else {
+            continue;
+        };
+        // This file spells the patterns it forbids; scanning itself would always fail.
+        if entry
+            .file_name()
+            .is_some_and(|name| name == "prompt_guards.rs")
+        {
+            continue;
+        }
+        // Only TEST code: a `set_var` in a shipped module is a different question.
+        if !entry.to_string_lossy().contains("/tests/") && !text.contains("#[cfg(test)]") {
+            continue;
+        }
+        // Only LIVE code: a doc comment that explains why a test does NOT call
+        // `set_var("HOME")` must not count as calling it (measured — the first version of
+        // this scan flagged exactly that comment).
+        let live: String = text
+            .lines()
+            .map(str::trim_start)
+            .filter(|line| !line.starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for var in ["TMPDIR", "HOME"] {
+            let spelled = [format!("set_var(\"{var}\""), format!("set_var(\'{var}\'")]
+                .iter()
+                .filter(|form| live.contains(form.as_str()))
+                .count();
+            let removed = live.contains(&format!("remove_var(\"{var}\""));
+            if spelled == 0 && !removed {
+                continue;
+            }
+            if var == "TMPDIR" {
+                offenders.push(format!(
+                    "{}: mutates TMPDIR, which decides where EVERY test's TempDir lands",
+                    entry.display()
+                ));
+                continue;
+            }
+            // HOME: allowed only where the mutating tests are serialised against each other.
+            let serialised = live.contains("ENV_MUTEX")
+                || live.contains("env_lock()")
+                || live.contains("ENV_LOCK")
+                || live.contains("session_lock");
+            if !serialised {
+                offenders.push(format!(
+                    "{}: mutates HOME with no mutex, so two tests that both move it race",
+                    entry.display()
+                ));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a test redirects a path the whole process shares (review #26):\n  {}",
+        offenders.join("\n  ")
+    );
+}
+
+/// Every `.rs` file under `dir`, recursively. `target/` is not under `crates/`.
+fn walk_rs_files(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(walk_rs_files(&path));
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            out.push(path);
+        }
+    }
+    out
+}

@@ -115,8 +115,19 @@ pub use interactive_mode::{
 /// so keep it compiled rather than gating it to tests.
 #[allow(dead_code)]
 fn migrate_from_legacy_once() {
-    use pa_types::platform::home_dir;
-    let Some(home) = home_dir() else { return };
+    let Some(home) = pa_types::platform::home_dir() else {
+        return;
+    };
+    migrate_from_legacy_in(&home);
+}
+
+/// [`migrate_from_legacy_once`] against an explicit home.
+///
+/// The home is a PARAMETER so the behaviour is testable without touching the process
+/// environment: `HOME` is process-wide, and a test that moves it moves it for every other
+/// test in the binary (review #26's shape — a shared path variable mutated to isolate one
+/// test, breaking its neighbours).
+fn migrate_from_legacy_in(home: &std::path::Path) {
     let new_dir = home.join(".allspark");
     if new_dir.exists() {
         return;
@@ -523,20 +534,14 @@ mod version_line_tests {
 
 #[cfg(test)]
 mod migration_tests {
-    use super::migrate_from_legacy_once;
     use std::path::Path;
 
-    /// Run the migration against a synthetic HOME.
+    /// Run the migration against a synthetic home.
+    ///
+    /// No `set_var("HOME")`: the home is a parameter, so this test cannot move a variable
+    /// every other test in this binary shares (review #26).
     fn run(home: &Path) {
-        // The function reads HOME through pa_types::platform::home_dir().
-        // SAFETY: single-threaded test; HOME is restored by the guard below.
-        let previous = std::env::var_os("HOME");
-        std::env::set_var("HOME", home);
-        migrate_from_legacy_once();
-        match previous {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
+        super::migrate_from_legacy_in(home);
     }
 
     /// The rotating-refresh regression: auth.json must NOT be copied, or the

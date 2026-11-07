@@ -243,31 +243,55 @@ mod self_test_tests {
         assert_ne!(port_a, 0, "the kernel's own port is reported, not 0");
     }
 
-    /// The runner must give each run its own scratch directory and never a fixed path.
+    /// The runner must give each run its own scratch directory, its own baseline, and a
+    /// port the SERVER reports — and each of those must be pinned by the line that does it.
     ///
-    /// Both halves are read from the script because they are what the script IS: a shared
-    /// `/tmp/pa_diff_ts.json` baseline let one run read another's bytes, and the selftest
-    /// that exists to prove isolation must be reachable without a TS checkout.
+    /// Measured, and the reason the pins are shaped this way: the first version asserted
+    /// `script.contains("REPLAY_PORT=")`, which the `sed` parser satisfies on its own even
+    /// when `PORT_REQUEST` is a fixed 18097 — the natural regression went through. Likewise
+    /// `PA_DIFF_SELFTEST` appears in the usage comment, so disabling the selftest passed.
+    /// Each assertion now names the ASSIGNMENT or the branch, not a substring that can
+    /// live in prose:
+    ///   * `PORT_REQUEST="${PA_DIFF_PORT:-0}"` — port 0, with the override still an
+    ///     override. A fixed default changes the brace group, so it fails;
+    ///   * `TS_BASELINE="$RUN_DIR/ts.json"` — the baseline lives under the per-run dir;
+    ///   * `RUN_DIR="$(mktemp -d …)"` — the dir is created per run and removed by the trap;
+    ///   * the selftest condition is `if [ "${PA_DIFF_SELFTEST:-}" = "1" ]`, not a mention.
     #[test]
     fn the_runner_isolates_its_baseline_and_is_self_testable() {
         let script =
             std::fs::read_to_string(repo_root().join("crates/pa-ai/tests/differential/run.sh"))
                 .expect("the differential runner");
+        for (needle, why) in [
+            (
+                "PORT_REQUEST=\"${PA_DIFF_PORT:-0}\"",
+                "port 0 lets the kernel choose; a fixed default is the race the finding is about",
+            ),
+            (
+                "TS_BASELINE=\"$RUN_DIR/ts.json\"",
+                "the baseline must live under the per-run scratch directory",
+            ),
+            (
+                "RUN_DIR=\"$(mktemp -d",
+                "each run needs its own scratch directory, created fresh",
+            ),
+            (
+                "if [ \"${PA_DIFF_SELFTEST:-}\" = \"1\" ]; then",
+                "the isolation selftest must be reachable AND guarded as a branch, not mentioned",
+            ),
+        ] {
+            assert!(script.contains(needle), "{why}: missing {needle}");
+        }
         assert!(
-            !script.contains("pa_diff_ts.json"),
+            !script.contains("/tmp/pa_diff_ts.json"),
             "a shared baseline path is the race the finding is about"
         );
+        // The assignment is only load-bearing if the server is STARTED with it: declaring
+        // `PORT_REQUEST` and then passing a literal leaves the slot free and every assertion
+        // above green (measured).
         assert!(
-            script.contains("mktemp -d") && script.contains("RUN_DIR"),
-            "each run needs its own scratch directory: {script}"
-        );
-        assert!(
-            script.contains("REPLAY_PORT="),
-            "the port must come from the server's own line, not from the request"
-        );
-        assert!(
-            script.contains("PA_DIFF_SELFTEST"),
-            "the isolation rule must be checkable without a TS checkout"
+            script.contains("replay_server.py\" \"$PORT_REQUEST\""),
+            "the server must be started with the resolved port request"
         );
     }
 }
