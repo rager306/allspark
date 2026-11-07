@@ -164,10 +164,13 @@ pub async fn run_update_command(options: &UpdateCommandOptions) -> Result<i32> {
             // A planning failure aborts before any state that could wedge: the daemon never stopped
             // (spec §4 `Aborted`).
             writer.set_state(UpdateState::Aborted)?;
-            writer.set_message(Some(error.to_string()))?;
+            // The status file is read by a human and by support; a raw reqwest cause in it
+            // carries the un-redacted request URL (review #32).
+            let described = pa_core::update::installer::redacted_error_chain(&error);
+            writer.set_message(Some(described.clone()))?;
             release(&agent_dir, &socket_path.to_string_lossy())?;
             track_update_completed(writer.current()).await;
-            anyhow::bail!("{error:#}");
+            anyhow::bail!("{described}");
         }
     };
 

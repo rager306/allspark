@@ -159,7 +159,14 @@ pub fn redact_url_credentials(url: &str) -> String {
 /// `X-Amz-Signature` and `sig` all land. Deliberately a list and not "the whole query":
 /// a query also carries the diagnostic part of a URL (a channel name, a page number),
 /// and erasing it turns an error message into one nobody can act on.
-const SECRET_QUERY_PARAMS: [&str; 8] = [
+/// The last three are the shapes a presigned or session-scoped mirror uses: `?session=`,
+/// `?ticket=` and `?code=` are short-lived credentials as often as they are diagnostics, and
+/// a URL that carries one in an error message has handed it to whoever reads the log
+/// (review #32's remaining shape — `?session=secret` survived the name list).
+///
+/// `channel`, `page`, `version` and the rest stay: the finding is about credentials, and a
+/// message with its whole query erased is a message nobody can act on.
+const SECRET_QUERY_PARAMS: [&str; 11] = [
     "token",
     "signature",
     "credential",
@@ -168,7 +175,65 @@ const SECRET_QUERY_PARAMS: [&str; 8] = [
     "sig",
     "key",
     "auth",
+    "session",
+    "ticket",
+    "code",
 ];
+
+/// Render an error chain with every URL in it redacted.
+///
+/// `{error:#}` walks `source()` and prints each cause, and a reqwest cause carries the RAW
+/// request URL — so a message whose own text was redacted still leaks the credential from a
+/// nested source (measured: `?token=<redacted>` at the top, `?token=SECRET123` one level
+/// down). The fix cannot be "stop walking the chain": the chain is where the diagnosis
+/// lives (connect vs TLS vs status). So the chain is walked here, each cause is formatted
+/// and redacted, and the redaction is applied to the RESULT — a URL split across two causes
+/// is still caught.
+#[must_use]
+pub fn redacted_error_chain(error: &anyhow::Error) -> String {
+    let mut out = String::new();
+    for (depth, cause) in error.chain().enumerate() {
+        if depth > 0 {
+            out.push_str(": ");
+        }
+        out.push_str(&cause.to_string());
+    }
+    redact_urls_in_text(&out)
+}
+
+/// Redact EVERY URL inside a free-text message.
+///
+/// [`redact_url_credentials`] assumes it is given one URL. A message is not: a chain can
+/// name the same request twice (ours at the top, reqwest's nested cause below), and the
+/// first `?` then belongs to the first URL while the second URL's token sits in the VALUE
+/// of whatever parameter happened to precede it — measured: `?token=<redacted>` followed
+/// by `channel=beta: error sending request for url (http://…?token=SECRET123)`, where
+/// `SECRET123` survives because it is inside `channel`'s value.
+///
+/// So the text is split at every `scheme://` and each URL span is redacted on its own. The
+/// end of a URL in prose is whitespace or one of `)]},'"<>` — the characters that cannot
+/// appear unescaped at the end of a URL a person typed into a message.
+#[must_use]
+pub fn redact_urls_in_text(text: &str) -> String {
+    const ENDS: [char; 8] = [')', ']', '}', ',', '\'', '"', '<', '>'];
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(scheme_at) = rest.find("://") {
+        // The span starts at the scheme's own start: walk back over the scheme letters.
+        let scheme_start = rest[..scheme_at]
+            .rfind(|c: char| !c.is_ascii_alphanumeric() && c != '+')
+            .map_or(0, |at| at + 1);
+        out.push_str(&rest[..scheme_start]);
+        let tail = &rest[scheme_start..];
+        let end = tail
+            .find(|c: char| c.is_whitespace() || ENDS.contains(&c))
+            .unwrap_or(tail.len());
+        out.push_str(&redact_url_credentials(&tail[..end]));
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
 
 /// Replace the VALUE of every credential-bearing query parameter with `<redacted>`, and
 /// drop the fragment.
@@ -1981,6 +2046,32 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
         }
     }
 
+    /// A session-scoped mirror URL carries its credential in a parameter no name list
+    /// anticipated: `?session=`, `?ticket=`, `?code=`.
+    ///
+    /// The list is the mechanism, and a list is only as good as its entries — the fifth
+    /// reverify wave found `?session=secret` surviving. Those three are short-lived
+    /// credentials as often as they are diagnostics, so they join it.
+    #[test]
+    fn a_session_scoped_mirror_credential_is_redacted() {
+        for (input, expected) in [
+            (
+                "https://h/a.tar.gz?session=abc123",
+                "https://h/a.tar.gz?session=<redacted>",
+            ),
+            (
+                "https://h/a.tar.gz?ticket=t-9&version=1",
+                "https://h/a.tar.gz?ticket=<redacted>&version=1",
+            ),
+            (
+                "https://h/a.tar.gz?code=c0de",
+                "https://h/a.tar.gz?code=<redacted>",
+            ),
+        ] {
+            assert_eq!(redact_url_credentials(input), expected, "input: {input}");
+        }
+    }
+
     /// A query parameter can carry the credential instead of the userinfo.
     ///
     /// The first fix redacted the authority only. A presigned mirror URL puts its secret
@@ -2024,6 +2115,71 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
         ] {
             assert_eq!(redact_url_credentials(input), expected, "input: {input}");
         }
+    }
+
+    /// Several URLs in one message, each redacted on its own.
+    ///
+    /// The single-URL redactor mis-slices prose: it finds the FIRST `?` and treats
+    /// everything after it as one query, so the second URL's token lands inside whatever
+    /// parameter preceded it. Measured on a real chain — `?token=<redacted>&channel=beta:
+    /// error sending request for url (http://…?token=SECRET123)` — where `SECRET123`
+    /// survived inside `channel`'s value. Splitting the text at every `://` fixes it.
+    #[test]
+    fn every_url_in_a_message_is_redacted_separately() {
+        let message = "request http://h/a?token=<redacted>&channel=beta: error sending \
+                       request for url (http://h/a?token=SECRET123&channel=beta)";
+        let out = redact_urls_in_text(message);
+        assert!(!out.contains("SECRET123"), "{out}");
+        assert!(
+            out.contains("channel=beta"),
+            "the diagnostic parameter survives in both URLs: {out}"
+        );
+        assert!(out.contains("token=<redacted>"), "{out}");
+
+        // A message with no URL is untouched, and a URL at the very end is caught.
+        assert_eq!(redact_urls_in_text("no url here"), "no url here");
+        let tail = redact_urls_in_text("see https://u:p@host/x");
+        assert_eq!(tail, "see https://<redacted>@host/x");
+    }
+
+    /// The error CHAIN carries the raw URL, and the top-level message does not.
+    ///
+    /// Measured on a real reqwest failure: `{error}` printed `?token=<redacted>`, and
+    /// `{error:#}` — which walks `source()` — printed `?token=SECRET123` from the nested
+    /// cause. A message redacted at its own level is not redacted as a whole, so the chain
+    /// is rendered here and the RESULT is redacted. The chain itself stays: it is where the
+    /// diagnosis lives (connect vs TLS vs status).
+    #[tokio::test]
+    async fn the_error_chain_is_redacted_after_rendering() {
+        let url = "http://127.0.0.1:1/a?token=SECRET123&channel=beta";
+        let err = reqwest::Client::new()
+            .get(url)
+            .send()
+            .await
+            .expect_err("a closed port refuses");
+        let error =
+            anyhow::Error::new(err).context(format!("request {}", redact_url_credentials(url)));
+
+        let raw_chain = format!("{error:#}");
+        assert!(
+            raw_chain.contains("SECRET123"),
+            "the fixture must actually leak through the chain, or this proves nothing: \
+             {raw_chain}"
+        );
+
+        let rendered = redacted_error_chain(&error);
+        assert!(
+            !rendered.contains("SECRET123"),
+            "the rendered chain must not carry the token: {rendered}"
+        );
+        assert!(
+            rendered.contains("channel=beta"),
+            "a diagnostic parameter survives: {rendered}"
+        );
+        assert!(
+            rendered.contains("Connection refused") || rendered.contains("connect"),
+            "and the diagnosis survives, which is why the chain is kept: {rendered}"
+        );
     }
 
     /// The shapes the name-matching redactor could not see.

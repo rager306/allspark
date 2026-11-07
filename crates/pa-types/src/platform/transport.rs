@@ -230,11 +230,31 @@ fn same_owner(peer_uid: u32, our_uid: u32, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// See the Linux implementation: the check needs a platform peer-credential call that is
-/// not wired on this target yet, so it refuses nothing here rather than pretending.
+/// The BSD/macOS half of the same check: `getpeereid` reports the peer's effective uid.
+///
+/// It was a no-op here, which left macOS with only the private-directory layer — and a
+/// directory check cannot help when the socket path was chosen some other way (an explicit
+/// `PRIME_AGENT_DAEMON_SOCKET`, a mounted home). `getpeereid` is the platform's own answer
+/// and needs no `SO_PEERCRED`; the decision is the same `same_owner` the Linux path uses.
 #[cfg(all(unix, not(target_os = "linux")))]
-fn verify_peer_uid(_stream: &tokio::net::UnixStream, _path: &Path) -> Result<()> {
-    Ok(())
+fn verify_peer_uid(stream: &tokio::net::UnixStream, path: &Path) -> Result<()> {
+    use std::os::fd::AsRawFd;
+    let mut peer_uid: libc::uid_t = 0;
+    let mut peer_gid: libc::gid_t = 0;
+    // SAFETY: `getpeereid` writes one uid and one gid into the pointers given; the fd is
+    // owned by `stream` for the duration of the call.
+    let status = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut peer_uid, &mut peer_gid) };
+    if status != 0 {
+        // No answer from the kernel is not a reason to trust the peer.
+        return Err(anyhow::anyhow!(
+            "could not read the owner of the daemon socket {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: read-only libc call.
+    let our_uid = unsafe { libc::geteuid() };
+    same_owner(peer_uid, our_uid, path)
 }
 
 /// Definitive nonblocking Unix listener refusal, used by the exit cleanup.
@@ -460,6 +480,34 @@ mod peer_credential_tests {
         assert!(
             message.contains("belongs to uid 1000") && message.contains("this process is uid 1001"),
             "the refusal must name both uids so an operator can tell a squatter from a typo: {message}"
+        );
+    }
+
+    /// The non-Linux verifier is a real check, not a stub that returns Ok.
+    ///
+    /// It was `Ok(())` on macOS and the BSDs, so the private-directory layer was the only
+    /// protection there — useless when the socket path comes from an explicit
+    /// `PRIME_AGENT_DAEMON_SOCKET`. The source is pinned rather than the behaviour because
+    /// the call cannot be exercised on a Linux host: `getpeereid` needs the BSD ABI.
+    #[test]
+    fn the_non_linux_verifier_reads_peer_credentials() {
+        let source = include_str!("transport.rs");
+        let non_linux = source
+            .split("#[cfg(all(unix, not(target_os = \"linux\")))]")
+            .nth(1)
+            .expect("the non-Linux verifier exists");
+        let body = &non_linux[..non_linux.find("\n}\n").expect("the fn ends")];
+        assert!(
+            body.contains("getpeereid"),
+            "the non-Linux verifier must ask the kernel, not return Ok(): {body}"
+        );
+        assert!(
+            body.contains("same_owner("),
+            "and it must apply the SAME decision as the Linux path: {body}"
+        );
+        assert!(
+            !body.contains("let _ = _stream") && !body.contains("Ok(())\n}"),
+            "a no-op stub is what the finding is about: {body}"
         );
     }
 

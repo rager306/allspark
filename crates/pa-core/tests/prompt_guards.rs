@@ -827,6 +827,13 @@ fn usage_layer_ends_turns_on_the_done_notification_not_an_await_rule() {
 const REVIEWED_AGENTS_SECTIONS: &[(&str, &[&str])] = &[
     ("Change hygiene", &["Change hygiene"]),
     ("Lint discipline", &["Lint discipline"]),
+    // The fork's two style sections are one AGENTS.md section and two BUGBOT.md ones: the
+    // crate/module rules and the formatting rules are written for different readers.
+    ("Style and structure", &["Style", "Module organization"]),
+    (
+        "Prompt-input caps are part of the contract",
+        &["Prompt-input caps"],
+    ),
     (
         "Performance and the critical path",
         &["Performance and the critical path"],

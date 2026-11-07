@@ -331,3 +331,57 @@ fn an_interrupted_rewrite_of_an_unchanged_file_is_re_parsed() {
         "the retry restored the call sites"
     );
 }
+
+/// The grouped-alias repair works on a REPEATED full pass too, not only incrementally.
+///
+/// The repair lands in `resolve_newly_satisfiable`, which both write paths call — but the
+/// regression test lived on the incremental lane only, so a full pass that skipped the
+/// repair would have gone unnoticed (the fifth reverify wave's point). The fixture is a
+/// second `index_project` in the SAME store: not a fresh store (that would re-resolve
+/// everything from scratch and prove nothing) and not a reindex (that is the other lane).
+#[test]
+fn a_repeated_full_pass_repairs_a_grouped_alias() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("a.rs"),
+        "use crate::c::{thing as first, other as second};\npub fn caller() { first(); second(); }\n",
+    )
+    .expect("a.rs");
+    let mut store = GraphStore::open_in_memory().expect("store");
+    store
+        .index_project(dir.path(), &IndexOptions::new("p"))
+        .expect("first index");
+    assert!(
+        store
+            .call_sites("p")
+            .expect("sites")
+            .iter()
+            .all(|site| site.resolution == "unresolved"),
+        "the fixture starts with both bindings unresolved"
+    );
+
+    std::fs::write(
+        dir.path().join("c.rs"),
+        "pub fn thing() {}\npub fn other() {}\n",
+    )
+    .expect("c.rs");
+    store
+        .index_project(dir.path(), &IndexOptions::new("p"))
+        .expect("second full pass");
+
+    let repeated = verdicts(&store);
+    let mut fresh = GraphStore::open_in_memory().expect("store");
+    fresh
+        .index_project(dir.path(), &IndexOptions::new("p"))
+        .expect("fresh index of the same tree");
+    assert_eq!(
+        repeated,
+        verdicts(&fresh),
+        "a repeated full pass must agree with a fresh one"
+    );
+    assert_eq!(
+        repeated.get("second").map(String::as_str),
+        Some("resolved"),
+        "the second binding of the group repairs on the full lane too: {repeated:?}"
+    );
+}

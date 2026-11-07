@@ -47,7 +47,13 @@ pub async fn download_archive(
             }
         }
     }
-    Err(last_error).with_context(|| {
+    // The chain is rendered and THEN redacted: `{error:#}` on the way out would print a
+    // raw reqwest cause, and the caller's own message cannot know what sits inside it.
+    Err(anyhow::anyhow!(
+        "{}",
+        super::installer::redacted_error_chain(&last_error)
+    ))
+    .with_context(|| {
         format!(
             "download {} within the update budget",
             super::installer::redact_url_credentials(url)
