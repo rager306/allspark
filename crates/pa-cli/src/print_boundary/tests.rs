@@ -1337,7 +1337,7 @@ async fn requested_refinement_failure_emits_the_refine_failed_event() {
 #[tokio::test]
 async fn requested_refinement_streams_rows_and_refine_complete() {
     let _faux = FAUX_TEST_LOCK.lock().await;
-    let plan = r#"{"summary":"note it","rationale":"repeated","expectedOutcome":"recall","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A"}]}"#;
+    let plan = r#"{"summary":"note it","rationale":"repeated","expectedOutcome":"recall","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A","metadata":{"sources":[{"kind":"turn","id":"third turn"}]}}]}"#;
     let (engine, _dir, model) = faux_engine_with_settings(
         json!({ "responses": [{"text": "seed reply"}, {"text": plan}] }),
         compactable_settings(),
@@ -1398,7 +1398,7 @@ async fn requested_refinement_streams_rows_and_refine_complete() {
 async fn compact_trigger_auto_refine_streams_at_the_next_boundary() {
     let _faux = FAUX_TEST_LOCK.lock().await;
     let review = r#"{"shouldRefine": true, "rationale": "the crossing turn shows a reusable tactic", "instructions": "record the tactic"}"#;
-    let plan = r#"{"summary":"note it","rationale":"repeated","expectedOutcome":"recall","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A"}]}"#;
+    let plan = r#"{"summary":"note it","rationale":"repeated","expectedOutcome":"recall","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A","metadata":{"sources":[{"kind":"turn","id":"third turn"}]}}]}"#;
     let (engine, _dir, model) = faux_engine_with_settings(
         json!({
             "responses": [
@@ -1487,7 +1487,7 @@ async fn compact_trigger_auto_refine_streams_at_the_next_boundary() {
 async fn overflow_retry_compact_trigger_streams_the_ts_surface() {
     let _faux = FAUX_TEST_LOCK.lock().await;
     let review = r#"{"shouldRefine": true, "rationale": "the overflow recovery is reusable"}"#;
-    let plan = r#"{"summary":"note it","rationale":"repeated","expectedOutcome":"recall","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A"}]}"#;
+    let plan = r#"{"summary":"note it","rationale":"repeated","expectedOutcome":"recall","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A","metadata":{"sources":[{"kind":"turn","id":"third turn"}]}}]}"#;
     let (engine, _dir, model) = faux_engine_with_settings(
         json!({
             "responses": [
@@ -1608,7 +1608,7 @@ async fn a_print_compaction_arms_the_sessions_compact_trigger() {
 async fn the_boundary_consumes_a_trigger_armed_on_the_session() {
     let _faux = FAUX_TEST_LOCK.lock().await;
     let review = r#"{"shouldRefine": true, "rationale": "the session asked for a review"}"#;
-    let plan = r#"{"summary":"note it","rationale":"repeated","expectedOutcome":"recall","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A"}]}"#;
+    let plan = r#"{"summary":"note it","rationale":"repeated","expectedOutcome":"recall","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A","metadata":{"sources":[{"kind":"turn","id":"third turn"}]}}]}"#;
     let (engine, _dir, model) = faux_engine_with_settings(
         json!({ "responses": [{"text": review}, {"text": plan}] }),
         compactable_settings(),
@@ -1647,7 +1647,7 @@ async fn the_boundary_consumes_a_trigger_armed_on_the_session() {
 async fn compact_trigger_drains_at_disposal_off_the_stream() {
     let _faux = FAUX_TEST_LOCK.lock().await;
     let review = r#"{"shouldRefine": true, "rationale": "the seed turn shows a reusable tactic"}"#;
-    let plan = r#"{"summary":"note it","rationale":"repeated","expectedOutcome":"recall","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A"}]}"#;
+    let plan = r#"{"summary":"note it","rationale":"repeated","expectedOutcome":"recall","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A","metadata":{"sources":[{"kind":"turn","id":"third turn"}]}}]}"#;
     let (engine, _dir, model) = faux_engine_with_settings(
         json!({
             "responses": [
