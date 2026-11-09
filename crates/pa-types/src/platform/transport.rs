@@ -252,6 +252,11 @@ pub struct PeerCredentials {
 }
 
 /// Read the connected peer's credentials, or `None` where the platform cannot report them.
+///
+/// # Panics
+///
+/// Panics only if `size_of::<ucred>()` ever exceeded `socklen_t::MAX`, which cannot happen: the
+/// struct is three 32-bit fields and `socklen_t` is `u32`.
 #[cfg(target_os = "linux")]
 #[must_use]
 pub fn socket_peer_credentials<F: std::os::fd::AsRawFd>(stream: &F) -> Option<PeerCredentials> {
