@@ -44,6 +44,12 @@ pub struct GraphTool {
     /// `settings.json` and expecting the change to be live, with no surface
     /// saying the gate was read once at construction.
     rerank_gate: Option<(String, bool)>,
+    /// `graph.auto`: whether a QUERY may build or refresh the graph. Unset reads
+    /// as `auto`. Under `off` a query never indexes — the explicit `index`
+    /// action is the only build path — so the answer says the graph is absent
+    /// or stale instead of quietly paying for the walk the user switched off
+    /// (review #32).
+    auto: crate::settings::types::GraphAuto,
 }
 
 impl GraphTool {
@@ -59,7 +65,16 @@ impl GraphTool {
             schema: params_schema(),
             reranker: None,
             rerank_gate: None,
+            auto: crate::settings::types::GraphAuto::default(),
         }
+    }
+
+    /// Set the query-time build policy (`graph.auto`). `off` leaves the explicit
+    /// `index` action as the only way the graph is built or refreshed.
+    #[must_use]
+    pub fn with_auto(mut self, auto: crate::settings::types::GraphAuto) -> Self {
+        self.auto = auto;
+        self
     }
 
     /// FORK-ONLY (jev Phase 2): attach the judge re-rank of `search`
@@ -125,6 +140,20 @@ impl GraphTool {
         root: &Path,
         project: &str,
     ) -> anyhow::Result<Option<String>> {
+        // `graph.auto = "off"`: a query must not build or refresh. Both halves of
+        // this function (the cold build below and the stale refresh above it) are
+        // automatic indexing, and the setting documents exactly one remaining
+        // build path — the explicit `index` action, which never comes through
+        // here. The answer says what the caller is looking at instead of
+        // returning a bare 0-hit result that reads as "the graph has nothing".
+        if self.auto == crate::settings::types::GraphAuto::Off {
+            return Ok(Some(
+                "graph.auto is off: this session does not index or refresh on a query, so the \
+                 answer reflects whatever was last indexed explicitly. Run the `index` action \
+                 to build it."
+                    .to_string(),
+            ));
+        }
         // The project key is the root's BASENAME, so two checkouts named the
         // same (`/a/service`, `/b/service`) share one row set in the shared DB.
         // The write path refuses to overwrite a project with a different root

@@ -185,6 +185,10 @@ pub(crate) fn register_native_tools(
         let rerank_armed = reranker.is_some();
         tools.push(Arc::new(
             crate::tools::graph::GraphTool::new(db_path, cwd.to_path_buf())
+                // `graph.auto = "off"` means the explicit `index` action is the only
+                // build path: the tool owns the query-time build too, so the policy
+                // must travel with it (review #32).
+                .with_auto(settings.graph_auto)
                 .with_reranker(reranker)
                 .with_rerank_gate(settings.jev_graph_rerank_raw.clone(), rerank_armed),
         ));

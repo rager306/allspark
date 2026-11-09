@@ -173,6 +173,52 @@ fn text_of(result: &AgentToolResult) -> &str {
     }
 }
 
+/// `graph.auto = "off"` promises that the explicit `index` action is the ONLY build
+/// path. A query used to ignore the setting: a cold `search` indexed the whole tree
+/// (and a warm one refreshed stale files), paying exactly the CPU and disk the user
+/// switched off (review #32).
+#[tokio::test]
+async fn auto_off_keeps_a_query_from_indexing() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("lib.rs"), "pub fn parse_config() {}\n").unwrap();
+    let tool = GraphTool::new(dir.path().join("graph.db"), dir.path().to_path_buf())
+        .with_auto(crate::settings::types::GraphAuto::Off);
+    let result = tool
+        .dispatch(&serde_json::json!({ "action": "search", "query": "parse config" }))
+        .unwrap();
+    assert!(
+        text_of(&result).contains("graph.auto is off"),
+        "the answer must say why nothing was built: {}",
+        text_of(&result)
+    );
+    // The store file may exist (reading the project key opens it); what must not
+    // happen is the walk that fills it.
+    let indexed = GraphStore::open(&dir.path().join("graph.db"))
+        .ok()
+        .and_then(|store| store.file_count("graph").ok())
+        .unwrap_or(0);
+    assert_eq!(
+        indexed, 0,
+        "a query under `auto = off` must not index a single file"
+    );
+
+    // The explicit action still builds, and afterwards a query reads it.
+    tool.dispatch(&serde_json::json!({ "action": "index" }))
+        .unwrap();
+    assert!(
+        dir.path().join("graph.db").exists(),
+        "the explicit `index` action remains the build path"
+    );
+    let warm = tool
+        .dispatch(&serde_json::json!({ "action": "search", "query": "parse config" }))
+        .unwrap();
+    assert!(
+        !warm.is_error,
+        "a warm query answers under `off`: {}",
+        text_of(&warm)
+    );
+}
+
 #[tokio::test]
 async fn index_then_search_finds_the_symbol() {
     let dir = tempfile::tempdir().unwrap();

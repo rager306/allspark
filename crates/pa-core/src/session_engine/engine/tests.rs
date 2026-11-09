@@ -1343,6 +1343,43 @@ async fn native_tools_are_on_by_default() {
     assert_eq!(native, ["lsp", "graph", "edit"]);
 }
 
+/// `graph.auto = "off"` must reach the TOOL, not only the session's background
+/// builds: the query-time cold build and stale refresh live in `GraphTool`, so a
+/// setting read only by `create_session` left a query indexing the whole tree the
+/// user had switched off (review #32).
+#[tokio::test]
+async fn graph_auto_off_reaches_the_tool_query_path() {
+    let (engine, tmp) = engine_over_with_settings(
+        Some(serde_json::json!({ "graph": { "enabled": true, "auto": "off" } })),
+        None,
+    )
+    .await;
+    let tools = engine.session.agent().state().await.tools.clone();
+    let graph = tools
+        .iter()
+        .find(|tool| tool.name() == "graph")
+        .cloned()
+        .expect("the graph tool is enabled by default");
+    let result = graph
+        .execute(
+            "call-1".to_string(),
+            serde_json::json!({ "action": "search", "query": "anything" }),
+            pa_agent::abort::AbortSignal::never(),
+            std::sync::Arc::new(|_update| {}),
+        )
+        .await
+        .expect("a search under `auto = off` answers");
+    assert!(
+        tool_text(&result).contains("graph.auto is off"),
+        "the query must not index under `auto = off`: {}",
+        tool_text(&result)
+    );
+    assert!(
+        !tmp.path().join("project").join("graph.db").exists(),
+        "no graph store is created by a query"
+    );
+}
+
 /// Review #8: the `minimal` profile must keep a command executor. The preset
 /// named `bash`, a tool the engine never registers (`bash()` is a function
 /// inside `python_repl`), so a session under it could edit files but not run a

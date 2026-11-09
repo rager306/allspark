@@ -1,0 +1,1 @@
+- Fixed `graph.auto = "off"` still indexing on a query: the tool now honours the setting, so the explicit `index` action is the only build path, and a query says so instead of paying for the walk.
