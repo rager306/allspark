@@ -13,6 +13,10 @@ use tokio::sync::{Mutex, Notify};
 use super::store::{AgentCronDispatch, AgentCronJobStore, DispatchResultOptions};
 
 const MAX_TIMEOUT_MS: u64 = 2_147_483_647;
+/// How long the wake timer waits before retrying a startup recovery that could not
+/// write its state (a sibling process held the lock). One attempt per wait, and the
+/// wait never depends on the job catalog: the repaired one-shot has no `next_run_at`.
+const RECOVERY_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
 
 const FAILURE_BACKOFF_BASE_MS: u64 = 120_000;
 
@@ -64,6 +68,12 @@ pub struct SchedulerCore<H: AgentCronSchedulerHooks> {
     dispatch_lanes: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// Consecutive failed fires per job id (in-memory; a daemon restart starts fresh).
     failure_streaks: std::sync::Mutex<HashMap<String, u32>>,
+    /// The startup recovery did not land (a state lock held elsewhere, a failed write).
+    /// A claimed one-shot has no `next_run_at` once it is dispatched, so nothing in the
+    /// job catalog keeps the wake timer armed for it: without this flag the scheduler
+    /// parks forever and the interrupted job stays stuck after the lock clears
+    /// (review #28).
+    recovery_pending: AtomicBool,
     wake: Notify,
 }
 
@@ -78,6 +88,7 @@ impl<H: AgentCronSchedulerHooks + 'static> AgentCronScheduler<H> {
                 has_started: AtomicBool::new(false),
                 dispatch_lanes: Mutex::new(HashMap::new()),
                 failure_streaks: std::sync::Mutex::new(HashMap::new()),
+                recovery_pending: AtomicBool::new(false),
                 wake: Notify::new(),
             }),
             timer: Mutex::new(None),
@@ -85,13 +96,15 @@ impl<H: AgentCronSchedulerHooks + 'static> AgentCronScheduler<H> {
     }
 
     /// Start the scheduler; recovers interrupted dispatches on first start.
+    ///
+    /// A recovery that cannot write (the state lock belongs to another process) is
+    /// retried by the wake timer with a bounded backoff rather than dropped: the
+    /// catalogs' `next_run_at` cannot express a claimed one-shot, so the timer is the
+    /// only thing that can come back to it (review #28).
     pub async fn start(&self) {
         self.core.stopped.store(false, Ordering::SeqCst);
         if !self.core.has_started.swap(true, Ordering::SeqCst) {
-            let now = self.core.hooks.now();
-            if let Err(error) = self.core.store.recover_interrupted_dispatches(now) {
-                tracing::warn!(%error, "cron recovery failed at start");
-            }
+            self.core.recover_interrupted();
         }
         self.schedule_next().await;
     }
@@ -293,6 +306,28 @@ impl<H: AgentCronSchedulerHooks + 'static> SchedulerCore<H> {
     }
 }
 
+impl<H: AgentCronSchedulerHooks + 'static> SchedulerCore<H> {
+    /// Run the startup recovery and record whether it landed.
+    fn recover_interrupted(&self) {
+        match self.store.recover_interrupted_dispatches(self.hooks.now()) {
+            Ok(recovered) => {
+                self.recovery_pending.store(false, Ordering::SeqCst);
+                if !recovered.is_empty() {
+                    tracing::info!(
+                        count = recovered.len(),
+                        "cron recovery settled interrupted dispatches"
+                    );
+                }
+            }
+            Err(error) => {
+                // Keep the flag: the wake timer arms a bounded retry for it.
+                self.recovery_pending.store(true, Ordering::SeqCst);
+                tracing::warn!(%error, "cron recovery failed at start");
+            }
+        }
+    }
+}
+
 impl<H: AgentCronSchedulerHooks + 'static> AgentCronScheduler<H> {
     /// (Re)start the wake timer to the next active run.
     ///
@@ -317,6 +352,23 @@ impl<H: AgentCronSchedulerHooks + 'static> AgentCronScheduler<H> {
                 let notified = core.wake.notified();
                 tokio::pin!(notified);
                 notified.as_mut().enable();
+                // A failed startup recovery is retried here, INDEPENDENTLY of the job
+                // catalog: the interrupted job it repairs has no `next_run_at` left to arm
+                // a wake from, so parking on the catalog alone would leave it stuck for
+                // the life of the process (review #28).
+                if core.recovery_pending.load(Ordering::SeqCst) {
+                    core.recover_interrupted();
+                    if core.recovery_pending.load(Ordering::SeqCst) {
+                        if core.stopped.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        tokio::select! {
+                            () = tokio::time::sleep(RECOVERY_RETRY) => {}
+                            () = &mut notified => {}
+                        }
+                        continue;
+                    }
+                }
                 let Some(next) = core.store.next_active_run_at() else {
                     // Nothing to fire: park until a mutation re-arms.
                     if core.stopped.load(Ordering::SeqCst) {
@@ -339,6 +391,7 @@ impl<H: AgentCronSchedulerHooks + 'static> AgentCronScheduler<H> {
                 core.run_due_at(core.hooks.now()).await.ok();
             }
         });
+
         timer.replace(handle);
     }
 }
@@ -377,6 +430,79 @@ mod tests {
             now: Some(now),
             ..Default::default()
         }
+    }
+
+    /// Review #28: a startup recovery that cannot write (a sibling process holds the
+    /// state lock) must be retried, not dropped.
+    ///
+    /// The job it repairs is invisible to the wake timer: a DISPATCHED one-shot has no
+    /// `next_run_at` left, so `next_active_run_at()` is `None` and the old task parked on
+    /// the notify forever. The interrupted job stayed claimed after the lock cleared,
+    /// with no error a human could see.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_startup_recovery_is_retried_without_a_next_run() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("jobs.json");
+        let store = Arc::new(AgentCronJobStore::new(path.clone()));
+        let now = 1_700_000_000_000;
+        // A one-shot claimed by the previous process: dispatched, so the catalog no
+        // longer schedules it.
+        let job = store.create(&input("tick", "in 5m", now)).expect("create");
+        let dispatches = store
+            .claim_due(now + 300_000, now + 300_000)
+            .expect("claim");
+        assert_eq!(dispatches.len(), 1, "the job must be claimed");
+        assert_eq!(
+            store.next_active_run_at(),
+            None,
+            "a claimed one-shot leaves nothing for the wake timer to arm on"
+        );
+
+        // Hold the lock across the start: recovery cannot land.
+        let held =
+            crate::platform::lock_dir::LockDir::acquire(&path, std::time::Duration::from_secs(30))
+                .expect("hold the state lock");
+        let runs = Arc::new(AtomicUsize::new(0));
+        let hooks = Arc::new(CountingHooks {
+            runs: runs.clone(),
+            outcomes: Mutex::new(vec!["ran"]),
+        });
+        let scheduler = AgentCronScheduler::new(store.clone(), hooks);
+        scheduler.start().await;
+        assert!(
+            scheduler.core.recovery_pending.load(Ordering::SeqCst),
+            "the failed recovery must stay pending"
+        );
+        assert_eq!(
+            store.get_claimed_job(&job.id).map(|job| job.id),
+            Some(job.id.clone()),
+            "nothing was recovered while the lock was held"
+        );
+
+        // The lock clears. A retry must come from the timer alone: nothing else wakes the
+        // scheduler, and no job carries a next run.
+        drop(held);
+        tokio::time::advance(RECOVERY_RETRY + std::time::Duration::from_millis(10)).await;
+        for _ in 0..50 {
+            if store.get_claimed_job(&job.id).is_none() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            store.get_claimed_job(&job.id).is_none(),
+            "the retry must settle the interrupted dispatch"
+        );
+        assert!(
+            !scheduler.core.recovery_pending.load(Ordering::SeqCst),
+            "a landed recovery clears the flag"
+        );
+        assert_eq!(
+            store.list()[0].status,
+            crate::cron::JobStatus::Completed,
+            "the interrupted one-shot is closed out, not left claimed"
+        );
+        scheduler.stop().await;
     }
 
     /// Dogfood P0 regression: a heartbeat created after the bind-time arm

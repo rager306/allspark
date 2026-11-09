@@ -1,0 +1,1 @@
+- Fixed cron startup recovery being dropped when its state lock was held: the scheduler now retries it on its own timer, so an interrupted one-shot is settled instead of staying claimed for the process's life.
