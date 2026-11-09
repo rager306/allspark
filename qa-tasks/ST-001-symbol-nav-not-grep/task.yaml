@@ -13,22 +13,19 @@ budget:
 setup: setup.sh
 prompt: |-
   In this Rust crate there are two methods with the same name `run`: one on `Worker`,
-  one on `Backup`. Only ONE of them is actually reachable from a call site.
+  one on `Backup`. Both are called, and both call sites read `x.run()`, so their text is
+  identical.
 
-  Answer precisely: which call site invokes `Worker::run`, and which invokes `Backup::run`?
+  Answer precisely, in exactly these two lines (one caller name per line):
+  Worker::run <- <function that calls it>
+  Backup::run <- <function that calls it>
+
   Then change `Worker::run` to return `self.id * 10` and leave `Backup::run` untouched.
 
   Finish by printing NAV-DONE.
 oracle:
-  type: state
-  spec:
-    # The real assertion: only the Worker body changed.
-    - path: src/lib.rs
-      contains: "self.id * 10"
-    - path: src/lib.rs
-      contains: "self.id * 3"
-    - path: src/lib.rs
-      not_contains: "self.id * 2"
+  type: script
+  spec: oracle.py
 must:
   # The semantic core: the agent must ask the language server which symbol it is
   # touching. A pure text edit cannot establish the caller set.
@@ -38,17 +35,4 @@ must_not:
   # The anti-pattern this task exists to catch: a blind textual rewrite.
   - tool: bash
     args_regex: "sed -i|perl -pi|> *src/lib.rs"
-output:
-  # The semantic core, which nothing checked before (review #15). The state rules below only
-  # prove an edit landed; a wrong ANSWER passed the task. This asserts the reported call sites:
-  # the prompt asks which call site invokes each method, and a text search cannot establish it
-  # because both call sites read `backup.run()` / `worker.run()` identically.
-  - id: worker-caller
-    regex: "spawn_worker"
-    min: 1
-  - id: backup-caller
-    regex: "unrelated"
-    min: 1
-  - id: done
-    contains: NAV-DONE
 reference: reference/solution.md

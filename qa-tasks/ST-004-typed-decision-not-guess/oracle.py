@@ -1,15 +1,23 @@
-"""decision.txt holds the EVIDENCE-BACKED verdict, and that verdict is DELETE.
+#!/usr/bin/env python3
+"""decision.txt agrees with the typed verdict the jev call actually returned.
 
-The README points entirely one way: the replacement has been live for eight months, it covers
-every endpoint, and the only two remaining callers are already migrated. With no tension in the
-fixture there is one defensible answer, so accepting either verdict made the oracle a coin flip
-(review #18) and the semantic decision was never checked at all.
+The old oracle pinned `DELETE`, and the fixture argues for deletion on every line - so
+an agent that never called jev, or that got `KEEP` and ignored it, passed exactly as a
+correct one did (review #39). The task's own instruction is "act on the answer", so the
+thing to grade is the AGREEMENT between the tool's verdict and the file.
 
-If the fixture ever gains genuine two-sided tension (an unmigrated caller, an endpoint svc2
-does not serve), this oracle must be widened with it — the answer is pinned to the EVIDENCE, not
-to `DELETE` as a word.
+A `jev check` answer is a calibrated probability of "yes"; the yes/no split is the
+probability's own midpoint. An agent with no successful jev call fails: the task asked
+for the typed path, and a decision reached any other way is the behaviour it catches.
 """
-import os, sys
+import json
+import os
+import re
+import sys
+
+sys.path.insert(0, os.environ.get("QA_SCRIPTS_DIR",
+                                  os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "qa")))
+import qa_oracle
 
 work = os.environ.get("QA_WORK", "")
 path = os.path.join(work, "decision.txt")
@@ -20,9 +28,35 @@ text = open(path, encoding="utf-8").read().strip().upper()
 if text not in ("DELETE", "KEEP"):
     print(f"decision.txt holds {text!r}, expected DELETE or KEEP")
     sys.exit(1)
-if text != "DELETE":
+
+rows = qa_oracle.load_rows(os.environ.get("QA_TRANSCRIPT", ""))
+calls = qa_oracle.successful_calls(rows, "jev")
+if not calls:
+    print("no successful jev call: the decision was not reached through the typed tool")
+    sys.exit(1)
+
+
+def probability(call: dict) -> float | None:
+    """The noul answer of one jev result: the structured detail, else the text."""
+    result = qa_oracle.result_of(rows, call)
+    answers = (result.get("details") or {}).get("answers") or {}
+    for answer in answers.values():
+        if isinstance(answer, dict) and isinstance(answer.get("noul"), (int, float)):
+            return float(answer["noul"])
+    # The rendered line is `<id>: <p>` (`tool.rs::render_result`); the id is the
+    # caller's, so match the shape rather than a known name.
+    match = re.search(r"^[^:\n]+:\s*(0\.\d+|1(?:\.0+)?)\s*$", result.get("text", ""), re.MULTILINE)
+    return float(match.group(1)) if match else None
+
+
+probabilities = [p for p in (probability(call) for call in calls) if p is not None]
+if not probabilities:
+    print("the jev result carried no readable probability: the typed verdict cannot be compared")
+    sys.exit(1)
+verdict = probabilities[-1]
+expected = "DELETE" if verdict >= 0.5 else "KEEP"
+if text != expected:
     print(
-        "decision.txt holds KEEP, but the README's evidence supports DELETE: the replacement "
-        "has served every endpoint for eight months and both remaining callers are migrated"
-    )
+        f"decision.txt holds {text}, but jev answered p(yes)={verdict:.2f} ({expected}): "
+        "the task asked the agent to ACT on the verdict, not to decide past it")
     sys.exit(1)

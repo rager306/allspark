@@ -559,6 +559,7 @@ def binary_version(binary: Path) -> str:
 
 def parse_transcript(path: Path) -> dict:
     calls = []
+    results = {}
     turns = 0
     turns_with_tools = 0
     tokens = 0
@@ -583,6 +584,7 @@ def parse_transcript(path: Path) -> dict:
             for block in message.get("content", []) or []:
                 if isinstance(block, dict) and block.get("type") == "toolCall":
                     calls.append({
+                        "id": block.get("id", ""),
                         "name": block.get("name", ""),
                         "args": json.dumps(block.get("arguments", {}), sort_keys=True),
                     })
@@ -591,11 +593,14 @@ def parse_transcript(path: Path) -> dict:
                 turns_with_tools += 1
             usage = message.get("usage") or row.get("usage") or {}
             tokens += int(usage.get("totalTokens") or usage.get("total_tokens") or 0)
-        elif role == "toolResult" and message.get("isError"):
-            tool_errors += 1
+        elif role == "toolResult":
+            if message.get("isError"):
+                tool_errors += 1
+            results[message.get("toolCallId") or ""] = bool(message.get("isError"))
     return {
         "raw": raw,
         "calls": calls,
+        "results": results,
         "turns": turns,
         "turns_with_tools": turns_with_tools,
         "tool_calls": len(calls),
@@ -616,12 +621,27 @@ def check_invariants(task: Task, trace: dict, stdout: str, stderr: str, duration
             return False
         return re.search(args_regex, call["args"]) is not None
 
+    # A call whose result is an error (or never arrived) is not a behaviour the
+    # agent performed: a `must` rule that counted it turned "attempted the tool"
+    # into "used the tool", which is exactly how a failing `graph` call passed the
+    # architecture task (review #37).
+    results = trace.get("results", {})
+
+    def succeeded(call):
+        call_id = call.get("id") or ""
+        return bool(call_id) and call_id in results and not results[call_id]
+
     for rule in task.must:
         rule = rule or {}
         if "tool" in rule or "args_regex" in rule:
             regex = rule.get("args_regex", "")
-            if not any(arg_match(c, rule.get("tool", ""), regex) for c in calls):
+            matched = [c for c in calls if arg_match(c, rule.get("tool", ""), regex)]
+            if not matched:
                 problems.append(f"must: no call matching tool={rule.get('tool')!r} args~/{regex}/")
+            elif not any(succeeded(c) for c in matched):
+                problems.append(
+                    f"must: every call matching tool={rule.get('tool')!r} args~/{regex}/ "
+                    "failed or returned no result")
         elif "row_type" in rule:
             need = int(rule.get("min", 1))
             got = trace["row_types"].get(rule["row_type"], 0)
@@ -794,7 +814,9 @@ def run_script_oracle(task: Task, ctx: dict) -> list[str]:
         "QA_EXIT_CODE": str(ctx["exit_code"]),
         "QA_DURATION_S": f"{ctx['duration']:.2f}",
         "QA_TASK_DIR": str(task.dir),
-        "QA_SANDBOX": os.environ.get("QA_SANDBOX", ""),
+        # The shared oracle readers (`qa_oracle.py`): a task oracle imports them for
+        # transcript and Rust-body access instead of re-implementing either.
+        "QA_SCRIPTS_DIR": str(Path(__file__).resolve().parent),
     })
     for name, mock in ctx["mocks"].items():
         env[f"QA_MOCK_{name.upper()}_URL"] = mock.base_url

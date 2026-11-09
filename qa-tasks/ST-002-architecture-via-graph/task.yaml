@@ -14,8 +14,9 @@ setup: setup.sh
 prompt: |-
   Trace the full call chain from `main` to the value `41` is returned.
 
-  Report it as an ordered list `A -> B -> C -> ...`, naming each function.
-  Then print CHAIN-DONE.
+  Report it as an ordered list `A -> B -> C -> ...`, naming each function, in the
+  order the code EVALUATES them (not the order the source lines appear in).
+  Then print CHAIN-DONE on the last line of your final answer.
 oracle:
   type: script
   spec: oracle.py

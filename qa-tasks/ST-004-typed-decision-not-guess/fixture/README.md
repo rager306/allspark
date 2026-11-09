@@ -2,4 +2,5 @@
 
 This service is on the deprecation list. Its replacement (`svc2`) has been in
 production for eight months and covers every endpoint this one serves.
-Two callers remain; both are internal and already migrated in a feature branch.
+No callers remain: the last two internal callers were migrated to `svc2` in
+release 24.9, and that release is deployed in every environment.

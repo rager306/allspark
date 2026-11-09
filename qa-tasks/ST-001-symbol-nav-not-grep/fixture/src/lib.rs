@@ -3,7 +3,7 @@ pub struct Worker {
 }
 
 impl Worker {
-    /// The method the task cares about: it is called from `spawn_worker`.
+    /// One of the two `run` methods in this crate.
     pub fn run(&self) -> u32 {
         self.id * 2
     }
@@ -14,11 +14,9 @@ pub struct Backup {
 }
 
 impl Backup {
-    /// Same name as `Worker::run`, and it IS called — from `unrelated`. The body is
-    /// textually identical to `Worker::run`'s, so `grep "run()"` finds both call sites and
-    /// cannot say which receiver each belongs to. (This comment used to claim it was never
-    /// called; that was wrong, and being wrong about it is what made the task's answer
-    /// unverifiable — review #15.)
+    /// The other one. Its body is textually identical to `Worker::run`'s, so
+    /// `grep "run()"` finds both call sites and cannot say which receiver each
+    /// belongs to.
     pub fn run(&self) -> u32 {
         self.id * 3
     }

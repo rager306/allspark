@@ -1,48 +1,70 @@
-"""The graph was USED for this question, and the state proves it — no prose matching.
+#!/usr/bin/env python3
+"""A SUCCESSFUL graph call and the call chain in the FINAL ANSWER (review #37).
 
-Two problems with the previous version, both real (review #16):
+Three defects made the old oracle pass an agent that never traced anything:
 
-1. It matched chain hops as raw substrings over the whole transcript (`flat.find`), so ordinary
-   prose that happened to contain `main`, `handle`, `validate`, `load` IN THAT ORDER passed with
-   no graph call at all. AGENTS.md is explicit that text matching belongs in the advisory judge
-   and never in the blocking gate.
-2. The order it demanded was wrong. The fixture is `validate(repo.load())`, and Rust evaluates
-   the argument first: the real chain is `main -> handle -> load -> 41 -> validate -> 41`, i.e.
-   `load` BEFORE `validate`. An agent that read the code correctly and reported the true order
-   would have FAILED the oracle.
+1. it accepted a `graph` ATTEMPT - the invariant layer only reported the tool's name
+   and arguments, so a failing call satisfied `must`. The oracle now reads the
+   transcript and requires a graph call whose result arrived without an error.
+2. `graph.db` existing was the state proof, but a session creates the graph store on
+   startup, so the file says "the tool was constructed", not "the graph answered".
+3. the `CHAIN-DONE` marker was searched over the WHOLE transcript - and the task's own
+   prompt carries it, so it was always there. It is now required in the final answer.
 
-So the blocking layer checks what a state oracle can check — that the symbol graph was actually
-consulted, and that the fixture is the one this task describes — and hop ORDER is left to the
-advisory judge, which reads the answer in context instead of substring-matching it.
+The chain itself is checked against the fixture's evaluation order, deterministically:
+`handle` calls `validate(repo.load())`, and Rust evaluates the argument first, so
+`load` runs before `validate`. The advisory judge still grades the wording.
 """
-import json, os, sys
+import os
+import re
+import sys
 
-work = os.environ.get("QA_WORK", "")
-home = os.environ.get("QA_HOME", "") or os.path.expanduser("~")
+sys.path.insert(0, os.environ.get("QA_SCRIPTS_DIR",
+                                  os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "qa")))
+import qa_oracle
+
 transcript = os.environ.get("QA_TRANSCRIPT", "")
+rows = qa_oracle.load_rows(transcript)
 problems = []
 
-# 1. The state: a graph index exists for this work tree. `graph` builds one under the agent
-#    dir, so its absence means the tool never ran — which is the behaviour this task exists to
-#    catch, and it cannot be faked by prose.
-candidates = []
-for root in {home, os.path.expanduser("~"), work}:
-    if not root:
-        continue
-    candidates.append(os.path.join(root, ".prime", "agent", "graph.db"))
-    candidates.append(os.path.join(root, ".allspark-home", ".prime", "agent", "graph.db"))
-indexed = any(os.path.isfile(path) and os.path.getsize(path) > 0 for path in candidates)
-if not indexed:
-    problems.append(
-        "no graph index exists under the agent dir: the code graph was never built, so the "
-        "chain was not traced with `graph` (prose alone is not navigation)"
-    )
+if not rows:
+    print("no session transcript: the trial produced no evidence to grade")
+    sys.exit(1)
 
-# 2. The answer is present at all. Its CONTENT is graded by the advisory judge, not here.
-if transcript and os.path.isfile(transcript):
-    text = open(transcript, encoding="utf-8", errors="replace").read()
-    if "CHAIN-DONE" not in text:
-        problems.append("missing CHAIN-DONE marker")
+# 1. The graph ANSWERED: a call whose result exists and carried no error.
+graph_calls = qa_oracle.successful_calls(rows, "graph")
+if not graph_calls:
+    attempted = [c for c in qa_oracle.tool_calls(rows) if c["name"] == "graph"]
+    if attempted:
+        results = qa_oracle.tool_results(rows)
+        detail = [results.get(c["id"], {}).get("text", "<no result>")[:200]
+                  for c in attempted][:2]
+        problems.append(f"every graph call failed or never returned: {detail}")
+    else:
+        problems.append("no graph tool call at all: the chain was not traced with `graph`")
+
+# 2. The ANSWER carries the marker (the prompt carries it too, so the transcript
+#    cannot prove anything) and the chain, in evaluation order.
+answer = qa_oracle.final_answer(rows)
+if "CHAIN-DONE" not in answer:
+    problems.append("the final answer is missing CHAIN-DONE")
+
+# 3. The independent expected sequence: load is evaluated before validate, so its
+#    first mention must come first in the answer.
+order = ["main", "handle", "load", "validate"]
+positions = {}
+for name in order:
+    match = re.search(rf"\b{name}\b", answer)
+    if not match:
+        problems.append(f"the final answer does not name `{name}`")
+    else:
+        positions[name] = match.start()
+missing = [n for n in order if n not in positions]
+if not missing:
+    if positions["load"] > positions["validate"]:
+        problems.append(
+            "the final answer orders `validate` before `load`; Rust evaluates "
+            "validate(repo.load())'s argument first, so load runs first")
 
 for problem in problems:
     print(problem)
