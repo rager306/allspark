@@ -389,10 +389,14 @@ fn shutdown_without_force_requires_confirmation_and_harms_nothing() {
     // Non-interactive stdin: the router refuses before any discovery.
     let tty_error = run_cli(fixture.path(), &["shutdown"]);
     assert_eq!(tty_error.status.code(), Some(1));
+    // The hint names the LAUNCHER (`pa_types::brand::INVOCATION`), not the payload binary:
+    // spelling it out here let the test drift from the product's own command name.
+    let expected = format!(
+        "Shutdown requires confirmation in an interactive terminal. Use \"{0} shutdown --force\".",
+        pa_types::brand::INVOCATION
+    );
     assert!(
-        stderr(&tty_error).contains(
-            "Shutdown requires confirmation in an interactive terminal. Use \"prime-agent shutdown --force\"."
-        ),
+        stderr(&tty_error).contains(&expected),
         "router error mismatch: {}{}",
         stdout(&tty_error),
         stderr(&tty_error)
@@ -414,7 +418,13 @@ fn shutdown_without_force_requires_confirmation_and_harms_nothing() {
     );
     assert_eq!(
         failed[0].get("reason").and_then(Value::as_str),
-        Some("confirmation required; use \"prime-agent shutdown --force --json\"")
+        Some(
+            format!(
+                "confirmation required; use \"{0} shutdown --force --json\"",
+                pa_types::brand::INVOCATION
+            )
+            .as_str()
+        )
     );
     assert!(
         report
