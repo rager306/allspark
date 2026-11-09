@@ -16,7 +16,7 @@ impl SettingsManager {
         let mut errors = Vec::new();
         let (global, global_raw, global_load_error) =
             load_scope(storage.as_ref(), SettingsScope::Global, &mut errors);
-        let (project, _, project_load_error) =
+        let (project, project_raw, project_load_error) =
             load_scope(storage.as_ref(), SettingsScope::Project, &mut errors);
         let merged = deep_merge(&global, &project);
         Self {
@@ -24,6 +24,7 @@ impl SettingsManager {
             global,
             pending_global_fields: BTreeSet::new(),
             project,
+            project_raw,
             merged,
             runtime_overrides: Settings::default(),
             global_raw,
@@ -111,11 +112,12 @@ impl SettingsManager {
         let mut errors = std::mem::take(&mut self.errors);
         let (global, global_raw, global_load_error) =
             load_scope(self.storage.as_ref(), SettingsScope::Global, &mut errors);
-        let (project, _, project_load_error) =
+        let (project, project_raw, project_load_error) =
             load_scope(self.storage.as_ref(), SettingsScope::Project, &mut errors);
         self.global = global;
         self.pending_global_fields.clear();
         self.project = project;
+        self.project_raw = project_raw;
         self.global_raw = global_raw;
         self.global_load_error = global_load_error;
         self.project_load_error = project_load_error;

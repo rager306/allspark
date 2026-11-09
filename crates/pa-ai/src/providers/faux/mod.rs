@@ -971,6 +971,7 @@ pub fn register_faux_provider(options: RegisterFauxProviderOptions) -> FauxProvi
             featured: None,
             headers: None,
             compat: None,
+            serving: None,
         })
         .collect();
 

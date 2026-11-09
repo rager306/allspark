@@ -621,6 +621,7 @@ mod tests {
             max_tokens: 64_000,
             max_tokens_explicit: true,
             featured: Some(true),
+            serving: None,
             headers: Some(std::collections::BTreeMap::from([(
                 "x-probe".to_string(),
                 "1".to_string(),

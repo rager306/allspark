@@ -2174,6 +2174,7 @@ fn ai_model(base_url: &str) -> pa_types::ai::Model {
         max_tokens: 100,
         max_tokens_explicit: false,
         featured: None,
+        serving: None,
         headers: None,
         compat: None,
     }

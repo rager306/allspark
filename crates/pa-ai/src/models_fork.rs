@@ -195,6 +195,9 @@ static FORK_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
                 max_tokens: raw.max_tokens,
                 max_tokens_explicit: false,
                 featured: None,
+                // A fork provider model comes from the fork's own table: it is not a
+                // Prime Inference route, so it carries no serving class (upstream #4009).
+                serving: None,
                 headers,
             }
         })

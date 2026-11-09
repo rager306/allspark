@@ -26,6 +26,7 @@ fn model(provider: &str, id: &str, context_window: u64, input_cost: f64) -> Mode
         max_tokens: 4_096,
         max_tokens_explicit: false,
         featured: None,
+        serving: None,
         headers: None,
         compat: None,
     }

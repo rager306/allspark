@@ -214,12 +214,17 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
     // `--allspark-bootstrap` after extracting a release, so the venv is ready
     // before the first session. The upstream spelling is accepted too, so an
     // older installer's invocation still works.
+    //
+    // `require_agent_dir` is upstream's guard (#3907: block project-controlled code on
+    // session startup) and applies to BOTH spellings — a missing home dir fails the
+    // bootstrap before a kernel is built, not after.
     if args.len() == 1
         && matches!(
             args[0].as_str(),
             "--allspark-bootstrap" | "--prime-agent-bootstrap"
         )
     {
+        crate::config::require_agent_dir()?;
         return run_runtime_bootstrap();
     }
 
@@ -232,6 +237,7 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
     let args = public_command.args;
 
     if args.first().map(String::as_str) == Some("config") {
+        crate::config::require_agent_dir()?;
         return Ok(crate::config_command::run());
     }
 
@@ -295,6 +301,8 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
         println!("{}", command_registry::format_top_level_help());
         return Ok(0);
     }
+
+    crate::config::require_agent_dir()?;
 
     if parsed.export.is_some() {
         // The TS product only reaches the export subsystem through the `session

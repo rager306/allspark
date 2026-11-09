@@ -218,6 +218,7 @@ mod tests {
             max_tokens: 64_000,
             max_tokens_explicit: false,
             featured: None,
+            serving: None,
             headers: None,
             compat: None,
         }
@@ -345,6 +346,7 @@ mod tests {
             featured: None,
             headers: None,
             compat: None,
+            serving: None,
         };
         let context = Context {
             system_prompt_cache_prefix: None,

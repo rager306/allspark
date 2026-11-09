@@ -680,6 +680,7 @@ mod model_projection_tests {
             max_tokens: 64_000,
             max_tokens_explicit: true,
             featured: None,
+            serving: None,
             headers: None,
             compat: None,
         }

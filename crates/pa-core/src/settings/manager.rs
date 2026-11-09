@@ -31,6 +31,10 @@ pub struct SettingsManager {
     global: Settings,
     pending_global_fields: BTreeSet<&'static str>,
     project: Settings,
+    /// The raw PROJECT document, kept only so an explicit `package remove` can name an
+    /// entry the effective settings refuse to activate (upstream #3907). Never merged,
+    /// never read by resolution or update checks.
+    project_raw: Option<serde_json::Value>,
     merged: Settings,
     runtime_overrides: Settings,
     errors: Vec<SettingsError>,
@@ -131,7 +135,19 @@ pub(super) fn load_scope(
         }
         other => other,
     };
-    let (settings, ignored) = from_value_lenient_reporting(&migrated);
+    let (mut settings, ignored) = from_value_lenient_reporting(&migrated);
+    // A repository can supply this file before the user opens it. Keep its document on
+    // disk, but never let it select a process, command prefix, package installer, or MCP
+    // server through an effective settings read (upstream #3907). Applied AFTER the lenient
+    // load so the dropped-value report below describes what the file actually said.
+    if scope == SettingsScope::Project {
+        settings.shell_path = None;
+        settings.shell_command_prefix = None;
+        settings.npm_command = None;
+        settings.packages = None;
+        settings.mcp_servers = None;
+        settings.mcp_catalog_sources = None;
+    }
     // Unknown keys, not just wrong-typed values. `Settings` flattens only at the ROOT, so
     // a key nested one level down (or in a block that is itself known) was read as
     // nothing at all: no value, no warning, no error. `retry.provider.waitForUsage.enabled`

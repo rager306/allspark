@@ -64,14 +64,20 @@ async fn shell_test_session(
     .await
 }
 
+/// A REPOSITORY CANNOT CHOOSE THE SHELL (upstream #3907).
+///
+/// This test used to assert the opposite: project settings overrode the global one before
+/// the session captured it. That is the defect upstream closed — a cloned repository ships
+/// `.prime/agent/settings.json`, and `shellPath` wraps EVERY shell command, so the checkout
+/// chose the executable that runs the user's commands. The global value now wins and the
+/// project's (whitespace-trimmed) spelling is ignored.
 #[tokio::test]
-async fn session_settings_reach_the_kernel_shell() {
+async fn project_settings_cannot_replace_the_kernel_shell() {
     let dir = tempfile::tempdir().unwrap();
     let agent_dir = dir.path().join("agent");
     let cwd = dir.path().join("project");
     std::fs::create_dir_all(&agent_dir).unwrap();
     std::fs::create_dir_all(cwd.join(".prime/agent")).unwrap();
-    // Project settings override the global setting before the session captures it.
     let global = executable_shell(dir.path(), "global-bash");
     let project = executable_shell(dir.path(), "project-bash");
     std::fs::write(
@@ -86,7 +92,7 @@ async fn session_settings_reach_the_kernel_shell() {
     )
     .unwrap();
     let engine = shell_test_session(cwd, agent_dir).await.unwrap();
-    assert_eq!(engine.provisioner.inner.options.shell_path, Some(project));
+    assert_eq!(engine.provisioner.inner.options.shell_path, Some(global));
 }
 
 #[tokio::test]
@@ -194,9 +200,11 @@ async fn session_settings_reject_a_missing_shell_path() {
     let cwd = dir.path().join("project");
     std::fs::create_dir_all(&agent_dir).unwrap();
     std::fs::create_dir_all(cwd.join(".prime/agent")).unwrap();
+    // The GLOBAL scope: a project's shellPath is ignored outright now (#3907), so a missing
+    // shell can only be reported where the value is actually honoured.
     let missing = cwd.join("no-such-shell");
     std::fs::write(
-        cwd.join(".prime/agent/settings.json"),
+        agent_dir.join("settings.json"),
         serde_json::json!({ "shellPath": missing.to_string_lossy() }).to_string(),
     )
     .unwrap();

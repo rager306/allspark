@@ -220,6 +220,7 @@ fn headless_image_router_settle_preserves_a_mid_run_model_switch() {
             max_tokens: 8192,
             max_tokens_explicit: false,
             featured: None,
+            serving: None,
             headers: None,
             compat: None,
         }

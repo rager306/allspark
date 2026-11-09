@@ -34,14 +34,29 @@ impl SettingsManager {
         self.merged = deep_merge(&self.global, &self.project);
     }
 
+    /// Project package entries remain available for an explicit removal, but never
+    /// participate in session resource resolution or update checks (upstream #3907).
+    #[must_use]
+    pub(crate) fn project_packages_for_removal(&self) -> Vec<serde_json::Value> {
+        self.project_raw
+            .as_ref()
+            .and_then(|value| value.get("packages"))
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     pub fn set_project_packages(&mut self, packages: Vec<serde_json::Value>) {
-        self.project.packages = Some(packages.clone());
-        self.persist_scope_field(
-            SettingsScope::Project,
-            "packages",
-            &serde_json::Value::Array(packages),
-        );
-        self.merged = deep_merge(&self.global, &self.project);
+        // The document keeps the entries so a later `package remove` can name them; the
+        // EFFECTIVE settings never gain them.
+        let value = serde_json::Value::Array(packages);
+        self.persist_scope_field(SettingsScope::Project, "packages", &value);
+        if let serde_json::Value::Object(project_raw) = self
+            .project_raw
+            .get_or_insert_with(|| serde_json::json!({}))
+        {
+            project_raw.insert("packages".into(), value);
+        }
     }
 
     /// Replace one resource-path array (`skills`/`prompts`/`themes`) in the global settings file.
