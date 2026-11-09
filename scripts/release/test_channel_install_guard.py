@@ -87,6 +87,22 @@ class TheSessionGuardTests(unittest.TestCase):
         with self.outside_a_session():
             harness.guard_isolated_sockets(deep, platform="Linux")
 
+    def test_the_harnesses_use_a_short_fixture_root(self):
+        """A fixture that starts in the host's default temp dir is already too long
+        on a macOS runner (`/var/folders/.../T/prime-legacy-upgrade-XXXXXXXX` is 116
+        bytes to the socket), and above the limit the installer re-anchors its
+        sockets at `/tmp` — the machine's namespace, not the fixture's. So the
+        harnesses must create their root through `fixture_root`, which prefers the
+        SHORTEST temporary directory the host offers and proves the result fits.
+        """
+        for harness in ("test_channel_install.py", "test_legacy_upgrade.py"):
+            source = (HERE / harness).read_text()
+            self.assertNotIn(
+                'TemporaryDirectory(prefix="prime-', source,
+                f"{harness} must not create its fixture in the default temp dir")
+            self.assertIn("fixture_root(", source,
+                          f"{harness} must create its fixture through fixture_root")
+
     def test_a_normal_fixture_root_passes(self):
         with self.outside_a_session():
             harness.guard_isolated_sockets(self.root, platform="Darwin")

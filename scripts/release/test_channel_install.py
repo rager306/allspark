@@ -12,7 +12,15 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from test_legacy_upgrade import archive_identity, digest, execute, isolated_environment, publish_archive, release_server
+from test_legacy_upgrade import (
+    archive_identity,
+    digest,
+    execute,
+    fixture_root,
+    isolated_environment,
+    publish_archive,
+    release_server,
+)
 
 
 def main() -> int:
@@ -25,8 +33,10 @@ def main() -> int:
     report = {"version": version, "platform": platform, "archive_sha256": digest(args.archive),
               "installer_sha256": digest(args.installer), "steps": []}
     try:
-        with tempfile.TemporaryDirectory(prefix="prime-channel-install-") as temporary:
-            root = Path(temporary)
+        # A SHORT fixture root: the installer re-anchors its sockets at /tmp when
+        # TMPDIR is longer than the unix socket limit, and that is the machine's
+        # own namespace (see `fixture_root` and `guard_isolated_sockets`).
+        with fixture_root("prime-channel-install-") as root:
             feed = root / "feed"
             publish_archive(feed, args.archive)
             shutil.copyfile(args.installer, feed / "install.sh")

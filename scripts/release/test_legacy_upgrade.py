@@ -98,6 +98,34 @@ def socket_candidates(root: Path) -> list[Path]:
     ] + [root / "home/.allspark-home/run/daemon.sock"]
 
 
+@contextlib.contextmanager
+def fixture_root(prefix: str):
+    """A temporary fixture root SHORT enough that the installer never leaves it.
+
+    Above the unix socket limit the installer re-anchors its sockets at
+    `/tmp/<name>-<uid>` — the machine's shared namespace, where the operator's own
+    daemon may be listening. A macOS runner's default temporary root
+    (`/var/folders/…/T/prime-legacy-upgrade-XXXXXXXX`) is already long enough to
+    trigger that, so the fixture is created in the SHORTEST temporary directory the
+    host offers, and `guard_isolated_sockets` then proves it stayed inside.
+    """
+    for candidate in (None, "/tmp"):
+        root = Path(tempfile.mkdtemp(prefix=prefix, dir=candidate))
+        platform = os.uname().sysname
+        longest = max(len(str(path).encode()) for path in socket_candidates(root))
+        if platform == "Linux" or longest <= SOCKET_PATH_LIMIT:
+            try:
+                yield root
+            finally:
+                shutil.rmtree(root, ignore_errors=True)
+            return
+        shutil.rmtree(root, ignore_errors=True)
+    raise SystemExit(
+        f"no temporary directory is short enough for the fixture sockets "
+        f"({SOCKET_PATH_LIMIT} bytes): the installer would probe the machine's own "
+        "socket namespace. Set TMPDIR to a short path (e.g. /tmp).")
+
+
 def guard_session() -> None:
     """Refuse to run the REAL installer from inside a live agent session.
 
@@ -303,8 +331,7 @@ def main() -> int:
         archives.append(args.next_archive.resolve())
     report = {"archives": [{"path": str(path), "sha256": digest(path)} for path in archives], "runs": []}
     failed = False
-    with tempfile.TemporaryDirectory(prefix="prime-legacy-upgrade-") as temporary:
-        directory = Path(temporary)
+    with fixture_root("prime-legacy-upgrade-") as directory:
         installers = []
         for index, ref in enumerate(args.installer_ref):
             content = subprocess.check_output(["git", "show", f"{ref}:install.sh"], cwd=REPO)
