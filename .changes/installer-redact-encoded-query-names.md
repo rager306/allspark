@@ -1,0 +1,1 @@
+- Fixed the update error path leaking a credential whose query-parameter name was percent-encoded (`?%74oken=SECRET`): the name is decoded before it is classified as secret.

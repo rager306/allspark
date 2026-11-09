@@ -180,6 +180,35 @@ const SECRET_QUERY_PARAMS: [&str; 11] = [
     "code",
 ];
 
+/// Percent-decode one query-parameter NAME, for credential classification only.
+///
+/// An invalid escape (`bad%2`) is kept verbatim: the URL is the user's text, and this
+/// function exists to answer "what does the name say", not to reassure. A byte run that is not
+/// valid UTF-8 decodes lossily, and the result is lowercased for the case-insensitive list.
+fn decoded_query_name(name: &str) -> String {
+    let hex = |byte: u8| match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    };
+    let bytes = name.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let (Some(high), Some(low)) = (hex(bytes[index + 1]), hex(bytes[index + 2])) {
+                out.push(high * 16 + low);
+                index += 3;
+                continue;
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).to_ascii_lowercase()
+}
+
 /// Render an error chain with every URL in it redacted.
 ///
 /// `{error:#}` walks `source()` and prints each cause, and a reqwest cause carries the RAW
@@ -266,7 +295,13 @@ fn redact_secret_query_params(url: &mut String) {
                 Some((name, value)) => (name, Some(value)),
                 None => (pair, None),
             };
-            let lowered = name.to_ascii_lowercase();
+            // The name is DECODED before classification: `?%74oken=SECRET` names
+            // `token` to every server that reads the query, while the raw spelling
+            // matched nothing in this list and its value rode every message this
+            // module redacts — the refusal, the download error, the status row
+            // (review #33, CWE-532). The name is emitted RAW, so the redacted URL
+            // still shows what was asked.
+            let lowered = decoded_query_name(name);
             match (value, lowered.is_empty()) {
                 // A bare token with no `=` at all.
                 (None, _) if !pair.is_empty() => {
@@ -2067,6 +2102,34 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
                 "https://h/a.tar.gz?code=c0de",
                 "https://h/a.tar.gz?code=<redacted>",
             ),
+        ] {
+            assert_eq!(redact_url_credentials(input), expected, "input: {input}");
+        }
+    }
+
+    /// An ENCODED credential name is still a credential name (review #33, CWE-532).
+    ///
+    /// `?%74oken=` names `token` to whatever reads the query, so the server hands over the
+    /// secret while the raw spelling matched nothing in [`SECRET_QUERY_PARAMS`] and its
+    /// value rode the refusal, the download error and the status row verbatim.
+    #[test]
+    fn an_encoded_credential_parameter_name_is_redacted() {
+        for (input, expected) in [
+            (
+                "https://mirror.example/install.sh?%74oken=SECRET",
+                "https://mirror.example/install.sh?%74oken=<redacted>",
+            ),
+            (
+                "https://h/a.tar.gz?%6Bey=k&channel=beta",
+                "https://h/a.tar.gz?%6Bey=<redacted>&channel=beta",
+            ),
+            // Mixed case escapes decode too, and the plain names are unaffected.
+            (
+                "https://h/a?%41uth=a1&page=2",
+                "https://h/a?%41uth=<redacted>&page=2",
+            ),
+            // A name whose `%` is not an escape keeps its old (safe) treatment.
+            ("https://h/a?100%25=done", "https://h/a?100%25=done"),
         ] {
             assert_eq!(redact_url_credentials(input), expected, "input: {input}");
         }
