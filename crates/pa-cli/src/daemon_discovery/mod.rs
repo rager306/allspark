@@ -480,15 +480,16 @@ pub(crate) fn verify_hello_supervisor_pid(
     // The socket must belong to the process the greeting names. A start id does not prove
     // that by itself: an attacker can read any live process's start id and repeat it in a
     // forged greeting, and killing that process is exactly the damage here.
-    match listener_pid {
-        Some(listener_pid) if listener_pid != pid => return None,
-        Some(_) => {}
+    if let Some(listener_pid) = listener_pid {
+        if listener_pid != pid {
+            return None;
+        }
+    } else if PEER_PID_REPORTED {
         // The probe could not learn the listener's pid. On a platform that reports it, the
         // greeting's number is then bound to nothing and is refused; where the platform has
         // no peer pid at all (macOS `getpeereid`), liveness plus the start id below is the
         // gate that platform has always had.
-        None if PEER_PID_REPORTED => return None,
-        None => {}
+        return None;
     }
     if let Some(expected) = expected_process_start_id {
         if pa_types::platform::process::process_start_id(pid).as_deref() != Some(expected) {
