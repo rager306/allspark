@@ -377,6 +377,22 @@ pub fn unix_listener_definitely_closed(path: &Path) -> bool {
     }
 }
 
+/// WINDOWS NAMED PIPES DO NOT AUTHENTICATE THEIR PEER (review #23, CWE-290).
+///
+/// The unix arms above and below bind the connection to the kernel's answer for the peer
+/// (`SO_PEERCRED` / `getpeereid`) on BOTH sides: a client verifies the server it connected to,
+/// and a listener verifies the client it accepted. Neither is possible here with the same
+/// guarantee. `GetNamedPipeServerProcessId` answers a pid, but a pid is reused and says nothing
+/// about which install the process belongs to; the real equivalent is pid + process start id +
+/// executable identity, the ladder the installer's stop probe uses (`install-rust.sh`), and it
+/// does not exist in this crate yet. An impersonation check works the opposite way — the SERVER
+/// can verify a client, the CLIENT cannot verify the server — so it cannot close the
+/// forged-daemon case, which is the one that has already killed a live session on unix.
+///
+/// Stated here so "the transport authenticates its peer" is not read as a claim about every
+/// platform. Closing it is a separate change that needs a Windows runner to prove, not a
+/// same-shape port of the unix check: `.research/review-runs/20261109-041525-a01cd1a0e/
+/// DECISIONS-23-26.md` carries the three mechanisms and what each does not give.
 #[cfg(windows)]
 impl TransportListener for super::windows_pipe::NamedPipeListener {
     fn accept(&self) -> AcceptFuture<'_> {
