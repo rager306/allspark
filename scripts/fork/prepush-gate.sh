@@ -124,14 +124,20 @@ step "fork surface (native tools, fork-owned files)"
 # Cheap, and it is the only detector for the class the v0.10.3-beta.1 merge produced:
 # upstream deleted modules the fork consumed, and nothing went red until a human read
 # `cargo check`. Runs before fmt so a dropped native tool fails in seconds.
-if bash "$ROOT/scripts/fork/check-fork-surface.sh" >"$OUT/fork-surface.log" 2>&1; then
+# The guard runs twice: once against the tree, and once against a fixture it mutates
+# (`--self-test`). The second run is the point — a guard that cannot fail gates nothing, and
+# this one was green on a fixture that was already red (review #40).
+if bash "$ROOT/scripts/fork/check-fork-surface.sh" >"$OUT/fork-surface.log" 2>&1 \
+   && bash "$ROOT/scripts/fork/check-fork-surface.sh" --self-test \
+        >"$OUT/fork-surface-self-test.log" 2>&1; then
   grep '^  ok' "$OUT/fork-surface.log" | sed 's/^  ok    /fork: /'
+  echo "fork: self-test ok (every injected break turned its own check red)"
 else
   # Exit immediately: a broken surface contract makes every later stage
   # meaningless (clippy on a tree that lost a native tool is wasted minutes), and
   # the point of this step is to fail in seconds.
-  echo "fork surface: FAILED"; cat "$OUT/fork-surface.log"
-  echo; echo "GATE RED (fork surface). Log: $OUT/fork-surface.log"
+  echo "fork surface: FAILED"; cat "$OUT/fork-surface.log" "$OUT/fork-surface-self-test.log"
+  echo; echo "GATE RED (fork surface). Logs: $OUT/fork-surface*.log"
   exit 1
 fi
 
