@@ -1,0 +1,1 @@
+- Fixed the `minimal` tool profile dropping the only command executor: it named a `bash` tool that does not exist (`bash()` lives inside `python_repl`), so a `minimal` session could edit files but not run a command.

@@ -83,6 +83,21 @@ fn roster() -> Vec<Arc<dyn AgentTool>> {
     ]
 }
 
+/// The roster the session engine actually registers: the kernel executor plus
+/// the fork native tools. There is NO `bash` tool — `bash()` is a function
+/// inside `python_repl` (`await bash(...)`), so a surface naming `bash` names
+/// nothing the engine can hand the model (review #8).
+fn runtime_roster() -> Vec<Arc<dyn AgentTool>> {
+    vec![
+        MockTool::make(pa_types::ai::PYTHON_TOOL_NAME, &[ToolMarker::CanEdit]),
+        MockTool::make("edit", &[ToolMarker::CanEdit]),
+        MockTool::make("lsp", &[ToolMarker::SymbolicRead]),
+        MockTool::make("graph", &[ToolMarker::Optional]),
+        MockTool::make("jev", &[ToolMarker::Optional]),
+        MockTool::make("schedule", &[ToolMarker::Optional]),
+    ]
+}
+
 fn names(tools: &[Arc<dyn AgentTool>]) -> Vec<String> {
     tools.iter().map(|t| t.name().to_string()).collect()
 }
@@ -164,16 +179,26 @@ fn context_presets_resolve() {
     assert!(Context::preset("nope").is_none());
 }
 
-/// Audit F08: `minimal` says "bash + edit only", and the PIPELINE is what the
+/// Audit F08: `minimal` states a fixed surface, and the PIPELINE is what the
 /// session engine applies — `Context::apply` alone would have said the right
 /// thing while the runtime received the full roster.
+///
+/// Review #8: the surface must name what the engine can actually register. It
+/// used to say `bash`, a tool that does not exist (the executor is
+/// `python_repl`, and `await bash(...)` lives inside it), so the preset kept
+/// `edit` and filtered out the ONLY way to run a command. This runs the real
+/// runtime roster, not a mock that happens to contain a `bash` tool.
 #[test]
-fn the_minimal_context_reaches_the_pipeline_as_exactly_bash_and_edit() {
+fn the_minimal_context_keeps_the_repl_executor_and_edit() {
     let layers = vec![ToolsetLayer::Context(
         Context::preset(CONTEXT_MINIMAL).unwrap(),
     )];
-    let surfaced = names(&apply_layers(&roster(), &layers));
-    assert_eq!(surfaced, vec!["bash".to_string(), "edit".to_string()]);
+    let surfaced = names(&apply_layers(&runtime_roster(), &layers));
+    assert_eq!(
+        surfaced,
+        vec![pa_types::ai::PYTHON_TOOL_NAME.to_string(), "edit".to_string()],
+        "minimal must keep the command executor and edit, and nothing else"
+    );
 }
 
 /// A fixed surface bounds a later layer: an explicit force-include still
@@ -181,7 +206,11 @@ fn the_minimal_context_reaches_the_pipeline_as_exactly_bash_and_edit() {
 #[test]
 fn a_fixed_surface_bounds_a_later_layers_inclusion() {
     let layers = vec![
-        ToolsetLayer::Context(Context::preset(CONTEXT_MINIMAL).unwrap()),
+        ToolsetLayer::Context(Context {
+            name: "two".into(),
+            fixed_tools: vec!["bash".into(), "edit".into()],
+            ..Context::default()
+        }),
         ToolsetLayer::Project(ToolsetDelta {
             excluded_tools: Vec::new(),
             included_tools: vec!["graph".into(), "find_symbol".into()],

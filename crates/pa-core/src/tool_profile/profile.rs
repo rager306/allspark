@@ -27,7 +27,7 @@ pub const SINGLE_PROJECT_EXCLUDED_TOOLS: &[&str] = &["activate_project", "get_cu
 pub const CONTEXT_CODING: &str = "coding";
 /// Read-only query context (no editing tools).
 pub const CONTEXT_QUERY: &str = "query";
-/// Minimal surface (bash + edit only).
+/// Minimal surface (the REPL executor + edit only).
 pub const CONTEXT_MINIMAL: &str = "minimal";
 /// Debugging surface (keeps diagnostics/graph, drops edits).
 pub const CONTEXT_DEBUG: &str = "debug";
@@ -50,9 +50,9 @@ pub struct ToolsetDelta {
     /// "these two tools and nothing else" cannot express that as exclusions,
     /// because `apply_layers` unions every layer's exclusions and a later
     /// layer's inclusion beats an earlier exclusion. Carried here so the
-    /// presets that state a fixed surface (`minimal`: `bash + edit`) actually
-    /// reach the roster — without it, `Context::delta()` dropped the field and
-    /// the runtime received the full router (audit F08).
+    /// presets that state a fixed surface (`minimal`) actually reach the
+    /// roster — without it, `Context::delta()` dropped the field and the
+    /// runtime received the full router (audit F08).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fixed_tools: Vec<String>,
 }
@@ -247,8 +247,13 @@ impl Context {
             },
             Context {
                 name: CONTEXT_MINIMAL.into(),
-                description: Some("Minimal surface: bash + edit only".into()),
-                fixed_tools: vec!["bash".into(), "edit".into()],
+                // The executor is `python_repl`, not a `bash` tool: `await
+                // bash(...)` is a function inside the kernel. Naming "bash"
+                // here filtered the ONLY executor out and left `minimal` with
+                // `edit` alone — a session that could write a file but never
+                // run a command, test, or inspect a directory (review #8).
+                description: Some("Minimal surface: python_repl (bash) + edit only".into()),
+                fixed_tools: vec![pa_types::ai::PYTHON_TOOL_NAME.into(), "edit".into()],
                 ..Self::default()
             },
             Context {

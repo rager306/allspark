@@ -1343,6 +1343,33 @@ async fn native_tools_are_on_by_default() {
     assert_eq!(native, ["lsp", "graph", "edit"]);
 }
 
+/// Review #8: the `minimal` profile must keep a command executor. The preset
+/// named `bash`, a tool the engine never registers (`bash()` is a function
+/// inside `python_repl`), so a session under it could edit files but not run a
+/// single command. This is the real engine roster, not a mock.
+#[tokio::test]
+async fn the_minimal_profile_keeps_the_command_executor() {
+    let (engine, _tmp) = engine_over_with_settings(
+        Some(serde_json::json!({ "toolProfile": { "context": "minimal" } })),
+        None,
+    )
+    .await;
+    let names: Vec<String> = engine
+        .session
+        .agent()
+        .state()
+        .await
+        .tools
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["edit".to_string(), pa_types::ai::PYTHON_TOOL_NAME.to_string()],
+        "minimal = the command executor + edit, nothing else"
+    );
+}
+
 /// `lsp.enabled = false` and `graph.enabled = false` drop both tools from
 /// the roster (and the prompt section with them).
 #[tokio::test]
