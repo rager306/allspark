@@ -15,7 +15,7 @@
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -530,7 +530,6 @@ exec "{python}" -c 'import os,sys
 st = os.stat(sys.argv[2])
 print(st.st_uid if sys.argv[1] == "%u" else format(st.st_mode & 0o777, "o"))' "$fmt" "$1"
 "#,
-            python = python
         ),
     )
     .expect("bsd stat stub");
@@ -608,13 +607,14 @@ fn the_launcher_reads_the_socket_directory_with_the_hosts_stat_dialect() {
     );
 }
 
-/// The release launcher carries the same private-socket rule.
+/// The release launcher's socket block, extracted from `install-rust.sh` and
+/// wrapped in a runnable script: everything from the socket-directory assignment
+/// to just before the payload exec.
 ///
-/// `install-rust.sh` writes its own launcher; the two had already drifted once (the
-/// nesting fix landed in one). Pinned as a contract, not as text: the embedded launcher's
-/// socket block, extracted and run, creates a 0700 directory and refuses a 0777 one.
-#[test]
-fn the_release_launcher_creates_and_checks_a_private_socket_directory() {
+/// Keyed on the ASSIGNMENT, not on a comment, because the comment is prose that may
+/// be reworded; and on the heredoc, because the two launchers had already drifted
+/// once (the nesting fix landed in one).
+fn release_launcher_socket_script() -> String {
     let installer = fs::read_to_string(repo_root().join("install-rust.sh")).expect("installer");
     let start = installer
         .find("cat > \"$launcher_tmp\" <<EOF")
@@ -632,8 +632,6 @@ fn the_release_launcher_creates_and_checks_a_private_socket_directory() {
         .split("export HOME=\"$ALLSPARK_HOME\"")
         .next()
         .expect("the home resolution");
-    // From the socket-directory assignment to the exec: the block under test. Keyed on the
-    // ASSIGNMENT, not on a comment, because the comment is prose that may be reworded.
     let socket_block = embedded
         .split("ALLSPARK_SOCKET_DIR=")
         .nth(1)
@@ -645,36 +643,45 @@ fn the_release_launcher_creates_and_checks_a_private_socket_directory() {
             .next()
             .expect("ends before exec")
     );
-    let parts = [
+    [
         "#!/bin/sh",
         home_resolution,
         "export HOME=\"$ALLSPARK_HOME\"",
         &socket_block,
         "printf '%s\\n' \"$PRIME_AGENT_DAEMON_SOCKET\"",
-    ];
-    let script = parts.join("\n");
+    ]
+    .join("\n")
+}
 
-    let run = |home: &Path, path: Option<&str>| {
-        let mut command = Command::new("sh");
-        command
-            .arg("-c")
-            .arg(&script)
-            .env("HOME", home)
-            .env_remove("ALLSPARK_HOME")
-            .env_remove("ALLSPARK_DAEMON_SOCKET")
-            .env_remove("ALLSPARK_DAEMON_SOCKET_DIR");
-        if let Some(path) = path {
-            command.env("PATH", path);
-        }
-        command
-            .output()
-            .expect("run the embedded socket block")
-    };
+/// Run the extracted release-launcher block for `home` (optionally under `path`).
+fn run_release_launcher_socket_block(script: &str, home: &Path, path: Option<&str>) -> Output {
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg(script)
+        .env("HOME", home)
+        .env_remove("ALLSPARK_HOME")
+        .env_remove("ALLSPARK_DAEMON_SOCKET")
+        .env_remove("ALLSPARK_DAEMON_SOCKET_DIR");
+    if let Some(path) = path {
+        command.env("PATH", path);
+    }
+    command.output().expect("run the embedded socket block")
+}
 
+/// The release launcher carries the same private-socket rule.
+///
+/// `install-rust.sh` writes its own launcher; the two had already drifted once (the
+/// nesting fix landed in one). Pinned as a contract, not as text: the embedded
+/// launcher's socket block, extracted and run, creates a 0700 directory and refuses
+/// a 0777 one.
+#[test]
+fn the_release_launcher_creates_and_checks_a_private_socket_directory() {
+    let script = release_launcher_socket_script();
     let tmp = tempfile::tempdir().expect("tempdir");
     let home = tmp.path().join("home");
     fs::create_dir_all(&home).expect("home");
-    let out = run(&home, None);
+    let out = run_release_launcher_socket_block(&script, &home, None);
     assert!(
         out.status.success(),
         "the embedded launcher runs: {}",
@@ -697,13 +704,33 @@ fn the_release_launcher_creates_and_checks_a_private_socket_directory() {
         "created 0700, not merely chmodded later"
     );
 
-    // The same block on a Darwin host: BSD `stat` knows `-f %u` / `-f %Lp` and no `-c`, so
-    // a GNU-only read here refuses the launcher's OWN 0700 directory (review #19, the
-    // same defect the tracked launcher carried).
-    let bsd_home = tmp.path().join("bsd-home");
-    fs::create_dir_all(&bsd_home).expect("bsd home");
-    let bsd_path = bsd_stat_path(&tmp.path().join("bsd-host"));
-    let out = run(&bsd_home, Some(&bsd_path));
+    // And the refusal: a widened directory is not reused.
+    let other = tempfile::tempdir().expect("tempdir");
+    let widened_home = other.path().join("home");
+    let widened_run = widened_home.join(".allspark-home").join("run");
+    fs::create_dir_all(&widened_run).expect("run dir");
+    fs::set_permissions(&widened_run, fs::Permissions::from_mode(0o777)).expect("widen");
+    let out = run_release_launcher_socket_block(&script, &widened_home, None);
+    assert!(
+        !out.status.success(),
+        "the release launcher must refuse a world-writable socket dir: {out:?}"
+    );
+}
+
+/// The RELEASE launcher must read a Darwin host's `stat` too (review #19).
+///
+/// The tracked launcher's dialect branch and the release one are the same contract
+/// written twice — and they have drifted before — so each is run against a PATH whose
+/// `stat` speaks only BSD and whose `uname` says Darwin.
+#[test]
+fn the_release_launcher_reads_the_hosts_stat_dialect() {
+    let script = release_launcher_socket_script();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("bsd-home");
+    fs::create_dir_all(&home).expect("bsd home");
+    let path = bsd_stat_path(&tmp.path().join("bsd-host"));
+
+    let out = run_release_launcher_socket_block(&script, &home, Some(&path));
     assert!(
         out.status.success(),
         "the release launcher must read a Darwin host's stat dialect: {}",
@@ -711,20 +738,7 @@ fn the_release_launcher_creates_and_checks_a_private_socket_directory() {
     );
     assert_eq!(
         Path::new(String::from_utf8_lossy(&out.stdout).trim()),
-        bsd_home.join(".allspark-home").join("run").join("daemon.sock"),
+        home.join(".allspark-home").join("run").join("daemon.sock"),
         "the Darwin-dialect run must pin the same private socket"
     );
-
-    // And the refusal: a widened directory is not reused.
-    let other = tempfile::tempdir().expect("tempdir");
-    let widened_home = other.path().join("home");
-    let widened_run = widened_home.join(".allspark-home").join("run");
-    fs::create_dir_all(&widened_run).expect("run dir");
-    fs::set_permissions(&widened_run, fs::Permissions::from_mode(0o777)).expect("widen");
-    let out = run(&widened_home, None);
-    assert!(
-        !out.status.success(),
-        "the release launcher must refuse a world-writable socket dir: {out:?}"
-    );
 }
-
