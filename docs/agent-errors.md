@@ -113,6 +113,23 @@ an independent verifier rather than by the author.
   its discriminating power: run the mutation, in review too. Fixed same day — the assertions now
   name assignments/branches and a started-with-resolved-port check, 5/5 mutations caught
   (`c1d8aac0a`).
+- The fork-surface guard's SELF-TEST never ran its own baseline (seventh, 2026-11-09,
+  `5a4152b31`). It copied a hand-kept list of files into a temp fixture, injected three breaks,
+  and counted any red run as detection — but the list omitted `pa-edit/src/tool.rs`, so the
+  fixture was ALREADY red on the clean state, and every "detected" break was detected by the
+  same unrelated failure. Measured: no mutation at all, exit 1. Break 2 also removed
+  `tools/graph.rs`, which has not existed since the graph became a directory, so it injected
+  nothing. Three rules came out of it: build the fixture from the same names the checks read,
+  require the CLEAN fixture to be green first, and match each injected break against the TEXT of
+  the check it targets — plus refuse a mutation whose pattern no longer matches.
+- Four QA task oracles graded the FILE or the TRANSCRIPT instead of the answer (eighth,
+  2026-11-09, `77b7407d4`). Measured on the shipped ST-003 oracle: describe untouched, summary
+  corrupted, the required marker put in a COMMENT — exit 0, the oracle passed a wrong answer.
+  ST-002 searched its completion marker over the whole transcript, where the task's own prompt
+  supplies it; ST-001 accepted the two caller names in any relationship; ST-004 accepted DELETE
+  even when the typed tool answered KEEP. Each is now a graded pair (wrong outcome red, right
+  outcome green) in `scripts/qa/test_st_oracles.py`, and the four oracles went red on the first
+  run of it — 12 of 18 cases.
 
 **Caught by:** writing the wrong implementation on purpose and running the test. Three of the
 first five passed on first contact.
@@ -120,7 +137,8 @@ first five passed on first contact.
 **Rule:** for each guard, name the wrong implementations it must reject, put one of them in the
 fixture's way, and run it. A test that has only ever been run against the correct code is a
 hypothesis. This is the same rule as §1 with the emphasis moved: §1 asks "does it fail on the
-OLD code", this one asks "does it fail on the PLAUSIBLE code".
+OLD code", this one asks "does it fail on the PLAUSIBLE code". And when a guard has a self-test:
+the UNMUTATED fixture must pass first, or the self-test is measuring its own fixture.
 
 ## 8. A fix that makes the common path pay for the rare case
 
