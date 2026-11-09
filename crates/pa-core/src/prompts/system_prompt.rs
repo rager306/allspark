@@ -3,6 +3,8 @@
 
 use crate::skills::{format_skills_for_prompt, Skill};
 
+use std::fmt::Write as _;
+
 use super::layers;
 
 /// The bundled skill the refinement trigger guidance keys on.
@@ -573,8 +575,10 @@ fn native_tools_section(tools: &[&str], options: &BuildSystemPromptOptions<'_>) 
             "- `rename` returns a PREVIEW unless you pass `apply=true`: without it nothing on disk \
              changes, and the reply is the computed edit. Set `apply=true` when you mean to perform \
              the rename. An APPLIED result (`apply=true`, or `rename_file`/`safe_delete_symbol`) is \
-             already consistent across declarations, references, overrides, and imports — do not \
-             re-read the changed files or re-run the build just to confirm it propagated."
+             consistent across declarations, references, overrides, and imports — do not re-read the \
+             changed files or re-run the build just to confirm it propagated, UNLESS the reply says \
+             the imports were not updated: then the file moved but its callers still name the old \
+             path, and fixing them is your job."
                 .to_string(),
         );
     } else {
@@ -606,11 +610,12 @@ fn native_tools_section(tools: &[&str], options: &BuildSystemPromptOptions<'_>) 
             // The session's policy rejects `replace`, so naming it would send the
             // model into a mode the tool answers with an error.
             let mode = allowed.first().copied().unwrap_or(pa_edit::EditMode::Patch);
-            line.push_str(&format!(
+            let _ = write!(
+                line,
                 "`edit` `{}` — this session does not accept `replace`, so read the snippet you are \
                  changing and submit the smallest change that covers it.",
                 mode.as_str()
-            ));
+            );
         }
         workflow.push(line);
     }
@@ -1129,6 +1134,36 @@ mod tests {
                 "schedule action {action:?} undocumented"
             );
         }
+    }
+
+    /// Review #29: the cached usage layer used to mandate the kernel `edit` skill
+    /// for every existing-file edit while the native-tools section mandates the
+    /// native `edit` tool — two incompatible instructions about the primary editing
+    /// surface, and following the static one bypassed the configured modes and their
+    /// safeguards.
+    ///
+    /// The layer is cache-stable (it may not be built per session), so the fix is
+    /// wording: name the native tool as the preferred surface when the session has
+    /// one, and keep the kernel skill as the fallback.
+    #[test]
+    fn the_usage_layer_does_not_override_the_native_edit_tool() {
+        let layer = layers::USAGE_LAYER;
+        let line = layer
+            .lines()
+            .find(|line| line.contains("Edits of existing files"))
+            .expect("the editing rule is in the usage layer");
+        assert!(
+            line.contains("native `edit` tool"),
+            "the rule must name the native tool first: {line}"
+        );
+        assert!(
+            line.contains("otherwise"),
+            "the kernel skill is the fallback, not the mandate: {line}"
+        );
+        assert!(
+            !line.starts_with("- Edits of existing files must be performed using `edit` with"),
+            "the old exclusive mandate is what contradicted the native section: {line}"
+        );
     }
 
     /// Review #30: an `lsp` rename is a PREVIEW unless `apply=true`, so the prompt

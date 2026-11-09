@@ -1,0 +1,1 @@
+- Fixed the cached usage rules telling every session to edit files through the Python `edit` skill while the native `edit` tool section mandates the native tool: the rule now prefers the native tool when the session has one and keeps the kernel skill as the fallback.
