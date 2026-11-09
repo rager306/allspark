@@ -239,6 +239,61 @@ fn verify_peer_uid<F: std::os::fd::AsRawFd>(stream: &F, path: &Path) -> Result<(
     same_owner(credentials.uid, our_uid, path)
 }
 
+/// The kernel-reported identity of the process at the other end of a connected Unix socket.
+///
+/// `SO_PEERCRED` reports the credentials captured when the connection was made, so neither
+/// field can be forged by the peer. Unlike a HELLO's `supervisorPid`, which the peer writes,
+/// the pid here is the kernel's own answer — the one fact that binds a claimed process to the
+/// socket a command was sent to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerCredentials {
+    pub pid: u32,
+    pub uid: u32,
+}
+
+/// Read the connected peer's credentials, or `None` where the platform cannot report them.
+#[cfg(target_os = "linux")]
+#[must_use]
+pub fn socket_peer_credentials<F: std::os::fd::AsRawFd>(stream: &F) -> Option<PeerCredentials> {
+    let mut credentials = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>())
+        .expect("a ucred is far smaller than socklen_t::MAX");
+    // SAFETY: `getsockopt` writes at most `length` bytes into `credentials`, whose size is
+    // exactly what `length` reports; the fd is owned by `stream` for the call.
+    let status = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            std::ptr::addr_of_mut!(credentials).cast(),
+            std::ptr::addr_of_mut!(length),
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+    // A pid that does not fit `u32` (or 0, which no process has) names nothing.
+    u32::try_from(credentials.pid)
+        .ok()
+        .filter(|pid| *pid > 0)
+        .map(|pid| PeerCredentials {
+            pid,
+            uid: credentials.uid,
+        })
+}
+
+/// The BSD/macOS answer carries the uid only (`getpeereid` has no pid), so the pid half of
+/// [`PeerCredentials`] is unavailable there.
+#[cfg(all(unix, not(target_os = "linux")))]
+#[must_use]
+pub fn socket_peer_credentials<F: std::os::fd::AsRawFd>(_stream: &F) -> Option<PeerCredentials> {
+    None
+}
+
 /// The decision, separated from the syscall so it can be exercised on any machine.
 ///
 /// A pure comparison, and the whole finding lives in it: the client trusted whichever
@@ -443,6 +498,12 @@ pub trait BlockingTransportStream:
     ///
     /// Returns an error if setting the read deadline on the underlying stream fails.
     fn set_read_timeout(&self, timeout: std::time::Duration) -> std::io::Result<()>;
+    /// The kernel-reported identity of the process at the other end, where the platform
+    /// reports one. Callers that must decide whether a HELLO's claimed pid really is the
+    /// listener read it here rather than trusting the greeting.
+    fn peer_credentials(&self) -> Option<PeerCredentials> {
+        None
+    }
 }
 
 #[cfg(unix)]
@@ -453,6 +514,10 @@ impl BlockingTransportStream for std::os::unix::net::UnixStream {
 
     fn set_read_timeout(&self, timeout: std::time::Duration) -> std::io::Result<()> {
         std::os::unix::net::UnixStream::set_read_timeout(self, Some(timeout))
+    }
+
+    fn peer_credentials(&self) -> Option<PeerCredentials> {
+        socket_peer_credentials(self)
     }
 }
 
@@ -613,11 +678,8 @@ mod peer_credential_tests {
         let path = dir.path().join("daemon.sock");
         let listener = bind_transport(&path).await.expect("bind");
         let connect_path = path.clone();
-        let client = tokio::spawn(async move {
-            connect_transport(&connect_path)
-                .await
-                .expect("connect")
-        });
+        let client =
+            tokio::spawn(async move { connect_transport(&connect_path).await.expect("connect") });
         let accepted = tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
             .await
             .expect("an owned client is accepted, not refused")

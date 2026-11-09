@@ -68,6 +68,17 @@ impl DaemonClient {
         })
     }
 
+    /// The kernel-reported identity of the process that owns the connected socket.
+    ///
+    /// Discovery binds a HELLO's claimed supervisor pid to this before believing it: the
+    /// greeting's fields are the peer's, and `shutdown --force` signals the pid it ends up
+    /// with, so a forged hello must not name a process the socket does not belong to.
+    pub(crate) fn peer_credentials(
+        &self,
+    ) -> Option<pa_types::platform::transport::PeerCredentials> {
+        self.reader.get_ref().peer_credentials()
+    }
+
     /// Send one command envelope and wait for its response. Errors carry the exact
     /// TS client message text (socket and daemon-log path), so users can self-diagnose.
     pub(crate) fn request(&mut self, command: DaemonCommand) -> Result<DaemonResponse> {

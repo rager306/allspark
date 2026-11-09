@@ -330,6 +330,10 @@ pub(crate) struct ProbeResult {
     session_count: Option<u64>,
     supervisor_pid: Option<u32>,
     supervisor_process_start_id: Option<String>,
+    /// The kernel's own answer for the process at the other end of the socket
+    /// (`SO_PEERCRED`), which no peer can forge. `None` where the platform does not
+    /// report it.
+    listener: Option<pa_types::platform::transport::PeerCredentials>,
     reachable: bool,
 }
 
@@ -346,6 +350,7 @@ pub(crate) fn probe_daemon(socket_path: &Path) -> ProbeResult {
     };
     let mut probe = ProbeResult {
         reachable: true,
+        listener: client.peer_credentials(),
         ..ProbeResult::default()
     };
     let greeted = client.wait_for_hello(HELLO_TIMEOUT_MS).ok().map(|hello| {
@@ -442,11 +447,26 @@ fn classify_reachable(probe: &ProbeResult) -> DaemonStatus {
     }
 }
 
-/// The hello's supervisor pid, but only when it is alive and its process
-/// identity still matches (the start-id gate defeats pid reuse).
+/// The hello's supervisor pid, but only when the socket really belongs to it.
+///
+/// Every field of a HELLO is written by the peer, and `shutdown --force` escalates to
+/// SIGTERM/SIGKILL on whatever pid discovery ends up with — so a forged endpoint (or an
+/// older build that omits the start id) could name any live process of the invoking user and
+/// have it signalled. Two gates bind the claim to the socket:
+///
+/// - the hello's `supervisorProcessStartId` must still match the live process (defeats pid
+///   reuse), and
+/// - with no start id, the kernel's own `SO_PEERCRED` answer for the connected socket must
+///   name the same pid. A peer cannot forge that: it is the process that made the
+///   connection, not a number the greeting reports.
+///
+/// `listener_pid` is `None` where the platform reports no peer pid (macOS `getpeereid`); the
+/// start-id gate and liveness are then the only binding available, which is the pre-existing
+/// behaviour there.
 pub(crate) fn verify_hello_supervisor_pid(
     pid: Option<u32>,
     expected_process_start_id: Option<&str>,
+    listener_pid: Option<u32>,
 ) -> Option<u32> {
     let pid = pid?;
     if pid == 0 {
@@ -457,6 +477,19 @@ pub(crate) fn verify_hello_supervisor_pid(
         // EPERM-equivalent: the process exists but is not ours to signal.
         Ok(false) | Err(_) => return None,
     }
+    // The socket must belong to the process the greeting names. A start id does not prove
+    // that by itself: an attacker can read any live process's start id and repeat it in a
+    // forged greeting, and killing that process is exactly the damage here.
+    match listener_pid {
+        Some(listener_pid) if listener_pid != pid => return None,
+        Some(_) => {}
+        // The probe could not learn the listener's pid. On a platform that reports it, the
+        // greeting's number is then bound to nothing and is refused; where the platform has
+        // no peer pid at all (macOS `getpeereid`), liveness plus the start id below is the
+        // gate that platform has always had.
+        None if PEER_PID_REPORTED => return None,
+        None => {}
+    }
     if let Some(expected) = expected_process_start_id {
         if pa_types::platform::process::process_start_id(pid).as_deref() != Some(expected) {
             return None;
@@ -464,6 +497,9 @@ pub(crate) fn verify_hello_supervisor_pid(
     }
     Some(pid)
 }
+
+/// Whether [`pa_types::platform::transport::PeerCredentials`] carries a pid on this platform.
+const PEER_PID_REPORTED: bool = cfg!(target_os = "linux");
 
 /// Discover every daemon in this state root and probe each. The root is
 /// explicit (the CLI passes the env-resolved root; tests pass fixture dirs).
@@ -527,6 +563,7 @@ fn discover_daemons_with(root: &DaemonStateRoot, named_pipes: bool) -> Vec<Daemo
                 verify_hello_supervisor_pid(
                     probe.supervisor_pid,
                     probe.supervisor_process_start_id.as_deref(),
+                    probe.listener.map(|listener| listener.pid),
                 )
             });
             let has_tracked_workers = worker_sockets.contains(&socket_path);
@@ -805,6 +842,77 @@ mod tests {
         assert!(infos[0].is_default);
         assert_eq!(infos[0].has_tracked_workers, None);
         assert_eq!(infos[0].status, DaemonStatus::Stale);
+    }
+
+    /// A HELLO's claimed pid is only believed when the socket proves it (review #5).
+    ///
+    /// Every greeting field is the peer's, and `shutdown --force` signals the pid discovery
+    /// ends up with, so an endpoint that reports an unrelated live pid — and omits the start
+    /// id an older build never sent — could make the CLI kill a process it never spoke to.
+    /// The kernel's `SO_PEERCRED` pid is the process that actually connected, so it is the
+    /// binding: a claim it does not name is refused, and so is a socket with no listener pid
+    /// when the greeting carries no start id, because then nothing binds the claim at all.
+    #[test]
+    fn a_hello_pid_is_believed_only_for_the_process_behind_the_socket() {
+        let live = std::process::id();
+        let other = live.wrapping_add(1).max(2);
+        assert_eq!(
+            verify_hello_supervisor_pid(Some(live), None, Some(live)),
+            Some(live),
+            "the socket's own owner is the daemon"
+        );
+        assert_eq!(
+            verify_hello_supervisor_pid(Some(live), None, Some(other)),
+            None,
+            "a greeting naming a process the socket does not belong to is refused"
+        );
+        assert_eq!(
+            verify_hello_supervisor_pid(Some(live), None, None),
+            None,
+            "no listener identity leaves the claim unbound"
+        );
+        assert_eq!(
+            verify_hello_supervisor_pid(Some(live), Some("proc:1"), Some(other)),
+            None,
+            "a start id the peer can read from any process does not bind the claim either"
+        );
+        // The start id still adds the pid-reuse gate on top of the ownership gate.
+        let start_id = pa_types::platform::process::process_start_id(live);
+        if let Some(start_id) = start_id {
+            assert_eq!(
+                verify_hello_supervisor_pid(Some(live), Some(&start_id), Some(live)),
+                Some(live),
+                "the socket's owner with a matching start id is the daemon"
+            );
+            assert_eq!(
+                verify_hello_supervisor_pid(Some(live), Some("proc:0"), Some(live)),
+                None,
+                "a recycled pid behind the socket is refused"
+            );
+        }
+    }
+
+    /// The probe records the kernel's answer, not the greeting's (review #5).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_probe_reports_the_process_that_owns_the_socket() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let socket = tmp.path().join("silent.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+        std::thread::spawn(move || {
+            // Hold every connection open without greeting: the probe must still learn who
+            // answered, because `SO_PEERCRED` answers at connect time.
+            for stream in listener.incoming() {
+                std::mem::forget(stream);
+            }
+        });
+        let probe = probe_daemon(&socket);
+        assert!(probe.reachable, "the silent endpoint accepts connections");
+        assert_eq!(
+            probe.listener.map(|listener| listener.pid),
+            Some(std::process::id()),
+            "the listener identity is this process's, whatever a greeting would claim"
+        );
     }
 
     #[test]
