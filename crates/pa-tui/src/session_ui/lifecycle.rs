@@ -226,6 +226,20 @@ impl SessionUi {
         Ok(session)
     }
 
+    /// The open's two optional dock registries, read CONCURRENTLY under one request bound
+    /// (review #15).
+    ///
+    /// `heartbeats_list` and `list_kernel_bash` are independent reads behind the same
+    /// `UI_REQUEST_TIMEOUT_MS` each; awaiting them in sequence made a wedged daemon cost two
+    /// bounds before the first content frame, so the dock fold is one round trip, not two.
+    /// Each epoch advances first, so a refresh in flight from before the attach is dropped at
+    /// fold time rather than overwriting the new session's rows.
+    async fn read_dock_registries(&mut self) -> (Option<Value>, Option<Value>) {
+        self.heartbeat_refresh_epoch += 1;
+        self.bash_list_epoch += 1;
+        tokio::join!(self.read_heartbeat_catalog(), self.read_bash_activities())
+    }
+
     /// Spec §10.2-§10.5: reattach after a restart — the fresh client replaces the dead one, the
     /// attach goes by DURABLE session id. `kind` names the driver: the update restart paints its
     /// §10.5 banner, a lost or announced-shutdown window reports the restart version-honestly.
@@ -453,8 +467,21 @@ impl SessionUi {
             // must not flicker away while the background refresh runs.
             DockFold::Held => {}
         }
+        // Review #15: the open's two optional dock registries are read CONCURRENTLY, under one
+        // `UI_REQUEST_TIMEOUT_MS` bound. They used to be awaited one after the other, so a
+        // stalled daemon could hold the first content frame for twice the bound — the paint-path
+        // rule this open is supposed to obey. A held dock keeps its data and refreshes in the
+        // background; `Fresh` owns nothing to show and does the same.
         match dock_fold {
-            DockFold::FirstFrame => self.fetch_heartbeat_catalog().await,
+            DockFold::FirstFrame => {
+                let (heartbeats, bash_activities) = self.read_dock_registries().await;
+                if let Some(data) = heartbeats {
+                    self.fold_heartbeat_catalog(&data);
+                }
+                if let Some(data) = bash_activities {
+                    self.fold_bash_activities(data);
+                }
+            }
             DockFold::Fresh | DockFold::Held => self.spawn_heartbeat_refresh(),
         }
         // FORK-ONLY: the tray's cache-hit rate is a `get_cache_stats` fold (the
@@ -483,8 +510,10 @@ impl SessionUi {
             DockFold::Held => {}
         }
         self.activity_group = crate::chrome::ActivityGroup::Subagents;
+        // The first-frame registry read happened above, with the heartbeat catalog (one bound
+        // for both); the other folds hand the dock to the background refresh.
         match dock_fold {
-            DockFold::FirstFrame => self.fetch_bash_activities().await,
+            DockFold::FirstFrame => {}
             DockFold::Fresh | DockFold::Held => self.spawn_bash_activity_refresh(),
         }
         // The refilled factory cache is a background refresh away on

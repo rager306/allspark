@@ -154,29 +154,26 @@ impl SessionUi {
         Ok(())
     }
 
-    /// The open-time kernel-bash fold: the first list response lands synchronously with the attach,
-    /// so the dock's bash rows ride the first content frame; a failed fetch leaves the cleared
-    /// registry.
-    pub(super) async fn fetch_bash_activities(&mut self) {
+    /// The open-time kernel-bash READ (no epoch bump: [`super::SessionUi::read_dock_registries`]
+    /// owns it, so the two dock reads can run concurrently on `&self`).
+    pub(super) async fn read_bash_activities(&self) -> Option<Value> {
         if !self.kernel_bash_supported() {
-            return;
+            return None;
         }
-        // Advance the epoch so a poll still in flight from before the attach
-        // never overwrites this fold: the epoch check drops it at fold time.
-        self.bash_list_epoch += 1;
-        let Ok(data) = self
-            .bounded_request(
-                Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
-                DaemonCommand::ListKernelBash {
-                    id: None,
-                    active_session_id: self.active_session_id.clone(),
-                    rest: Map::default(),
-                },
-            )
-            .await
-        else {
-            return;
-        };
+        self.bounded_request(
+            Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
+            DaemonCommand::ListKernelBash {
+                id: None,
+                active_session_id: self.active_session_id.clone(),
+                rest: Map::default(),
+            },
+        )
+        .await
+        .ok()
+    }
+
+    /// Land the read registry; a failed read leaves the cleared one.
+    pub(super) fn fold_bash_activities(&mut self, data: Value) {
         self.bash_activities = data;
     }
 

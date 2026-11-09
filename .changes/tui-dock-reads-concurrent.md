@@ -1,0 +1,1 @@
+- Fixed opening an existing session reading the two optional dock registries one after the other: they are now issued together under one request bound, so a slow daemon cannot hold the first content frame for two 10-second timeouts.

@@ -22,12 +22,25 @@ const DOCK_DATA_DELAY_MS: u64 = 300;
 
 struct MockSupervisor {
     listener: UnixListener,
+    /// Answer `heartbeats_list` only AFTER `list_kernel_bash` has arrived: the
+    /// barrier an open that reads the two dock registries concurrently passes and a
+    /// sequential one cannot (review #15).
+    dock_barrier: bool,
 }
 
 impl MockSupervisor {
     fn bind(socket: &std::path::Path) -> Self {
         MockSupervisor {
             listener: UnixListener::bind(socket).expect("bind mock socket"),
+            dock_barrier: false,
+        }
+    }
+
+    /// A mock whose two dock reads cross: neither is answered until both arrived.
+    fn bind_with_dock_barrier(socket: &std::path::Path) -> Self {
+        MockSupervisor {
+            listener: UnixListener::bind(socket).expect("bind mock socket"),
+            dock_barrier: true,
         }
     }
 
@@ -38,6 +51,9 @@ impl MockSupervisor {
         reason = "mock daemon request loop: one match arm per scripted request method"
     )]
     fn serve(self, with_content: bool) {
+        let dock_barrier = self.dock_barrier;
+        // The held heartbeat request (barrier mode): answered when the bash read lands.
+        let mut held_heartbeat: Option<String> = None;
         let (stream, _) = self.listener.accept().expect("accept");
         let write_stream = stream.try_clone().expect("clone mock socket");
         let mut writer = write_stream;
@@ -73,6 +89,12 @@ impl MockSupervisor {
                     write_json(&mut writer, &attach_data(id, with_content));
                 }
                 "heartbeats_list" => {
+                    if dock_barrier && held_heartbeat.is_none() {
+                        // Hold it: a sequential open cannot send the other read while it
+                        // waits for this answer.
+                        held_heartbeat = Some(id.to_string());
+                        continue;
+                    }
                     std::thread::sleep(std::time::Duration::from_millis(DOCK_DATA_DELAY_MS));
                     write_json(
                         &mut writer,
@@ -120,6 +142,32 @@ impl MockSupervisor {
                             },
                         }),
                     );
+                    if let Some(held) = held_heartbeat.take() {
+                        write_json(
+                            &mut writer,
+                            &json!({
+                                "type": "response",
+                                "id": held,
+                                "command": "heartbeats_list",
+                                "success": true,
+                                "data": {
+                                    "heartbeats": [
+                                        {
+                                            "job": {
+                                                "id": "hb-1",
+                                                "status": "active",
+                                                "source": "heartbeat",
+                                                "activeSessionId": "s1",
+                                                "sessionId": "sess-1",
+                                                "schedule": {"kind": "interval", "expression": "every 30m"},
+                                            },
+                                            "sessionName": "layout probe",
+                                        },
+                                    ],
+                                },
+                            }),
+                        );
+                    }
                 }
                 "get_session_stats" => {
                     write_json(
@@ -277,6 +325,31 @@ fn run_open(transcript: &OpeningTranscript) -> Vec<String> {
     outcome.frames
 }
 
+/// An open whose two dock reads cross: neither is answered until both have arrived,
+/// so only an open that issues them CONCURRENTLY can complete the fold (review #15).
+fn run_open_with_dock_barrier() -> Vec<String> {
+    std::env::remove_var("TMUX");
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("tui.sock");
+    let supervisor = MockSupervisor::bind_with_dock_barrier(&socket);
+    let handle = std::thread::spawn(move || supervisor.serve(false));
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let plan = HeadlessPlan {
+        steps: vec![HeadlessStep::WaitMs(400)],
+        width: 100,
+        height: 30,
+    };
+    let outcome = runtime
+        .block_on(run_interactive(options(socket), UiMode::Headless(plan)))
+        .expect("interactive run");
+    handle.join().expect("mock supervisor finished");
+    outcome.frames
+}
+
 /// The dock's divider rule: one full-width row of box-drawing heavies.
 fn is_divider_row(line: &str, width: usize) -> bool {
     !line.is_empty() && line.chars().count() == width && line.chars().all(|c| c == '\u{2500}')
@@ -303,6 +376,21 @@ fn the_activity_dock_is_in_every_frame_from_the_first() {
          heartbeat panel row (frames {offenders:?} lack it) — the dock \
          data must fold with the attach, never land as a late repaint:\n{}",
         frames.join("\n---frame---\n")
+    );
+}
+
+/// Review #15: the open's two dock reads are concurrent. A daemon that answers
+/// `heartbeats_list` only after seeing `list_kernel_bash` (a cross-barrier) can be
+/// served only by an open that issues both before awaiting either; the sequential
+/// shape timed out and painted an empty dock.
+#[test]
+fn the_two_dock_reads_are_concurrent() {
+    let frames = run_open_with_dock_barrier();
+    assert!(!frames.is_empty(), "frames were captured");
+    let last = frames.last().cloned().unwrap_or_default();
+    assert!(
+        last.contains("\u{25f7} 1 heartbeat"),
+        "the crossing dock reads must both land (they are issued together):\n{last}"
     );
 }
 

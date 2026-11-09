@@ -136,27 +136,25 @@ impl SessionUi {
         )
     }
 
-    /// The open-time heartbeat-catalog fold: the first list response scopes and sorts into the
-    /// catalog synchronously with the attach, so the dock's heartbeat rows ride the first content
-    /// frame; a failed fetch leaves the cleared catalog.
-    pub(crate) async fn fetch_heartbeat_catalog(&mut self) {
-        // Advance the epoch so a refresh still in flight from before the attach
-        // never overwrites this fold: the epoch check drops it at fold time.
-        self.heartbeat_refresh_epoch += 1;
-        let Ok(data) = self
-            .bounded_request(
-                Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
-                DaemonCommand::HeartbeatsList {
-                    id: None,
-                    active_session_id: None,
-                    rest: Map::default(),
-                },
-            )
-            .await
-        else {
-            return;
-        };
-        let mut heartbeats = self.scope_heartbeats(parse_heartbeats(&data));
+    /// The open-time heartbeat-catalog READ (no epoch bump: [`SessionUi::read_dock_registries`]
+    /// owns that, so the two dock reads can run concurrently on `&self`).
+    pub(super) async fn read_heartbeat_catalog(&self) -> Option<Value> {
+        self.bounded_request(
+            Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
+            DaemonCommand::HeartbeatsList {
+                id: None,
+                active_session_id: None,
+                rest: Map::default(),
+            },
+        )
+        .await
+        .ok()
+    }
+
+    /// Scope and sort the read catalog into the dock; a failed read leaves the cleared
+    /// catalog.
+    pub(crate) fn fold_heartbeat_catalog(&mut self, data: &Value) {
+        let mut heartbeats = self.scope_heartbeats(parse_heartbeats(data));
         sort_heartbeats(&mut heartbeats);
         self.heartbeat_catalog = heartbeats;
     }
