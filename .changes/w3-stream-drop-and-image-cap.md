@@ -1,0 +1,1 @@
+- A Gemini, Vertex, or OpenAI/Azure Responses stream that ends before the provider's terminal marker is now retried instead of being stored as a complete (truncated) answer, and an `@file` image over the inline limit is reported and omitted instead of being read and sent whole.
