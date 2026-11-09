@@ -27,6 +27,12 @@ use crate::worker::{QueuedItem, SessionCore, Worker};
 /// turn must not pin the dispatch lane forever).
 const FIRE_SETTLE_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 
+/// A per-process monotonic counter: the unique half of a plain cron fire's queue key.
+fn next_fire_sequence() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The session-artifact directory for one session file: `<sessions>/../session-artifacts/<id>`.
 pub(crate) fn session_artifact_dir(session_file: &Path, session_id: &str) -> Option<PathBuf> {
     session_file
@@ -155,10 +161,22 @@ impl AgentCronSchedulerHooks for QueueHooks {
         }
         let (done_tx, done_rx) = oneshot::channel();
         let heartbeat = is_heartbeat_cron_job(job);
-        let queue_key = heartbeat.then(|| format!("heartbeat:{}", job.id));
+        // Every fire carries a queue identity, and for the settle timeout below it is the only
+        // way to tell a fire still PARKED in the lane from one the runner already picked up
+        // (review #12). A heartbeat keeps its `heartbeat:<id>` key, whose replace-on-enqueue
+        // dedupe is the TS behaviour; a plain cron fire gets a key unique to THIS dispatch, so
+        // identifying it does not also change how successive fires stack.
+        let queue_key = Some(if heartbeat {
+            format!("heartbeat:{}", job.id)
+        } else {
+            format!("cron:{}:{}", job.id, next_fire_sequence())
+        });
         // A heartbeat rides its delivery-mode lane; a plain cron job queues on the follow-up lane.
         let rides_steering =
             heartbeat && !matches!(job.delivery_mode, Some(DeliveryMode::FollowUp));
+        // The key survives the admission (the item owns it): the settle timeout reads it back to
+        // ask whether the fire is still parked.
+        let fire_key = queue_key.clone();
         {
             let mut core = self
                 .core
@@ -257,9 +275,56 @@ impl AgentCronSchedulerHooks for QueueHooks {
             // The queued item was consumed without a settle handshake (its waiter dropped):
             // the fire ran as far as the queue could deliver it.
             Ok(Err(_)) => Ok(None),
-            // The settle window expired: the fire did not run.
-            Err(_) => Ok(Some("skipped")),
+            // The settle window expired. What that means depends on ONE fact the timeout
+            // alone cannot see (review #12): a fire still PARKED in its lane never ran, while
+            // a fire the runner picked up is executing right now.
+            Err(_) => self.on_settle_timeout(job, fire_key.as_deref()),
         }
+    }
+}
+
+impl QueueHooks {
+    /// Classify a fire whose settle window expired, by where its queue item is.
+    ///
+    /// - Still PARKED in a lane: it never ran, so it is withdrawn (it must not execute later
+    ///   behind the scheduler's back) and reported as a skip — no run happened.
+    /// - Gone from the lanes, i.e. the runner picked it up: never report a skip.
+    ///   `record_dispatch_result` completes a one-shot on a skip, which would close a prompt
+    ///   that is executing right now and stamp a recurring job's `lastSkippedAt` for work in
+    ///   flight. The turn owns its own outcome, so the fire counts as a run.
+    fn on_settle_timeout(
+        &self,
+        job: &AgentCronJob,
+        fire_key: Option<&str>,
+    ) -> anyhow::Result<Option<&'static str>> {
+        if Self::withdraw_parked_fire(&self.core, fire_key) {
+            return Ok(Some("skipped"));
+        }
+        tracing::warn!(
+            job = %job.id,
+            "a scheduled fire outlived its settle window while running; leaving the outcome \
+             to its turn"
+        );
+        Ok(None)
+    }
+
+    /// Remove a still-parked fire from its lane, returning whether it was there.
+    ///
+    /// The lane is where a fire waits; once the runner gathers it the row is gone from both
+    /// lanes, which is exactly the evidence [`Self::on_settle_timeout`] needs.
+    fn withdraw_parked_fire(core: &Mutex<SessionCore>, queue_key: Option<&str>) -> bool {
+        let Some(queue_key) = queue_key else {
+            return false;
+        };
+        let mut core = core
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let before = core.steering.len() + core.follow_up.len();
+        core.steering
+            .retain(|item| item.queue_key.as_deref() != Some(queue_key));
+        core.follow_up
+            .retain(|item| item.queue_key.as_deref() != Some(queue_key));
+        before != core.steering.len() + core.follow_up.len()
     }
 }
 

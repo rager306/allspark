@@ -201,6 +201,101 @@ async fn an_unreadable_session_file_does_not_cancel_the_schedule() {
     );
 }
 
+/// A settle timeout must not report live work as skipped (review #12).
+///
+/// The window is 15 minutes, so the decision — not the wait — is what the test drives. A fire
+/// still PARKED never ran: it is withdrawn (it must not execute later behind the scheduler's
+/// back) and reported as a skip. A fire the runner already picked up is executing: reporting a
+/// skip would have `record_dispatch_result` complete a running one-shot and stamp a recurring
+/// job's `lastSkippedAt`, so it must report that the turn owns the outcome instead.
+#[tokio::test]
+async fn a_settle_timeout_never_reports_live_work_as_skipped() {
+    let dir = std::env::temp_dir().join(format!("pa-sched-timeout-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let session = write_active_session(&dir);
+    let core = Arc::new(std::sync::Mutex::new(
+        crate::worker::SessionCore::test_core(None, "/w".to_string()),
+    ));
+    let hooks = QueueHooks {
+        core: Arc::clone(&core),
+        work_notify: Arc::new(Notify::new()),
+        user_bash: Arc::new(crate::user_bash::UserBash::new()),
+        store: Arc::new(AgentCronJobStore::for_session_artifacts()),
+        recovery: Arc::new(std::sync::Mutex::new(None)),
+    };
+    let job = heartbeat_job("hb-timeout", "still going", DeliveryMode::Steer, &session);
+    let key = format!("heartbeat:{}", job.id);
+
+    // The runner already gathered the fire: nothing is parked under its key.
+    assert!(
+        hooks
+            .on_settle_timeout(&job, Some(key.as_str()))
+            .expect("no error")
+            .is_none(),
+        "a fire that left the lane is running, so it is not a skip"
+    );
+
+    // The fire is still parked: it never ran.
+    {
+        let mut core = core.lock().unwrap();
+        let mut item = heartbeat_job("hb-timeout", "still going", DeliveryMode::Steer, &session);
+        item.id = job.id.clone();
+        core.follow_up.push_back(crate::worker::QueuedItem {
+            priority: crate::worker::QueuePriority::Background,
+            message: "still going".to_string(),
+            preview: None,
+            custom_message: None,
+            agent_message: None,
+            admission_id: None,
+            images: Vec::new(),
+            queue_key: Some(key.clone()),
+            done: None,
+            queue_visible: true,
+            policy: crate::worker::TurnPolicy::Injected,
+            forced_batch: false,
+        });
+    }
+    assert_eq!(
+        hooks
+            .on_settle_timeout(&job, Some(key.as_str()))
+            .expect("no error"),
+        Some("skipped"),
+        "a fire that never left the lane is a skip"
+    );
+    let core = core.lock().unwrap();
+    assert!(
+        core.steering.is_empty() && core.follow_up.is_empty(),
+        "the withdrawn fire must not execute later behind the scheduler's back"
+    );
+}
+
+/// `run_job`'s settle-timeout arm must delegate that decision, not answer a skip itself.
+///
+/// The classifier above is testable; whether the fire path calls it is a separate fact, and
+/// the finding is precisely that the arm answered `skipped` unconditionally. The wait is 15
+/// minutes, so the call site is pinned rather than driven — the same mechanism pin the
+/// transport owner checks use.
+#[test]
+fn the_settle_timeout_arm_consults_the_queue_position() {
+    let source = include_str!("../scheduled_jobs.rs");
+    let start = source
+        .find("pub(crate) struct QueueHooks")
+        .expect("the hooks exist");
+    let end = source[start..]
+        .find("/// The worker's schedule catalog")
+        .map(|at| start + at)
+        .expect("the hooks end");
+    let body = &source[start..end];
+    let arm = &body[body
+        .find("Err(_) =>")
+        .expect("the settle-timeout arm exists")..];
+    let arm = &arm[..arm.find('\n').unwrap_or(arm.len())];
+    assert!(
+        arm.contains("on_settle_timeout"),
+        "a settle timeout must ask where the fire is before calling it a skip: {arm}"
+    );
+}
+
 /// A heartbeat parks as the injected `heartbeat_prompt` row with the TS preview (the
 /// queue strip reads `Heartbeat prompt: <content>`, the turn text keeps the raw content).
 #[tokio::test]
@@ -296,7 +391,14 @@ async fn heartbeat_fire_parks_the_labeled_preview_on_its_lane() {
             assert_eq!(content, "nightly sweep");
             assert_eq!(item.preview, None);
             assert_eq!(item.custom_message, None);
-            assert_eq!(item.queue_key, None);
+            // A plain cron fire carries a key unique to THIS dispatch: it identifies the fire
+            // for the settle timeout without replacing a queued fire the way a shared key
+            // would (successive plain fires stack, as they always did).
+            let key = item
+                .queue_key
+                .clone()
+                .expect("a plain cron fire carries a key");
+            assert!(key.starts_with("cron:cron-1:"), "{key}");
             assert_eq!(lane, "follow_up");
         }
         drop(item);
