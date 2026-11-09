@@ -2,6 +2,28 @@
 //! local-only, clients waiting while every instance is busy (Node's `net` on Windows); implements
 //! the shared [`TransportListener`] / [`TransportStream`] / [`BlockingTransportStream`] contracts.
 //! Endpoint naming lives in `pa-daemon::platform`.
+//!
+//! # Peer authentication: the Windows gap (review #23, CWE-290)
+//!
+//! The Unix transports ask the kernel who is at the other end (`SO_PEERCRED`/`getpeereid`, see
+//! [`super::transport`]). This one asks nothing, in either direction, and that is a real
+//! difference rather than an oversight to paper over:
+//!
+//! - The daemon's pipe name is fixed and machine-wide, and `ServerOptions::create` leaves the
+//!   default security descriptor in place, so the pipe is not owner-only. Another local account
+//!   can squat the name before the daemon starts, answer the greeting with the product's public
+//!   constants, and receive the victim's prompts.
+//! - A client that connects gets whichever server instance answered; it never asks the server
+//!   process for its identity.
+//!
+//! Closing it needs two things this crate cannot verify from here: a security descriptor that
+//! admits only the daemon's own user (`SECURITY_ATTRIBUTES`, or one converted from an SDDL
+//! string), and `GetNamedPipeServerProcessId` plus a token comparison on the client side before
+//! the HELLO is trusted. Both are Win32 calls the pinned-constant/`extern` style can express, but
+//! neither compiles or runs on the hosts this fork is developed and tested on, and a guard that
+//! cannot be exercised on the platform it protects is the class of defect this review exists to
+//! catch. The options, their costs, and what each would need to be verified are recorded as an
+//! open decision in the review's findings; this note makes the gap visible at the code.
 
 use std::io;
 use std::sync::{Arc, Mutex};
