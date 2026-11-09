@@ -2241,3 +2241,73 @@ async fn a_settle_against_a_dead_link_reports_no_confirmation() {
         "a link that never answers cannot confirm a release"
     );
 }
+
+/// A detached release that fails once is RETRIED, and the retry is what frees the slot (#9).
+///
+/// The old code spawned exactly one best-effort `release` and dropped its answer, so a
+/// supervisor-link failure during a dropped stream's teardown lost the slot for the life of a
+/// LIVE worker: holder reaping runs on worker EXIT and the dead-holder reaper only reclaims
+/// leases of workers that are gone. The fake supervisor here fails the FIRST release and
+/// confirms the second, which is the shape of a transient link failure.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_detached_release_is_retried_until_the_supervisor_confirms_it() {
+    use crate::protocol::{response_failure, response_line, response_success};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("sup.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).expect("bind fake supervisor");
+    let (releases_tx, mut releases_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let server = tokio::spawn(async move {
+        // Two connections; the first answers a failure, the second a success.
+        for attempt in 0..2 {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let releases = releases_tx.clone();
+            tokio::spawn(async move {
+                let (reader, mut writer) = stream.into_split();
+                writer
+                    .write_all(
+                        b"{\"type\":\"daemon_hello\",\"protocol\":{\"name\":\"prime-agent.daemon\",\"version\":7}}\n",
+                    )
+                    .await
+                    .expect("hello");
+                let mut reader = BufReader::new(reader);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.expect("request");
+                let request: serde_json::Value = serde_json::from_str(line.trim()).expect("json");
+                let id = request["id"].as_str();
+                let response = if attempt == 0 {
+                    response_failure(id, "provider_admission", "link is restarting", None)
+                } else {
+                    response_success(id, "provider_admission", Some(serde_json::json!({})))
+                };
+                writer
+                    .write_all(
+                        serde_json::to_string(&response_line(&response))
+                            .expect("serialize")
+                            .as_bytes(),
+                    )
+                    .await
+                    .expect("write");
+                writer.write_all(b"\n").await.expect("newline");
+                let _ = releases.send(());
+            });
+        }
+    });
+
+    let client = AdmissionClient::link(
+        Arc::new(crate::supervisor_link::SupervisorLink::new(socket)),
+        "worker-a".to_string(),
+    );
+    client.release_detached(42);
+
+    // An observable event per attempt: two releases reached the supervisor.
+    for attempt in 0..2 {
+        tokio::time::timeout(Duration::from_secs(10), releases_rx.recv())
+            .await
+            .unwrap_or_else(|_| panic!("no release reached the supervisor for attempt {attempt}"))
+            .expect("the server task reports its release");
+    }
+    server.await.expect("the fake supervisor joins");
+}

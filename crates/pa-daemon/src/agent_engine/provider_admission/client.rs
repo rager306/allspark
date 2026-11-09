@@ -203,6 +203,15 @@ impl AdmissionClient {
 
     /// The fire-and-forget release a `Drop` can afford (the abort path and
     /// a dropped stream): never blocks the caller.
+    ///
+    /// The release is retried with backoff, and only a CONFIRMED one ends the ladder. One
+    /// best-effort attempt was not enough: a supervisor link that failed for a moment (a
+    /// supervisor restart, a dropped connection) left a live worker holding a slot nobody
+    /// could free — holder reaping runs on worker EXIT, and the dead-holder reaper only
+    /// reclaims leases of workers that are gone, so the slot stayed charged until the worker
+    /// died, and enough of them pushed later requests through the whole 600-second
+    /// admission budget (review #9). The release is idempotent, so a retry after a lost
+    /// answer costs nothing.
     pub fn release_detached(&self, lease: u64) {
         if !self.is_enabled() {
             return;
@@ -212,7 +221,22 @@ impl AdmissionClient {
         // supervisor's own holder reaping covers the slot.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
-                let _ = client.release(lease).await;
+                for attempt in 0..RELEASE_ATTEMPTS {
+                    if client.release(lease).await {
+                        return;
+                    }
+                    if attempt + 1 < RELEASE_ATTEMPTS {
+                        tokio::time::sleep(RELEASE_BACKOFF[attempt.min(RELEASE_BACKOFF.len() - 1)])
+                            .await;
+                    }
+                }
+                // Out of attempts: the supervisor is not answering at all. Its holder reaping
+                // frees the lease when this worker exits, so nothing else can be done here.
+                tracing::warn!(
+                    lease,
+                    "provider admission: release still unconfirmed after retries; \
+                     the slot is reaped when this worker exits"
+                );
             });
         }
     }
@@ -260,6 +284,17 @@ const LOCAL_HOLDER: &str = "local";
 /// link dead and the lease orphans (finding #4: 30s vs 600s minted
 /// orphans on every deep-queue spawn).
 pub(super) const ADMISSION_REQUEST_BUDGET: Duration = Duration::from_secs(605);
+
+/// How many times a detached release is attempted before the worker gives up.
+///
+/// Bounded, because the launch path must not accumulate tasks on a supervisor that is gone:
+/// the ladder spans roughly half a minute of retries over a 10-second request budget each,
+/// which outlasts a supervisor restart and still ends.
+const RELEASE_ATTEMPTS: usize = 3;
+
+/// The pause between detached-release attempts. The first retry is immediate enough to hide
+/// from a caller, and the last is long enough to outlast a supervisor's own restart window.
+const RELEASE_BACKOFF: [Duration; 2] = [Duration::from_millis(250), Duration::from_secs(2)];
 
 /// The deadline for a settle/release round trip.
 ///
