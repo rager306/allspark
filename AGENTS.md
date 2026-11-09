@@ -210,8 +210,9 @@ directory. Treat the tree as shared state.
   file behind; it was dated three days earlier than an active build on this tree), so a shared
   probe would succeed against a live build — leave `.fingerprint` alone
   (dropping it rebuilds everything), and print the size before removing.
-  Measured 2026-11-09: `deps` held 11.4 GB in 6731 files, and 1342 of 1620 `<crate>.<ext>`
-  groups had more than one variant; keeping the newest of each freed 7.67 GB. The cause is
+  Measured 2026-11-09 (a snapshot; the ratio is the point, not the bytes): `deps` held
+  11.4 GB in 6731 files, and 1342 of 1620 `<crate>.<ext>` groups had more than one variant;
+  keeping the newest of each freed 7.67 GB. The cause is
   that cargo puts the package `version` in the unit hash — one identical source built as
   1.0.0 and 1.0.1 gets two different rlib names — and every `nightly: vN (tag-only)` commit
   reaching `main` bumps `[workspace.package] version`, minting a whole generation that
