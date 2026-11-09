@@ -92,6 +92,11 @@ pub async fn prepare_socket_path(path: &Path) -> Result<()> {
         // `ensure_dir` deliberately never re-modes a directory it did not create, so the
         // ownership has to be checked, not assumed.
         if parent == crate::platform::socket_dir() {
+            // The product's own socket directory is per-uid but lives in the SHARED temp dir,
+            // so another user can pre-create `allspark-<uid>` before the daemon starts and then
+            // own the directory our socket file lands in — free to replace or unlink it (review
+            // #24). `ensure_dir` deliberately never re-modes a directory it did not create, so
+            // the ownership has to be checked, not assumed.
             ensure_socket_dir_is_ours(parent)?;
         }
     }
