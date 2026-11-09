@@ -146,6 +146,7 @@ pub async fn run_rpc_mode(options: RpcOptions) -> anyhow::Result<i32> {
         pump_suspended: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         model_ops: Arc::new(tokio::sync::Mutex::new(())),
         session_ops: Arc::new(tokio::sync::Mutex::new(())),
+        user_bash: Arc::new(crate::user_bash::UserBash::new()),
     });
     // The background-bash completion lane: each built engine's wake
     // kicks the queued-work pump, so an idle session runs the

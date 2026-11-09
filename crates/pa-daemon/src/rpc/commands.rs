@@ -41,6 +41,10 @@ pub struct RpcState {
     /// The context-rebuilding commands' serialization lane (`compact`,
     /// `refine`): they must not interleave.
     pub session_ops: Arc<tokio::sync::Mutex<()>>,
+    /// The user-bash slot: `bash` and `abort_bash` share ONE implementation with
+    /// the daemon's awaited command, and the slot is what makes `abort_bash` reach
+    /// the run it answers for (review #11).
+    pub(crate) user_bash: Arc<crate::user_bash::UserBash>,
 }
 
 impl RpcState {
@@ -691,7 +695,69 @@ pub(crate) mod tests {
             pump_suspended: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             model_ops: Arc::new(tokio::sync::Mutex::new(())),
             session_ops: Arc::new(tokio::sync::Mutex::new(())),
+            user_bash: Arc::new(crate::user_bash::UserBash::new()),
         })
+    }
+
+    /// Review #11: `--mode rpc` must run commands, not answer a gap error.
+    ///
+    /// TS `executeBashAndWait` runs the command and answers its `BashResult`; the
+    /// Rust in-process transport refused every `bash` request, so an RPC client
+    /// could not run a single command. `abort_bash` answered success with nothing
+    /// to abort.
+    #[tokio::test]
+    async fn bash_runs_the_command_and_abort_bash_has_a_run_to_stop() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let state = test_state(dir.path()).await;
+
+        let started = std::time::Instant::now();
+        let response = session_commands::handle(
+            &state,
+            "bash",
+            &serde_json::json!({ "command": "echo rpc-bash-ok" }),
+        )
+        .await
+        .expect("bash answers");
+        let ResponseData::Present(result) = response else {
+            panic!("bash answers with a body");
+        };
+        assert_eq!(result["exitCode"], serde_json::json!(0), "{result}");
+        assert!(
+            result["output"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("rpc-bash-ok"),
+            "the command's output must come back to the client: {result}"
+        );
+        assert_eq!(result["cancelled"], serde_json::json!(false));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "the run settles with the response"
+        );
+
+        // A failing command reports its status rather than erroring the request.
+        let failed =
+            session_commands::handle(&state, "bash", &serde_json::json!({ "command": "exit 3" }))
+                .await
+                .expect("a non-zero exit is a result, not a transport error");
+        let ResponseData::Present(failed) = failed else {
+            panic!("a failing command still answers with a body");
+        };
+        assert_eq!(
+            failed["exitCode"],
+            serde_json::json!(3),
+            "the exit status reaches the client: {failed}"
+        );
+
+        // `abort_bash` is a success with a run registered against it.
+        let aborted = session_commands::handle(&state, "abort_bash", &serde_json::json!({}))
+            .await
+            .expect("abort_bash answers");
+        assert!(matches!(aborted, ResponseData::Absent));
+        assert!(
+            !state.user_bash.is_running(),
+            "nothing is left running after the abort"
+        );
     }
 
     /// `get_state` answers the session's model with the provider, id, and endpoint the session

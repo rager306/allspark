@@ -20,9 +20,35 @@ use super::session::RpcEngineRequest;
 const CRON_REQUIRES_DAEMON: &str = "Cron jobs require daemon mode";
 const HEARTBEATS_REQUIRE_DAEMON: &str = "Heartbeats require daemon mode";
 const AGENT_MESSAGING_REQUIRES_DAEMON: &str = "Agent messaging requires daemon mode";
-/// The in-process bash executor is not ported to the Rust session engine
-/// yet; the daemon-attached transport serves the command.
-const BASH_BACKEND_GAP: &str = "Bash execution requires the session bash executor, which is not linked into the in-process RPC transport yet; the daemon-attached RPC transport serves it";
+/// `bash { command }` (TS `executeBashAndWait`): the session's shell, cwd, and
+/// settings, run through the same executor the daemon's awaited command uses.
+async fn bash(state: &Arc<RpcState>, payload: &Value) -> Result<ResponseData, String> {
+    let command = payload
+        .get("command")
+        .and_then(Value::as_str)
+        .filter(|command| !command.is_empty())
+        .ok_or_else(|| "bash requires a command".to_string())?;
+    let cwd = state.settings_cwd().await;
+    let settings = pa_core::settings::SettingsManager::create(&cwd, &state.agent_dir);
+    let settings = settings.settings();
+    let prefix = settings.shell_command_prefix.clone();
+    let shell_path = settings.shell_path.clone();
+    // The awaited bracket registers a cancellation token, so `abort_bash` reaches
+    // this run exactly as it reaches a daemon-side one, and the slot reports busy
+    // while it is in flight.
+    let awaited = state.user_bash.begin_awaited();
+    let cwd = cwd.to_string_lossy().to_string();
+    let result = crate::user_bash::run_bash_to_result(
+        command,
+        &cwd,
+        prefix.as_deref(),
+        shell_path.as_deref(),
+        awaited.cancellation(),
+    )
+    .await;
+    drop(awaited);
+    Ok(ResponseData::Present(result))
+}
 
 /// Handle one session-level command.
 ///
@@ -68,10 +94,18 @@ pub async fn handle(
                 .unwrap_or_default();
             Err(format!("Unknown active session: {id}"))
         }
-        // A no-op success: this connection never observed, and no bash
-        // slot exists to abort.
-        "unobserve" | "abort_bash" => Ok(ResponseData::Absent),
-        "bash" => Err(BASH_BACKEND_GAP.to_string()),
+        "unobserve" => Ok(ResponseData::Absent),
+        // TS `executeBashAndWait`: run the command to completion and answer its
+        // `BashResult`. The gap error this used to return made `--mode rpc` a mode
+        // in which a client could not run a command at all, which is not the
+        // headless contract the CLI promises (review #11).
+        "bash" => bash(state, payload).await,
+        // TS `abortBash`: kill every in-flight run; the settled command reports
+        // `cancelled`. It now has something to abort (review #11).
+        "abort_bash" => {
+            state.user_bash.abort();
+            Ok(ResponseData::Absent)
+        }
         unknown => Err(format!("Unknown command: {unknown}")),
     }
 }

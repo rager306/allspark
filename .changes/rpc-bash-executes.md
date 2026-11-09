@@ -1,0 +1,1 @@
+- Fixed `--mode rpc` answering a gap error for every `bash` request (and reporting `abort_bash` success with nothing to abort): the in-process transport now runs commands through the same executor as the daemon and returns the `BashResult`.

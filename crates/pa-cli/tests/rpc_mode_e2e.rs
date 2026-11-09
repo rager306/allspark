@@ -547,15 +547,21 @@ fn rpc_daemon_mode_families_answer_the_ts_inprocess_semantics() {
         &["--mode", "rpc", "--no-session"],
         &turn_script(&json!(["unused"])),
     );
+    // TS `executeBashAndWait`: the command runs and its `BashResult` comes back.
+    // This used to answer a gap error, which made `--mode rpc` a mode where a
+    // client could not run a command at all (review #11).
     let bash = client.request(&json!({ "type": "bash", "command": "echo hi" }));
-    assert_eq!(bash["success"], false);
-    assert!(
-        bash["error"]
-            .as_str()
-            .unwrap()
-            .starts_with("Bash execution requires"),
-        "the bash gap names its backend: {bash}"
+    assert_eq!(bash["success"], true, "bash runs: {bash}");
+    assert_eq!(bash["data"]["output"], json!("hi\n"), "{bash}");
+    assert_eq!(bash["data"]["exitCode"], json!(0), "{bash}");
+    let failing = client.request(&json!({ "type": "bash", "command": "exit 4" }));
+    assert_eq!(
+        failing["data"]["exitCode"],
+        json!(4),
+        "a non-zero exit is a result, not a transport error: {failing}"
     );
+    let abort = client.request(&json!({ "type": "abort_bash" }));
+    assert_eq!(abort["success"], true, "{abort}");
     let send = client.request(&json!(
         { "type": "send_message", "targetActiveSessionId": "x", "message": "hi" }
     ));

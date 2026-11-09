@@ -453,11 +453,52 @@ pub(crate) struct AwaitedRun<'a> {
     cancellation: Arc<CancellationToken>,
 }
 
+impl AwaitedRun<'_> {
+    /// The run's cancellation token: `abort_bash` cancels it, so an executor
+    /// outside this module (the RPC transport's awaited command) kills its own
+    /// process tree on the same signal.
+    pub(crate) fn cancellation(&self) -> &CancellationToken {
+        &self.cancellation
+    }
+}
+
 impl Drop for AwaitedRun<'_> {
     fn drop(&mut self) {
         self.user_bash.awaited.fetch_sub(1, Ordering::SeqCst);
         self.user_bash.settled.notify_waiters();
     }
+}
+
+/// Run one command to completion and answer the TS `BashResult` wire shape.
+///
+/// The in-process RPC transport's `bash` command (TS `executeBashAndWait`) runs
+/// through the SAME executor the daemon's awaited path uses — one implementation
+/// of the shell resolution, the process group, the streaming window and the tail
+/// truncation — instead of a second, quietly different runner.
+pub(crate) async fn run_bash_to_result(
+    command: &str,
+    cwd: &str,
+    prefix: Option<&str>,
+    shell_path: Option<&str>,
+    cancellation: &CancellationToken,
+) -> serde_json::Value {
+    let end = run_bash(RunBash {
+        command,
+        cwd,
+        prefix,
+        shell_path,
+        cancellation,
+        on_chunk: None,
+    })
+    .await;
+    let result = BashResult {
+        output: end.output,
+        exit_code: end.exit_code,
+        cancelled: end.cancelled,
+        truncated: end.truncated,
+        full_output_path: end.full_output_path,
+    };
+    serde_json::to_value(&result).unwrap_or(Value::Null)
 }
 
 /// The TS `BashResult` wire shape.
