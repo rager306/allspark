@@ -40,18 +40,37 @@ FILES_API_CEILING = 3000
 
 # Conservative CI impact graph: some edges cover behavior beyond a direct
 # Cargo.toml link. Over-selecting is safe; missing a dependent test is not.
-# The changes job must select without installing Rust or running Cargo.
+# The changes job must select without installing Rust or running Cargo, so the
+# graph is a literal — and `test_ci_pr_crates.py` proves it against the real
+# manifests: every workspace member is a key, and every path dependency in a
+# member's Cargo.toml is an edge. Before that parity test existed this table held
+# only the nine upstream-shaped crates, so a PR touching `pa-types` ran none of
+# `pa-edit`/`pa-lsp`/`pa-graph`/`pa-ast` (review #20).
 WORKSPACE_DEPS = {
     "pa-types": set(),
     "pa-telemetry": set(),
+    "pa-agent": set(),
+    "pa-ast": set(),
+    "pa-diff": set(),
+    "pa-mem": set(),
+    "pa-jev": set(),
     "pa-ai": {"pa-types"},
-    "pa-models": {"pa-ai"},
-    "pa-agent": {"pa-ai", "pa-types"},
-    "pa-core": {"pa-agent", "pa-ai", "pa-models", "pa-types", "pa-telemetry"},
-    "pa-daemon": {"pa-core"},
-    "pa-tui": {"pa-types", "pa-core"},
-    "pa-cli": {"pa-types", "pa-telemetry", "pa-ai", "pa-models",
-               "pa-agent", "pa-core", "pa-daemon", "pa-tui"},
+    "pa-models": {"pa-ai", "pa-types"},
+    "pa-graph": {"pa-ast"},
+    "pa-lsp": {"pa-agent", "pa-ast", "pa-types"},
+    "pa-edit": {"pa-agent", "pa-ast", "pa-diff", "pa-lsp", "pa-types"},
+    "pa-core": {"pa-agent", "pa-ai", "pa-edit", "pa-graph", "pa-jev", "pa-lsp",
+                "pa-models", "pa-telemetry", "pa-types"},
+    "pa-daemon": {"pa-agent", "pa-ai", "pa-core", "pa-models", "pa-telemetry",
+                  "pa-types"},
+    # The TUI renders from wire types and links no session engine, but its e2e
+    # window tests drive real sessions through the engine: a conservative edge.
+    "pa-tui": {"pa-core", "pa-types"},
+    "pa-perf": {"pa-core", "pa-daemon", "pa-types"},
+    # pa-cli is the composition root: every crate is its dependency, directly or
+    # transitively, so it is a dependent of everything above it.
+    "pa-cli": {"pa-agent", "pa-ai", "pa-core", "pa-daemon", "pa-models",
+               "pa-telemetry", "pa-tui", "pa-types"},
 }
 
 
@@ -103,10 +122,14 @@ def select_crates(rows: list[tuple[str, str]]) -> list[str] | None:
             else:
                 print(f"non-crate path {candidate}: the full selection runs")
                 return None
-    # pa-types owns the shared wire vocabulary: run every workspace test for
-    # its changes, including the independent pa-telemetry leaf crate.
+    # pa-types owns the shared wire vocabulary: run every workspace test for its
+    # changes. The FULL-SELECTION sentinel (None), not this table's key set: the
+    # table can only name crates someone remembered, while the sentinel runs the
+    # shard's whole enumeration — every member, including one added after this
+    # file was last edited (review #20).
     if "pa-types" in crates:
-        return sorted(WORKSPACE_DEPS)
+        print("pa-types owns the shared wire vocabulary: the full selection runs")
+        return None
     # Walk upward through the DAG until no dependent is left unselected.
     while True:
         dependents = {crate for crate, deps in WORKSPACE_DEPS.items()

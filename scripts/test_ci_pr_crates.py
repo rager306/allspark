@@ -21,6 +21,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -56,8 +57,9 @@ class TheMappingTestCase(unittest.TestCase):
             "crates/pa-tui/src/view/runs.rs",
         ])
         self.assertEqual(rc, 0, out)
-        self.assertEqual(outputs["crates"], "pa-cli,pa-daemon,pa-tui")
-        self.assertIn("crates (3: pa-cli, pa-daemon, pa-tui)", outputs["scope"])
+        self.assertEqual(outputs["crates"], "pa-cli,pa-daemon,pa-perf,pa-tui")
+        self.assertIn("crates (4: pa-cli, pa-daemon, pa-perf, pa-tui)",
+                      outputs["scope"])
 
     def test_any_non_crate_path_fails_safe_to_the_full_selection(self):
         rc, out, outputs = run_mapper([
@@ -86,10 +88,25 @@ class TheMappingTestCase(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertEqual(outputs["crates"], "pa-cli,pa-tui")
 
-    def test_pa_types_only_runs_every_crate(self):
+    def test_pa_types_only_runs_the_full_selection(self):
+        # pa-types owns the shared wire vocabulary, so its PR runs EVERY unit.
+        # The answer is the full-selection sentinel (an empty `crates`), not this
+        # file's key set: the table can only name crates someone remembered
+        # (review #20 — the fork crates were missing for months).
         rc, out, outputs = run_mapper(["crates/pa-types/src/lib.rs"])
         self.assertEqual(rc, 0, out)
-        self.assertEqual(outputs["crates"], ",".join(sorted(ci_pr_crates.WORKSPACE_DEPS)))
+        self.assertEqual(outputs["crates"], "")
+        self.assertEqual(outputs["scope"], "all")
+
+    def test_a_fork_crate_pulls_its_dependents(self):
+        # The fork crates were absent from the graph entirely, so a pa-lsp change
+        # ran pa-lsp and pa-cli and none of pa-edit / pa-core / pa-daemon that
+        # actually depend on it (review #20).
+        rc, out, outputs = run_mapper(["crates/pa-lsp/src/lib.rs"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(
+            outputs["crates"],
+            "pa-cli,pa-core,pa-daemon,pa-edit,pa-lsp,pa-perf,pa-tui")
 
     def test_pa_tui_only_runs_pa_cli_too(self):
         rc, out, outputs = run_mapper(["crates/pa-tui/src/lib.rs"])
@@ -100,7 +117,7 @@ class TheMappingTestCase(unittest.TestCase):
         rc, out, outputs = run_mapper(["crates/pa-telemetry/src/lib.rs"])
         self.assertEqual(rc, 0, out)
         self.assertEqual(outputs["crates"],
-                         "pa-cli,pa-core,pa-daemon,pa-telemetry,pa-tui")
+                         "pa-cli,pa-core,pa-daemon,pa-perf,pa-telemetry,pa-tui")
 
     def test_an_unknown_crate_fails_safe(self):
         rc, out, outputs = run_mapper(["crates/pa-future/src/lib.rs"])
@@ -155,6 +172,66 @@ class TheMappingTestCase(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertEqual(outputs["crates"], "")
         self.assertIn("ceiling", out)
+
+
+class TheGraphParityTests(unittest.TestCase):
+    """`WORKSPACE_DEPS` is a literal because the changes job cannot run Cargo, so
+    nothing but a test can keep it honest. Review #20: it listed only the nine
+    upstream crates, so `pa-types` (the crate whose whole purpose is being shared)
+    selected none of `pa-edit`/`pa-lsp`/`pa-graph`/`pa-ast`/`pa-mem` that depend on
+    it, and a fork-crate PR ran none of its dependents.
+
+    The oracle is the manifests themselves: every workspace member is a key, and
+    every path dependency a member declares is an edge. Over-selecting beyond the
+    manifests (the e2e edges above) is allowed — that is why the edge check is a
+    superset, while the key set must match exactly.
+    """
+
+    def manifests(self) -> dict[str, set[str]]:
+        root = SCRIPTS_DIR.parent
+        workspace = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
+        members = workspace["workspace"]["members"]
+        by_path = {}
+        for spec in (workspace["workspace"]["dependencies"] or {}).values():
+            if isinstance(spec, dict) and "path" in spec:
+                by_path["crates/" + Path(spec["path"]).name] =                     Path(spec["path"]).name
+        graph: dict[str, set[str]] = {}
+        for member in members:
+            manifest = tomllib.loads((root / member / "Cargo.toml").read_text(encoding="utf-8"))
+            name = manifest["package"]["name"]
+            edges: set[str] = set()
+            tables = [manifest.get(table) for table in
+                      ("dependencies", "dev-dependencies", "build-dependencies")]
+            tables += [table
+                       for target in (manifest.get("target") or {}).values()
+                       for table in (target.get("dependencies"),
+                                     target.get("dev-dependencies"),
+                                     target.get("build-dependencies"))]
+            for table in tables:
+                for dependency, spec in (table or {}).items():
+                    if isinstance(spec, dict) and "path" in spec:
+                        edges.add(Path(spec["path"]).name)
+                    elif dependency in by_path:
+                        edges.add(by_path[dependency])
+            graph[name] = edges
+        return graph
+
+    def test_every_workspace_member_is_in_the_graph(self):
+        graph = self.manifests()
+        self.assertEqual(
+            sorted(ci_pr_crates.WORKSPACE_DEPS), sorted(graph),
+            "every workspace member must be a key: an unknown crate name fails the "
+            "whole PR selection safe, but a MISSING member is silently untested")
+
+    def test_every_manifest_path_dependency_is_an_edge(self):
+        graph = self.manifests()
+        missing = {name: sorted(edges - ci_pr_crates.WORKSPACE_DEPS.get(name, set()))
+                   for name, edges in graph.items()
+                   if edges - ci_pr_crates.WORKSPACE_DEPS.get(name, set())}
+        self.assertEqual(
+            missing, {},
+            "a path dependency absent from the graph means a change to that "
+            "dependency never selects this crate's tests")
 
 
 if __name__ == "__main__":
