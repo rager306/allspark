@@ -1,0 +1,1 @@
+- Fixed the `allspark` launcher refusing every socket directory on macOS (BSD `stat`), a standalone fork install leaving its own daemon running, and `--force` signalling a daemon it had only met on a socket; the QA manifest no longer stores the provider API key, and the CI test summary now fails when a shard's lifecycle checks fail.
