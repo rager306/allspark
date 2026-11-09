@@ -520,6 +520,110 @@ fn a_fork_run_does_not_claim_the_prefix_shared_with_the_upstream_install() {
     );
 }
 
+/// A STANDALONE fork install must recognise its own daemon.
+///
+/// `--fork-run` deliberately drops the prefix root (the upstream Rust install shares
+/// `${PREFIX}/share`), and a standalone `curl | sh` has no invoking payload directory —
+/// so the probe used to receive NO install root at all, classified this install's own
+/// daemon as `foreign`, left it running through the update, and the installer reported
+/// success (review #17). The tree this run writes IS its payload tree: `${share_dir}`,
+/// `${PREFIX}/libexec` in the fork layout.
+///
+/// Pinned where the value is chosen — the shell, not the probe: a stub probe records the
+/// argv the handler actually passes.
+#[test]
+fn a_standalone_fork_run_owns_the_libexec_tree_it_writes() {
+    let block = stop_handler_block();
+    let dir = tempfile::tempdir().expect("scratch dir");
+    let argv_file = dir.path().join("probe-argv");
+    let stub = dir.path().join("stub-probe");
+    std::fs::write(
+        &stub,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\nprintf 'rust:stopped:0\\n'\n",
+            argv_file.display()
+        ),
+    )
+    .expect("write the stub probe");
+    make_executable(&stub);
+    let harness = format!(
+        "#!/bin/sh\n\
+         set -u\n\
+         {block}\n\
+         say() {{ :; }}\n\
+         note() {{ :; }}\n\
+         todo() {{ :; }}\n\
+         step_start() {{ :; }}\n\
+         step_ok() {{ :; }}\n\
+         step_fail() {{ :; }}\n\
+         step_clear() {{ :; }}\n\
+         PREFIX=\"/fixture/prefix\"\n\
+         share_dir=\"${{PREFIX}}/libexec\"\n\
+         FORCE=0\n\
+         ui_pid=\"\"\n\
+         probe_py=/dev/null\n\
+         live_daemon_socket=\"\"\n\
+         ts_stop_summary=\"\"\n\
+         ts_stop_found_any=\"\"\n\
+         ts_stop_refused=\"\"\n\
+         ts_stop_rust_stopped=\"\"\n\
+         stop_daemon_candidate \"$SOCKET\" ours\n"
+    );
+    let path = dir.path().join("handler.sh");
+    std::fs::write(&path, harness).expect("write the harness");
+    let socket = dir.path().join("daemon.sock");
+    let _listener = UnixListener::bind(&socket).expect("bind the fixture socket");
+
+    let run = |fork_run: &str, install_payload_dir: &str| -> Vec<String> {
+        let output = Command::new("sh")
+            .arg(&path)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("SOCKET", &socket)
+            .env("UVPY", &stub)
+            .env("fork_run", fork_run)
+            .env("install_payload_dir", install_payload_dir)
+            .output()
+            .expect("run the handler harness");
+        assert!(
+            output.status.success(),
+            "the handler runs: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::fs::read_to_string(&argv_file)
+            .expect("the stub probe ran")
+            .lines()
+            .map(str::to_string)
+            .collect()
+    };
+
+    let payload_arg = |argv: &[String]| -> String {
+        argv.iter()
+            .find(|arg| arg.starts_with("--payload-dir="))
+            .cloned()
+            .unwrap_or_default()
+    };
+
+    // The bug: a standalone fork run passed an empty root.
+    assert_eq!(
+        payload_arg(&run("yes", "")),
+        "--payload-dir=/fixture/prefix/libexec",
+        "a standalone fork run must own the libexec tree it writes"
+    );
+    // The funnel's verified invoking payload still wins when it names one.
+    assert_eq!(
+        payload_arg(&run("yes", "/invoking/libexec")),
+        "--payload-dir=/invoking/libexec",
+        "an invoking payload root is the more precise answer and stays"
+    );
+    // An upstream-shaped run keeps the prefix root and passes no payload dir.
+    assert_eq!(
+        payload_arg(&run("no", "")),
+        "--payload-dir=",
+        "a non-fork run keeps the prefix root it already passes; nothing is invented"
+    );
+}
+
 fn make_executable(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let mut permissions = std::fs::metadata(path).expect("metadata").permissions();

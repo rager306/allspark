@@ -1799,6 +1799,16 @@ esac
 # OUTSIDE the prefix, and that payload IS the install the update replaces. The
 # funnel exports PRIME_AGENT_INSTALL_PAYLOAD_DIR; a standalone curl|sh run has
 # no invoking payload and the prefix alone decides.
+#
+# THE STANDALONE FORK RUN (review #17): that last sentence was false for a fork
+# run. `--fork-run` deliberately DROPS the prefix root (the upstream Rust
+# install shares it), so a standalone `curl | sh` of the fork installer had no
+# owned root at all: every Rust daemon answered `foreign`, the old daemon was
+# left holding the replaced binary, and the update reported success. The tree
+# this run actually writes is ${share_dir} — `${PREFIX}/libexec` in the fork
+# layout — so THAT is the root a standalone fork run owns, alongside any
+# verified invoking payload root. Narrow on purpose: libexec/, never the shared
+# prefix.
 install_payload_dir="${PRIME_AGENT_INSTALL_PAYLOAD_DIR:-}"
 # THE CANDIDATES ride named variables, never a space-joined list (the
 # bots' finding): a socket path containing whitespace would word-split
@@ -2575,8 +2585,17 @@ stop_daemon_candidate() {
     probe_ui_file=""
     if [ -n "$ui_pid" ]; then probe_ui_file="$ui_active"; fi
     fork_run_flag=""
-    if [ "${fork_run:-}" = "yes" ]; then fork_run_flag="--fork-run"; fi
-    verdict="$(PRIME_AGENT_INSTALL_UI_FILE="$probe_ui_file" "$UVPY" "$probe_py" "--kind=${candidate_kind}" "--force=${FORCE}" "--prefix=${PREFIX}" "--payload-dir=${install_payload_dir}" ${fork_run_flag} "$socket_path" 4>&2 2>/dev/null)" || verdict="probe-error"
+    probe_payload_dir="$install_payload_dir"
+    if [ "${fork_run:-}" = "yes" ]; then
+      fork_run_flag="--fork-run"
+      # A standalone `curl | sh` of the fork installer has no invoking payload,
+      # and a fork run does not own the shared prefix — so without this the probe
+      # got NO root, called this install's own daemon `foreign`, and left it
+      # running through the update (review #17). The tree this run writes IS its
+      # payload tree: ${share_dir}, i.e. ${PREFIX}/libexec.
+      if [ -z "$probe_payload_dir" ]; then probe_payload_dir="$share_dir"; fi
+    fi
+    verdict="$(PRIME_AGENT_INSTALL_UI_FILE="$probe_ui_file" "$UVPY" "$probe_py" "--kind=${candidate_kind}" "--force=${FORCE}" "--prefix=${PREFIX}" "--payload-dir=${probe_payload_dir}" ${fork_run_flag} "$socket_path" 4>&2 2>/dev/null)" || verdict="probe-error"
   else
     verdict="absent"
   fi
