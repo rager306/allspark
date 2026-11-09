@@ -36,7 +36,11 @@ either changes.
 
 ## Branding
 
-- Flag "pi"/"pi-mono"/"pi-ai"/"Prime Intellect" naming on user-visible surfaces — docs, READMEs, CLI help text, error messages, splash/onboarding strings, keybinding hints, TUI labels, and comments that quote user-facing strings. The product is Prime Agent.
+- Flag "pi"/"pi-mono"/"pi-ai"/"Prime Intellect" naming on user-visible surfaces — docs, READMEs, CLI help text, error messages, splash/onboarding strings, keybinding hints, TUI labels, and comments that quote user-facing strings — and name the product by its half of the fork's identity (AGENTS.md, "Fork identity and isolation"):
+  - the user-facing product is **allspark** (docs, READMEs, splash/onboarding, TUI labels, error text);
+  - the compiled payload keeps the upstream name **prime-agent** (the `[[bin]]`, the `pa-*` crates, CLI command examples). Never flag or "fix" that half;
+  - wire-protocol identifiers stay byte-compatible with the TS product: `PRIME_AGENT_*` / `PI_*` env vars, settings keys, provider IDs, harness `_meta` namespaces. Parity beats branding on the wire.
+  - A review comment that recommends renaming the binary, a crate, or a wire identifier is wrong; one that recommends branding a NEW user-visible string "Prime Agent" is wrong too — that string is allspark.
 - Wire identifiers that must stay byte-compatible with the TS product are exempt and stay until the TS side renames them: `PI_*` env vars (`PI_PACKAGE_DIR`), settings keys, provider ids such as `prime-inference`, harness `_meta` namespaces, and lockfile names. Parity beats branding on the wire.
 
 ## Adoption telemetry
