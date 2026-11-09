@@ -75,7 +75,16 @@ impl AgentCronJobStore {
             let mut dispatches = Vec::new();
             let mut failure: Option<anyhow::Error> = None;
             for path in &paths {
-                let mut state = read_jobs_state(path);
+                // A read this build cannot interpret is an ERROR, not an empty catalog: the
+                // writer below replaces the file, so a lenient read here would destroy the
+                // rows it dropped (review #7).
+                let mut state = match read_jobs_state_checked(path) {
+                    Ok(state) => state,
+                    Err(error) => {
+                        failure = Some(error);
+                        break;
+                    }
+                };
                 let before = serde_json::to_string(&state).unwrap_or_default();
                 let claimed = mutator(&mut state);
                 if serde_json::to_string(&state).unwrap_or_default() != before {
@@ -375,8 +384,84 @@ pub(crate) fn read_jobs_state(path: &Path) -> CronJobsState {
     }
 }
 
+/// The state a READ-MODIFY-WRITE path may build on (review #7): absent reads as empty,
+/// anything this build cannot understand is an error.
+///
+/// [`read_jobs_state`] is deliberately lenient — a listing must render even for a file a
+/// newer build wrote — but the same leniency is destructive on a write path. A file with one
+/// unparsable row used to read as "the rest of the catalog", so the next create appended to
+/// that partial view and replaced the artifact: the rows the read had silently dropped lost
+/// their schedules, and a top-level parse failure turned "one corrupted file" into "the
+/// catalog is empty" followed by an overwrite with only the new job.
+///
+/// So: `NotFound` is genuinely empty, every other read error, an invalid document, and any
+/// invalid row or dispatch is refused BEFORE the writer replaces the file. The original
+/// bytes stay for repair, and the caller reports the failure instead of acknowledging a
+/// change it destroyed the evidence for.
+pub(crate) fn read_jobs_state_checked(path: &Path) -> anyhow::Result<CronJobsState> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(CronJobsState::default())
+        }
+        Err(error) => {
+            return Err(anyhow::anyhow!(
+                "scheduled jobs state {} is unreadable: {error}",
+                path.display()
+            ))
+        }
+    };
+    let parsed: serde_json::Value = serde_json::from_str(&raw).map_err(|error| {
+        anyhow::anyhow!(
+            "scheduled jobs state {} is not valid JSON ({error}); refusing to overwrite it",
+            path.display()
+        )
+    })?;
+    let rows = |key: &str| -> anyhow::Result<&Vec<serde_json::Value>> {
+        match parsed.get(key) {
+            None | Some(serde_json::Value::Null) => Ok(&EMPTY_ROWS),
+            Some(serde_json::Value::Array(rows)) => Ok(rows),
+            Some(other) => Err(anyhow::anyhow!(
+                "scheduled jobs state {} has a {key} field that is not a list ({other}); \
+                 refusing to overwrite it",
+                path.display()
+            )),
+        }
+    };
+    let jobs = rows("jobs")?
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            serde_json::from_value::<AgentCronJob>(row.clone()).map_err(|error| {
+                anyhow::anyhow!(
+                    "scheduled jobs state {} has an unreadable job at [{index}] ({error}); \
+                     refusing to overwrite it",
+                    path.display()
+                )
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let dispatches = rows("dispatches")?
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            serde_json::from_value::<AgentCronDispatchRecord>(row.clone()).map_err(|error| {
+                anyhow::anyhow!(
+                    "scheduled jobs state {} has an unreadable dispatch at [{index}] ({error}); \
+                     refusing to overwrite it",
+                    path.display()
+                )
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok(CronJobsState { jobs, dispatches })
+}
+
+/// The empty row list a document without (or with a null) `jobs`/`dispatches` reads as.
+static EMPTY_ROWS: Vec<serde_json::Value> = Vec::new();
+
 fn write_jobs_file(path: &Path, jobs: &[AgentCronJob], merge_current: bool) -> anyhow::Result<()> {
-    let current = read_jobs_state(path);
+    let current = read_jobs_state_checked(path)?;
     let jobs = if merge_current {
         merge_fresh_jobs(current.jobs, jobs.to_vec())
     } else {
@@ -415,6 +500,91 @@ mod tests {
         let path = dir.path().join("jobs.json");
         std::fs::create_dir(&path).unwrap();
         assert!(write_jobs_state(&path, &CronJobsState::default()).is_err());
+    }
+
+    /// A catalog this build cannot read is REFUSED before a write path replaces it
+    /// (review #7).
+    ///
+    /// `read_jobs_state` is lenient on purpose — a listing must render for a file a newer
+    /// build wrote — but `create` reads the catalog and then REPLACES it. The lenient read
+    /// turned one corrupt file into "the catalog is empty", so the create wrote the artifact
+    /// holding only the new job and the original schedule was gone before anyone could
+    /// repair it. Both shapes below are the finding: the document never parsed, and the
+    /// document parsed with one row that did not.
+    #[test]
+    fn an_unreadable_catalog_is_refused_instead_of_overwritten() {
+        let now = 1_700_000_000_000;
+        let cases = [
+            ("not JSON at all", "this is not json"),
+            (
+                "one unreadable row beside a good one",
+                r#"{"jobs":[{"id":"job-a","status":"active","activeSessionId":"s","sessionId":"s","sessionFile":"/s.jsonl","cwd":"/w","prompt":"keep me","schedule":{"kind":"interval","expression":"every 10m","intervalMs":600000},"createdAt":"2023-11-14T22:13:20.000Z","updatedAt":"2023-11-14T22:13:20.000Z"},{"id":42}]}"#,
+            ),
+        ];
+        for (label, corrupt) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("jobs.json");
+            std::fs::write(&path, corrupt).unwrap();
+            let store = AgentCronJobStore::new(path.clone());
+            let error = store
+                .create(&crate::cron::store::input("tick", "every 10m", now))
+                .expect_err("a create must not overwrite a catalog it cannot read");
+            assert!(
+                error.to_string().contains("refusing to overwrite"),
+                "{label}: the refusal must say why the file was kept: {error}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                corrupt,
+                "{label}: the original bytes stay for repair"
+            );
+        }
+    }
+
+    /// The claim path must refuse the same file: `claim_due` rewrites every partition, so a
+    /// lenient read here would mark the rows it could parse as claimed and drop the rest
+    /// (review #7 — a lost schedule is worse than a refused pass, which retries).
+    #[test]
+    fn a_claim_refuses_a_partition_it_cannot_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.json");
+        let corrupt = r#"{"jobs":[{"id":"job-a","status":"active"}]}"#;
+        std::fs::write(&path, corrupt).unwrap();
+        let store = AgentCronJobStore::new(path.clone());
+        let error = store
+            .claim_due(1_700_000_000_000, 1_700_000_000_000)
+            .expect_err("a claim must not rewrite a catalog it cannot read")
+            .0;
+        assert!(
+            error.to_string().contains("refusing to overwrite"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            corrupt,
+            "the original bytes stay for repair"
+        );
+    }
+
+    /// The checked read: absent is empty, everything unreadable is an error (review #7).
+    #[test]
+    fn the_checked_read_defaults_only_on_a_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.json");
+        assert_eq!(
+            read_jobs_state_checked(&path).expect("an absent catalog is empty"),
+            CronJobsState::default()
+        );
+        std::fs::write(&path, "{}").unwrap();
+        assert_eq!(
+            read_jobs_state_checked(&path).expect("an empty object is an empty catalog"),
+            CronJobsState::default()
+        );
+        std::fs::write(&path, r#"{"jobs":"nope"}"#).unwrap();
+        let error = read_jobs_state_checked(&path).expect_err("a non-list field is refused");
+        assert!(error.to_string().contains("not a list"), "{error}");
+        // The lenient read is unchanged: listings still render a partial catalog.
+        assert_eq!(read_jobs_state(&path), CronJobsState::default());
     }
 
     /// The cron state write opts in (the TS test pins `{ fsync: true, mode: 0o600 }`)

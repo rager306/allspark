@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::state::{
-    merge_fresh_jobs, read_jobs_state, recover_interrupted_in_state, with_state_locks,
-    write_jobs_state,
+    merge_fresh_jobs, read_jobs_state, read_jobs_state_checked, recover_interrupted_in_state,
+    with_state_locks, write_jobs_state,
 };
 use super::{
     AgentCronDispatchRecord, AgentCronJobStore, CronJobsState, SESSION_SCHEDULED_JOBS_FILENAME,
@@ -61,7 +61,9 @@ impl AgentCronJobStore {
         with_state_locks(
             std::slice::from_ref(&path),
             || -> anyhow::Result<Vec<AgentCronJob>> {
-                let mut state = read_jobs_state(&path);
+                // The recovery rewrites the artifact, so an unreadable one is refused rather
+                // than replaced by the rows a lenient read happened to parse (review #7).
+                let mut state = read_jobs_state_checked(&path)?;
                 let mut recovered = Vec::new();
                 if !state.dispatches.is_empty() {
                     recover_interrupted_in_state(&mut state, now, &mut recovered, None);
@@ -90,10 +92,13 @@ impl AgentCronJobStore {
         }
         let paths: Vec<PathBuf> = artifact_files.values().cloned().collect();
         let with_locks = with_state_locks(&paths, || -> anyhow::Result<()> {
+            // Every partition is read through the CHECKED read: this writer replaces all of
+            // them, so one unreadable partition must abort the pass instead of being rewritten
+            // from a partial view (review #7).
             let current_by_session_id: HashMap<String, CronJobsState> = artifact_files
                 .iter()
-                .map(|(session_id, path)| (session_id.clone(), read_jobs_state(path)))
-                .collect();
+                .map(|(session_id, path)| Ok((session_id.clone(), read_jobs_state_checked(path)?)))
+                .collect::<anyhow::Result<HashMap<_, _>>>()?;
             let incoming_by_id: HashMap<&str, &AgentCronJob> =
                 jobs.iter().map(|job| (job.id.as_str(), job)).collect();
             let mut merged_by_session_id: HashMap<String, Vec<AgentCronJob>> = HashMap::new();
