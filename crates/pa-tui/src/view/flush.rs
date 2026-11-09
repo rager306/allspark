@@ -47,7 +47,7 @@ impl AgentView {
         sink.feed(out, &layout.tail)?;
         let dock = self.render_dock(width);
         sink.feed(out, &dock)?;
-        sink.finish(out)?;
+        sink.finish(out, self.clear_on_shrink)?;
         self.flushed_frame = std::mem::take(&mut sink.texts);
         Ok(())
     }
@@ -139,7 +139,18 @@ impl FlushSink {
 
     /// Write what the decided mode owes: the append tail, the repaint
     /// erase plus the ring, or nothing for an identical frame.
-    fn finish(&mut self, out: &mut dyn std::io::Write) -> std::io::Result<()> {
+    ///
+    /// `clear_on_shrink` (`terminal.clearOnShrink`) decides what a frame that
+    /// got SHORTER does. On: the screen is cleared before the repaint, so the rows
+    /// the previous frame used cannot survive under the shorter one. Off: the
+    /// ring repaints the visible window in place and the leftover rows stay —
+    /// the user's choice between flicker and stale rows, which is the whole point
+    /// of the row in the settings menu (review #41).
+    fn finish(
+        &mut self,
+        out: &mut dyn std::io::Write,
+        clear_on_shrink: bool,
+    ) -> std::io::Result<()> {
         if self.appending {
             if !self.chunk.is_empty() {
                 write_with_progress(
@@ -152,7 +163,11 @@ impl FlushSink {
         } else if self.repaint || self.texts.len() < self.flushed.len() {
             // A frame that shrank never rewinds into a rewrite of
             // scrollback: the changed region repaints the visible window.
-            let mut buffer = String::from("\x1b[2J\x1b[H");
+            let shrank = self.texts.len() < self.flushed.len();
+            let mut buffer = String::new();
+            if !shrank || clear_on_shrink {
+                buffer.push_str("\x1b[2J\x1b[H");
+            }
             let ring: Vec<crate::Line> = std::mem::take(&mut self.ring).into_iter().collect();
             crate::interactive::write_flush_rows(&mut buffer, &ring);
             write_with_progress(

@@ -1,0 +1,1 @@
+- Fixed two `/settings` rows that changed nothing: **Clear on shrink** and **Terminal progress** now reach the renderer — the exit flush clears the screen before repainting a shrunk frame when enabled, and a running turn shows (and clears) the OSC 9;4 tab-bar indicator.

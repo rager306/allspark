@@ -437,18 +437,26 @@ impl SessionUi {
                 }
             }
             "clear-on-shrink" => {
-                self.persist_bool_setting(
+                // The row is a RENDERING choice (review #41): persist it and apply it to the
+                // exit flush now, so the next shrink behaves the way the row says.
+                if self.persist_bool_setting(
                     |settings, enabled| settings.set_clear_on_shrink(enabled),
                     value,
                     view,
-                );
+                ) {
+                    view.clear_on_shrink = value == "true";
+                }
             }
             "terminal-progress" => {
-                self.persist_bool_setting(
+                // The indicator is emitted from the run loop's turn state (review #42); the flag
+                // the loop reads is the one this row just set.
+                if self.persist_bool_setting(
                     |settings, enabled| settings.set_show_terminal_progress(enabled),
                     value,
                     view,
-                );
+                ) {
+                    view.terminal_progress = value == "true";
+                }
             }
             "idle-eviction-minutes" => {
                 if let Some(settings) = &self.client_settings {
@@ -605,17 +613,23 @@ impl SessionUi {
     }
 
     /// Persist one boolean row through the settings seam, surfacing errors.
+    ///
+    /// Returns whether the value is now in effect: a failed persist leaves the live flag
+    /// alone (the store and the surface must not disagree), and a build without a settings
+    /// seam still applies the choice to this process.
     fn persist_bool_setting(
         &mut self,
         set: impl FnOnce(&dyn crate::client_settings::ClientSettings, bool) -> anyhow::Result<()>,
         value: &str,
         view: &mut AgentView,
-    ) {
+    ) -> bool {
         if let Some(settings) = &self.client_settings {
             if let Err(error) = set(settings.as_ref(), value == "true") {
                 self.error_row(&format!("{error:#}"), view);
+                return false;
             }
         }
+        true
     }
 
     /// A session-switch daemon command: the result never blocks the menu.

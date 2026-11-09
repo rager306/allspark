@@ -18,10 +18,14 @@ pub(crate) const PROVIDERS_PROMPT: &str = "Connect other providers, or continue.
 pub(crate) const PROVIDERS_SEARCH_PLACEHOLDER: &str = "Search providers";
 pub(crate) const PROVIDERS_NOTE: &str = "You can add providers anytime with /login.";
 pub(crate) const CONTINUE_LABEL: &str = "Continue";
-pub(crate) const LOGIN_ACTION_LABEL: &str = "Log in with Prime Intellect";
+/// The welcome action names the PROVIDER the sign-in talks to, not the upstream
+/// vendor's brand: the fork's user-facing product is allspark, and "Prime Intellect"
+/// on an onboarding screen is the upstream name (review #44). The provider id and its
+/// display name stay untouched — parity beats branding on the wire, not in a label.
+pub(crate) const LOGIN_ACTION_LABEL: &str = "Log in with Prime Inference";
 /// The Prime Inference login's heading: the panel that owns the block names itself in place of the
 /// brand line.
-pub(crate) const PRIME_LOGIN_HEADING: &str = "Login with Prime Intellect";
+pub(crate) const PRIME_LOGIN_HEADING: &str = "Login with Prime Inference";
 pub(crate) const API_KEY_PROMPT: &str = "Enter API key:";
 
 const WELCOME_DESCRIPTION_PARAGRAPHS: [&str; 2] = [

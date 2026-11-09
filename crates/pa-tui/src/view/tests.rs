@@ -818,12 +818,49 @@ fn flush_streams_append_then_repaints_the_changed_tail() {
     assert!(joined.contains("late turn"));
     assert!(!joined.contains("reply 0"));
 
-    // A shrinking rebuild never rewinds into a rewrite of scrollback.
+    // A shrinking rebuild never rewinds into a rewrite of scrollback: the changed
+    // region repaints the visible window.
     v.clear_chat();
     let repaint = flush_bytes(&mut v, 80, 24);
-    assert!(repaint.starts_with(b"\x1b[2J\x1b[H"));
     let joined = String::from_utf8_lossy(&repaint);
     assert!(!joined.contains("second turn"));
+}
+
+/// `terminal.clearOnShrink` decides what a frame that got SHORTER does, and the two
+/// values must render differently — otherwise the settings row is a placebo (review
+/// #41: it was persisted, displayed, and read by nothing).
+#[test]
+fn the_shrink_repaint_follows_the_clear_on_shrink_setting() {
+    let mut shrank_without = view();
+    shrank_without.push(TranscriptItem::UserMessage {
+        text: "a turn that is about to disappear".to_string(),
+    });
+    let first = flush_bytes(&mut shrank_without, 80, 24);
+    assert!(!first.is_empty(), "the first flush appends the frame");
+    shrank_without.clear_chat();
+
+    // Off (the TS default): the ring repaints in place, leaving the previous frame's
+    // rows alone — no screen-wide erase.
+    assert!(!shrank_without.clear_on_shrink);
+    let off = flush_bytes(&mut shrank_without, 80, 24);
+    assert!(
+        !off.is_empty() && !off.starts_with(b"\x1b[2J"),
+        "clearOnShrink off repaints without erasing the screen"
+    );
+
+    // On: the same shrink clears first, so no leftover row can survive.
+    let mut shrank_with = view();
+    shrank_with.push(TranscriptItem::UserMessage {
+        text: "a turn that is about to disappear".to_string(),
+    });
+    flush_bytes(&mut shrank_with, 80, 24);
+    shrank_with.clear_chat();
+    shrank_with.clear_on_shrink = true;
+    let on = flush_bytes(&mut shrank_with, 80, 24);
+    assert!(
+        on.starts_with(b"\x1b[2J\x1b[H"),
+        "clearOnShrink on clears the screen before the repaint"
+    );
 }
 
 #[test]

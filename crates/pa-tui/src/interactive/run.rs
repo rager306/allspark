@@ -253,6 +253,11 @@ async fn run_interactive_surface(
     view.show_images = options.show_images;
     if let Some(settings) = &options.client_settings {
         view.show_hardware_cursor = settings.show_hardware_cursor();
+        // The two rendering rows (`terminal.clearOnShrink`, `terminal.showTerminalProgress`)
+        // travel the same seam as the cursor row: they are client-side settings the surface
+        // must consume, not just persist (review #41, #42).
+        view.clear_on_shrink = settings.clear_on_shrink();
+        view.terminal_progress = settings.show_terminal_progress();
         // A chat opens at the persisted `chatDetail` level; an unset store reads as the collapsed
         // `overview` startup level (operator directive 2026-09-28).
         view.detail = crate::chat::Detail::from_wire_name(&settings.chat_detail());
@@ -2055,6 +2060,11 @@ async fn run_interactive_surface(
         // after the select, right before the paint — because a loop-top refresh goes stale across
         // the select's sleep: the expiry wake would repaint the hint with the pre-sleep value.
         view.chrome.tray_override = session.tray_override(&view);
+
+        // The tab-bar spinner (`terminal.showTerminalProgress`): the transition, not the frame,
+        // is what the terminal sees — a per-frame emit would flood it, so the module debounces
+        // on the state it last wrote (review #42).
+        crate::terminal_progress::sync(view.terminal_progress, session.turn_active);
 
         // The frame gate: at most one render per MIN_RENDER_INTERVAL_MS — every state change inside
         // the window coalesces into the next frame (a stream burst renders at most one frame per

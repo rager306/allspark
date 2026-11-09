@@ -322,6 +322,9 @@ impl Renderer {
     fn suspend(&mut self, view: &mut AgentView) -> Result<()> {
         match self {
             Renderer::Terminal { .. } => {
+                // The shell prompt takes over the pane: the turn's tab-bar spinner must not
+                // survive into it (the turn is still running when a client command suspends).
+                crate::terminal_progress::release();
                 let _ = crate::mouse_tracking::disable(&mut std::io::stdout());
                 // The raw-mode bracket takes the enhanced-key modes with it; `resume` re-enables
                 // both.
@@ -494,6 +497,9 @@ impl Renderer {
         } else {
             crate::enhanced_keys::drain(&mut std::io::stdout());
         }
+        // The turn's tab-bar indicator releases with the surface, before the alt screen goes:
+        // the shell prompt after the exit must not inherit a spinner.
+        crate::terminal_progress::release();
         // Tracking releases with the surface (disable written before leaving the alt screen).
         let _ = crate::mouse_tracking::disable(&mut std::io::stdout());
         // The enhanced-key modes release with the raw-mode bracket (the paste disable, the

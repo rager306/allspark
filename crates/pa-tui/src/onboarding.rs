@@ -837,7 +837,7 @@ mod tests {
         assert!(
             !text
                 .iter()
-                .any(|row| row.contains("Login with Prime Intellect")),
+                .any(|row| row.contains(crate::onboarding_flow::PRIME_LOGIN_HEADING)),
             "no login heading rides the question: {text:?}"
         );
         assert!(

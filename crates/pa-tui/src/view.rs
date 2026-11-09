@@ -110,6 +110,15 @@ pub struct AgentView {
     /// The `terminal.showImages` setting (default true): image blocks
     /// render metadata rows when set, `[Image: ...]` placeholders otherwise.
     pub show_images: bool,
+    /// The `terminal.clearOnShrink` setting (default false): the exit flush clears
+    /// the screen before repainting a frame that shrank, instead of rewriting the
+    /// visible window in place. Off leaves the previous frame's leftover rows on
+    /// screen; on removes them at the cost of a flicker — which is exactly the
+    /// trade the menu row names (review #41).
+    pub clear_on_shrink: bool,
+    /// The `terminal.showTerminalProgress` setting (default false): the run loop
+    /// emits the OSC 9;4 turn indicator while a turn is active (review #42).
+    pub terminal_progress: bool,
     /// The `showHardwareCursor` setting (TS default false): frame paints
     /// never drag a visible cursor across the pane.
     pub show_hardware_cursor: bool,
@@ -315,6 +324,8 @@ impl AgentView {
             info_panel: None,
             show_images: true,
             show_hardware_cursor: false,
+            clear_on_shrink: false,
+            terminal_progress: false,
             splash_suppressed: false,
             older_history_loading: false,
             scroll_top: 0,
