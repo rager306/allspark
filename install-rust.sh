@@ -1929,7 +1929,7 @@ fi
 # holds a plain call.
 probe_py="${dl}/daemon-stop.py"
 cat > "$probe_py" <<'PROBE_PY'
-import json, os, select, signal, socket, sys, time
+import json, os, select, signal, socket, struct, sys, time
 
 # --ancestor-daemon-socket: print the socket of the daemon this process tree
 # runs under, if there is one, and exit. The caller (the stop section under
@@ -2159,10 +2159,21 @@ def read_line(sock, deadline, buf):
             buf.extend(part)
     return None
 
+# The kernel's answer for the CURRENT connection, filled by connect(): the
+# pid that bound the socket and, where the platform answers it, its uid.
+PEER_PID = None
+PEER_UID = None
+
 def connect():
+    global PEER_PID, PEER_UID
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(HELLO_TIMEOUT_S)
     sock.connect(path)
+    # Read it on the CONNECTED socket, before a byte is exchanged: on a unix
+    # stream socket this is the credentials of the process that bound the
+    # listening end (SO_PEERCRED / LOCAL_PEERPID), not of a peer that could
+    # have been replaced since.
+    PEER_PID, PEER_UID = peer_credentials(sock)
     return sock
 
 def wait_hello(sock):
@@ -2179,6 +2190,52 @@ def wait_hello(sock):
         if value.get("type") == "daemon_hello":
             return value
     return None
+
+# THE PEER'S KERNEL IDENTITY (review #18, CWE-290): the daemon's hello is
+# UNTRUSTED input — every field in it is chosen by whoever bound the socket.
+# A forged responder can name any pid it likes in supervisorPid, and the
+# --force path used to validate only that the named pid LOOKS like a Prime
+# Agent daemon (any of them, anywhere on the machine) and then signal it. The
+# kernel knows which process actually bound the socket; that is the only
+# answer worth binding a signal to.
+def peer_credentials(sock):
+    # Linux: SO_PEERCRED -> struct ucred {pid, uid, gid}.
+    try:
+        raw = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+        peer_pid, peer_uid, _peer_gid = struct.unpack("3i", raw)
+        return peer_pid, peer_uid
+    except (AttributeError, OSError, ValueError):
+        pass
+    # macOS/BSD: LOCAL_PEERPID (0x002) on SOL_LOCAL; no uid companion is
+    # portable, so the peer's uid stays unknown there and only the pid binds.
+    try:
+        raw = sock.getsockopt(getattr(socket, "SOL_LOCAL", 0), 0x002, 4)
+        return struct.unpack("i", raw)[0], None
+    except (AttributeError, OSError, ValueError):
+        return None, None
+
+# The kernel's process identity (start time), in the SAME spelling the
+# daemon's own hello carries (`supervisorProcessStartId`): "proc:<field 22>"
+# on Linux, "ps:<lstart>" under the pinned locale on macOS. Used to notice
+# that the pid we are about to signal is no longer the process we checked.
+def process_start_id(pid):
+    try:
+        with open("/proc/%d/stat" % pid, "rb") as handle:
+            stat = handle.read().decode("utf-8", "replace")
+        start_time = stat.rsplit(")", 1)[-1].split()[19]
+        if start_time:
+            return "proc:" + start_time
+    except (OSError, IndexError):
+        pass
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            ["ps", "-p", str(pid), "-o", "lstart="],
+            stderr=subprocess.DEVNULL, universal_newlines=True, timeout=5,
+            env=dict(os.environ, LC_ALL="C", LC_TIME="C", LANG="C", TZ="UTC")).strip()
+    except Exception:
+        return None
+    return "ps:" + out if out else None
 
 def listening_flag():
     try:
@@ -2467,6 +2524,53 @@ def is_prime_agent_daemon(args):
         args[i] == "--mode" and args[i + 1] == "daemon" for i in range(len(args) - 1))
     return named and daemon_mode
 
+def real_executable_of(pid):
+    # The executable the pid ACTUALLY runs: /proc where there is one, else ps
+    # (macOS). Never the hello's `runtime.executablePath`, which is the
+    # responder's own claim — a forged one names any path it likes, including
+    # one inside this install's payload tree (review #18).
+    try:
+        return os.readlink("/proc/%d/exe" % pid)
+    except OSError:
+        pass
+    try:
+        import subprocess
+        out = subprocess.check_output(["ps", "-p", str(pid), "-o", "comm="],
+                                      stderr=subprocess.DEVNULL,
+                                      universal_newlines=True, timeout=5).strip()
+    except Exception:
+        return None
+    return out or None
+
+def install_owns_executable(executable):
+    if not executable:
+        return False
+    real_exe = os.path.realpath(executable)
+    return any(real_exe == root or real_exe.startswith(root + os.sep) for root in OWN_ROOTS)
+
+def signal_identity(pid, expected_start_id, require_install_executable):
+    """Why this pid may still be signalled, or the reason it may not.
+
+    Bound to the KERNEL's answers, not to the hello: the pid must be the one
+    that bound the socket (SO_PEERCRED / LOCAL_PEERPID), its process start id
+    must still be the one the hello described (a reused pid is another
+    process), and — for a Rust daemon, which IS the payload binary — it must run
+    this install's own payload. A TypeScript daemon runs `node`, so the payload
+    test cannot apply to it; the peer binding still does.
+    """
+    if PEER_PID is None:
+        return "the kernel did not report the socket peer's pid"
+    if pid != PEER_PID:
+        return "the pid it names is not the process that bound its socket"
+    if PEER_UID is not None and PEER_UID != os.geteuid():
+        return "its socket belongs to another user"
+    if require_install_executable and not install_owns_executable(real_executable_of(pid)):
+        return "the process on its socket does not run this install's payload"
+    actual_start_id = process_start_id(pid)
+    if expected_start_id and actual_start_id and actual_start_id != expected_start_id:
+        return "the pid now belongs to a different process"
+    return None
+
 # The --force outcomes, each with its own report text:
 #   killed       a signal brought the daemon down;
 #   gone         the daemon went down on its own before any signal;
@@ -2475,6 +2579,8 @@ def is_prime_agent_daemon(args):
 #   undelivered  no signal was sent: os.kill refused (e.g. permission);
 #   no-pid       no signal was sent: the hello named no usable pid;
 #   not-daemon   no signal was sent: the named pid is not a Prime Agent daemon;
+#   unbound      no signal was sent: the named pid is not the process the
+#                kernel reports on the socket, or it runs another install;
 #   failed       SIGTERM and SIGKILL were sent and the daemon stayed up.
 def kill_supervisor():
     try:
@@ -2497,9 +2603,28 @@ def kill_supervisor():
     if not is_prime_agent_daemon(command_line(pid)):
         progress("pid %d is not a Prime Agent daemon; not signalled" % pid)
         return "not-daemon"
+    # THE IDENTITY BINDING (review #18): the hello is the responder's CLAIM.
+    # Bind the pid to the kernel's answer for this socket, to this install's
+    # own payload tree, and to the process generation the hello described —
+    # otherwise a forged responder could name any live Prime Agent daemon on
+    # the machine (another user's, another install's) and have it killed.
+    refusal = signal_identity(pid, current.get("supervisorProcessStartId"),
+                               owner == "rust")
+    if refusal:
+        progress("pid %d not signalled: %s" % (pid, refusal))
+        return "unbound"
     signalled = False
     for sig, wait_s, name in ((signal.SIGTERM, FORCE_TERM_WAIT_S, "SIGTERM"),
                               (signal.SIGKILL, FORCE_KILL_WAIT_S, "SIGKILL")):
+        # REVALIDATED IMMEDIATELY BEFORE EVERY SIGNAL: the window between the
+        # decision and the kill is long enough for the pid to be reused, and
+        # SIGKILL lands a moment after SIGTERM did. The kernel's answers are
+        # re-read, not remembered.
+        refusal = signal_identity(pid, current.get("supervisorProcessStartId"),
+                               owner == "rust")
+        if refusal:
+            progress("pid %d not signalled: %s" % (pid, refusal))
+            return "killed" if signalled else "unbound"
         progress("sending %s to pid %d" % (name, pid))
         try:
             os.kill(pid, sig)
@@ -2654,6 +2779,7 @@ stop_daemon_candidate() {
         *:kill-not-daemon:*) stop_failed_reason="--force sent no signal: the pid it names is not a Prime Agent daemon" ;;
         *:kill-no-pid:*) stop_failed_reason="--force sent no signal: its hello names no usable pid" ;;
         *:kill-undelivered:*) stop_failed_reason="--force could not deliver a signal to its pid" ;;
+        *:kill-unbound:*) stop_failed_reason="--force sent no signal: the pid it names is not the process bound to its socket, or runs another install" ;;
         *:kill-*) stop_failed_reason="--force sent no signal: it could not re-identify the daemon on its socket" ;;
         *) stop_failed_reason="No signal was sent" ;;
       esac

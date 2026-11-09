@@ -101,6 +101,10 @@ struct FakeDaemon {
 
 impl FakeDaemon {
     fn start(dir: &Path, executable: &Path) -> Self {
+        Self::start_with(dir, executable, /*honor_shutdown*/ true)
+    }
+
+    fn start_with(dir: &Path, executable: &Path, honor_shutdown: bool) -> Self {
         std::fs::create_dir_all(dir).expect("fake daemon dir");
         let socket = dir.join("daemon.sock");
         let _ = std::fs::remove_file(&socket);
@@ -124,7 +128,7 @@ impl FakeDaemon {
                     }
                     Err(_) => return,
                 };
-                if serve(stream, &hello_exe, &seen) {
+                if serve(stream, &hello_exe, &seen, honor_shutdown) {
                     // The shutdown request: the real daemon stops listening
                     // and its socket stops answering.
                     let _ = std::fs::remove_file(&socket_for_thread);
@@ -155,8 +159,14 @@ impl Drop for FakeDaemon {
     }
 }
 
-/// Serve one connection; `true` when it carried a shutdown command.
-fn serve(stream: UnixStream, hello_exe: &str, commands: &std::sync::Mutex<Vec<String>>) -> bool {
+/// Serve one connection; `true` when the listener should stop (a shutdown it
+/// honours).
+fn serve(
+    stream: UnixStream,
+    hello_exe: &str,
+    commands: &std::sync::Mutex<Vec<String>>,
+    honor_shutdown: bool,
+) -> bool {
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .expect("read timeout");
@@ -201,7 +211,7 @@ fn serve(stream: UnixStream, hello_exe: &str, commands: &std::sync::Mutex<Vec<St
     );
     let _ = writer.write_all(reply.as_bytes());
     let _ = writer.flush();
-    command == "shutdown"
+    honor_shutdown && command == "shutdown"
 }
 
 /// Run the probe exactly as the installer does for an install-owned socket:
@@ -621,6 +631,177 @@ fn a_standalone_fork_run_owns_the_libexec_tree_it_writes() {
         payload_arg(&run("no", "")),
         "--payload-dir=",
         "a non-fork run keeps the prefix root it already passes; nothing is invented"
+    );
+}
+
+/// A fixture daemon process, run from INSIDE an install's payload tree.
+///
+/// The fixture is a copy of the host's `python3` placed at
+/// `<root>/libexec/prime-agent` and driven with `--mode daemon`, so
+/// `/proc/<pid>/exe` really resolves under that root and the argv really looks
+/// like a supervisor's: both are properties the probe reads from the KERNEL and
+/// a stub could not fake. `advertised` is what the hello CLAIMS its executable
+/// is — the lever a forged responder has.
+struct PayloadDaemon {
+    child: std::process::Child,
+    socket: PathBuf,
+}
+
+impl PayloadDaemon {
+    fn start(dir: &Path, install_root: &Path, pid_arg: &str, advertised: Option<&Path>) -> Self {
+        std::fs::create_dir_all(dir).expect("fixture daemon dir");
+        let libexec = install_root.join("libexec");
+        std::fs::create_dir_all(&libexec).expect("libexec");
+        let payload = libexec.join("prime-agent");
+        if !payload.exists() {
+            std::fs::copy("/usr/bin/python3", &payload).expect("copy python3 as the payload");
+            make_executable(&payload);
+        }
+        let socket = dir.join("daemon.sock");
+        let mut child = Command::new(&payload)
+            .arg(REPO_FIXTURE_DAEMON)
+            .arg(&socket)
+            .arg(pid_arg)
+            .arg("deaf")
+            .args(["--mode", "daemon", "--daemon-socket"])
+            .arg(&socket)
+            .env(
+                "FIXTURE_EXECUTABLE",
+                advertised.map_or_else(|| payload.clone(), Path::to_path_buf),
+            )
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn the fixture daemon");
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().expect("fixture stdout"))
+            .read_line(&mut ready)
+            .expect("the fixture prints its pid");
+        // The socket file is the readiness event (never a timer).
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !socket.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(socket.exists(), "the fixture daemon bound its socket");
+        PayloadDaemon { child, socket }
+    }
+}
+
+impl Drop for PayloadDaemon {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_file(&self.socket);
+    }
+}
+
+/// The fixture daemon's script: a test SUPPORT file, not a `.tmp` scratch one
+/// (a scratch dir is disposable and this must survive).
+const REPO_FIXTURE_DAEMON: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/support/fixture_daemon.py"
+);
+
+fn run_probe_forced(probe: &Path, socket: &Path, prefix: &Path, payload_dir: &str) -> Output {
+    Command::new(
+        [
+            "/usr/bin/python3",
+            "/usr/local/bin/python3",
+            "/opt/homebrew/bin/python3",
+        ]
+        .into_iter()
+        .find(|path| Path::new(path).is_file())
+        .expect("python3"),
+    )
+    .arg(probe)
+    .arg("--kind=ours")
+    .arg("--force=1")
+    .arg(format!("--prefix={}", prefix.display()))
+    .arg(format!("--payload-dir={payload_dir}"))
+    .arg(socket)
+    .env_clear()
+    .env("PATH", "/usr/bin:/bin")
+    .output()
+    .expect("run the probe")
+}
+
+/// A FORGED SOCKET MUST NOT GET AN UNRELATED DAEMON KILLED (review #18, CWE-290).
+///
+/// Every fact the probe used to check before a `--force` kill came from the
+/// responder's own hello: the `supervisorPid` it would signal, and the executable
+/// path that satisfied the install-root gate. Whoever binds a candidate socket can
+/// therefore advertise another live Prime Agent daemon's pid and an in-root
+/// executable path, and the installer kills a supervisor it never owned — the
+/// class that already ended one live session. The decision must rest on the
+/// kernel: the pid that BOUND the socket (`SO_PEERCRED`), that pid's REAL
+/// executable (`/proc/<pid>/exe`), and its process start id.
+///
+/// Three cases, and the first keeps the fix honest:
+///   * an HONEST daemon (the pid it names is the peer) is still signalled;
+///   * a FORGED hello naming another live daemon — right argv, right executable
+///     path, wrong process — sends no signal, and that process keeps running;
+///   * an honest pid whose hello LIES about its executable: the install-root gate
+///     passes on the lie, the kernel's answer refuses the signal.
+#[test]
+fn a_forced_stop_binds_the_signal_to_the_kernel_socket_peer() {
+    let dir = tempfile::tempdir().expect("scratch dir");
+    let Some(probe) = probe_file(dir.path()) else {
+        eprintln!("skipping: no python3 for the installer's probe");
+        return;
+    };
+    let prefix = dir.path().join("install");
+
+    // 1. The honest daemon: the pid it names IS the pid that bound the socket.
+    let honest = PayloadDaemon::start(&dir.path().join("honest"), &prefix, "self", None);
+    let output = run_probe_forced(&probe, &honest.socket, &prefix, "");
+    let honest_verdict = verdict(&output);
+    assert!(
+        honest_verdict.starts_with("rust:stopped-killed")
+            || honest_verdict.starts_with("rust:kill-gone"),
+        "the install's own daemon is killed by --force: {honest_verdict} / {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // 2. The forged hello: another live daemon's pid, advertised by this socket.
+    let mut victim = PayloadDaemon::start(&dir.path().join("victim"), &prefix, "self", None);
+    let victim_pid = victim.child.id().to_string();
+    let claimed = prefix.join("libexec/prime-agent");
+    let forged = PayloadDaemon::start(
+        &dir.path().join("forged"),
+        &dir.path().join("forged-install"),
+        &victim_pid,
+        Some(&claimed),
+    );
+    let output = run_probe_forced(&probe, &forged.socket, &prefix, "");
+    assert_eq!(
+        verdict(&output),
+        "rust:kill-unbound:0",
+        "a forged pid must not be signalled: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        victim.child.try_wait().expect("wait").is_none(),
+        "the process the forged hello named must still be running"
+    );
+
+    // 3. An honest pid, a LYING executable path: the process runs another
+    // install's payload while the hello claims this install's.
+    let mut liar = PayloadDaemon::start(
+        &dir.path().join("liar"),
+        &dir.path().join("other-install"),
+        "self",
+        Some(&claimed),
+    );
+    let output = run_probe_forced(&probe, &liar.socket, &prefix, "");
+    assert_eq!(
+        verdict(&output),
+        "rust:kill-unbound:0",
+        "an advertised in-root path must not authorise a signal: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        liar.child.try_wait().expect("wait").is_none(),
+        "the process that lied about its executable is left running"
     );
 }
 
