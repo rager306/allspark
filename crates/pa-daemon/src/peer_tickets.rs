@@ -59,8 +59,9 @@ impl Supervisor {
         command_id: &str,
         type_name: &str,
         selector: &str,
+        client_id: &str,
     ) -> DaemonResponse {
-        match self.issue_direct_transport(selector).await {
+        match self.issue_direct_transport(selector, client_id).await {
             Ok(ticket) => response_success(
                 Some(command_id),
                 type_name,
@@ -94,11 +95,30 @@ impl Supervisor {
 
     /// Port of `issuePeerTransport`. Errors carry the TS worker-state
     /// strings so clients see the same diagnosis.
+    ///
+    /// The ownership gate is the `get_direct_worker_transport` arm of the TS dispatch, and it
+    /// has to live here because a ticket bypasses the supervisor for the rest of the
+    /// connection: another client that knows the selector could otherwise mint a
+    /// `session_client` grant for a session the supervisor hides from it and drive
+    /// session-plane commands (prompt, steer) straight into the worker (review #10).
     async fn issue_direct_transport(
         self: &std::sync::Arc<Self>,
         selector: &str,
+        client_id: &str,
     ) -> Result<DaemonPeerTransportTicket> {
         let resident = self.registry.resolve(selector).await?;
+        // Same split as TS `findWorkerForClient` + the arm's refusal: a worker another client
+        // owns is invisible through this selector, and a client-owned worker refuses tickets
+        // outright (the owner reaches it through the supervisor until it promotes).
+        let owner = resident.descriptor.lock().await.owner_client_id.clone();
+        if let Some(owner) = owner {
+            if owner != client_id {
+                return Err(anyhow!("Unknown active session: {selector}"));
+            }
+            return Err(anyhow!(
+                "Direct transport is unavailable for client-owned workers"
+            ));
+        }
         self.mint_peer_transport_ticket(&resident, PeerGrantPurpose::SessionClient)
             .await
     }
@@ -389,6 +409,117 @@ mod tests {
         assert!(!reachable.success, "{reachable:?}");
         assert_eq!(
             reachable.error.as_deref(),
+            Some("Session worker is recovering")
+        );
+    }
+
+    /// A ticket must not be a side door around session ownership (review #10).
+    ///
+    /// A `session_client` grant takes the supervisor out of the connection: the client talks
+    /// to the worker's own socket from then on. Minting one for a session another client owns
+    /// would hand it the session-plane commands (prompt, steer) that `retry_worker` and the
+    /// TS `findWorkerForClient` refuse — and it refused nothing before this test, because the
+    /// ownership check lived only in the TS dispatch arm, not on the mint path.
+    #[tokio::test]
+    async fn a_direct_ticket_is_refused_for_a_client_owned_session() {
+        use crate::registry::ResidentWorker;
+        use pa_types::daemon::{
+            DaemonWorkerDescriptor, DaemonWorkerLifecycle, DurableDaemonCreateCommand,
+        };
+
+        let owned = |worker_id: &str, owner: Option<&str>| {
+            ResidentWorker::new(
+                worker_id.to_string(),
+                DaemonWorkerDescriptor {
+                    version: 2,
+                    worker_id: worker_id.to_string(),
+                    pid: u64::from(std::process::id()),
+                    process_start_id: None,
+                    socket_path: "/w.sock".to_string(),
+                    recovery_journal_path: "/w.jsonl".to_string(),
+                    orphan_process_journal_path: None,
+                    supervisor_socket_path: "/s.sock".to_string(),
+                    authentication_token: format!("tok-{worker_id}"),
+                    worker_instance_id: Some(format!("inst-{worker_id}")),
+                    root_active_session_id: worker_id.to_string(),
+                    owner_client_id: owner.map(str::to_string),
+                    root_session_id: None,
+                    session_file: Some(format!("/sessions/{worker_id}.jsonl")),
+                    session_dir: None,
+                    telemetry_disabled: None,
+                    created_at: "t".to_string(),
+                    updated_at: "t".to_string(),
+                    lifecycle: DaemonWorkerLifecycle::Ready,
+                    create_command: DurableDaemonCreateCommand {
+                        session_path: None,
+                        no_session: None,
+                        rest: Map::default(),
+                    },
+                    consecutive_failures: 0,
+                    stop_requested_at: None,
+                    archive_on_stop: None,
+                    last_failure_at: None,
+                    last_error: None,
+                    rest: Map::default(),
+                },
+                std::path::PathBuf::from(format!("/{worker_id}.json")),
+            )
+        };
+        let supervisor = worker_ticket_supervisor();
+        let unowned = owned("shared-1", None);
+        unowned
+            .peer_transport_capable
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let client_owned = owned("mine-1", Some("client-a"));
+        client_owned
+            .peer_transport_capable
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        supervisor.registry.insert(unowned).await;
+        supervisor.registry.insert(client_owned).await;
+
+        // Another client's session is invisible through the selector, like the retry arm.
+        let foreign = supervisor
+            .handle_get_direct_worker_transport(
+                "t1",
+                "get_direct_worker_transport",
+                "mine-1",
+                "client-b",
+            )
+            .await;
+        assert!(!foreign.success, "{foreign:?}");
+        assert_eq!(
+            foreign.error.as_deref(),
+            Some("Unknown active session: mine-1")
+        );
+
+        // The owner itself is refused too: the TS rule is about the session, not the caller.
+        let by_owner = supervisor
+            .handle_get_direct_worker_transport(
+                "t2",
+                "get_direct_worker_transport",
+                "mine-1",
+                "client-a",
+            )
+            .await;
+        assert!(!by_owner.success, "{by_owner:?}");
+        assert_eq!(
+            by_owner.error.as_deref(),
+            Some("Direct transport is unavailable for client-owned workers")
+        );
+
+        // An unowned session passes the gate and fails only on availability: the refusal above
+        // is ownership, not a gate that refuses every request.
+        let shared = supervisor
+            .handle_get_direct_worker_transport(
+                "t3",
+                "get_direct_worker_transport",
+                "shared-1",
+                "client-b",
+            )
+            .await;
+        assert!(!shared.success, "{shared:?}");
+        assert_eq!(
+            shared.error.as_deref(),
             Some("Session worker is recovering")
         );
     }

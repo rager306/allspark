@@ -770,8 +770,16 @@ impl Supervisor {
             } => {
                 // Direct-attach ticket: a single-use grant for a registered session, handed to
                 // the client with the worker's own socket; it stays out of the streaming path.
+                // The asking client rides along: the ticket's ownership gate is the only place
+                // a client-owned session stays private once the supervisor is out of the path.
+                let client_id = effective_client_id.lock().unwrap().clone();
                 let response = self
-                    .handle_get_direct_worker_transport(&command_id, &type_name, active_session_id)
+                    .handle_get_direct_worker_transport(
+                        &command_id,
+                        &type_name,
+                        active_session_id,
+                        &client_id,
+                    )
                     .await;
                 (vec![response_line(&response)], false)
             }
