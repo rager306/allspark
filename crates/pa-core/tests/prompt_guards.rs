@@ -975,6 +975,27 @@ fn no_test_redirects_a_path_the_whole_process_shares() {
             .filter(|line| !line.starts_with("//"))
             .collect::<Vec<_>>()
             .join("\n");
+        // A third process-wide seam: the paste fixture path the TUI resolves on every
+        // paste. `TempDir`s do not share it, but the VARIABLE does — two tests that point it
+        // at their own fixture overwrite each other, and the loser's paste reads a path whose
+        // temp dir the winner already removed (review #27). Allowed only behind a guard name.
+        if [
+            "set_var(\"PRIME_AGENT_TEST_CLIPBOARD_IMAGE\"",
+            "set_var('PRIME_AGENT_TEST_CLIPBOARD_IMAGE'",
+        ]
+        .iter()
+        .any(|form| live.contains(form))
+        {
+            let serialised =
+                live.contains("CLIPBOARD_IMAGE_SEAM") || live.contains("ClipboardImageSeam");
+            if !serialised {
+                offenders.push(format!(
+                    "{}: points the paste seam at its own fixture with no guard, so a parallel \
+                     test's paste reads a path whose temp dir is already gone",
+                    entry.display()
+                ));
+            }
+        }
         for var in ["TMPDIR", "HOME"] {
             let spelled = [format!("set_var(\"{var}\""), format!("set_var(\'{var}\'")]
                 .iter()

@@ -30,6 +30,46 @@ const MINIMAL_PNG: &[u8] = &[
     5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
 ];
 
+/// The paste seam's variable, named once.
+const TEST_CLIPBOARD_IMAGE_ENV: &str = "PRIME_AGENT_TEST_CLIPBOARD_IMAGE";
+
+/// Serialises every test that points the paste seam at its own fixture.
+///
+/// The TUI resolves [`TEST_CLIPBOARD_IMAGE_ENV`] on EVERY paste, and it is process-wide:
+/// three parallel stash tests each wrote their own `TempDir` path into it, so one test's
+/// paste could read another test's path — and that other test's temp dir is removed when it
+/// finishes, which turns a correct paste into a missing image (review #27). The lock is
+/// what makes "set, use, restore" one critical section.
+static CLIPBOARD_IMAGE_SEAM: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Points the paste seam at one test's fixture for as long as it lives, and puts the
+/// previous value back on drop (a panic included).
+struct ClipboardImageSeam {
+    _lock: tokio::sync::MutexGuard<'static, ()>,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl ClipboardImageSeam {
+    async fn install(path: &Path) -> Self {
+        let lock = CLIPBOARD_IMAGE_SEAM.lock().await;
+        let previous = std::env::var_os(TEST_CLIPBOARD_IMAGE_ENV);
+        std::env::set_var(TEST_CLIPBOARD_IMAGE_ENV, path);
+        Self {
+            _lock: lock,
+            previous,
+        }
+    }
+}
+
+impl Drop for ClipboardImageSeam {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(previous) => std::env::set_var(TEST_CLIPBOARD_IMAGE_ENV, previous),
+            None => std::env::remove_var(TEST_CLIPBOARD_IMAGE_ENV),
+        }
+    }
+}
+
 struct Supervisor {
     child: Child,
     socket: PathBuf,
@@ -3693,7 +3733,7 @@ async fn tui_prompt_stash_survives_the_agents_view_handoff() {
     // bytes (the reopened chat's paste registry is empty — the stash hydrates it).
     let png_path = dir.path().join("fixture.png");
     std::fs::write(&png_path, MINIMAL_PNG).expect("write fixture image");
-    std::env::set_var("PRIME_AGENT_TEST_CLIPBOARD_IMAGE", &png_path);
+    let _seam = ClipboardImageSeam::install(&png_path).await;
     let prompt_stash: std::sync::Arc<std::sync::Mutex<pa_tui::prompt_stash::PromptStashStore>> =
         std::sync::Arc::default();
     let make_options = || pa_tui::interactive::InteractiveOptions {
@@ -3831,9 +3871,9 @@ async fn tui_prompt_stash_restores_a_pasted_image_with_the_draft() {
     // A one-pixel PNG: the fixture stands in for the system clipboard (no display server).
     let png_path = dir.path().join("fixture.png");
     std::fs::write(&png_path, MINIMAL_PNG).expect("write fixture image");
-    // The seam only applies to the paste path (ctrl+v). The var stays set for
-    // the whole process: a cross-test remove would race the parallel stash tests.
-    std::env::set_var("PRIME_AGENT_TEST_CLIPBOARD_IMAGE", &png_path);
+    // The seam only applies to the paste path (ctrl+v), and it is process-wide: the guard
+    // holds the seam lock until this test's temp dir is gone.
+    let _seam = ClipboardImageSeam::install(&png_path).await;
     let supervisor = spawn_supervisor(dir.path());
     let script = serde_json::json!({
         "engine": "faux",
@@ -3966,7 +4006,7 @@ async fn tui_ctrl_s_stashes_and_restores_the_prompt_draft() {
     // The draft carries a pasted image, so the manual stash must round-trip the bytes too.
     let png_path = dir.path().join("fixture.png");
     std::fs::write(&png_path, MINIMAL_PNG).expect("write fixture image");
-    std::env::set_var("PRIME_AGENT_TEST_CLIPBOARD_IMAGE", &png_path);
+    let _seam = ClipboardImageSeam::install(&png_path).await;
     let supervisor = spawn_supervisor(dir.path());
     let script = serde_json::json!({
         "engine": "faux",
