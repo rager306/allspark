@@ -38,10 +38,10 @@ class AttemptAudit(unittest.TestCase):
             path.write_text(json.dumps(data))
         return path
 
-    def run_summary(self, sha="a" * 40):
+    def run_summary(self, sha="a" * 40, *extra):
         env = dict(os.environ, GITHUB_RUN_ID="12345", GITHUB_SHA=sha)
         return subprocess.run([sys.executable, str(HERE / "ci_test_shard_summary.py"),
-                               "--total", "2", "--dir", str(self.directory)],
+                               "--total", "2", "--dir", str(self.directory), *extra],
                               capture_output=True, text=True, env=env, check=False)
 
     @staticmethod
@@ -203,6 +203,39 @@ class AttemptAudit(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("digest mismatch", result.stdout)
 
+    def test_a_failed_shard_job_fails_the_aggregate(self):
+        """Review #1: the summary audited the manifests only. A shard whose
+        real-binary lifecycle checks failed runs its Cargo subset on purpose
+        (`if: !cancelled() && (success() || steps.lifecycle_checks.outcome ==
+        'failure')`) and uploads a GREEN manifest, so the aggregate — the check
+        repositories gate on — stayed green while the shard job was red."""
+        self.write(1)
+        self.write(2)
+        result = self.run_summary("a" * 40, "--job-result", "test-shard=failure")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("job test-shard did not succeed (result: failure)", result.stdout)
+        # The same manifests with a green job are green: the new input is the only
+        # difference, so the assertion above cannot pass on an unrelated failure.
+        self.assertEqual(self.run_summary("a" * 40, "--job-result", "test-shard=success")
+                         .returncode, 0)
+
+    def test_a_cancelled_shard_job_fails_the_aggregate(self):
+        # A cancelled leg uploads no manifest, so the partition audit catches it —
+        # but the summary must name the JOB too rather than only "no manifest".
+        self.write(2)
+        result = self.run_summary("a" * 40, "--job-result", "test-shard=cancelled")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("job test-shard did not succeed (result: cancelled)", result.stdout)
+
+    def test_a_malformed_job_result_is_refused(self):
+        # `needs.<job>.result` is always `NAME=RESULT`; a typo must fail loudly
+        # instead of quietly contributing no constraint.
+        self.write(1)
+        self.write(2)
+        result = self.run_summary("a" * 40, "--job-result", "test-shard")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("expected NAME=RESULT", result.stdout)
+
     def test_wrong_shard_assignment_is_refused(self):
         path = self.write(1)
         self.write(2)
@@ -212,6 +245,23 @@ class AttemptAudit(unittest.TestCase):
         result = self.run_summary()
         self.assertEqual(result.returncode, 1)
         self.assertIn("belongs to shard 2", result.stdout)
+
+
+class TheWorkflowWiringTest(unittest.TestCase):
+    """The flag exists only if the workflow PASSES it.
+
+    `--job-result` is new, and a summary job that supports a gate nobody wires is
+    the "documented, never wired" class: `ci.yml` would keep auditing manifests only
+    and review #1 would be closed on paper. Pinned by the ASSIGNMENT and the CALL,
+    not by a word that could sit in a comment.
+    """
+
+    def test_the_summary_job_passes_the_shard_job_result(self):
+        workflow = (HERE.parent / ".github/workflows/ci.yml").read_text()
+        self.assertIn("TEST_SHARD_RESULT: ${{ needs.test-shard.result }}", workflow,
+                      "the summary must read the shard job's own conclusion")
+        self.assertIn('--job-result "test-shard=${TEST_SHARD_RESULT}"', workflow,
+                      "and must pass it to the audit it gates on")
 
 
 if __name__ == "__main__":

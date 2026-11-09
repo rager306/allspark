@@ -16,7 +16,13 @@ narrowed run can never masquerade as a full one:
   4. shard assignments are disjoint and their union is the selected set
      (nothing selected is skipped, nothing outside the selection ran);
   5. every shard completed all of its selected units;
-  6. every executed unit passed.
+  6. every executed unit passed;
+  7. every job this summary speaks for (`--job-result`) SUCCEEDED. A shard that
+     failed OUTSIDE the Cargo units — the real-binary lifecycle checks, the
+     sibling-binary build, the kernel prewarm — still uploads a green manifest,
+     so auditing manifests alone reported a green aggregate for a red shard
+     (review #1). The shard job continues past a lifecycle failure on purpose
+     (its tests are the diagnostics); its own conclusion is what this reads.
 
 It then prints ONE merged report: the scope, which binaries failed, in which
 shard, with their failing test names — the single place a lane looks when a
@@ -28,7 +34,8 @@ the matrix job's own failure remains a separate required CI gate.
 
 Usage (from the repo root, in ci.yml's test summary job):
 
-  python3 scripts/ci_test_shard_summary.py --total 4 --dir manifests
+  python3 scripts/ci_test_shard_summary.py --total 4 --dir manifests \
+      --job-result "test-shard=${{ needs.test-shard.result }}"
 """
 
 from __future__ import annotations
@@ -288,16 +295,41 @@ def merged_report(manifests: dict, total: int, problems: list[str],
     return "\n".join(lines)
 
 
+def job_result_problems(results: list[str]) -> list[str]:
+    """Failures from the jobs this summary speaks for.
+
+    The manifests audit ONE part of the shard job: the Cargo units it ran. A shard
+    that failed BEFORE or AROUND that part — the real-binary lifecycle checks
+    (`steps.lifecycle_checks`), the sibling-binary build, the kernel prewarm — still
+    uploads a green manifest and a green aggregate (review #1). The gate is the
+    aggregate, so it has to read the shard JOB's own conclusion, and the job is told
+    to continue for diagnostics rather than to hide the failure.
+    """
+    problems = []
+    for entry in results:
+        name, separator, result = entry.partition("=")
+        if not name or not separator or not result:
+            problems.append(f"--job-result {entry!r}: expected NAME=RESULT")
+        elif result != "success":
+            problems.append(f"job {name} did not succeed (result: {result}): "
+                            "its own checks failed even if the shard manifests "
+                            "audit clean")
+    return problems
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--total", type=int, required=True, help="shard count")
     parser.add_argument("--dir", type=Path, required=True,
                         help="directory with shard-manifest-*.json files")
+    parser.add_argument("--job-result", action="append", default=[], metavar="NAME=RESULT",
+                        help="a job this summary speaks for and its needs.<job>.result; "
+                             "anything but `success` fails the gate")
     args = parser.parse_args()
 
     manifests, retained, load_problems = load_manifests(args.dir, args.total)
     audit_problems, failed_units = audit(manifests, args.total)
-    problems = load_problems + audit_problems
+    problems = job_result_problems(args.job_result) + load_problems + audit_problems
     report = merged_report(manifests, args.total, problems, failed_units, retained)
     print(report)
     step_summary = os.environ.get("GITHUB_STEP_SUMMARY")

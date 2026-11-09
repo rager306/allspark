@@ -450,8 +450,10 @@ jobs:
 
   # The aggregate: audits the partition (same enumeration everywhere,
   # disjoint shards, every assigned unit executed — coverage can never
-  # silently regress) and merges the per-shard failure reports into one
-  # table naming the failing binaries. Green only when every shard is green.
+  # silently regress), reads the shard JOB's own conclusion (a step outside the
+  # manifest — the lifecycle checks — can fail while every unit passes), and
+  # merges the per-shard failure reports into one table naming the failing
+  # binaries. Green only when every shard's job and every unit is green.
   test-summary:
     name: test summary
     runs-on: ubuntu-24.04
@@ -468,11 +470,20 @@ jobs:
           merge-multiple: true
           path: manifests
       - name: Audit the shards and merge their failure reports
+        # --job-result is the half the manifests cannot see: a shard that failed in
+        # its real-binary lifecycle checks (`steps.lifecycle_checks`) still runs its
+        # Cargo subset on purpose and uploads a GREEN manifest, so auditing the
+        # manifests alone reported a green aggregate for a red shard (review #1).
+        # The shard job is told to continue for diagnostics; its own conclusion is
+        # what this gate now reads.
+        env:
+          TEST_SHARD_RESULT: ${{ needs.test-shard.result }}
         run: |
           python3 scripts/test_ci_test_shard.py
           python3 scripts/test_ci_pr_crates.py
           python3 scripts/test_ci_test_shard_summary.py
-          python3 scripts/ci_test_shard_summary.py --total ${{ env.SHARD_COUNT }} --dir manifests
+          python3 scripts/ci_test_shard_summary.py --total ${{ env.SHARD_COUNT }} --dir manifests \
+            --job-result "test-shard=${TEST_SHARD_RESULT}"
       # The QA runner's own contract battery (`scripts/qa/test_*.py`): stdlib only and
       # under a second, so it costs this job nothing. It pins the exit codes that make
       # `run_suite.py` a gate — review #16 was exactly this battery's blind spot: a
