@@ -1365,7 +1365,10 @@ async fn the_minimal_profile_keeps_the_command_executor() {
         .collect();
     assert_eq!(
         names,
-        vec!["edit".to_string(), pa_types::ai::PYTHON_TOOL_NAME.to_string()],
+        vec![
+            "edit".to_string(),
+            pa_types::ai::PYTHON_TOOL_NAME.to_string()
+        ],
         "minimal = the command executor + edit, nothing else"
     );
 }

@@ -196,7 +196,10 @@ fn the_minimal_context_keeps_the_repl_executor_and_edit() {
     let surfaced = names(&apply_layers(&runtime_roster(), &layers));
     assert_eq!(
         surfaced,
-        vec![pa_types::ai::PYTHON_TOOL_NAME.to_string(), "edit".to_string()],
+        vec![
+            pa_types::ai::PYTHON_TOOL_NAME.to_string(),
+            "edit".to_string()
+        ],
         "minimal must keep the command executor and edit, and nothing else"
     );
 }
