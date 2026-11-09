@@ -131,6 +131,76 @@ async fn a_fire_at_a_killed_session_cancels_and_skips() {
     );
 }
 
+/// A single unreadable read must not cancel the session's schedule (review #13).
+///
+/// `read_session_info` answers `None` for a deleted file AND for a file it could not open,
+/// scan, or parse. The fire path treats `None` as "the target is gone" and PERSISTS a
+/// cancellation of every job for the session — so one read that raced a rewrite deleted a
+/// live schedule. The three answers must stay distinct: gone cancels, unreadable fails the
+/// fire (the scheduler backs off and re-reads), live fires.
+#[tokio::test]
+async fn an_unreadable_session_file_does_not_cancel_the_schedule() {
+    let dir = std::env::temp_dir().join(format!("pa-sched-torn-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (session_id, session_file) = write_active_session(&dir);
+    let store = AgentCronJobStore::for_session_artifacts();
+    let artifact_dir = session_artifact_dir(&session_file, &session_id).unwrap();
+    std::fs::create_dir_all(&artifact_dir).unwrap();
+    store.register_session_artifact(&session_id, &artifact_dir);
+    let job = store
+        .create(&CreateAgentCronJobInput {
+            active_session_id: session_id.clone(),
+            session_id: session_id.clone(),
+            session_file: session_file.to_string_lossy().to_string(),
+            cwd: "/w".to_string(),
+            prompt: "reader-hiccup ping".to_string(),
+            schedule_text: "every 10s".to_string(),
+            now: Some(1),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // The file still EXISTS but its first line no longer parses: exactly what a read racing a
+    // rewrite (or a torn append) looks like, and what `read_session_info` cannot tell apart
+    // from a deleted session.
+    std::fs::write(&session_file, "{not a session file}\n").unwrap();
+
+    let core = Arc::new(std::sync::Mutex::new(
+        crate::worker::SessionCore::test_core(None, "/w".to_string()),
+    ));
+    let hooks = QueueHooks {
+        core: Arc::clone(&core),
+        work_notify: Arc::new(Notify::new()),
+        user_bash: Arc::new(crate::user_bash::UserBash::new()),
+        store: Arc::new(AgentCronJobStore::for_session_artifacts()),
+        recovery: Arc::new(std::sync::Mutex::new(None)),
+    };
+    hooks
+        .store
+        .register_session_artifact(&session_id, &artifact_dir);
+
+    let verdict = AgentCronSchedulerHooks::run_job(&hooks, &job).await;
+    assert!(
+        verdict.is_err(),
+        "an unreadable target is an indeterminate read, not a dead session: {verdict:?}"
+    );
+    let stored = hooks.store.list();
+    let row = stored
+        .iter()
+        .find(|candidate| candidate.id == job.id)
+        .expect("the job stays in the store");
+    assert_eq!(
+        row.status,
+        JobStatus::Active,
+        "a failed read must leave the schedule armed for the next fire"
+    );
+    let core = core.lock().unwrap();
+    assert!(
+        core.steering.is_empty() && core.follow_up.is_empty(),
+        "nothing was fired at a target it never read"
+    );
+}
+
 /// A heartbeat parks as the injected `heartbeat_prompt` row with the TS preview (the
 /// queue strip reads `Heartbeat prompt: <content>`, the turn text keeps the raw content).
 #[tokio::test]

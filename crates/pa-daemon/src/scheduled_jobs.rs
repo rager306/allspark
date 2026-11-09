@@ -65,16 +65,53 @@ impl QueueHooks {
     }
 }
 
+/// What a fire can learn about its session file before it runs.
+///
+/// The three answers are deliberately not two: `read_session_info` reports `None` for a
+/// deleted file AND for one that could not be read or parsed, and the fire path PERSISTS a
+/// cancellation for "gone". Collapsing an I/O failure into "gone" therefore cancelled every
+/// scheduled job of a live session because one read raced a rewrite (review #13).
+#[derive(Debug, PartialEq, Eq)]
+enum TargetState {
+    /// The file is there, it is this job's session, and the session is `active`.
+    Live,
+    /// The session is confirmed deleted or archived: a fire can never revive it.
+    Gone,
+    /// The file exists but could not be read or understood: the fire must not decide.
+    Indeterminate(String),
+}
+
 impl QueueHooks {
     /// A persisted job may only fire at a session that still exists — file
     /// present, still the job's session, still `active`.
-    fn persisted_target_gone(job: &AgentCronJob) -> bool {
+    fn persisted_target_state(job: &AgentCronJob) -> TargetState {
         if job.session_file.is_empty() {
-            return true;
+            // No file named at all: a malformed job, not a read failure.
+            return TargetState::Gone;
         }
-        match crate::session_store::read_session_info(Path::new(&job.session_file)) {
-            None => true,
-            Some(info) => info.id != job.session_id || info.state.as_deref() != Some("active"),
+        let path = Path::new(&job.session_file);
+        match std::fs::metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return TargetState::Gone,
+            Err(error) => {
+                return TargetState::Indeterminate(format!(
+                    "{} is unreadable: {error}",
+                    path.display()
+                ))
+            }
+            Ok(_) => {}
+        }
+        match crate::session_store::read_session_info(path) {
+            Some(info) if info.id == job.session_id && info.state.as_deref() == Some("active") => {
+                TargetState::Live
+            }
+            Some(_) => TargetState::Gone,
+            // Present but unreadable or not a session this build understands: a transient
+            // failure (a rewrite in flight, a lock that was momentarily held) looks exactly
+            // like this, so it is never "gone".
+            None => TargetState::Indeterminate(format!(
+                "{} is present but could not be read as a session",
+                path.display()
+            )),
         }
     }
 
@@ -97,9 +134,20 @@ impl AgentCronSchedulerHooks for QueueHooks {
     async fn run_job(&self, job: &AgentCronJob) -> anyhow::Result<Option<&'static str>> {
         // A persisted job whose target is no longer live (killed — `archived` — or deleted)
         // cancels the session's jobs and skips: a fire can never revive a stopped session.
-        if Self::persisted_target_gone(job) {
-            self.cancel_jobs_for_dead_target(job)?;
-            return Ok(Some("skipped"));
+        // A target that cannot be READ is not gone: the cancel is persisted, so guessing here
+        // would cancel a live session's whole schedule over one failed read (review #13).
+        match Self::persisted_target_state(job) {
+            TargetState::Live => {}
+            TargetState::Gone => {
+                self.cancel_jobs_for_dead_target(job)?;
+                return Ok(Some("skipped"));
+            }
+            TargetState::Indeterminate(reason) => {
+                // No cancel and no fire: the scheduler records a run ERROR (not a skip), so the
+                // schedule survives with its failure backoff and the next fire re-reads the
+                // file. A skip would complete a one-shot job on one bad read.
+                anyhow::bail!("scheduled job target could not be read: {reason}");
+            }
         }
         let activity = self.activity();
         if should_defer_heartbeat_cron_job(job, &activity) {
