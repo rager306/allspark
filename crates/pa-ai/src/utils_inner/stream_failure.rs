@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use serde::Serialize;
 use serde_json::Map;
 
-use crate::types::AssistantMessage;
+use crate::types::{AssistantContent, AssistantMessage};
 use crate::utils::diagnostics::{
     append_assistant_message_diagnostic, create_assistant_message_diagnostic, now_ms,
     DiagnosticErrorInfo,
@@ -626,6 +626,21 @@ pub(crate) enum OpenStreamBlock {
     ToolCall,
     /// No content block had opened yet (the stream died before any).
     None,
+}
+
+/// The block a stream was inside when its provider ended it without a terminal marker.
+///
+/// One definition for every provider that classifies a silent drop: the last content block is
+/// what the disclosure names, and each provider's stream loop already keeps `output` in the
+/// shape the client saw.
+#[must_use]
+pub(crate) fn open_stream_block(output: &AssistantMessage) -> OpenStreamBlock {
+    match output.content.last() {
+        Some(AssistantContent::Thinking(_)) => OpenStreamBlock::Thinking,
+        Some(AssistantContent::Text(_)) => OpenStreamBlock::Text,
+        Some(AssistantContent::ToolCall(_)) => OpenStreamBlock::ToolCall,
+        None => OpenStreamBlock::None,
+    }
 }
 
 /// Failure for a stream the provider ended without its terminal marker:

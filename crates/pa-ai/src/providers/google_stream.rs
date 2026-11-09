@@ -20,6 +20,10 @@ pub struct GoogleStreamState {
     /// Currently open block kind ("text" or "thinking").
     current_kind: Option<&'static str>,
     tool_call_counter: u64,
+    /// Whether the API said the response is over: a candidate `finishReason`, or a prompt
+    /// block. A stream that ends without one was cut off, which only the provider run knows
+    /// how to report (review #3: the partial answer used to settle as a completed turn).
+    saw_terminal_marker: bool,
 }
 
 impl GoogleStreamState {
@@ -27,7 +31,14 @@ impl GoogleStreamState {
         Self {
             current_kind: None,
             tool_call_counter: 0,
+            saw_terminal_marker: false,
         }
+    }
+
+    /// Whether the stream carried the provider's terminal marker.
+    #[must_use]
+    pub fn saw_terminal_marker(&self) -> bool {
+        self.saw_terminal_marker
     }
 
     fn close_current_block(
@@ -72,6 +83,17 @@ impl GoogleStreamState {
         writer: &AssistantMessageEventWriter,
     ) -> Result<(), String> {
         use AssistantMessageEvent;
+        // A blocked prompt comes back with a `promptFeedback.blockReason` and no candidate at
+        // all: the provider has said its piece, so this is terminal even though no
+        // `finishReason` follows (review #3: otherwise the block would read as a cut-off
+        // stream and be retried).
+        if chunk
+            .get("promptFeedback")
+            .and_then(|feedback| feedback.get("blockReason"))
+            .is_some_and(|reason| !reason.is_null())
+        {
+            self.saw_terminal_marker = true;
+        }
         if output.response_id.is_none() {
             if let Some(id) = chunk.get("responseId").and_then(|value| value.as_str()) {
                 output.response_id = Some(id.to_string());
@@ -237,6 +259,7 @@ impl GoogleStreamState {
                 .get("finishReason")
                 .and_then(|value| value.as_str())
             {
+                self.saw_terminal_marker = true;
                 output.stop_reason = map_google_stop_reason(finish_reason)?;
                 let has_tool_call = output
                     .content

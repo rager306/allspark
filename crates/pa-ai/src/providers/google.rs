@@ -27,8 +27,8 @@ use crate::utils_inner::json_parse::parse_json_with_repair;
 use crate::utils_inner::sanitize_unicode::sanitize_surrogates;
 use crate::utils_inner::sse::SseDecoder;
 use crate::utils_inner::stream_failure::{
-    format_stream_failure_message, record_stream_failure, stream_failure_from_stop_reason,
-    ProviderError,
+    format_stream_failure_message, open_stream_block, record_stream_failure, stream_drop_failure,
+    stream_failure_from_stop_reason, ProviderError,
 };
 
 /// Thinking configuration for the provider options.
@@ -356,6 +356,15 @@ async fn run_stream(
     {
         return Err(ProviderError::Aborted);
     }
+    // A Gemini response ends with a candidate `finishReason` (or a prompt block). A body that
+    // closes on a partial text chunk without one was cut off mid-flight; the old code settled it
+    // as a completed turn because `output` starts at `Stop`, so the retry ladder never ran
+    // (review #3).
+    if !state.saw_terminal_marker() {
+        return Err(ProviderError::StreamFailure(stream_drop_failure(
+            open_stream_block(output),
+        )));
+    }
     if matches!(output.stop_reason, StopReason::Aborted | StopReason::Error) {
         return Err(ProviderError::StreamFailure(
             stream_failure_from_stop_reason(output.stop_reason_raw.as_deref(), None),
@@ -449,6 +458,10 @@ impl Provider for GoogleGenerativeAiProvider {
         stream_simple_google(model, context, options)
     }
 }
+
+#[cfg(test)]
+#[path = "google_stream_drop.rs"]
+mod stream_drop;
 
 #[cfg(test)]
 mod tests {

@@ -25,8 +25,8 @@ use crate::utils_inner::json_parse::parse_json_with_repair;
 use crate::utils_inner::sanitize_unicode::sanitize_surrogates;
 use crate::utils_inner::sse::SseDecoder;
 use crate::utils_inner::stream_failure::{
-    format_stream_failure_message, record_stream_failure, stream_failure_from_stop_reason,
-    ProviderError,
+    format_stream_failure_message, open_stream_block, record_stream_failure, stream_drop_failure,
+    stream_failure_from_stop_reason, ProviderError,
 };
 
 pub const VERTEX_API_VERSION: &str = "v1";
@@ -410,6 +410,14 @@ async fn run_stream(
         .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
     {
         return Err(ProviderError::Aborted);
+    }
+    // Same terminal rule as the Gemini path: Vertex ends a response with a candidate
+    // `finishReason` (or a prompt block), and a body that closes without one is a drop
+    // (review #3).
+    if !state.saw_terminal_marker() {
+        return Err(ProviderError::StreamFailure(stream_drop_failure(
+            open_stream_block(output),
+        )));
     }
     if matches!(output.stop_reason, StopReason::Aborted | StopReason::Error) {
         return Err(ProviderError::StreamFailure(
