@@ -919,10 +919,20 @@ impl<'a> ResponsesStreamProcessor<'a> {
     }
 
     /// Check invariants after the stream ended (port of the trailing checks).
+    ///
+    /// EVERY Responses provider ends a response with `response.completed` or
+    /// `response.incomplete`. A body that closes before one was cut off, and its text or tool
+    /// call is partial: returning `Ok` there settled a truncated answer as a completed turn and
+    /// kept the retry ladder from re-issuing the request. The check used to be xAI-only, which
+    /// left `OpenAI`, Azure, and the Codex transports accepting the same truncation (review
+    /// #4).
     pub fn finish(&self) -> Result<(), ProviderError> {
-        if self.model.provider == "xai" && !self.saw_terminal_response {
+        if !self.saw_terminal_response {
             return Err(ProviderError::StreamFailure(StreamFailureError {
-                message: "xAI Responses stream ended before a terminal response event".to_string(),
+                message: format!(
+                    "{} Responses stream ended before a terminal response event",
+                    self.model.provider
+                ),
                 info: StreamFailureInfo {
                     kind: StreamFailureKind::Unknown,
                     ..StreamFailureInfo::unknown()

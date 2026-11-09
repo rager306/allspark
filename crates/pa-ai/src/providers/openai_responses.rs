@@ -508,6 +508,10 @@ impl Provider for OpenAIResponsesProvider {
 }
 
 #[cfg(test)]
+#[path = "openai_responses_drop.rs"]
+mod stream_drop;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
