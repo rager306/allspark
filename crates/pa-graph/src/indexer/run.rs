@@ -51,7 +51,11 @@ impl GraphStore {
         let stored = self.all_file_hashes(&opts.project)?;
 
         // 2. Write nodes/FTS per batch; call sites accumulate for resolution below.
-        let mut seen: Vec<String> = Vec::new();
+        // A HashSet, not a Vec: the sweep below asks "was this stored file seen?" once per
+        // stored file, so a linear probe is O(stored x walked) on every pass — at the
+        // 10^4-file scale this function already names, roughly 5 x 10^7 path comparisons on
+        // an UNCHANGED tree, which is the common case (review #34).
+        let mut seen: HashSet<String> = HashSet::new();
         let mut pending_calls: Vec<(String, String, CallSite)> = Vec::new();
         let mut pending_imports: Vec<(String, ImportDef)> = Vec::new();
         // Hashes of the re-parsed files whose edges are written AFTER this batch.
@@ -71,7 +75,7 @@ impl GraphStore {
                 break;
             }
             for w in &batch {
-                seen.push(w.rel.clone());
+                seen.insert(w.rel.clone());
                 match w.change {
                     FileChange::Unchanged => {
                         report.unchanged += 1;

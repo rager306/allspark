@@ -1,0 +1,1 @@
+- Fixed the graph indexer's removal sweep doing a linear scan per stored file: the seen-path set is a hash set, so an unchanged re-index no longer costs O(files x walked).
