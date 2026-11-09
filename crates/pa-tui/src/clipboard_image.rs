@@ -194,7 +194,7 @@ async fn read_via_powershell() -> Option<ClipboardImage> {
     }
     let image = crate::image_load::load_image_from_path(&temp_path)
         .ok()
-        .flatten();
+        .and_then(crate::image_load::LoadedFileImage::into_image);
     let _ = std::fs::remove_file(&temp_path);
     image
 }
@@ -245,7 +245,7 @@ if (!types.containsObject($.NSPasteboardTypePNG)) {{
     }
     let image = crate::image_load::load_image_from_path(&temp_path)
         .ok()
-        .flatten();
+        .and_then(crate::image_load::LoadedFileImage::into_image);
     let _ = std::fs::remove_file(&temp_path);
     image
 }

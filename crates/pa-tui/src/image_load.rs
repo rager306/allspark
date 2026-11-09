@@ -58,22 +58,65 @@ pub fn detect_supported_image_mime_from_path(path: &Path) -> std::io::Result<Opt
     Ok(detect_supported_image_mime_from_bytes(&buffer))
 }
 
-/// Load an image file as an attachment payload. `Ok(None)` when the file
-/// is empty or not a supported image (the caller treats those as plain
-/// text instead).
+/// The inline image budget: 4.5MB of base64 payload, headroom below the
+/// provider's 5MB limit. One owner, so a caller cannot free itself of the cap by
+/// skipping the check.
+pub const MAX_IMAGE_BASE64_BYTES: usize = 4_500_000;
+
+/// The raw bytes that base64-encode to exactly [`MAX_IMAGE_BASE64_BYTES`]
+/// (base64 emits four characters per three bytes).
+pub const MAX_IMAGE_BYTES: usize = MAX_IMAGE_BASE64_BYTES / 4 * 3;
+
+/// What one file turned out to be, from the attachment loader's point of view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoadedFileImage {
+    /// A supported image within the inline budget.
+    Image(LoadedImage),
+    /// A supported image above the budget, reported but never read or encoded.
+    Oversized { bytes: u64 },
+    /// Not a supported image: the caller embeds the file as text instead.
+    NotAnImage,
+}
+
+impl LoadedFileImage {
+    /// The image, when the file is one within the budget.
+    #[must_use]
+    pub fn into_image(self) -> Option<LoadedImage> {
+        match self {
+            LoadedFileImage::Image(image) => Some(image),
+            LoadedFileImage::Oversized { .. } | LoadedFileImage::NotAnImage => None,
+        }
+    }
+}
+
+/// Load an image file as an attachment payload, reading at most the inline budget.
+///
+/// The read is BOUNDED on purpose: an `@file` argument pointing at a multi-gigabyte
+/// image must not be allocated and base64-encoded before anyone asks how big it is
+/// (AGENTS.md: a file read into the prompt caps its size and reports the truncation).
 ///
 /// # Errors
 ///
-/// Returns `Err` when the file cannot be opened, its prefix read, or its full bytes re-read.
-pub fn load_image_from_path(path: &Path) -> std::io::Result<Option<LoadedImage>> {
+/// Returns `Err` when the file cannot be opened, its prefix read, or its bytes read.
+pub fn load_image_from_path(path: &Path) -> std::io::Result<LoadedFileImage> {
+    use std::io::Read;
     let Some(mime_type) = detect_supported_image_mime_from_path(path)? else {
-        return Ok(None);
+        return Ok(LoadedFileImage::NotAnImage);
     };
-    let bytes = std::fs::read(path)?;
+    let declared_bytes = std::fs::metadata(path)?.len();
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take((MAX_IMAGE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
     if bytes.is_empty() {
-        return Ok(None);
+        return Ok(LoadedFileImage::NotAnImage);
     }
-    Ok(Some(LoadedImage {
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Ok(LoadedFileImage::Oversized {
+            bytes: declared_bytes,
+        });
+    }
+    Ok(LoadedFileImage::Image(LoadedImage {
         data: base64::engine::general_purpose::STANDARD.encode(bytes),
         mime_type: mime_type.to_string(),
     }))
@@ -138,16 +181,56 @@ mod tests {
     #[test]
     fn loads_supported_images_as_base64_attachments() {
         let gif = temp_image("a.gif", b"GIF89a\x02\x00\x01\x00");
-        let loaded = load_image_from_path(&gif).unwrap().expect("image");
+        let loaded = load_image_from_path(&gif)
+            .unwrap()
+            .into_image()
+            .expect("image");
         assert_eq!(loaded.mime_type, "image/gif");
         assert_eq!(
             loaded.data,
             base64::engine::general_purpose::STANDARD.encode(b"GIF89a\x02\x00\x01\x00")
         );
         let text = temp_image("a.txt", b"just text");
-        assert_eq!(load_image_from_path(&text).unwrap(), None);
+        assert_eq!(
+            load_image_from_path(&text).unwrap(),
+            LoadedFileImage::NotAnImage
+        );
         let empty = temp_image("a.png", b"");
-        assert_eq!(load_image_from_path(&empty).unwrap(), None);
+        assert_eq!(
+            load_image_from_path(&empty).unwrap(),
+            LoadedFileImage::NotAnImage
+        );
+    }
+
+    /// Review #35: the size cap runs BEFORE the read, so an oversized image costs a
+    /// bounded read instead of being allocated and base64-encoded in full.
+    ///
+    /// The fixture is larger than the inline budget; the loader reports it by
+    /// declared size and returns no payload at all.
+    #[test]
+    fn an_oversized_image_is_reported_without_being_read() {
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        png.resize(4_000_001, 0);
+        let path = temp_image("huge.png", &png);
+        assert_eq!(
+            load_image_from_path(&path).unwrap(),
+            LoadedFileImage::Oversized {
+                bytes: png.len() as u64
+            }
+        );
+    }
+
+    /// Just inside the budget still attaches: the cap is a ceiling, not a small-file rule.
+    #[test]
+    fn an_image_at_the_budget_still_attaches() {
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        png.resize(MAX_IMAGE_BYTES, 0);
+        let path = temp_image("edge.png", &png);
+        let loaded = load_image_from_path(&path)
+            .unwrap()
+            .into_image()
+            .expect("an image at the budget attaches");
+        assert_eq!(loaded.data.len(), MAX_IMAGE_BASE64_BYTES);
     }
 
     #[test]

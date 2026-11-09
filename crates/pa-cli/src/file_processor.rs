@@ -1,8 +1,9 @@
 //! `@file` argument expansion for the initial prompt: each argument becomes
 //! either a `<file name>` text block or a base64 image attachment (the
 //! magic-byte sniff, never the extension, plus the same 4.5MB inline limit).
-//! No resize engine: an oversized image under auto-resize falls back to the
-//! converter-unavailable text (`[Image omitted: ...]`) TS emits.
+//! No resize engine exists here, so an oversized image is reported and omitted
+//! whatever `images.autoResize` says — the loader enforces the budget before it
+//! reads, and this module only chooses the marker text.
 //! Text files over `MAX_TEXT_EMBED_BYTES` embed only their first cap bytes
 //! plus an explicit truncation marker (a deliberate divergence from the TS
 //! binary, which embeds whole files unbounded).
@@ -12,9 +13,6 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use pa_agent::types::ImageContent;
-
-/// 4.5MB of base64 payload, headroom below the provider's 5MB limit.
-const DEFAULT_MAX_BYTES: usize = 4_500_000;
 
 /// Cap on the text bytes one @file argument may embed into the initial
 /// prompt; files above it embed a prefix plus a truncation marker. 256KiB is
@@ -58,27 +56,38 @@ pub fn process_file_arguments(
         }
         match pa_tui::image_load::load_image_from_path(&absolute_path) {
             // An image: attach the payload (the same sniff the paste path
-            // uses), with the auto-resize setting gating the size limit.
-            Ok(Some(image)) => {
-                if auto_resize_images && image.data.len() > DEFAULT_MAX_BYTES {
-                    let _ = writeln!(
-                    processed.text,
-                    "<file name=\"{resolved}\">[Image omitted: could not be resized below the inline image size limit.]</file>"
-                );
-                    continue;
-                }
+            // uses). The inline budget is the loader's, not a caller's option: an
+            // oversized image is reported and omitted whatever the auto-resize
+            // setting says, because there is no resize engine to bring it under the
+            // provider's limit (review #35: "off" used to ship the whole payload).
+            Ok(pa_tui::image_load::LoadedFileImage::Image(image)) => {
                 processed.images.push(ImageContent {
                     data: image.data,
                     mime_type: image.mime_type,
                 });
                 let _ = writeln!(processed.text, "<file name=\"{resolved}\"></file>");
             }
+            Ok(pa_tui::image_load::LoadedFileImage::Oversized { bytes }) => {
+                // There is no resize engine in this port, so auto-resize cannot bring the
+                // image under the provider's limit either way; the setting now only says
+                // WHICH marker the user reads (TS's wording vs. the explicit budget).
+                let limit = pa_tui::image_load::MAX_IMAGE_BASE64_BYTES;
+                let marker = if auto_resize_images {
+                    "[Image omitted: could not be resized below the inline image size limit.]"
+                        .to_string()
+                } else {
+                    format!(
+                        "[Image omitted: {bytes} bytes exceeds the {limit} byte inline image size limit, and image auto-resize is off.]"
+                    )
+                };
+                let _ = writeln!(processed.text, "<file name=\"{resolved}\">{marker}</file>");
+            }
             // Not an image: embed the content in a file block (Node's utf-8 read decodes
             // invalid sequences lossily, so binary non-image files embed instead of failing).
             // Files over the cap embed only their first MAX_TEXT_EMBED_BYTES bytes plus a
             // truncation marker, and the read itself stops at the cap, so one @file
             // argument cannot pull an unbounded payload into the initial prompt.
-            Ok(None) => {
+            Ok(pa_tui::image_load::LoadedFileImage::NotAnImage) => {
                 let total_bytes = metadata.len();
                 let mut file =
                     std::fs::File::open(&absolute_path).map_err(|error| FileProcessingError {
@@ -313,8 +322,11 @@ mod tests {
         );
     }
 
+    /// Review #35: `images.autoResize = false` used to ship the whole payload, and the
+    /// prompt-input cap AGENTS.md requires does not depend on a user setting. The oversized
+    /// image is omitted with its own marker either way.
     #[test]
-    fn auto_resize_off_attaches_the_raw_payload() {
+    fn an_oversized_image_is_omitted_even_with_auto_resize_off() {
         let (_guard, dir) = temp_dir();
         let mut png = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
         png.extend(std::iter::repeat_n(0u8, 4_000_000));
@@ -322,6 +334,11 @@ mod tests {
         std::fs::write(&file, &png).expect("write fixture");
         let processed = process_file_arguments(&[file.to_string_lossy().to_string()], &dir, false)
             .expect("process");
-        assert_eq!(processed.images.len(), 1);
+        assert_eq!(processed.images, Vec::new());
+        assert!(
+            processed.text.contains("image auto-resize is off"),
+            "the marker must say why the image was dropped: {}",
+            processed.text
+        );
     }
 }
