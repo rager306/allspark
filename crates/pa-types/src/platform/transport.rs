@@ -47,10 +47,34 @@ pub trait TransportListener: Send + Sync {
 impl TransportListener for tokio::net::UnixListener {
     fn accept(&self) -> AcceptFuture<'_> {
         Box::pin(async move {
-            let (stream, _address) = self.accept().await?;
-            Ok(Box::new(stream) as Box<dyn TransportStream>)
+            loop {
+                let (stream, _address) = self.accept().await?;
+                // The accepted peer's uid is the kernel's answer, not the peer's (review #24,
+                // CWE-306): a socket is bound before the daemon restricts its path, so a local
+                // user can connect inside that window and keep the accepted connection after the
+                // chmod. Refusing a foreign uid here covers the daemon and worker listeners
+                // alike, because both are bound through `bind_transport`.
+                //
+                // A refusal RETRIES instead of surfacing an error: the accept loops count
+                // consecutive failures toward a give-up budget, so an attacker able to connect
+                // repeatedly could otherwise end the supervisor by being refused.
+                if verify_peer_uid(&stream, &listener_label(self)).is_err() {
+                    continue;
+                }
+                return Ok(Box::new(stream) as Box<dyn TransportStream>);
+            }
         })
     }
+}
+
+/// The bound endpoint's own path, for a refusal message (empty when the listener has no path).
+#[cfg(unix)]
+fn listener_label(listener: &tokio::net::UnixListener) -> std::path::PathBuf {
+    listener
+        .local_addr()
+        .ok()
+        .and_then(|address| address.as_pathname().map(Path::to_path_buf))
+        .unwrap_or_default()
 }
 
 /// Native `AF_UNIX` path capacity, excluding the terminating NUL.
@@ -166,23 +190,24 @@ pub async fn connect_transport(path: &Path) -> Result<Box<dyn TransportStream>> 
     Ok(Box::new(stream))
 }
 
-/// Refuse a daemon socket that another user owns (review #17, CWE-290).
+/// Refuse a peer on a Unix socket that another user owns (reviews #17/#24, CWE-290/306).
 ///
-/// The client used to trust whatever answered: `probe_daemon` validates the HELLO's
-/// protocol, schema and build hash — every one of those fields is supplied by the peer.
-/// A socket path is predictable (`${TMPDIR}/allspark-daemon.sock`), so another local user
-/// can bind it first, answer with the expected public constants, and receive the
-/// victim's subsequent session commands and prompt text.
+/// Both directions need it, and both used to trust the peer. On the CLIENT side
+/// `probe_daemon` validates the HELLO's protocol, schema and build hash — every one of
+/// those fields is supplied by the peer — so a predictable socket path
+/// (`${TMPDIR}/allspark-daemon.sock`) let another local user bind it first, answer with
+/// the expected public constants, and receive the victim's session commands and prompt
+/// text. On the SERVER side a socket file exists from `bind` until the daemon restricts
+/// its path, so a local user can connect inside that window and keep the accepted
+/// connection after the chmod.
 ///
-/// The check is the kernel's answer, not the peer's: `SO_PEERCRED` on the connected
-/// socket reports the uid of the process that BOUND it, which a process cannot forge.
-/// Refusing a foreign uid turns the impersonation into a connection error the caller
-/// already reports. Linux only — the other Unix platforms reach the same fact through
-/// `LOCAL_PEERCRED`/`getpeereid`, and until that is wired the check is skipped rather
-/// than guessed.
+/// The answer is the kernel's, not the peer's: `SO_PEERCRED` on a connected socket
+/// reports the uid of the process at the other end, which a process cannot forge.
+/// Refusing a foreign uid turns both impersonations into a connection error the caller
+/// already reports.
 #[cfg(target_os = "linux")]
-fn verify_peer_uid(stream: &tokio::net::UnixStream, path: &Path) -> Result<()> {
-    use std::os::fd::AsRawFd;
+fn verify_peer_uid<F: std::os::fd::AsRawFd>(stream: &F, path: &Path) -> Result<()> {
+    let fd = stream.as_raw_fd();
     let mut credentials = libc::ucred {
         pid: 0,
         uid: 0,
@@ -194,7 +219,7 @@ fn verify_peer_uid(stream: &tokio::net::UnixStream, path: &Path) -> Result<()> {
     // exactly what `length` reports; the fd is owned by `stream` for the call.
     let status = unsafe {
         libc::getsockopt(
-            stream.as_raw_fd(),
+            fd,
             libc::SOL_SOCKET,
             libc::SO_PEERCRED,
             std::ptr::addr_of_mut!(credentials).cast(),
@@ -223,7 +248,7 @@ fn verify_peer_uid(stream: &tokio::net::UnixStream, path: &Path) -> Result<()> {
 fn same_owner(peer_uid: u32, our_uid: u32, path: &Path) -> Result<()> {
     if peer_uid != our_uid {
         return Err(anyhow::anyhow!(
-            "refusing the daemon socket {}: it belongs to uid {peer_uid} (this process is uid {our_uid})",
+            "refusing the socket {}: it belongs to uid {peer_uid} (this process is uid {our_uid})",
             path.display(),
         ));
     }
@@ -237,8 +262,7 @@ fn same_owner(peer_uid: u32, our_uid: u32, path: &Path) -> Result<()> {
 /// `PRIME_AGENT_DAEMON_SOCKET`, a mounted home). `getpeereid` is the platform's own answer
 /// and needs no `SO_PEERCRED`; the decision is the same `same_owner` the Linux path uses.
 #[cfg(all(unix, not(target_os = "linux")))]
-fn verify_peer_uid(stream: &tokio::net::UnixStream, path: &Path) -> Result<()> {
-    use std::os::fd::AsRawFd;
+fn verify_peer_uid<F: std::os::fd::AsRawFd>(stream: &F, path: &Path) -> Result<()> {
     let mut peer_uid: libc::uid_t = 0;
     let mut peer_gid: libc::gid_t = 0;
     // SAFETY: `getpeereid` writes one uid and one gid into the pointers given; the fd is
@@ -442,6 +466,11 @@ impl BlockingTransportStream for std::os::unix::net::UnixStream {
 pub fn connect_blocking(path: &Path) -> std::io::Result<Box<dyn BlockingTransportStream>> {
     let address = UnixSocketAddress::new(path).map_err(std::io::Error::other)?;
     let stream = std::os::unix::net::UnixStream::connect(address.effective())?;
+    // The blocking CLI client is the one that carries `send` and `shutdown`, and it used to
+    // accept whichever process answered (review #16, CWE-290). The asynchronous client has
+    // checked the peer's uid since review #17; this arm never did, so the same squatting
+    // socket collected the victim's commands through `allspark <cmd>`.
+    verify_peer_uid(&stream, path).map_err(std::io::Error::other)?;
     Ok(Box::new(stream))
 }
 
@@ -527,6 +556,77 @@ mod peer_credential_tests {
         connect_transport(&path)
             .await
             .expect("a socket this uid owns connects");
+    }
+
+    /// The listener side must CALL the same check (review #24, CWE-306).
+    ///
+    /// The accepted-peer uid is the only fact that separates the daemon's owner from any
+    /// other local user who connected before the socket's path was restricted. Same shape
+    /// as the client pin below: the refusal is not observable from a connection this
+    /// process builds (the uid always matches, and a second uid needs a privilege the test
+    /// may not drop to), so the check is on the mechanism.
+    #[test]
+    fn the_listener_accept_runs_the_owner_check() {
+        let source = include_str!("transport.rs");
+        let start = source
+            .find("impl TransportListener for tokio::net::UnixListener")
+            .expect("the unix listener impl exists");
+        let end = source[start..]
+            .find("\n}\n")
+            .map(|at| start + at)
+            .expect("the impl ends");
+        let body = &source[start..end];
+        assert!(
+            body.contains("verify_peer_uid("),
+            "accept must verify the connected peer's uid before dispatching it: {body}"
+        );
+    }
+
+    /// The blocking CLI client must CALL the check (review #16, CWE-290).
+    ///
+    /// It is the transport behind `allspark send` and `allspark shutdown`; the async
+    /// client checked the owner since review #17 and this arm never did.
+    #[test]
+    fn connect_blocking_runs_the_owner_check() {
+        let source = include_str!("transport.rs");
+        let start = source
+            .find("pub fn connect_blocking(path: &Path)")
+            .expect("the blocking connect exists");
+        let end = source[start..]
+            .find("\n}\n")
+            .map(|at| start + at)
+            .expect("the function ends");
+        let body = &source[start..end];
+        assert!(
+            body.contains("verify_peer_uid("),
+            "connect_blocking must verify the peer's uid before handing the stream on: {body}"
+        );
+    }
+
+    /// The check must not refuse the owner: a same-uid client still connects, and the
+    /// listener still hands the stream on (a guard that refuses everyone would pass the
+    /// two pins above and break every daemon attach).
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn an_owned_client_is_still_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("daemon.sock");
+        let listener = bind_transport(&path).await.expect("bind");
+        let connect_path = path.clone();
+        let client = tokio::spawn(async move {
+            connect_transport(&connect_path)
+                .await
+                .expect("connect")
+        });
+        let accepted = tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
+            .await
+            .expect("an owned client is accepted, not refused")
+            .expect("accept succeeds");
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), client)
+            .await
+            .expect("the client connects")
+            .expect("client task");
+        drop(accepted);
     }
 
     /// `connect_transport` must CALL the check.
