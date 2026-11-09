@@ -268,6 +268,14 @@ pub(crate) fn claim_due_in_state(
     dispatches
 }
 
+/// Settle claims left behind by a process that died before recording their outcome.
+///
+/// A recurring job keeps its schedule (the next run is already rolled), but a ONE-SHOT claim is
+/// the user's only wake — a quota-resume or goal-backoff fire — and it is re-armed here rather
+/// than completed (review #6). Completion would claim the prompt ran, and the claim is written
+/// BEFORE the prompt reaches the session queue, so a crash in that window loses the wake
+/// outright. Re-arming is at-least-once: a crash after the prompt was durably queued replays it,
+/// which is the direction a durability record must err in.
 pub(crate) fn recover_interrupted_in_state(
     state: &mut CronJobsState,
     now: u64,
@@ -290,6 +298,12 @@ pub(crate) fn recover_interrupted_in_state(
         .iter()
         .map(|dispatch| dispatch.job_id.clone())
         .collect();
+    // The window each claim covered: a re-armed one-shot returns to the moment it was due.
+    let scheduled_for: HashMap<String, String> = interrupted
+        .iter()
+        .filter(|dispatch| !dispatch.scheduled_for.is_empty())
+        .map(|dispatch| (dispatch.job_id.clone(), dispatch.scheduled_for.clone()))
+        .collect();
     match dispatch_ids {
         Some(ids) => state
             .dispatches
@@ -304,11 +318,16 @@ pub(crate) fn recover_interrupted_in_state(
             if !interrupted_ids.contains(&job.id) || job.status != JobStatus::Active {
                 return job;
             }
-            job.status = if job.schedule.kind == ScheduleKind::Once {
-                JobStatus::Completed
-            } else {
-                job.status
-            };
+            if job.schedule.kind == ScheduleKind::Once {
+                // Re-arm, never complete: nothing recorded that this prompt was handed to the
+                // session, and completing it destroys the only wake the one-shot represents.
+                job.next_run_at = Some(
+                    scheduled_for
+                        .get(&job.id)
+                        .cloned()
+                        .unwrap_or_else(|| iso_from_millis(now)),
+                );
+            }
             job.last_error = Some("Interrupted before scheduled operation completion".to_string());
             job.updated_at = iso_from_millis(now);
             recovered.push(job.clone());
@@ -563,6 +582,65 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             corrupt,
             "the original bytes stay for repair"
+        );
+    }
+
+    /// An interrupted one-shot is RE-ARMED, never completed (review #6).
+    ///
+    /// The claim is written before the prompt reaches the session queue, so a crash in that
+    /// window leaves no record that anything ran. Completing the job destroyed the only wake a
+    /// one-shot represents — a quota-resume or goal-backoff fire simply stopped existing —
+    /// while a recurring job kept its schedule because its next run was already rolled.
+    #[test]
+    fn an_interrupted_one_shot_is_rearmed_at_its_due_time() {
+        let now = 1_700_000_000_000_u64;
+        let once: AgentCronJob = serde_json::from_value(serde_json::json!({
+            "id": "wake",
+            "activeSessionId": "s-1",
+            "sessionId": "s-1",
+            "sessionFile": "/tmp/s-1.jsonl",
+            "cwd": "/tmp",
+            "prompt": "resume the parked goal",
+            "schedule": { "kind": "once", "expression": "in 5m" },
+            "status": "active",
+            "nextRunAt": "2023-11-14T22:18:20.000Z",
+            "createdAt": "2023-11-14T22:13:20.000Z",
+            "updatedAt": "2023-11-14T22:13:20.000Z"
+        }))
+        .expect("the one-shot fixture parses");
+        let due_iso = once.next_run_at.clone().expect("the fixture is due");
+        let mut state = CronJobsState {
+            jobs: vec![once],
+            dispatches: Vec::new(),
+        };
+        let claimed = claim_due_in_state(&mut state, now + 300_000, now + 300_001);
+        assert_eq!(claimed.len(), 1, "the one-shot is claimed");
+        let dispatch_id = claimed[0].id.clone();
+        assert_eq!(
+            state.jobs[0].next_run_at, None,
+            "a claimed one-shot carries no next run"
+        );
+
+        let mut recovered = Vec::new();
+        recover_interrupted_in_state(&mut state, now + 309_000, &mut recovered, None);
+        assert_eq!(recovered.len(), 1, "the interrupted claim is reported");
+        assert_eq!(
+            state.jobs[0].status,
+            JobStatus::Active,
+            "the one-shot must not be completed: nothing recorded that it ran"
+        );
+        assert_eq!(
+            state.jobs[0].next_run_at.as_deref(),
+            Some(due_iso.as_str()),
+            "it returns to the moment it was due, so the next pass fires it"
+        );
+        assert!(
+            state.jobs[0].last_error.is_some(),
+            "the recovery stamps why the wake is late"
+        );
+        assert!(
+            state.dispatches.is_empty(),
+            "the claim is released, so the next pass can take it again: {dispatch_id}"
         );
     }
 

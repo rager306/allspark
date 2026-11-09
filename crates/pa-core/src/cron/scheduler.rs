@@ -435,10 +435,10 @@ mod tests {
     /// Review #28: a startup recovery that cannot write (a sibling process holds the
     /// state lock) must be retried, not dropped.
     ///
-    /// The job it repairs is invisible to the wake timer: a DISPATCHED one-shot has no
-    /// `next_run_at` left, so `next_active_run_at()` is `None` and the old task parked on
-    /// the notify forever. The interrupted job stayed claimed after the lock cleared,
-    /// with no error a human could see.
+    /// The job it repairs is invisible to the wake timer: a DISPATCHED job has no
+    /// `next_run_at` left until the recovery re-arms it, so `next_active_run_at()` is `None`
+    /// and the old task parked on the notify forever. The interrupted job stayed claimed
+    /// after the lock cleared, with no error a human could see.
     #[tokio::test(start_paused = true)]
     async fn a_failed_startup_recovery_is_retried_without_a_next_run() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -497,10 +497,16 @@ mod tests {
             !scheduler.core.recovery_pending.load(Ordering::SeqCst),
             "a landed recovery clears the flag"
         );
+        let repaired = store.list().into_iter().next().expect("the job survives");
         assert_eq!(
-            store.list()[0].status,
-            crate::cron::JobStatus::Completed,
-            "the interrupted one-shot is closed out, not left claimed"
+            repaired.status,
+            crate::cron::JobStatus::Active,
+            "the interrupted one-shot is re-armed, not closed out (review #6)"
+        );
+        assert!(
+            store.next_active_run_at().is_some(),
+            "the re-armed one-shot leaves the wake timer something to arm on: {}",
+            repaired.next_run_at.clone().unwrap_or_default()
         );
         scheduler.stop().await;
     }
