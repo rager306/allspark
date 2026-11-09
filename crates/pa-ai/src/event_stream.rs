@@ -103,6 +103,10 @@ impl AssistantMessageEventExt for AssistantMessageEvent {
 #[derive(Default)]
 struct SharedState {
     done: bool,
+    /// Set by [`AssistantMessageEventStream::drop_queued_events`]: events are still resolved
+    /// but not queued, so a caller that only wants the final message never retains a
+    /// snapshot per token.
+    discard_events: bool,
     queue: VecDeque<AssistantMessageEvent>,
     waker: Option<Waker>,
     resolved: Option<AssistantMessage>,
@@ -139,6 +143,12 @@ impl Shared {
             if let Some(message) = event.terminal_message() {
                 state.resolve(message);
             }
+        }
+        // A result-only consumer (`result`) reads only `resolved`: queueing every snapshot
+        // there would hold one full partial message per token until the provider finishes
+        // (quadratic retained memory on a long completion, review #2).
+        if state.discard_events {
+            return;
         }
         state.queue.push_back(event);
         if let Some(waker) = state.waker.take() {
@@ -242,6 +252,10 @@ impl AssistantMessageEventStream {
     /// A stream terminated without a resolved message (`end(None)`) never resolves: this future
     /// hangs.
     pub async fn result(self) -> AssistantMessage {
+        // Nothing will read events from here on, so release the snapshots already queued and
+        // stop queueing the ones still to come (review #2: `complete`/`complete_simple` await
+        // only the result, and each queued snapshot holds the whole partial message).
+        self.drop_queued_events();
         if let Some(message) = self.try_result() {
             return message;
         }
@@ -265,6 +279,17 @@ impl AssistantMessageEventStream {
 
     fn try_result(&self) -> Option<AssistantMessage> {
         self.shared.state.lock().unwrap().resolved.clone()
+    }
+
+    /// Switch the stream into result-only mode: nothing queued now or later is retained.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared-state `Mutex` is poisoned.
+    fn drop_queued_events(&self) {
+        let mut state = self.shared.state.lock().unwrap();
+        state.discard_events = true;
+        state.queue.clear();
     }
 }
 
@@ -382,6 +407,51 @@ mod tests {
         let resolved = stream.result().await;
         assert_eq!(resolved.stop_reason, StopReason::Error);
         assert_eq!(resolved.content, message.content);
+    }
+
+    /// Review #2: a caller that awaits only `result()` (every non-streaming completion, incl.
+    /// compaction and branch summaries) must not hold one full partial message per token.
+    ///
+    /// The snapshots here carry growing text; without the mode switch the queue keeps all 100
+    /// and keeps growing, which is the retained memory this pins.
+    #[tokio::test]
+    async fn a_result_only_stream_retains_no_snapshots() {
+        let (writer, stream) = AssistantMessageEventStream::new();
+        let growing = |index: usize| sample_message(&"x".repeat(index + 1));
+        for index in 0..100 {
+            writer.push(AssistantMessageEvent::TextDelta {
+                content_index: 0,
+                delta: "x".into(),
+                partial: growing(index),
+            });
+        }
+        assert_eq!(
+            writer.shared.state.lock().unwrap().queue.len(),
+            100,
+            "the fixture must queue before the result-only switch, or it proves nothing"
+        );
+
+        let awaiting = tokio::spawn(async move { stream.result().await });
+        while !writer.shared.state.lock().unwrap().queue.is_empty() {
+            tokio::task::yield_now().await;
+        }
+        writer.push(AssistantMessageEvent::TextDelta {
+            content_index: 0,
+            delta: "x".into(),
+            partial: growing(100),
+        });
+        assert!(
+            writer.shared.state.lock().unwrap().queue.is_empty(),
+            "a result-only stream must not retain events queued after the switch"
+        );
+
+        let final_message = sample_message("done");
+        writer.push(AssistantMessageEvent::Done {
+            reason: DoneStopReason::Stop,
+            message: final_message.clone(),
+        });
+        let resolved = awaiting.await.expect("the result task joins");
+        assert_eq!(resolved.content, final_message.content);
     }
 
     #[tokio::test]
