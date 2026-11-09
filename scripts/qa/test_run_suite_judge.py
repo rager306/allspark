@@ -67,6 +67,51 @@ class RunnerFailureExitTests(unittest.TestCase):
                 return run_suite.main()
 
 
+class ManifestArtifactTests(unittest.TestCase):
+    """Review #21: the manifest is an artifact (kept under --out, archived, and
+    uploaded by CI), so a credential must never enter it. `--api-key` was copied into
+    `model_cfg` at construction and `model_cfg` was written whole, which put the key in
+    plaintext in every real-model manifest."""
+
+    SENTINEL = "qa-sentinel-key-do-not-serialize"
+
+    def test_the_api_key_never_reaches_the_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            task_dir = work / "task"
+            task_dir.mkdir()
+            (task_dir / "task.yaml").write_text(
+                "id: secret-fixture\nlane: real-model\nnetwork: off\nprompt: p\n"
+                "oracle:\n  type: state\n  spec:\n    - exit_code: 0\n")
+            task = run_suite.Task(task_dir)
+
+            def passing_trial(*args, **kwargs):
+                return {"trial": "trial-1", "ok": True, "reasons": [],
+                        "duration_s": 0.1, "steps": 0, "tokens": 0, "tool_freq": {},
+                        "exit_code": 0, "tool_calls": 0, "killed": False}
+
+            command = ["run_suite.py", "--trials", "1", "--lane", "real-model",
+                       "--provider", "openai", "--model", "gpt-x",
+                       "--api-key", self.SENTINEL, "--out", str(work / "out")]
+            with patch.object(run_suite, "load_tasks", return_value=[task]), \
+                 patch.object(run_suite, "resolve_binary", return_value=work / "unused-bin"), \
+                 patch.object(run_suite, "run_trial", side_effect=passing_trial), \
+                 patch.object(run_suite, "suite_revision", return_value={}), \
+                 patch.object(run_suite, "binary_version", return_value="offline"), \
+                 patch("sys.argv", command), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(run_suite.main(), 0)
+
+            manifests = list((work / "out").rglob("manifest.json"))
+            self.assertEqual(len(manifests), 1, "the run writes one manifest")
+            text = manifests[0].read_text()
+            self.assertNotIn(self.SENTINEL, text,
+                             "the provider API key must never be serialized into an artifact")
+            self.assertEqual(json.loads(text)["model"],
+                             {"provider": "openai", "model": "gpt-x"},
+                             "the manifest keeps the selection, not the credential")
+
+
 class RunnerJudgeIntegrationTests(unittest.TestCase):
     def test_429_leaves_deterministic_exit_gate_unchanged(self):
         self.check_advisory_response("print(json.dumps({'error':'provider request failed','http_status':429,'retry_after':'60'}))")

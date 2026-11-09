@@ -1832,6 +1832,12 @@ def main() -> int:
             None, args.judge_key_file)
     model_cfg = ({"provider": args.provider, "model": args.model, "api_key": args.api_key}
                  if (args.provider or args.model) else None)
+    # The manifest is an ARTIFACT (kept, archived, uploaded), so it carries the
+    # SELECTION, never the credential: `--api-key` rides the runtime config into
+    # the child's argv and stops there. Writing model_cfg whole put the key in
+    # plaintext in every manifest a real-model run produced (review #21).
+    manifest_model = ({"provider": args.provider, "model": args.model}
+                      if (args.provider or args.model) else None)
 
     stamp = time.strftime("%Y%m%d-%H%M%S")
     out_root = Path(args.out).resolve() / stamp
@@ -1917,7 +1923,7 @@ def main() -> int:
         "suiteRev": suite_revision(),
         "binary": str(binary),
         "binaryBuild": binary_version(binary),
-        "model": model_cfg or (args.lane or "faux"),
+        "model": manifest_model or (args.lane or "faux"),
         "trials_per_task": args.trials,
         "kernel_python": kernel_python,
         "results_summary": {
