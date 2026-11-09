@@ -81,9 +81,71 @@ def publish_archive(feed: Path, archive: Path) -> Path:
     return checksums
 
 
+# The installer derives its stop candidates from TMPDIR: `prime-agent-<uid>`,
+# `prime-agent-rust-<uid>`, `allspark-<uid>`, plus the launcher's `$ALLSPARK_HOME/run`.
+# Above the unix sun_path limit it falls back to `/tmp` on non-Linux hosts — the
+# AMBIENT namespace, where an operator's live daemon lives.
+SOCKET_PATH_LIMIT = 103
+
+
+def socket_candidates(root: Path) -> list[Path]:
+    """The sockets the installer will probe, for a fixture rooted at `root`."""
+    tmp = root / "tmp"
+    uid = os.getuid()
+    return [
+        tmp / f"{name}-{uid}" / "daemon.sock"
+        for name in ("prime-agent", "prime-agent-rust", "allspark")
+    ] + [root / "home/.allspark-home/run/daemon.sock"]
+
+
+def guard_session() -> None:
+    """Refuse to run the REAL installer from inside a live agent session.
+
+    AGENTS.md forbids it "in any form", and the reason is concrete: this harness
+    spawns `install-rust.sh`, whose stop probe asks each candidate daemon to shut
+    down BY SOCKET PATH — and the session that started the harness answers on
+    one of them. The scrubbed fixture environment does not help; it narrows what
+    the child sees, not what its stop probe stops.
+    """
+    if os.environ.get("PRIME_AGENT_INTERNAL_DAEMON_WORKER") \
+            or os.environ.get("PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET"):
+        raise SystemExit(
+            "refusing to run the real installer from inside a prime-agent session: "
+            "it stops daemons by socket path, and this session's supervisor answers "
+            "on one of them. Run this harness outside the session (CI does).")
+
+
+def guard_isolated_sockets(root: Path, platform: str | None = None) -> None:
+    """Refuse a fixture whose sockets the installer could not keep to itself.
+
+    The installer stops daemons BY SOCKET PATH, and it derives those paths from
+    TMPDIR — falling back to `/tmp/<name>-<uid>` on a non-Linux host when the
+    fixture path is longer than the unix socket limit. That fallback IS the
+    ambient namespace of the machine running this harness, so a long fixture path
+    is refused rather than trusted to contain the child. A fixture socket that
+    resolves outside the fixture root is refused for the same reason.
+
+    Fail-closed by design: there is no override here, and a harness that needs one
+    is a harness whose sockets are not provably its own.
+    """
+    guard_session()
+    platform = platform or os.uname().sysname
+    resolved_root = root.resolve()
+    for candidate in socket_candidates(root):
+        if not str(candidate.resolve()).startswith(str(resolved_root) + os.sep):
+            raise SystemExit(f"the fixture socket {candidate} escapes the fixture root")
+        if platform != "Linux" and len(str(candidate).encode()) > SOCKET_PATH_LIMIT:
+            raise SystemExit(
+                f"the fixture socket {candidate} is longer than {SOCKET_PATH_LIMIT} "
+                f"bytes, so on {platform} the installer would fall back to /tmp — the "
+                "AMBIENT socket namespace of the machine running this harness. Give the "
+                "harness a shorter temporary root (TMPDIR).")
+
+
 def isolated_environment(root: Path, base_url: str, layout: str = "custom") -> dict[str, str]:
     # An allowlist prevents inheriting credentials, daemon addresses, package
     # roots, update overrides, or user-specific runtime paths from the host.
+    guard_isolated_sockets(root)
     env = {name: os.environ[name] for name in ("PATH", "LANG", "LC_ALL", "SYSTEMROOT") if name in os.environ}
     for name, relative in {
         "HOME": "home", "TMPDIR": "tmp", "XDG_DATA_HOME": "data",

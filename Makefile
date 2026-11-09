@@ -215,3 +215,11 @@ legacy-upgrade-gates:
 	python3 scripts/release/test_npm_bridge.py
 
 .PHONY: legacy-upgrade-gates
+
+# The release harnesses' own safety contract: they spawn the REAL installer, so
+# they must refuse to run from inside a live agent session (AGENTS.md's install
+# rule) or with a fixture path that would fall back to the ambient /tmp sockets.
+install-harness-gates:
+	python3 scripts/release/test_channel_install_guard.py
+
+.PHONY: install-harness-gates

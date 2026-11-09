@@ -245,6 +245,12 @@ jobs:
           python3 scripts/release/test_catalog_assets.py
           python3 scripts/release/test_decoder_manifest.py
           python3 scripts/release/test_fold_changelog.py
+          # The two harnesses that spawn the REAL installer (channel install, legacy
+          # upgrade) take arguments and run from their own lanes, so their safety
+          # contract is what runs here: they must refuse to start inside a live
+          # agent session, where the installer's socket-path stop probe is exactly
+          # the mechanism that reaches this session's supervisor (AGENTS.md).
+          python3 scripts/release/test_channel_install_guard.py
 
   # The ADR-0001 test-contract governor (scripts/testgov/): proves the rows
   # of doc/testing/test-matrix.yaml against the tree — each row's oracle
