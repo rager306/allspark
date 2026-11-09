@@ -60,7 +60,8 @@ pub use ledger::{
     OwnedDiagnostic, FILE_LEVEL_BUCKET,
 };
 pub use manager::{
-    Clock, InitFailureBackoff, LspManager, ServerStatus, SystemClock, INIT_FAILURE_BACKOFF,
+    Clock, InitFailureBackoff, LspManager, RenameReport, ServerStatus, SystemClock,
+    INIT_FAILURE_BACKOFF,
 };
 // The mux brokers one language server per project over a Unix socket, so both
 // the module and its re-exports are Unix-only; a Windows build has no `mux` to

@@ -1,0 +1,1 @@
+- Fixed `lsp` `rename_file` moving the file without updating imports when it was the session's first language-server operation; the reply now starts the owning server and states when imports were not updated.

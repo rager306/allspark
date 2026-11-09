@@ -36,6 +36,17 @@ pub struct ServerStatus {
     pub alive: bool,
 }
 
+/// What a file rename actually achieved.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RenameReport {
+    /// Files whose imports/text the servers rewrote before the move.
+    pub touched: Vec<PathBuf>,
+    /// `Some(reason)` when no server could compute import updates, so the move
+    /// happened but the callers of the renamed module were NOT repaired. The
+    /// caller must report it rather than claiming a complete refactor.
+    pub imports_unverified: Option<String>,
+}
+
 /// A time source, so the backoff window can be tested without sleeping.
 pub trait Clock: Send + Sync + 'static {
     /// The current instant.
@@ -562,15 +573,19 @@ impl LspManager {
     /// Rename a file on disk and broadcast the file operation to every live
     /// server (L18).
     ///
-    /// Every client is asked for its `workspace/willRenameFiles` edits *before*
-    /// the move (which are applied to disk), then notified with
+    /// The file's OWNING server is started first when none is live: this
+    /// function used to ask only the clients that happened to exist, so a rename
+    /// as the session's first LSP operation moved the file and left every import
+    /// pointing at the old path — while reporting success (review #14).
+    ///
+    /// Every client is then asked for its `workspace/willRenameFiles` edits
+    /// *before* the move (which are applied to disk), and notified with
     /// `workspace/didRenameFiles` afterwards. A server that does not advertise
-    /// the capability simply returns nothing; the move still happens. Returns
-    /// the files touched by the applied pre-rename edits.
+    /// the capability simply returns nothing; the move still happens.
     ///
     /// # Errors
     /// Fails when either path is not absolute or the on-disk rename fails.
-    pub async fn rename_file(&self, from: &Path, to: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    pub async fn rename_file(&self, from: &Path, to: &Path) -> anyhow::Result<RenameReport> {
         let from_url = lsp_types::Url::from_file_path(from)
             .map_err(|()| anyhow::anyhow!("not an absolute path: {}", from.display()))?;
         let to_url = lsp_types::Url::from_file_path(to)
@@ -596,6 +611,22 @@ impl LspManager {
         // every import broken while reporting success (oh-my-pi F04). Refuse
         // and say which server failed, so the move can be retried.
         let mut touched = Vec::new();
+        // Start the server that owns the file before asking anyone: an import
+        // rewrite is exactly what a server computes, and none of them can answer
+        // for a file whose server never started.
+        let mut imports_unverified = match self.server_for(from) {
+            None => Some(format!(
+                "no language server is configured for `{}`, so imports were not updated",
+                from.display()
+            )),
+            Some(server) => match self.ensure_client(from).await {
+                Ok(_) => None,
+                Err(err) => Some(format!(
+                    "`{}` could not be started ({err}), so imports were not updated",
+                    server.name
+                )),
+            },
+        };
         let clients = self.clients().await;
         for client in &clients {
             match client.rename_files(&renames).await {
@@ -620,7 +651,17 @@ impl LspManager {
         for client in &clients {
             let _ = client.did_rename_files(&renames);
         }
-        Ok(touched)
+        // The answer must not claim more than was verified: when no server could
+        // be asked, say so instead of letting the caller report a complete
+        // refactor (the prompt used to promise exactly that, review #14).
+        if clients.is_empty() && imports_unverified.is_none() {
+            imports_unverified =
+                Some("no language server was live, so imports were not updated".to_string());
+        }
+        Ok(RenameReport {
+            touched,
+            imports_unverified,
+        })
     }
 
     /// Remove the client owning `path` from the roster, shutting its server down first.
@@ -824,6 +865,55 @@ mod tests {
             std::fs::read_to_string(&to).unwrap(),
             "fn keep_me() {}\n",
             "the destination must survive untouched"
+        );
+    }
+
+    /// Review #14: a rename must NAME its import gap instead of implying a complete
+    /// refactor. The old path asked only the already-live clients, so a first-operation
+    /// rename moved the file, touched no import, and returned success.
+    ///
+    /// Two deterministic shapes: an extension with no configured server at all, and a
+    /// server whose binary cannot be spawned.
+    #[tokio::test]
+    async fn a_rename_that_cannot_rewrite_imports_says_so() {
+        // (a) No server is configured for the extension.
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("module.zzz");
+        let to = dir.path().join("renamed.zzz");
+        std::fs::write(&from, "content\n").unwrap();
+        let report = LspManager::new()
+            .rename_file(&from, &to)
+            .await
+            .expect("the move itself");
+        assert!(to.exists() && !from.exists(), "the file moved");
+        let reason = report
+            .imports_unverified
+            .expect("an unowned extension cannot rewrite imports");
+        assert!(
+            reason.contains("no language server is configured"),
+            "the reason must name the gap: {reason}"
+        );
+
+        // (b) A configured server that cannot be spawned.
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("module.rs");
+        let to = dir.path().join("renamed.rs");
+        std::fs::write(&from, "pub fn kept() {}\n").unwrap();
+        let overrides = serde_json::json!({
+            "rust-analyzer": { "command": "definitely-not-a-language-server" }
+        });
+        let manager = LspManager::new().with_server_overrides(overrides.as_object());
+        let report = manager
+            .rename_file(&from, &to)
+            .await
+            .expect("the move itself");
+        assert!(to.exists(), "the file moved");
+        let reason = report
+            .imports_unverified
+            .expect("a server that cannot start cannot rewrite imports");
+        assert!(
+            reason.contains("could not be started"),
+            "the reason must name the failed server: {reason}"
         );
     }
 

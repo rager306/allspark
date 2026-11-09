@@ -247,9 +247,11 @@ impl LspTool {
 
     /// Rename a file on disk and let language servers react (L18 `rename_file`).
     ///
-    /// The manager broadcasts `workspace/willRenameFiles` to every live server
-    /// *before* the move (applying the returned edits), performs the rename,
-    /// then broadcasts `workspace/didRenameFiles` to every live server.
+    /// The manager starts the file's owning server (so imports CAN be rewritten
+    /// even when this is the session's first LSP call), asks every live server
+    /// for its `workspace/willRenameFiles` edits *before* the move (applying
+    /// them), performs the rename, then broadcasts
+    /// `workspace/didRenameFiles`.
     async fn rename_file(&self, params: &LspParams) -> anyhow::Result<AgentToolResult> {
         let from = self.file_path(params)?;
         let dest = params
@@ -259,11 +261,22 @@ impl LspTool {
             .ok_or_else(|| anyhow::anyhow!("`dest` is required for action `rename_file`"))?;
         let to = resolve_file(&self.cwd, dest);
 
-        let touched = self.manager.rename_file(&from, &to).await?;
+        let report = self.manager.rename_file(&from, &to).await?;
 
         let mut text = format!("renamed {} -> {}", from.display(), to.display());
-        if !touched.is_empty() {
-            let _ = write!(text, "\napplied edits to {} file(s)", touched.len());
+        if !report.touched.is_empty() {
+            let _ = write!(text, "\napplied edits to {} file(s)", report.touched.len());
+        }
+        // The move happened; the imports may not have. Saying so is the
+        // difference between a reported refactor and a broken tree (review #14):
+        // the caller is a model that will otherwise trust the answer and move on.
+        if let Some(reason) = report.imports_unverified {
+            let _ = write!(
+                text,
+                "\nIMPORTS NOT UPDATED: {reason}. The file moved; re-check every import of \
+                 `{}` and fix them yourself.",
+                from.display()
+            );
         }
         Ok(AgentToolResult::text(text))
     }

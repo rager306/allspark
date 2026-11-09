@@ -164,10 +164,14 @@ async fn l18_rename_file_broadcasts_to_live_servers() {
     let manager = LspManager::new();
     // Warm a client so the manager has a live server to broadcast to.
     let _ = manager.ensure_client(&from).await.expect("spawn gopls");
-    let touched = manager.rename_file(&from, &to).await.expect("rename file");
+    let report = manager.rename_file(&from, &to).await.expect("rename file");
     assert!(to.exists(), "the file moved on disk");
     assert!(!from.exists(), "the old path is gone");
-    eprintln!("live L18 touched {} file(s)", touched.len());
+    eprintln!(
+        "live L18 touched {} file(s), imports_unverified={:?}",
+        report.touched.len(),
+        report.imports_unverified
+    );
     manager.shutdown_all().await;
 }
 
