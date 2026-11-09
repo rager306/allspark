@@ -1098,12 +1098,16 @@ async fn fresh_home_runs_the_full_sign_in_flow_to_completion() {
 
     let rendered = outcome.frames.join("\n");
     assert!(
-        rendered.contains("Log in with Prime Intellect"),
+        rendered.contains("Log in with Prime Inference"),
         "the welcome screen's action rendered:\n{rendered}"
     );
     assert!(
-        rendered.contains("Login with Prime Intellect"),
+        rendered.contains("Login with Prime Inference"),
         "the login dialog's heading replaced the brand line:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("Prime Intellect"),
+        "no onboarding label carries the upstream vendor name:\n{rendered}"
     );
     assert!(
         rendered.contains("Paste a Prime API key below:"),
