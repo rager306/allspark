@@ -1041,7 +1041,10 @@ mod tests {
         assert!(!no_lsp.contains("`rename` returns a PREVIEW"));
         // A roster without `lsp` must not be told to get an overview through it
         // (review #31: the line was unconditional).
-        assert!(!no_lsp.contains("`lsp` `symbols`"), "leaked lsp into:\n{no_lsp}");
+        assert!(
+            !no_lsp.contains("`lsp` `symbols`"),
+            "leaked lsp into:\n{no_lsp}"
+        );
 
         // A roster with none of them renders no section at all.
         assert_eq!(
@@ -1133,10 +1136,7 @@ mod tests {
     /// agent that believed it reported a refactor that never happened.
     #[test]
     fn a_rename_is_described_as_a_preview_until_applied() {
-        let section = native_tools_section(
-            &["edit", "lsp"],
-            &BuildSystemPromptOptions::default(),
-        );
+        let section = native_tools_section(&["edit", "lsp"], &BuildSystemPromptOptions::default());
         assert!(
             section.contains("`rename` returns a PREVIEW unless you pass `apply=true`"),
             "the preview default must be stated: {section}"
