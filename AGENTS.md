@@ -204,9 +204,11 @@ directory. Treat the tree as shared state.
   agent already paid to build. Do sweep what no process holds and no build reads: the
   generation of a previous `Cargo.toml` version, stale `<crate>-<hash>.<ext>` variants in
   `target/debug/deps`, and `target/debug/incremental.kache-auto` when no compiler runs.
-  Sweeping is an explicit step, never part of a build, and it must refuse while a compile is
-  live (`target/debug/.cargo-lock`), leave `.fingerprint` alone (dropping it rebuilds
-  everything), and print the size before removing.
+  Sweeping is an explicit step, never part of a build. It must refuse while a compile is
+  live — probe `flock -n` on `target/debug/.cargo-lock`, because the file's existence proves
+  nothing (cargo holds a shared lock on it while building and leaves the file behind; it was
+  dated three days earlier than an active build on this tree) — leave `.fingerprint` alone
+  (dropping it rebuilds everything), and print the size before removing.
   Measured 2026-11-09: `deps` held 11.4 GB in 6731 files, and 1342 of 1620 `<crate>.<ext>`
   groups had more than one variant; keeping the newest of each freed 7.67 GB. The cause is
   that cargo puts the package `version` in the unit hash — one identical source built as
