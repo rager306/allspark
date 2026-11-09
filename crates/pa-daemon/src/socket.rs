@@ -85,6 +85,21 @@ pub async fn prepare_socket_path(path: &Path) -> Result<()> {
         crate::paths::ensure_dir(parent)?;
         // The socket FILE is owner-only regardless (the bind's umask), and a
         // private per-user parent keeps that guarantee when the caller passes one.
+        //
+        // The product's own socket directory is per-uid but lives in the SHARED temp dir, so
+        // another user can pre-create `allspark-<uid>` before the daemon starts and then own
+        // the directory our socket file lands in — free to replace or unlink it (review #24).
+        // `ensure_dir` deliberately never re-modes a directory it did not create, so the
+        // ownership has to be checked, not assumed.
+        if parent == crate::platform::socket_dir() {
+            ensure_socket_dir_is_ours(parent)?;
+        }
+        //
+        // The product's own socket directory is per-uid but lives in the SHARED temp dir, so
+        // another user can pre-create `allspark-<uid>` before the daemon starts and then own
+        // the directory our socket file lands in — free to replace or unlink it (review #24).
+        // `ensure_dir` deliberately never re-modes a directory it did not create, so the
+        // ownership has to be checked, not assumed.
     }
     // lstat, not `Path::exists()`: a dangling symlink still blocks `bind`
     // while `exists()` (which follows links) denies it.
@@ -100,6 +115,51 @@ pub async fn prepare_socket_path(path: &Path) -> Result<()> {
     }
     let _lock = acquire_cleanup_lock(path).await?;
     prepare_locked_socket_path(path).await
+}
+
+/// Refuse an existing default socket directory that is not a private directory of this user.
+///
+/// The decision is a pure function of (owner, mode) so it is testable everywhere; the syscall
+/// wrapper only supplies those two facts, and a symlink is refused outright: a link named
+/// `allspark-<uid>` pointing at a directory someone else controls would otherwise pass an
+/// owner check on the *target*.
+///
+/// # Errors
+///
+/// Returns an error when the directory is a symlink, belongs to another user, or lets another
+/// user write into it — each of which lets that user replace the socket file after the bind.
+#[cfg(unix)]
+fn ensure_socket_dir_is_ours(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::symlink_metadata(dir)?;
+    if metadata.file_type().is_symlink() {
+        return Err(anyhow!(
+            "Daemon socket directory {} is a symlink; refusing to bind into it",
+            dir.display()
+        ));
+    }
+    // The REAL uid, like Node's `getuid()`: this product never changes identity at runtime, so
+    // the real and effective ids are the same, and the shared platform helper keeps the crate
+    // free of `unsafe` (pa-daemon forbids it).
+    let our_uid = pa_core::platform::process::current_user_id();
+    let mode = metadata.mode() & 0o777;
+    if !private_dir_is_ours(metadata.uid(), our_uid, mode) {
+        return Err(anyhow!(
+            "Daemon socket directory {} belongs to uid {} with mode {mode:o}; \
+             this process is uid {our_uid}, so another user could replace the socket file \
+             (remove it, or start the daemon with a private TMPDIR)",
+            dir.display(),
+            metadata.uid()
+        ));
+    }
+    Ok(())
+}
+
+/// The rule [`ensure_socket_dir_is_ours`] applies: our directory, and not writable by anyone
+/// else (a group/other write bit lets another user unlink or replace our socket file).
+#[cfg(unix)]
+fn private_dir_is_ours(owner_uid: u32, our_uid: u32, mode: u32) -> bool {
+    owner_uid == our_uid && mode & 0o022 == 0
 }
 
 /// Probe + grace wait + unlink for a probed-stale socket file; the caller owns the cleanup lock.
@@ -265,6 +325,83 @@ pub async fn bind_capture_gap() {
 mod tests {
     use super::*;
     use pa_types::platform::transport::bind_transport;
+
+    /// The socket-dir ownership rule (review #24): ours, and not writable by others.
+    ///
+    /// A directory in the shared temp dir is per-uid by NAME, so another user can create
+    /// `allspark-<uid>` before the daemon starts. `ensure_dir` never re-modes a directory it did
+    /// not create, so the daemon would bind into a directory that user owns — and that user can
+    /// unlink or replace our socket file afterwards, which is an accept-side attack the peer
+    /// check cannot see. The rule is a pure function so it is testable on any machine.
+    #[test]
+    fn a_socket_directory_is_only_ours_when_we_own_it_and_nobody_else_can_write() {
+        // Ours and private: the normal case (0700 or tighter).
+        assert!(private_dir_is_ours(501, 501, 0o700));
+        assert!(private_dir_is_ours(501, 501, 0o500));
+        // Another user's directory, whatever its mode.
+        assert!(!private_dir_is_ours(502, 501, 0o700));
+        // Ours, but group- or world-writable: another user can unlink our socket file.
+        assert!(!private_dir_is_ours(501, 501, 0o770));
+        assert!(!private_dir_is_ours(501, 501, 0o707));
+    }
+
+    /// `prepare_socket_path` must RUN that check on the product's own socket directory.
+    ///
+    /// The rule above is testable anywhere; whether the bind path consults it is a separate
+    /// fact, and the finding is that nothing looked at the directory at all. The guard is
+    /// scoped to `socket_dir()` because a caller-chosen path (a pinned socket, a fixture
+    /// root) is the caller's decision, so the pin also asserts the scope.
+    #[test]
+    fn prepare_checks_the_ownership_of_the_default_socket_directory() {
+        let source = include_str!("socket.rs");
+        let start = source
+            .find("pub async fn prepare_socket_path(path: &Path)")
+            .expect("the unix prepare exists");
+        let end = source[start..]
+            .find("\n}\n")
+            .map(|at| start + at)
+            .expect("the function ends");
+        let body = &source[start..end];
+        assert!(
+            body.contains("ensure_socket_dir_is_ours(parent)"),
+            "prepare_socket_path must verify the default socket directory's owner: {body}"
+        );
+        assert!(
+            body.contains("crate::platform::socket_dir()"),
+            "the check is scoped to the product's own socket directory: {body}"
+        );
+    }
+
+    /// The check runs on a real directory, and a pre-created foreign one is refused.
+    #[tokio::test]
+    async fn a_foreign_socket_directory_is_refused() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().join("allspark-foreign");
+        std::fs::create_dir(&dir).unwrap();
+        // Same owner, wrong mode: group- and other-writable is what another user needs.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        }
+        let error = ensure_socket_dir_is_ours(&dir).expect_err("a writable dir is refused");
+        assert!(
+            error.to_string().contains("another user could replace"),
+            "{error}"
+        );
+        // A symlink at the same name is refused even when it points at a private dir.
+        let link = tmp.path().join("allspark-link");
+        let target = tmp.path().join("private");
+        std::fs::create_dir(&target).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let error = ensure_socket_dir_is_ours(&link).expect_err("a symlink is refused");
+        assert!(error.to_string().contains("symlink"), "{error}");
+        // A private directory of ours passes.
+        ensure_socket_dir_is_ours(&target).expect("our own private directory is accepted");
+    }
 
     /// Bind and drop the listener: the socket file outlives the fd with
     /// nobody listening - exactly a crashed worker's residue.
