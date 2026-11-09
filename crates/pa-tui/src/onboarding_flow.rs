@@ -460,8 +460,9 @@ pub(crate) fn welcome_rows(theme: &Theme, width: usize) -> Vec<Line> {
     lines
 }
 
-/// The welcome screen's single action: the bold `> Log in with Prime Intellect` row washed across
-/// its highlight band.
+/// The welcome screen's single action: the bold `> {LOGIN_ACTION_LABEL}` row washed across its
+/// highlight band. The label is the constant because the brand rule lives there — a doc that
+/// quotes the old vendor string reads like the code still prints it (review #44).
 pub(crate) fn welcome_action_row(theme: &Theme, width: usize) -> Line {
     let band = MIN_HIGHLIGHT_WIDTH
         .max(MARKER_WIDTH + crate::width::str_width(LOGIN_ACTION_LABEL) + HIGHLIGHT_TRAILING)
