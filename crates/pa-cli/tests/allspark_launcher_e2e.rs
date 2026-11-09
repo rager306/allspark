@@ -490,6 +490,124 @@ fn a_world_writable_socket_directory_is_refused() {
     );
 }
 
+/// A PATH whose `stat` speaks ONLY the BSD dialect and whose `uname` says Darwin.
+///
+/// Stock macOS ships BSD `stat`: `-f <format> <path>`, `%u` for the owner, `%Lp` for the
+/// numeric mode, and no `-c` at all. The stubs model that interface (mode and owner come
+/// from the real inode, so a 0700 and a 0777 directory are still told apart), which is what
+/// makes a launcher's dialect branch observable on a Linux host.
+///
+/// Shared by the two launcher tests below — the tracked script and the one
+/// `install-rust.sh` writes have drifted before, and both need the same host.
+fn bsd_stat_path(dir: &Path) -> String {
+    let python = [
+        "/usr/bin/python3",
+        "/usr/local/bin/python3",
+        "/opt/homebrew/bin/python3",
+    ]
+    .into_iter()
+    .find(|path| Path::new(path).is_file())
+    .expect("python3 for the BSD stat stub");
+    let stubs = dir.join("bsd-stubs");
+    fs::create_dir_all(&stubs).expect("bsd stub dir");
+    let stat = stubs.join("stat");
+    fs::write(
+        &stat,
+        format!(
+            r#"#!/bin/sh
+if [ "$1" = "-f" ]; then
+    fmt="$2"
+    shift 2
+else
+    echo "stat: illegal option -- $1" >&2
+    exit 1
+fi
+case "$fmt" in
+    %u|%Lp) : ;;
+    *) echo "stat: unsupported format $fmt" >&2; exit 1 ;;
+esac
+exec "{python}" -c 'import os,sys
+st = os.stat(sys.argv[2])
+print(st.st_uid if sys.argv[1] == "%u" else format(st.st_mode & 0o777, "o"))' "$fmt" "$1"
+"#,
+            python = python
+        ),
+    )
+    .expect("bsd stat stub");
+    let uname = stubs.join("uname");
+    fs::write(&uname, "#!/bin/sh\necho Darwin\n").expect("darwin uname stub");
+    for stub in [&stat, &uname] {
+        fs::set_permissions(stub, fs::Permissions::from_mode(0o755)).expect("chmod the stub");
+    }
+    format!(
+        "{}:{}",
+        stubs.display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
+}
+
+/// The launcher's socket-directory check must speak the `stat` its HOST has.
+///
+/// `stat -c %u` is GNU's spelling. Stock macOS ships BSD `stat`, which knows only `-f`
+/// (`%Lp` for the mode, not GNU's `%a`), so both reads failed there — and the
+/// `|| echo unknown` fallback turned that failure into a VALUE, which can never equal
+/// `$(id -u)`. The launcher therefore refused EVERY socket directory, including the 0700
+/// one it had just created, and the product could not start on either supported Darwin
+/// architecture (review #19).
+///
+/// The host is modelled, not emulated: a `stat` that rejects `-c` and answers `-f` the way
+/// BSD does, plus a `uname` reporting Darwin.
+#[test]
+fn the_launcher_reads_the_socket_directory_with_the_hosts_stat_dialect() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).expect("home");
+    let launcher = deploy_launcher(tmp.path(), Path::new(env!("CARGO_BIN_EXE_prime-agent")));
+    let probe = tmp.path().join("libexec").join("prime-agent");
+    write_env_probe_payload_at(&probe);
+    let path = bsd_stat_path(tmp.path());
+
+    let out = Command::new(&launcher)
+        .env("HOME", &home)
+        .env("PATH", &path)
+        .env_remove("ALLSPARK_HOME")
+        .env_remove("ALLSPARK_DAEMON_SOCKET_DIR")
+        .output()
+        .expect("run launcher under a BSD stat");
+    assert!(
+        out.status.success(),
+        "a Darwin host must not be refused its own 0700 socket directory: {out:?}"
+    );
+    let socket_line = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        socket_line.contains("SOCKET="),
+        "the payload must run and report the socket: {socket_line}"
+    );
+
+    // The refusal still has to FIRE when the directory really is widened: a dialect branch
+    // that silently accepted any directory would pass the assertions above.
+    let widened_home = tmp.path().join("widened-home");
+    let widened = widened_home.join(".allspark-home").join("run");
+    fs::create_dir_all(&widened).expect("widened run dir");
+    fs::set_permissions(&widened, fs::Permissions::from_mode(0o777)).expect("widen the dir");
+    let out = Command::new(&launcher)
+        .env("HOME", &widened_home)
+        .env("PATH", &path)
+        .env_remove("ALLSPARK_HOME")
+        .env_remove("ALLSPARK_DAEMON_SOCKET_DIR")
+        .output()
+        .expect("run launcher under a BSD stat");
+    assert!(
+        !out.status.success(),
+        "a 0777 socket directory is still refused under the BSD dialect: {out:?}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("must be a private directory") && stderr.contains("777"),
+        "the BSD mode read must produce a real mode, not `unknown`: {stderr}"
+    );
+}
+
 /// The release launcher carries the same private-socket rule.
 ///
 /// `install-rust.sh` writes its own launcher; the two had already drifted once (the
@@ -536,14 +654,19 @@ fn the_release_launcher_creates_and_checks_a_private_socket_directory() {
     ];
     let script = parts.join("\n");
 
-    let run = |home: &Path| {
-        Command::new("sh")
+    let run = |home: &Path, path: Option<&str>| {
+        let mut command = Command::new("sh");
+        command
             .arg("-c")
             .arg(&script)
             .env("HOME", home)
             .env_remove("ALLSPARK_HOME")
             .env_remove("ALLSPARK_DAEMON_SOCKET")
-            .env_remove("ALLSPARK_DAEMON_SOCKET_DIR")
+            .env_remove("ALLSPARK_DAEMON_SOCKET_DIR");
+        if let Some(path) = path {
+            command.env("PATH", path);
+        }
+        command
             .output()
             .expect("run the embedded socket block")
     };
@@ -551,7 +674,7 @@ fn the_release_launcher_creates_and_checks_a_private_socket_directory() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let home = tmp.path().join("home");
     fs::create_dir_all(&home).expect("home");
-    let out = run(&home);
+    let out = run(&home, None);
     assert!(
         out.status.success(),
         "the embedded launcher runs: {}",
@@ -574,15 +697,34 @@ fn the_release_launcher_creates_and_checks_a_private_socket_directory() {
         "created 0700, not merely chmodded later"
     );
 
+    // The same block on a Darwin host: BSD `stat` knows `-f %u` / `-f %Lp` and no `-c`, so
+    // a GNU-only read here refuses the launcher's OWN 0700 directory (review #19, the
+    // same defect the tracked launcher carried).
+    let bsd_home = tmp.path().join("bsd-home");
+    fs::create_dir_all(&bsd_home).expect("bsd home");
+    let bsd_path = bsd_stat_path(&tmp.path().join("bsd-host"));
+    let out = run(&bsd_home, Some(&bsd_path));
+    assert!(
+        out.status.success(),
+        "the release launcher must read a Darwin host's stat dialect: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        Path::new(String::from_utf8_lossy(&out.stdout).trim()),
+        bsd_home.join(".allspark-home").join("run").join("daemon.sock"),
+        "the Darwin-dialect run must pin the same private socket"
+    );
+
     // And the refusal: a widened directory is not reused.
     let other = tempfile::tempdir().expect("tempdir");
     let widened_home = other.path().join("home");
     let widened_run = widened_home.join(".allspark-home").join("run");
     fs::create_dir_all(&widened_run).expect("run dir");
     fs::set_permissions(&widened_run, fs::Permissions::from_mode(0o777)).expect("widen");
-    let out = run(&widened_home);
+    let out = run(&widened_home, None);
     assert!(
         !out.status.success(),
         "the release launcher must refuse a world-writable socket dir: {out:?}"
     );
 }
+

@@ -99,8 +99,20 @@ fi
 # connect to it). The check is ownership first, then the mode bits another user could write
 # through (0700 and 0750 are ours alone; 0755 lets anyone traverse and read, which is a
 # weaker but real exposure on a multi-user host, so it is refused too).
-socket_dir_owner="$(stat -c %u "$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo unknown)"
-socket_dir_mode="$(stat -c %a "$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo unknown)"
+# `stat` speaks TWO dialects on the machines this product supports: GNU
+# `-c <fmt>` on Linux, BSD `-f <fmt>` on stock macOS, where the mode format is
+# `%Lp` (not GNU's `%a`). Reading the wrong dialect prints nothing, the
+# `|| echo unknown` fallback turns that into a VALUE, and `unknown` can never
+# equal `$(id -u)` — so the launcher refused every socket directory, including
+# the 0700 one it had just created, and the product would not start on either
+# supported Darwin architecture. `uname` decides the dialect once.
+if [ "$(uname -s)" = "Darwin" ]; then
+    socket_dir_owner="$(stat -f %u "$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo unknown)"
+    socket_dir_mode="$(stat -f %Lp "$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo unknown)"
+else
+    socket_dir_owner="$(stat -c %u "$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo unknown)"
+    socket_dir_mode="$(stat -c %a "$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo unknown)"
+fi
 if [ "$socket_dir_owner" != "$(id -u)" ]; then
     echo "allspark: $ALLSPARK_SOCKET_DIR belongs to uid $socket_dir_owner, not $(id -u):" \
          "a socket another user owns is a socket another user answers on" >&2

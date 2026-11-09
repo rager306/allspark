@@ -3470,8 +3470,13 @@ fi
 # Ownership FIRST, then the mode: a 0755 directory owned by another user is readable by us
 # and writable only by them — they bind the socket, we connect to it. Mode alone would pass
 # that, which is why both checks exist (see scripts/allspark-launcher.sh, same rule).
-socket_dir_owner="\$(stat -c %u "\$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo unknown)"
-socket_dir_mode="\$(stat -c %a "\$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo unknown)"
+if [ "\$(uname -s)" = "Darwin" ]; then
+    socket_dir_owner="\$(stat -f %u "\$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo unknown)"
+    socket_dir_mode="\$(stat -f %Lp "\$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo unknown)"
+else
+    socket_dir_owner="\$(stat -c %u "\$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo unknown)"
+    socket_dir_mode="\$(stat -c %a "\$ALLSPARK_SOCKET_DIR" 2>/dev/null || echo unknown)"
+fi
 if [ "\$socket_dir_owner" != "\$(id -u)" ]; then
     echo "allspark: \$ALLSPARK_SOCKET_DIR belongs to uid \$socket_dir_owner, not \$(id -u):" \
          "a socket another user owns is a socket another user answers on" >&2
