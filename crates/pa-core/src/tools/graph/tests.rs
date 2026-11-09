@@ -193,7 +193,7 @@ async fn auto_off_keeps_a_query_from_indexing() {
     );
     // The store file may exist (reading the project key opens it); what must not
     // happen is the walk that fills it.
-    let indexed = GraphStore::open(&dir.path().join("graph.db"))
+    let indexed = GraphStore::open(dir.path().join("graph.db"))
         .ok()
         .and_then(|store| store.file_count("graph").ok())
         .unwrap_or(0);
