@@ -546,42 +546,86 @@ fn native_tools_section(tools: &[&str], options: &BuildSystemPromptOptions<'_>) 
     lines.push(String::new());
     lines.push("## Working with these tools".to_string());
     lines.push(String::new());
-    let mut workflow: Vec<&str> = Vec::new();
-    workflow.push(
-        "- Acquire context step by step; NEVER open a guessed file or read a whole file to find one \
-         symbol. Get an overview first (`lsp` `symbols`), narrow to the symbol, and read only the \
-         body you need. Once you have read a file, do not re-analyse it with the symbol tools — you \
-         already have it.",
-    );
+    let mut workflow: Vec<String> = Vec::new();
+    // Every line below is built from the SAME roster and mode policy the tool
+    // descriptions use: a session without `lsp`, or an `edit` policy that rejects
+    // `replace`, must not be told to call them (review #31). The old text named
+    // `lsp` `symbols` unconditionally and offered `edit` `replace` whenever `edit`
+    // existed, so a restricted session received instructions its own tool refuses.
     if has_lsp {
         workflow.push(
-            "- Before changing an exported or widely used symbol, run `lsp` `references` first, then \
-             keep the change backward-compatible or update every callsite in the same pass.",
+            "- Acquire context step by step; NEVER open a guessed file or read a whole file to find \
+             one symbol. Get an overview first (`lsp` `symbols`), narrow to the symbol, and read only \
+             the body you need. Once you have read a file, do not re-analyse it with the symbol tools \
+             — you already have it."
+                .to_string(),
         );
         workflow.push(
-            "- A successful `rename`, `rename_file`, or `safe_delete_symbol` is already complete and \
-             consistent across declarations, references, overrides, and imports. Trust it: do not \
-             re-read the changed files or re-run the build just to confirm the refactor propagated.",
+            "- Before changing an exported or widely used symbol, run `lsp` `references` first, then \
+             keep the change backward-compatible or update every callsite in the same pass."
+                .to_string(),
+        );
+        // `rename` defaults to a PREVIEW (`apply=false`): the computed workspace
+        // edit changes nothing until it is applied. The line used to promise every
+        // successful rename was already complete, so an agent could report a
+        // refactor that never touched the tree (review #30).
+        workflow.push(
+            "- `rename` returns a PREVIEW unless you pass `apply=true`: without it nothing on disk \
+             changes, and the reply is the computed edit. Set `apply=true` when you mean to perform \
+             the rename. An APPLIED result (`apply=true`, or `rename_file`/`safe_delete_symbol`) is \
+             already consistent across declarations, references, overrides, and imports — do not \
+             re-read the changed files or re-run the build just to confirm it propagated."
+                .to_string(),
+        );
+    } else {
+        workflow.push(
+            "- Acquire context step by step; NEVER open a guessed file or read a whole file to find \
+             one symbol. Locate it (`graph` `search` when available, otherwise a targeted text \
+             search), then read only the body you need."
+                .to_string(),
         );
     }
     if has_edit {
-        workflow.push(
-            "- Choose the edit granularity: replace a whole symbol with `lsp` \
-             `replace_symbol_body` when the entire body changes, and use `edit` `replace` when only a \
-             few lines inside a larger symbol change. For several small edits in one file, prefer a \
-             batch of targeted `replace` calls over re-emitting the whole file.",
-        );
+        let allowed = options.edit_modes.unwrap_or(&ALL_EDIT_MODES);
+        let mut line = String::from("- Choose the edit granularity: ");
+        if has_lsp {
+            line.push_str(
+                "replace a whole symbol with `lsp` `replace_symbol_body` when the entire body \
+                 changes, and use ",
+            );
+        } else {
+            line.push_str("use ");
+        }
+        if allowed.contains(&pa_edit::EditMode::Replace) {
+            line.push_str(
+                "`edit` `replace` when only a few lines inside a larger symbol change. For several \
+                 small edits in one file, prefer a batch of targeted `replace` calls over \
+                 re-emitting the whole file.",
+            );
+        } else {
+            // The session's policy rejects `replace`, so naming it would send the
+            // model into a mode the tool answers with an error.
+            let mode = allowed.first().copied().unwrap_or(pa_edit::EditMode::Patch);
+            line.push_str(&format!(
+                "`edit` `{}` — this session does not accept `replace`, so read the snippet you are \
+                 changing and submit the smallest change that covers it.",
+                mode.as_str()
+            ));
+        }
+        workflow.push(line);
     }
     workflow.push(
         "- Independent calls are safe to batch in one turn; only serialize when one call genuinely \
-         needs another's result.",
+         needs another's result."
+            .to_string(),
     );
     workflow.push(
         "- `python_repl` remains the right tool for orchestration, data transformation, and \
-         computation — not for what one of these tools does better.",
+         computation — not for what one of these tools does better."
+            .to_string(),
     );
     for line in workflow {
-        lines.push(line.to_string());
+        lines.push(line);
     }
     lines.join("\n")
 }
@@ -742,6 +786,7 @@ fn format_generic_mcp_guidance(servers: &[String]) -> String {
 mod tests {
     use super::*;
     use crate::skills::{create_synthetic_source_info, SkillKind, SourceScope};
+    use pa_edit::EditMode;
     use std::path::PathBuf;
 
     fn skill(name: &str, import: Option<&str>) -> Skill {
@@ -980,7 +1025,7 @@ mod tests {
             "MUST use the specialized tool over its shell or REPL equivalent",
             "NEVER issue an individual edit with `sed`",
             "NEVER text-search for code intelligence",
-            "Trust it: do not re-read the changed files",
+            "do not re-read the changed files",
         ] {
             assert!(all.contains(expected), "missing {expected:?} in:\n{all}");
         }
@@ -993,7 +1038,10 @@ mod tests {
         assert!(!no_lsp.contains("- `jev`:"));
         // The lsp-only workflow lines must follow their tool.
         assert!(!no_lsp.contains("`references` first"));
-        assert!(!no_lsp.contains("safe_delete_symbol` is already complete"));
+        assert!(!no_lsp.contains("`rename` returns a PREVIEW"));
+        // A roster without `lsp` must not be told to get an overview through it
+        // (review #31: the line was unconditional).
+        assert!(!no_lsp.contains("`lsp` `symbols`"), "leaked lsp into:\n{no_lsp}");
 
         // A roster with none of them renders no section at all.
         assert_eq!(
@@ -1078,6 +1126,52 @@ mod tests {
                 "schedule action {action:?} undocumented"
             );
         }
+    }
+
+    /// Review #30: an `lsp` rename is a PREVIEW unless `apply=true`, so the prompt
+    /// must not tell the model every successful rename already touched the tree — an
+    /// agent that believed it reported a refactor that never happened.
+    #[test]
+    fn a_rename_is_described_as_a_preview_until_applied() {
+        let section = native_tools_section(
+            &["edit", "lsp"],
+            &BuildSystemPromptOptions::default(),
+        );
+        assert!(
+            section.contains("`rename` returns a PREVIEW unless you pass `apply=true`"),
+            "the preview default must be stated: {section}"
+        );
+        assert!(
+            !section.contains("is already complete and"),
+            "the unconditional completeness claim is what misled the model: {section}"
+        );
+    }
+
+    /// Review #31: the workflow lines come from the same roster and edit policy as
+    /// the tool descriptions, so a restricted session is never told to call a tool
+    /// or a mode it does not have.
+    #[test]
+    fn the_workflow_follows_the_roster_and_the_edit_policy() {
+        // `lsp` absent: no lsp overview, no lsp references, no lsp rename advice.
+        let no_lsp = native_tools_section(&["edit"], &BuildSystemPromptOptions::default());
+        assert!(!no_lsp.contains("`lsp`"), "leaked lsp into:\n{no_lsp}");
+
+        // `replace` not in the policy: the recommendation names the mode that IS.
+        let hashline_only = [EditMode::Hashline];
+        let options = BuildSystemPromptOptions {
+            edit_modes: Some(&hashline_only),
+            edit_default_mode: Some(EditMode::Hashline),
+            ..BuildSystemPromptOptions::default()
+        };
+        let section = native_tools_section(&["edit", "lsp"], &options);
+        assert!(
+            !section.contains("`edit` `replace`"),
+            "a hashline-only policy must not be told to use replace: {section}"
+        );
+        assert!(
+            section.contains("`edit` `hashline`"),
+            "the available mode must be named instead: {section}"
+        );
     }
 
     /// The `schedule` tool's line belongs to its own gate: a roster without it

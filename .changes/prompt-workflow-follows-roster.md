@@ -1,0 +1,1 @@
+- Fixed the native-tools prompt telling restricted sessions to use tools they do not have (`lsp` overview without `lsp`, `edit replace` under a hashline-only policy) and describing an `lsp` rename as already applied when it is a preview until `apply=true`.
