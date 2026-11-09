@@ -74,7 +74,10 @@ State-oracle checks: `{path, exists|not_exists|contains|not_contains|size_lt|occ
 `{duration_le: s}`, `{mock_requests_le|ge: {name, count}}`,
 `{dir_empty: abs}`, `{dir_no_new_jsonl: {dir, since}}`.
 Script oracles read `QA_HOME/QA_WORK/QA_TRANSCRIPT/QA_SANDBOX/QA_MOCK_*`
-and exit nonzero with reasons on failure.
+(and `QA_SCRIPTS_DIR`, the directory of the shared `qa_oracle.py` readers) and exit
+nonzero with reasons on failure. `qa_oracle.py` is the one place that reads a
+transcript (tool calls, tool results, the final answer) and a Rust function body, so an
+oracle never re-implements either.
 
 ## The seed corpus (12 tasks, all from real fork failures)
 
@@ -103,6 +106,39 @@ flag, so a whole-corpus run exits 1 while any task is red — use
 (pre-fix runtime truncates to 0, fixed runtime keeps 1700 bytes; see its
 reference/) and green end-to-end once the kernel venv carries the fixed
 runtime. A task being red is DATA; the delta gate decides regressions.
+
+## Semantic tasks (`ST-*`): the tool-choice gap
+
+The `RT-*` corpus guards reliability (a 402 is retried, a stall times out, compaction
+fires). None of them can observe *which tool the agent chose*, which is how a session
+shipped with `python_repl` called 132 times and `lsp` 15 times on work that needed the
+symbol layer. The `ST-*` tasks close that gap: each is a small fixture plus a prompt
+whose correct answer is only reachable through one specialized tool, and each asserts
+both sides (`must:` the right tool, `must_not:` the anti-pattern).
+
+The fixture is the load-bearing part: it must contain a TRAP the wrong tool cannot see
+through — two methods with the same name in different impls, a call chain whose
+evaluation order differs from the source order, a decision that needs a calibrated
+answer. Without the trap the task passes by luck.
+
+| id | trap | oracle asserts |
+|----|------|----------------|
+| `ST-001-symbol-nav-not-grep` | `Worker::run` / `Backup::run`, identical bodies, both called through identical `x.run()` text | the answer's structured `Worker::run <- caller` / `Backup::run <- caller` lines, and the edit inside `Worker`'s own impl body |
+| `ST-002-architecture-via-graph` | three files; `validate(repo.load())` evaluates `load` FIRST | a graph call whose result arrived without an error, plus the chain in the FINAL answer in evaluation order |
+| `ST-003-edit-symbol-body-not-sed` | `describe` and `summary` share one body byte for byte | each method's body separately: `describe` changed, `summary` byte-identical |
+| `ST-004-typed-decision-not-guess` | a judgement the README argues one way | `decision.txt` agrees with the probability the `jev` call returned |
+
+Two rules follow from the oracles being scripts:
+
+* a `must:` tool rule means the tool ANSWERED — the runner requires a call whose
+  `toolResult` exists and carries no error (a failed attempt is not a behaviour);
+* every oracle is graded on the FINAL ANSWER or on file state, never on the whole
+  transcript: the task's own prompt lives there, so a marker found "anywhere" proves
+  nothing.
+
+`scripts/qa/test_st_oracles.py` runs each shipped oracle twice — a deliberately wrong
+outcome (must be red) and the correct one (must be green) — so an oracle whose check
+cannot fail is caught in the same step that would ship it.
 
 ## Running
 
