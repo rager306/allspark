@@ -197,8 +197,24 @@ directory. Treat the tree as shared state.
   `git rebase` while work is in flight: uncommitted work belongs to someone else and the index
   cannot recover it. If another agent's edit blocks your build, work around it and say so in
   your report instead of reverting it.
-- Cap the build: `CARGO_BUILD_JOBS=2` per agent (the workspace target is tens of GB), never
-  `cargo clean`, never delete anything under `target/`.
+- Cap the build: `CARGO_BUILD_JOBS=2` per agent (the workspace target is tens of GB).
+- **Keep one artifact set per build key.** `target/` is a shared cache, not scratch space, so
+  never split it into a second, disjoint set: no `CARGO_PROFILE_*`, feature or rustflags
+  override that changes the artifact key, and no `cargo clean`, which discards what another
+  agent already paid to build. Do sweep what no process holds and no build reads: the
+  generation of a previous `Cargo.toml` version, stale `<crate>-<hash>.<ext>` variants in
+  `target/debug/deps`, and `target/debug/incremental.kache-auto` when no compiler runs.
+  Sweeping is an explicit step, never part of a build, and it must refuse while a compile is
+  live (`target/debug/.cargo-lock`), leave `.fingerprint` alone (dropping it rebuilds
+  everything), and print the size before removing.
+  Measured 2026-11-09: `deps` held 11.4 GB in 6731 files, and 1342 of 1620 `<crate>.<ext>`
+  groups had more than one variant; keeping the newest of each freed 7.67 GB. The cause is
+  that cargo puts the package `version` in the unit hash — one identical source built as
+  1.0.0 and 1.0.1 gets two different rlib names — and every `nightly: vN (tag-only)` commit
+  reaching `main` bumps `[workspace.package] version`, minting a whole generation that
+  nothing then sweeps. `cargo clean` is the wrong answer to this (it also drops the current
+  generation); deleting the previous one is the right answer, and the distinction is "is this
+  an input to a build that is still live", not "is this under `target/`".
 
 ## Tests
 

@@ -54,7 +54,8 @@ either changes.
 ## Parallel agents share one tree
 
 - Flag instructions or scripts that commit with `git commit -a`, `git add -A`, or `git add .`, and flag any `git checkout -- <path>`, `git stash`, `git reset --hard`, `git restore`, or `git rebase` while other work is uncommitted: this checkout is worked by several agents on one branch, one index, one target dir. Commits use `git commit -o -- <path>...`.
-- Flag an agent run that builds with more than `CARGO_BUILD_JOBS=2`, runs `cargo clean`, or deletes anything under `target/`.
+- Flag an agent run that builds with more than `CARGO_BUILD_JOBS=2`, runs `cargo clean`, or changes the artifact key (`CARGO_PROFILE_*`, feature or rustflags override) so the tree builds a second, disjoint set of artifacts beside the one it already has.
+- Flag a target sweep that runs during a build (a cargo-lock absent check), that removes `.fingerprint`, or that reports "cleaned" without the size it freed: the point is one artifact set per build key, so the previous `Cargo.toml` version's generation and stale `<crate>-<hash>.<ext>` variants go, while the current generation stays.
 
 ## Module organization
 
