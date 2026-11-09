@@ -90,8 +90,8 @@ move your own run under `TMPDIR=<repo>/.tmp` as the gate does.
 
 ## 7. A fixture that cannot distinguish the wrong implementation
 
-**Seen:** five times in one session (2026-11-06), each caught by an independent verifier rather
-than by the author.
+**Seen:** six times (five in one session, 2026-11-06; the sixth on 2026-11-08), each caught by
+an independent verifier rather than by the author.
 
 - `cycle_model` must filter judgment-only dialects. The fixture put `subq/snap` LAST in the
   catalog, so "step the unfiltered list and wrap" and "filter only the returned model" both
@@ -106,9 +106,16 @@ than by the author.
   until the verifier named them.
 - The socket directory must be private. A mode-only check admitted a 0755 directory owned by
   another user — the fixture only ever created directories we owned.
+- The differential runner must not pin a fixed port. A re-grade verified the guard's assertions
+  existed and named the right properties; the mutation run then showed the fixed-port revert
+  SATISFIES `contains("REPLAY_PORT=")` — the `sed` parser emits that line regardless, and
+  `PA_DIFF_SELFTEST` in a usage comment satisfied `if false`. Existence of an assertion is not
+  its discriminating power: run the mutation, in review too. Fixed same day — the assertions now
+  name assignments/branches and a started-with-resolved-port check, 5/5 mutations caught
+  (`c1d8aac0a`).
 
 **Caught by:** writing the wrong implementation on purpose and running the test. Three of the
-five passed on first contact.
+first five passed on first contact.
 
 **Rule:** for each guard, name the wrong implementations it must reject, put one of them in the
 fixture's way, and run it. A test that has only ever been run against the correct code is a
