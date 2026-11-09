@@ -13,6 +13,64 @@ branch (`feat/allspark-identity`). `fork.3` points at the SAME commit as `fork.2
 (`375ad95cf`) and is a duplicate tag, not a separate release — it has no entry here
 because nothing shipped between them. `FORK.md` carries the same correction.
 
+## fork.018 — upstream main @ 6abb29e69 (4 commits past `v0.10.3-beta.17`)
+
+- Tag: `allspark-v0.10.3-beta.17-fork.018`
+- Base: upstream `main` at `6abb29e69`, four commits past the `v0.10.3-beta.17` tag the
+  `fork.017` entry names. No newer tag exists: `v0.10.3-beta.17` is still the newest, and
+  `beta.12`/`beta.14`/`beta.16` are tag-only version bumps whose parents are already merged.
+
+### What upstream brought
+
+- **A repository can no longer choose the code that runs your commands** (#3907). A cloned
+  checkout ships `.prime/agent/settings.json`, and `shellPath` wraps EVERY shell command, so
+  the checkout chose the executable behind the user's shell. `load_scope` now drops the
+  project-scope fields that select a process, a command prefix, a package installer, or an
+  MCP server — they stay in the document so `package remove` can still name them, but never
+  reach an effective settings read.
+- **Reasoning survives a turn boundary** (#4012, #3976): native provider thinking blocks are
+  replayed across turns, and a Responses stream that finalizes its items no longer drops the
+  reasoning it just received.
+- **Prime Inference picker rows carry a serving class** (#4009): `Model.serving` is `hosted`
+  or `gateway`, so the picker can group rows by how the route is served.
+
+### Conflicts, and how each was resolved
+
+Seven files, and one of them inverted a fork test on purpose.
+
+| file | resolution |
+|---|---|
+| `settings/load.rs` | **ours**. The fork replaced the `KNOWN_FIELDS` literal with a schema-derived unknown-key report (`56270870c`, review #31); upstream's only change to that file was adding `mcpCatalogSources` to the literal. The key is covered anyway — the invariant test derives its key set from `Settings::default()`. |
+| `settings/manager.rs` | **both**. The fork's lenient-load reporting stays; upstream's project-scope nulling runs after it; `project_raw` joins the struct so `project_packages_for_removal` can name what the effective settings refuse to activate. |
+| `settings/manager_parts/{core,onboarding}.rs` | upstream's three hunks re-applied to the split modules, so `manager.rs` does not regain a second `impl SettingsManager`. |
+| `pa-cli/src/lib.rs` | ours, plus upstream's `require_agent_dir()` guard, now covering BOTH `--allspark-bootstrap` and upstream's spelling. |
+| `package_command.rs` | upstream's wording and `--local` semantics; the fork's `INVOCATION` constant in the user-facing examples. |
+| `models/registry/tests.rs` | both — 197 lines of fork catalog-source tests and upstream's new serving-label test. |
+| `print_runtime.rs`, `kernel/provisioner.rs` | **deleted again**. The fork split both (`f3051c4d0`); upstream's only change to each was one `serving:` field inside a test literal, already carried by the split module. |
+
+### The fork test that had to be inverted
+
+`session_settings_reach_the_kernel_shell` asserted that project settings override the global
+`shellPath` — which is exactly the defect #3907 closes. It is now
+`project_settings_cannot_replace_the_kernel_shell` and asserts the opposite, and
+`session_settings_reject_a_missing_shell_path` moved its fixture to the global scope, where a
+`shellPath` is still honoured.
+
+### One fork fix the merge silently reverted
+
+`85f0f6960` rewrote two `list_configured_packages()` assertions for rust 1.99's
+`assert_is_empty` lint. Upstream never received that commit, so its side of the conflict
+carried the old `assert!` and `clippy -D warnings` went red. Restored.
+
+### Verified
+
+`cargo check --workspace --all-targets` clean; `cargo clippy --workspace --all-targets --
+-D warnings` clean; gate `--fast` GREEN; `pa-graph --lib` 585 passed; `pa-daemon --lib` 1319
+passed / 2 failed, both green when re-run alone; `pa-core --lib` 1787 passed / 4 failed, and
+those four fail identically on a clean upstream checkout — this machine has an empty
+`/tmp/.git` that turns `/tmp` into a repository boundary for the fork's executable-search
+guard.
+
 ## fork.017 — upstream v0.10.3-beta.17
 
 - Tag: `allspark-v0.10.3-beta.17-fork.017`
