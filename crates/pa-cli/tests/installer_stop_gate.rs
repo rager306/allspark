@@ -649,13 +649,32 @@ struct PayloadDaemon {
 
 impl PayloadDaemon {
     fn start(dir: &Path, install_root: &Path, pid_arg: &str, advertised: Option<&Path>) -> Self {
+        Self::start_with(dir, install_root, pid_arg, advertised, &[])
+    }
+
+    /// [`PayloadDaemon::start`] plus fixture switches (`FIXTURE_OMIT_START_ID`, ...):
+    /// the named slice keeps every call site readable — the extra env is the anomaly
+    /// under test, never a positional flag.
+    fn start_with(
+        dir: &Path,
+        install_root: &Path,
+        pid_arg: &str,
+        advertised: Option<&Path>,
+        extra_env: &[(&str, &str)],
+    ) -> Self {
         std::fs::create_dir_all(dir).expect("fixture daemon dir");
         let libexec = install_root.join("libexec");
         std::fs::create_dir_all(&libexec).expect("libexec");
         let payload = libexec.join("prime-agent");
         if !payload.exists() {
-            std::fs::copy("/usr/bin/python3", &payload).expect("copy python3 as the payload");
-            make_executable(&payload);
+            // Copy, then RENAME into place: a payload written in place is still open
+            // for writing when a parallel fixture daemon execs it, and the kernel
+            // answers `ETXTBSY` ("text file busy"). The rename publishes a complete
+            // file, so a concurrent spawn either misses it or executes it whole.
+            let staging = libexec.join("prime-agent.copy");
+            std::fs::copy("/usr/bin/python3", &staging).expect("copy python3 as the payload");
+            make_executable(&staging);
+            std::fs::rename(&staging, &payload).expect("publish the payload");
         }
         let socket = dir.join("daemon.sock");
         let mut child = Command::new(&payload)
@@ -669,6 +688,7 @@ impl PayloadDaemon {
                 "FIXTURE_EXECUTABLE",
                 advertised.map_or_else(|| payload.clone(), Path::to_path_buf),
             )
+            .envs(extra_env.iter().copied())
             .stdout(Stdio::piped())
             .spawn()
             .expect("spawn the fixture daemon");
@@ -802,6 +822,66 @@ fn a_forced_stop_binds_the_signal_to_the_kernel_socket_peer() {
     assert!(
         liar.child.try_wait().expect("wait").is_none(),
         "the process that lied about its executable is left running"
+    );
+}
+
+/// THE OMITTED START ID (review #18, second half): the pid binding is a moment, and
+/// the signal comes later.
+///
+/// The supervisor's process start id is what notices that the pid was reused in
+/// between — and both sides of the comparison used to be optional, so a hello that
+/// left the field out skipped the reuse check altogether and the signal went ahead.
+/// A Rust daemon always advertises one (`supervisor_process_start_id` is filled from
+/// the kernel), so its absence is the anomaly, not a platform limitation: refuse.
+#[test]
+fn a_forced_stop_refuses_a_rust_daemon_whose_hello_omits_its_process_start_id() {
+    let dir = tempfile::tempdir().expect("scratch dir");
+    let Some(probe) = probe_file(dir.path()) else {
+        eprintln!("skipping: no python3 for the installer's probe");
+        return;
+    };
+    let prefix = dir.path().join("install");
+    let mut anonymous = PayloadDaemon::start_with(
+        &dir.path().join("anonymous"),
+        &prefix,
+        "self",
+        None,
+        &[("FIXTURE_OMIT_START_ID", "1")],
+    );
+    let output = run_probe_forced(&probe, &anonymous.socket, &prefix, "");
+    assert_eq!(
+        verdict(&output),
+        "rust:kill-unbound:0",
+        "a hello with no process start id must not authorise a signal: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        anonymous.child.try_wait().expect("wait").is_none(),
+        "the daemon whose hello omitted its start id must still be running"
+    );
+
+    // The other half, so the new requirement cannot be satisfied by refusing
+    // everything: an honest peer whose hello carries the WRONG generation is the
+    // pid-reuse case the start id exists for, and it is refused the same way.
+    let mut reused = PayloadDaemon::start_with(
+        &dir.path().join("reused"),
+        &prefix,
+        "self",
+        None,
+        &[("FIXTURE_START_ID", "proc:1")],
+    );
+    let output = run_probe_forced(&probe, &reused.socket, &prefix, "");
+    assert_eq!(
+        verdict(&output),
+        "rust:kill-unbound:0",
+        "a start id that is not the live process's must not authorise a signal: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        reused.child.try_wait().expect("wait").is_none(),
+        "the daemon whose hello claimed another generation must still be running"
     );
 }
 

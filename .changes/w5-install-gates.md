@@ -1,0 +1,1 @@
+- `--force` updates now refuse to signal a Rust daemon whose hello carries no process start id (a reused pid can no longer be signalled), and the release installer harnesses refuse a scrubbed-environment run under a live daemon by walking the process tree, with an `--installer-mode fixture` channel probe so the flow stays testable inside a session.

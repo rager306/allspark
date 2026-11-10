@@ -3,9 +3,30 @@
 connection the way a real supervisor does, then answers the probe's envelope.
 
 argv: <socket> <pid|self> <deaf|honour>
-env:  FIXTURE_EXECUTABLE  - the path the hello advertises as runtime.executablePath
+env:  FIXTURE_EXECUTABLE   - the path the hello advertises as runtime.executablePath
+      FIXTURE_START_ID     - the process start id the hello CLAIMS (a forged value)
+      FIXTURE_OMIT_START_ID - "1" leaves supervisorProcessStartId out of the hello
 """
-import json, os, socket, sys
+import json, os, socket, subprocess, sys
+
+def kernel_start_id(pid):
+    # The SAME identity the probe reads (`proc:<field 22>`, else `ps:<lstart>` under
+    # the pinned locale): the shipped Rust supervisor reports exactly this, so a
+    # fixture that advertises anything else is the anomaly under test.
+    try:
+        with open("/proc/%d/stat" % pid, "rb") as handle:
+            stat = handle.read().decode("utf-8", "replace")
+        return "proc:" + stat.rsplit(")", 1)[-1].split()[19]
+    except (OSError, IndexError):
+        pass
+    try:
+        out = subprocess.check_output(
+            ["ps", "-p", str(pid), "-o", "lstart="],
+            stderr=subprocess.DEVNULL, universal_newlines=True, timeout=5,
+            env=dict(os.environ, LC_ALL="C", LC_TIME="C", LANG="C", TZ="UTC")).strip()
+    except Exception:
+        return None
+    return "ps:" + out if out else None
 
 path, pid_arg, mode = sys.argv[1], sys.argv[2], sys.argv[3]
 if os.path.exists(path):
@@ -25,6 +46,13 @@ hello = {
                 "executablePath": os.environ.get("FIXTURE_EXECUTABLE", "")},
     "supervisorPid": pid,
 }
+# The pid-reuse identity, the way the shipped supervisor carries it: the claimed
+# pid's OWN start id by default, a forged one under FIXTURE_START_ID, and absent
+# under FIXTURE_OMIT_START_ID (an older build's hello).
+if os.environ.get("FIXTURE_OMIT_START_ID") != "1":
+    claimed = os.environ.get("FIXTURE_START_ID") or kernel_start_id(pid)
+    if claimed:
+        hello["supervisorProcessStartId"] = claimed
 while True:
     conn, _ = server.accept()
     try:

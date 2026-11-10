@@ -968,33 +968,32 @@ fn no_test_redirects_a_path_the_whole_process_shares() {
         }
         // Only LIVE code: a doc comment that explains why a test does NOT call
         // `set_var("HOME")` must not count as calling it (measured — the first version of
-        // this scan flagged exactly that comment).
+        // this scan flagged exactly that comment). Comment lines are blanked rather than
+        // dropped: the paste-seam scan reports line numbers, and they must be the file's.
         let live: String = text
             .lines()
-            .map(str::trim_start)
-            .filter(|line| !line.starts_with("//"))
+            .map(|line| {
+                if line.trim_start().starts_with("//") {
+                    ""
+                } else {
+                    line
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n");
         // A third process-wide seam: the paste fixture path the TUI resolves on every
         // paste. `TempDir`s do not share it, but the VARIABLE does — two tests that point it
         // at their own fixture overwrite each other, and the loser's paste reads a path whose
-        // temp dir the winner already removed (review #27). Allowed only behind a guard name.
-        if [
-            "set_var(\"PRIME_AGENT_TEST_CLIPBOARD_IMAGE\"",
-            "set_var('PRIME_AGENT_TEST_CLIPBOARD_IMAGE'",
-        ]
-        .iter()
-        .any(|form| live.contains(form))
-        {
-            let serialised =
-                live.contains("CLIPBOARD_IMAGE_SEAM") || live.contains("ClipboardImageSeam");
-            if !serialised {
-                offenders.push(format!(
-                    "{}: points the paste seam at its own fixture with no guard, so a parallel \
-                     test's paste reads a path whose temp dir is already gone",
-                    entry.display()
-                ));
-            }
+        // temp dir the winner already removed (review #27). The allow is on the WRITE, not on
+        // the file: see [`paste_seam_offenders`].
+        let seam = paste_seam_offenders(&live);
+        if !seam.is_empty() {
+            offenders.push(format!(
+                "{}: writes the paste seam outside the seam guard's own statements, so a \
+                 parallel test's paste reads a path whose temp dir is already gone ({})",
+                entry.display(),
+                seam.join(", ")
+            ));
         }
         for var in ["TMPDIR", "HOME"] {
             let spelled = [format!("set_var(\"{var}\""), format!("set_var(\'{var}\'")]
@@ -1029,6 +1028,220 @@ fn no_test_redirects_a_path_the_whole_process_shares() {
         offenders.is_empty(),
         "a test redirects a path the whole process shares (review #26):\n  {}",
         offenders.join("\n  ")
+    );
+}
+
+/// The paste fixture seam the TUI resolves on every paste.
+const PASTE_SEAM_VAR: &str = "PRIME_AGENT_TEST_CLIPBOARD_IMAGE";
+
+/// Writes of the paste seam that are NOT the seam guard's own statements.
+///
+/// The first version of this scan allowed the whole FILE as soon as it mentioned the guard
+/// (`CLIPBOARD_IMAGE_SEAM` / `ClipboardImageSeam`), so a test that kept the guard and then
+/// wrote `set_var("PRIME_AGENT_TEST_CLIPBOARD_IMAGE", …)` beside it — a restored literal
+/// write — was exempt (review #27's remaining half). The allow is per STATEMENT: a seam
+/// write is legal only inside the guard type's own `impl` blocks (`ClipboardImageSeam`'s
+/// install, and its `Drop` restore). Every other write is reported here.
+///
+/// Line-based on purpose: the regression is a pattern in test source, and a write whose
+/// guard block cannot be located is an offender (fail closed), so a formatting change can
+/// only make the scan stricter.
+fn paste_seam_offenders(text: &str) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    // The seam's spellings in THIS file: the quoted literal, plus any
+    // `const NAME: &str = "<seam>"` the file names it by (the usual case).
+    let mut names: Vec<String> = vec![format!("\"{PASTE_SEAM_VAR}\"")];
+    for line in &lines {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("const ") {
+            if rest.contains(&format!("= \"{PASTE_SEAM_VAR}\"")) {
+                if let Some((name, _)) = rest.split_once(':') {
+                    names.push(name.trim().to_string());
+                }
+            }
+        }
+    }
+    let names_the_seam =
+        |candidate: &str| names.iter().any(|name| candidate.contains(name.as_str()));
+    let guarded = guard_statement_lines(&lines);
+    let mut offenders = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let write_at = ["set_var(", "remove_var("]
+            .iter()
+            .filter_map(|call| line.find(call))
+            .min();
+        let Some(offset) = write_at else {
+            continue;
+        };
+        // The statement may wrap: read to the call's closing parenthesis and look for the
+        // seam's name anywhere inside it.
+        let mut depth = 0_i32;
+        let mut statement = String::new();
+        let mut end = index;
+        'scan: for (cursor, part) in lines[index..].iter().enumerate() {
+            end = index + cursor;
+            statement.push_str(part);
+            for (position, character) in part.char_indices() {
+                if cursor == 0 && position < offset {
+                    continue;
+                }
+                match character {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break 'scan;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if !names_the_seam(&statement) {
+            continue;
+        }
+        if (index..=end).all(|cursor| guarded.contains(&cursor)) {
+            continue;
+        }
+        offenders.push(format!("line {}", index + 1));
+    }
+    offenders
+}
+
+/// The line indices inside the seam guard's own `impl` blocks.
+///
+/// `impl ClipboardImageSeam` (install) and `impl Drop for ClipboardImageSeam` (restore)
+/// are the only places a seam write belongs: both run under the seam mutex. The block is
+/// found by brace balance from its header, so the scan does not depend on indentation.
+fn guard_statement_lines(lines: &[&str]) -> std::collections::BTreeSet<usize> {
+    let mut guarded = std::collections::BTreeSet::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let trimmed = lines[index].trim_start();
+        let header = trimmed.starts_with("impl ClipboardImageSeam")
+            || trimmed.starts_with("impl Drop for ClipboardImageSeam");
+        if !header {
+            index += 1;
+            continue;
+        }
+        let mut depth = 0_i32;
+        for (cursor, line) in lines[index..].iter().enumerate() {
+            for character in line.chars() {
+                match character {
+                    '{' => depth += 1,
+                    '}' => depth -= 1,
+                    _ => {}
+                }
+            }
+            guarded.insert(index + cursor);
+            if depth == 0 {
+                index += cursor + 1;
+                break;
+            }
+        }
+    }
+    guarded
+}
+
+/// The guard's own writes are legal; a restored LITERAL write beside them is not.
+///
+/// The first version of the scan exempted a whole FILE that mentioned the guard, so this
+/// pair of statements — the seam guard doing its job, and a test writing the seam by hand
+/// anyway — passed (review #27's remaining half). The exemption must be per statement.
+#[test]
+fn a_restored_literal_paste_seam_write_is_still_an_offender() {
+    let fixture = r#"
+const TEST_CLIPBOARD_IMAGE_ENV: &str = "PRIME_AGENT_TEST_CLIPBOARD_IMAGE";
+static CLIPBOARD_IMAGE_SEAM: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+struct ClipboardImageSeam {
+    _lock: tokio::sync::MutexGuard<'static, ()>,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl ClipboardImageSeam {
+    async fn install(path: &Path) -> Self {
+        let lock = CLIPBOARD_IMAGE_SEAM.lock().await;
+        let previous = std::env::var_os(TEST_CLIPBOARD_IMAGE_ENV);
+        std::env::set_var(TEST_CLIPBOARD_IMAGE_ENV, path);
+        Self { _lock: lock, previous }
+    }
+}
+
+impl Drop for ClipboardImageSeam {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(previous) => std::env::set_var(TEST_CLIPBOARD_IMAGE_ENV, previous),
+            None => std::env::remove_var(TEST_CLIPBOARD_IMAGE_ENV),
+        }
+    }
+}
+
+#[test]
+fn a_paste_test() {
+    std::env::set_var("PRIME_AGENT_TEST_CLIPBOARD_IMAGE", "/tmp/fixture.png");
+    let _seam = ClipboardImageSeam::install(Path::new("/tmp/fixture.png"));
+}
+"#;
+    let offenders = paste_seam_offenders(fixture);
+    assert_eq!(
+        offenders,
+        vec!["line 30".to_string()],
+        "only the hand-written literal write is an offender: the guard's own install and          Drop statements are the legal ones"
+    );
+    // And the negative direction, so the assertion above cannot pass by flagging everything:
+    // the guard's statements alone are clean.
+    let only_the_guard: String = fixture
+        .lines()
+        .take_while(|line| !line.starts_with("#[test]"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        paste_seam_offenders(&only_the_guard),
+        Vec::<String>::new(),
+        "the seam guard's own statements are the allow"
+    );
+}
+
+/// The scan, against the REAL test file that owns the seam: clean as it stands, and an
+/// offender the moment a literal write is restored beside the guard.
+///
+/// The regression's shape is not invented: `interactive_daemon_e2e.rs` is the file the
+/// review named, and its guard is what makes it legal today. Reading it (never editing it)
+/// proves the allow is narrow — the guard stays, and the write is still caught.
+#[test]
+fn the_real_paste_seam_file_is_clean_until_a_literal_write_returns() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("workspace root");
+    let path = root.join("crates/pa-cli/tests/interactive_daemon_e2e.rs");
+    let text = std::fs::read_to_string(&path).expect("read the daemon e2e suite");
+    assert_eq!(
+        paste_seam_offenders(&text),
+        Vec::<String>::new(),
+        "the seam writes in {path:?} all sit inside the guard's own impl blocks"
+    );
+    // Restore the pre-review shape: keep everything, add one literal write to a test.
+    let restored = text.replace(
+        "    let _seam = ClipboardImageSeam::install(&png_path).await;",
+        "    std::env::set_var(\"PRIME_AGENT_TEST_CLIPBOARD_IMAGE\", &png_path);\n    \
+         let _seam = ClipboardImageSeam::install(&png_path).await;",
+    );
+    assert_ne!(
+        restored, text,
+        "the fixture line moved: update this test's anchor"
+    );
+    let offenders = paste_seam_offenders(&restored);
+    assert!(
+        !offenders.is_empty(),
+        "a literal write restored beside the guard must still be an offender"
+    );
+    assert_eq!(
+        offenders.len(),
+        text.matches("let _seam = ClipboardImageSeam::install(&png_path).await;")
+            .count(),
+        "every clipboard test that restored a literal write is reported: {offenders:?}"
     );
 }
 

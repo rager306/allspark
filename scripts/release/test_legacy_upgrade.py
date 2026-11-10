@@ -71,6 +71,29 @@ def release_server(root: Path):
         thread.join(timeout=5)
 
 
+def digest_text(text: str) -> str:
+    """The sha256 of a string: the fixture installer has no file of its own."""
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def publish_installer(feed: Path, installer: Path, mode: str) -> None:
+    """Publish the installer a run will download as `<feed>/install.sh`.
+
+    `real` copies the shipped bytes: the release gate's subject. `fixture` writes
+    `FIXTURE_INSTALLER_SCRIPT` INSTEAD, so a run can exercise channel → download →
+    install → reinstall without executing the shipped script and without touching a
+    socket. The name is the same either way, because that is the wire contract the
+    installer download follows.
+    """
+    if mode not in INSTALLER_MODES:
+        raise ValueError(f"unknown installer mode {mode!r}: expected one of {INSTALLER_MODES}")
+    destination = feed / "install.sh"
+    if mode == FIXTURE_INSTALLER:
+        destination.write_text(FIXTURE_INSTALLER_SCRIPT)
+    else:
+        shutil.copyfile(installer, destination)
+
+
 def publish_archive(feed: Path, archive: Path) -> Path:
     version, _ = archive_identity(archive)
     directory = feed / "releases" / f"v{version}"
@@ -126,6 +149,150 @@ def fixture_root(prefix: str):
         "socket namespace. Set TMPDIR to a short path (e.g. /tmp).")
 
 
+# WHICH installer a run may spawn.
+#
+# `real` copies the shipped bytes into the feed and is the release gate's subject
+# (`release.yml`, outside every session). `fixture` stands in for that file when the
+# probe is about the harness's OWN flow — channel publish, download, install,
+# reinstall, user-state preservation — because the real installer's stop probe asks
+# candidate daemons to shut down BY SOCKET PATH, which is the mechanism AGENTS.md's
+# install rule exists to keep out of a live session. The fixture installs a fake
+# launcher and never opens a socket.
+REAL_INSTALLER = "real"
+FIXTURE_INSTALLER = "fixture"
+INSTALLER_MODES = (REAL_INSTALLER, FIXTURE_INSTALLER)
+
+# The stand-in installer written into the feed under `fixture`. It records the
+# environment it was handed (so a probe can assert the isolation), installs a fake
+# launcher that answers `--version` with the channel's version, and touches no
+# socket, no daemon, and no path outside `$PRIME_AGENT_RUST_PREFIX`.
+FIXTURE_INSTALLER_SCRIPT = r"""#!/bin/sh
+set -eu
+record="${FIXTURE_INSTALLER_RECORD:?the fixture installer needs a record dir}"
+mkdir -p "$record" "${PRIME_AGENT_RUST_PREFIX}/bin"
+env | sort > "$record/env.txt"
+# The CHANNEL is real even here: the manifest must be served and must name the
+# version this run expects, so a broken publish still fails the probe.
+curl -fsSL "$PRIME_AGENT_DOWNLOAD_BASE_URL/latest.json" > "$record/latest.json"
+python3 - "$record/latest.json" "$FIXTURE_INSTALLER_VERSION" <<'CHECK'
+import json, sys
+manifest = json.load(open(sys.argv[1]))
+if manifest.get("version") != sys.argv[2]:
+    raise SystemExit("channel manifest version %r != %r" % (manifest.get("version"), sys.argv[2]))
+CHECK
+cat > "${PRIME_AGENT_RUST_PREFIX}/bin/prime-agent" <<LAUNCHER
+#!/bin/sh
+case "\$1" in
+  --version) printf '%s\n' "$FIXTURE_INSTALLER_VERSION" ;;
+  *) : ;;
+esac
+exit 0
+LAUNCHER
+chmod +x "${PRIME_AGENT_RUST_PREFIX}/bin/prime-agent"
+# The marker the probe asserts on: the bytes that ran were THIS fixture, not the
+# shipped installer (which cannot run inside a session at all).
+printf 'fixture-installer\n' > "$record/ran.txt"
+"""
+
+SHELL_INTERPRETERS = ("sh", "bash", "dash", "zsh")
+
+
+def _argv_of(pid: int, platform: str) -> list[str]:
+    """A live process's argv, best effort: /proc where it exists, else `ps`."""
+    if platform == "Linux":
+        try:
+            return [
+                part.decode("utf-8", "replace")
+                for part in Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+                if part
+            ]
+        except OSError:
+            return []
+    try:
+        out = subprocess.check_output(
+            ["ps", "-o", "args=", "-p", str(pid)],
+            stderr=subprocess.DEVNULL, universal_newlines=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return out.split()
+
+
+def _parent_of(pid: int, platform: str) -> int | None:
+    if platform == "Linux":
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(errors="replace")
+            return int(stat.rsplit(")", 1)[-1].split()[1])
+        except (OSError, ValueError, IndexError):
+            return None
+    try:
+        out = subprocess.check_output(
+            ["ps", "-o", "ppid=", "-p", str(pid)],
+            stderr=subprocess.DEVNULL, universal_newlines=True, timeout=5).strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return int(out) if out.isdigit() else None
+
+
+def _daemon_socket_of(args: list[str]) -> str | None:
+    """The socket a supervisor's argv names, or None when it is not a supervisor.
+
+    The same two spellings the installer's own ancestor walk accepts
+    (`--mode daemon --daemon-socket <socket>`, `supervisor --socket <socket>`), and
+    the same executable gate: only a `prime-agent` argv counts, so an unrelated
+    `sh --mode daemon` shell never produces a refusal.
+    """
+    if not args:
+        return None
+    named = os.path.basename(args[0]) in ("prime-agent", "prime-agent.exe")
+    if not named and os.path.basename(args[0]) in SHELL_INTERPRETERS and len(args) > 1:
+        named = os.path.basename(args[1]) in ("prime-agent", "prime-agent.exe")
+        if named:
+            args = args[1:]
+    if not named:
+        return None
+
+    def after(flag: str) -> str | None:
+        for index in range(len(args) - 1):
+            if args[index] == flag:
+                return args[index + 1]
+        return None
+
+    socket = after("--daemon-socket")
+    if socket is None:
+        socket = after("--socket")
+    return socket if socket and socket.startswith("/") else None
+
+
+def daemon_ancestor_socket(
+    platform: str | None = None,
+    ppid: int | None = None,
+    argv_of=None,
+    parent_of=None,
+) -> str | None:
+    """The socket of the daemon this process tree runs under, if any.
+
+    Why this exists beside the environment markers: a scrubbed invocation
+    (`env -i`, a service manager, a nested harness) drops the variables a daemon
+    exports, and that is exactly how the 2026-10-21 incident reached a live
+    supervisor. The process tree still carries the truth, so this walk is the
+    marker-independent arm of the refusal — the mechanism `install-rust.sh`'s own
+    probe uses. Best effort by construction: no ancestor, no `ps`, or a walk
+    error answers None, which leaves the marker arms alone.
+    """
+    platform = platform or os.uname().sysname
+    read_argv = argv_of or (lambda pid: _argv_of(pid, platform))
+    read_parent = parent_of or (lambda pid: _parent_of(pid, platform))
+    pid = os.getppid() if ppid is None else ppid
+    seen: set[int] = set()
+    while pid and pid > 1 and pid not in seen and len(seen) < 64:
+        seen.add(pid)
+        socket = _daemon_socket_of(read_argv(pid))
+        if socket:
+            return socket
+        pid = read_parent(pid)
+    return None
+
+
 def guard_session() -> None:
     """Refuse to run the REAL installer from inside a live agent session.
 
@@ -134,6 +301,11 @@ def guard_session() -> None:
     down BY SOCKET PATH — and the session that started the harness answers on
     one of them. The scrubbed fixture environment does not help; it narrows what
     the child sees, not what its stop probe stops.
+
+    This arm reads the markers the session EXPORTS. They are the cheap signal and
+    they are also the scrubbable one: `env -i` drops both, which is how the
+    2026-10-21 incident reached a live supervisor. [`guard_live_daemon_ancestor`]
+    is the arm that survives a scrubbed environment.
     """
     if os.environ.get("PRIME_AGENT_INTERNAL_DAEMON_WORKER") \
             or os.environ.get("PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET"):
@@ -141,6 +313,22 @@ def guard_session() -> None:
             "refusing to run the real installer from inside a prime-agent session: "
             "it stops daemons by socket path, and this session's supervisor answers "
             "on one of them. Run this harness outside the session (CI does).")
+
+
+def guard_live_daemon_ancestor() -> None:
+    """Refuse when this process runs UNDER a daemon, whatever the environment says.
+
+    The marker arm above is only as good as the environment it reads, and the
+    harness is the caller that scrubs hardest. The process tree cannot be scrubbed:
+    the walk names the supervisor this very run would be a child of, which is the
+    one daemon whose socket probe is guaranteed to reach live work.
+    """
+    ancestor = daemon_ancestor_socket()
+    if ancestor:
+        raise SystemExit(
+            "refusing to run the real installer from under a live daemon "
+            f"({ancestor}): it stops daemons by socket path, and that is this "
+            "session's own supervisor. Run this harness outside the session (CI does).")
 
 
 def guard_isolated_sockets(root: Path, platform: str | None = None) -> None:
@@ -153,10 +341,13 @@ def guard_isolated_sockets(root: Path, platform: str | None = None) -> None:
     is refused rather than trusted to contain the child. A fixture socket that
     resolves outside the fixture root is refused for the same reason.
 
+    Paths only: whether this RUN may start a socket-probing installer is the
+    separate [`guard_session`] / [`guard_live_daemon_ancestor`] question, asked by
+    `isolated_environment` where the mode is known.
+
     Fail-closed by design: there is no override here, and a harness that needs one
     is a harness whose sockets are not provably its own.
     """
-    guard_session()
     platform = platform or os.uname().sysname
     resolved_root = root.resolve()
     for candidate in socket_candidates(root):
@@ -170,10 +361,28 @@ def guard_isolated_sockets(root: Path, platform: str | None = None) -> None:
                 "harness a shorter temporary root (TMPDIR).")
 
 
-def isolated_environment(root: Path, base_url: str, layout: str = "custom") -> dict[str, str]:
+def isolated_environment(
+    root: Path,
+    base_url: str,
+    layout: str = "custom",
+    *,
+    live_installer: bool,
+) -> dict[str, str]:
+    """The child environment for a harness run.
+
+    `live_installer` is REQUIRED, not defaulted: it decides whether the shipped
+    installer may start, and that is the one decision this module must never make
+    silently. When it is true, a run under a live daemon (by exported marker, or by
+    the process tree when the markers were scrubbed) is refused; a fixture
+    installer opens no socket, so the fixture mode is the one that may run inside a
+    session.
+    """
     # An allowlist prevents inheriting credentials, daemon addresses, package
     # roots, update overrides, or user-specific runtime paths from the host.
     guard_isolated_sockets(root)
+    if live_installer:
+        guard_session()
+        guard_live_daemon_ancestor()
     env = {name: os.environ[name] for name in ("PATH", "LANG", "LC_ALL", "SYSTEMROOT") if name in os.environ}
     for name, relative in {
         "HOME": "home", "TMPDIR": "tmp", "XDG_DATA_HOME": "data",
@@ -240,7 +449,7 @@ def exercise(installer: Path, archive: Path, previous: Path | None, root: Path, 
             (feed / "install.sh").write_bytes(script.read())
     steps = []
     with release_server(feed) as base_url:
-        env = isolated_environment(root / "user", base_url, layout)
+        env = isolated_environment(root / "user", base_url, layout, live_installer=True)
         state = Path(env["PRIME_AGENT_CODING_AGENT_DIR"])
         # Opaque content witnesses that installation never edits existing state.
         witnesses = {

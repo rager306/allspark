@@ -2548,7 +2548,8 @@ def install_owns_executable(executable):
     real_exe = os.path.realpath(executable)
     return any(real_exe == root or real_exe.startswith(root + os.sep) for root in OWN_ROOTS)
 
-def signal_identity(pid, expected_start_id, require_install_executable):
+def signal_identity(pid, expected_start_id, require_install_executable,
+                    require_start_id=False):
     """Why this pid may still be signalled, or the reason it may not.
 
     Bound to the KERNEL's answers, not to the hello: the pid must be the one
@@ -2557,6 +2558,14 @@ def signal_identity(pid, expected_start_id, require_install_executable):
     process), and — for a Rust daemon, which IS the payload binary — it must run
     this install's own payload. A TypeScript daemon runs `node`, so the payload
     test cannot apply to it; the peer binding still does.
+
+    `require_start_id` closes the second half of review #18: the check used to
+    need BOTH sides, so a hello that simply left `supervisorProcessStartId` out
+    skipped the pid-reuse gate and the signal still went out. The Rust
+    supervisor always advertises one (filled from the kernel), so on the Rust
+    path its absence is the anomaly — refuse. A TS daemon's hello is not held to
+    it: the field is a Rust-only extension, and the TS product never sends one,
+    which is exactly the compatibility the earlier conditional was protecting.
     """
     if PEER_PID is None:
         return "the kernel did not report the socket peer's pid"
@@ -2566,8 +2575,16 @@ def signal_identity(pid, expected_start_id, require_install_executable):
         return "its socket belongs to another user"
     if require_install_executable and not install_owns_executable(real_executable_of(pid)):
         return "the process on its socket does not run this install's payload"
+    if not expected_start_id:
+        if require_start_id:
+            return "its hello carries no process start id, so pid reuse cannot be ruled out"
+        return None
     actual_start_id = process_start_id(pid)
-    if expected_start_id and actual_start_id and actual_start_id != expected_start_id:
+    if not actual_start_id:
+        if require_start_id:
+            return "the kernel reports no process start id for the pid it names"
+        return None
+    if actual_start_id != expected_start_id:
         return "the pid now belongs to a different process"
     return None
 
@@ -2609,7 +2626,7 @@ def kill_supervisor():
     # otherwise a forged responder could name any live Prime Agent daemon on
     # the machine (another user's, another install's) and have it killed.
     refusal = signal_identity(pid, current.get("supervisorProcessStartId"),
-                               owner == "rust")
+                              owner == "rust", require_start_id=(owner == "rust"))
     if refusal:
         progress("pid %d not signalled: %s" % (pid, refusal))
         return "unbound"
@@ -2621,7 +2638,7 @@ def kill_supervisor():
         # SIGKILL lands a moment after SIGTERM did. The kernel's answers are
         # re-read, not remembered.
         refusal = signal_identity(pid, current.get("supervisorProcessStartId"),
-                               owner == "rust")
+                                  owner == "rust", require_start_id=(owner == "rust"))
         if refusal:
             progress("pid %d not signalled: %s" % (pid, refusal))
             return "killed" if signalled else "unbound"
