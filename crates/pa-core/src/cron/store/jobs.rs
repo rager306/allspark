@@ -384,7 +384,14 @@ impl AgentCronJobStore {
                         job.last_skipped_at = Some(now_iso.clone());
                         job.updated_at.clone_from(&now_iso);
                     } else {
-                        job.status = if job.schedule.kind == ScheduleKind::Once {
+                        // A ONE-SHOT that FAILED has not delivered the wake it represents
+                        // (review #13): completing it drops the only scheduled wake a
+                        // quota-resume or goal-backoff job has, and the scheduler's failure
+                        // backoff then finds a non-active row and cannot re-arm it. The row
+                        // stays active with no next run — the shape `defer_next_run` moves.
+                        let completed =
+                            job.schedule.kind == ScheduleKind::Once && result.error.is_none();
+                        job.status = if completed {
                             JobStatus::Completed
                         } else {
                             job.status
@@ -608,6 +615,73 @@ mod tests {
             .defer_next_run(&job.id, now + 2_000_000)
             .unwrap()
             .is_none());
+    }
+
+    /// A one-shot whose run FAILED has not delivered its wake (review #13).
+    ///
+    /// `record_dispatch_result` completed a `once` job in both arms. The failure arm runs
+    /// with an error, i.e. the prompt did NOT run — a quota-resume or goal-backoff wake
+    /// whose fire hit a provider outage was marked `completed` and the scheduler's
+    /// `defer_next_run` then found a non-active row and could not re-arm it, so one bad
+    /// fire deleted the only scheduled wake. The row must stay active (with no next run,
+    /// the shape the backoff moves forward) and the error must be recorded.
+    #[test]
+    fn a_failed_one_shot_fire_keeps_its_wake() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = AgentCronJobStore::new(dir.path().join("jobs.json"));
+        let now = 1_700_000_000_000;
+        let job = store
+            .create(&input("resume the parked goal", "in 1m", now))
+            .unwrap();
+        assert_eq!(job.schedule.kind, ScheduleKind::Once);
+        let dispatch = store.claim_due(now + 60_000, now + 60_000).unwrap();
+        assert_eq!(dispatch.len(), 1, "the due one-shot is claimed");
+
+        let failed = store
+            .record_dispatch_result(
+                &dispatch[0].id,
+                &DispatchResultOptions {
+                    now: Some(now + 60_001),
+                    outcome: "ran",
+                    error: Some("502 provider outage".to_string()),
+                },
+            )
+            .unwrap()
+            .expect("the job is updated");
+        assert_eq!(
+            failed.status,
+            JobStatus::Active,
+            "a failed fire is not a delivered wake: {:?}",
+            failed.status
+        );
+        assert_eq!(failed.run_count, 1);
+        assert_eq!(failed.last_error.as_deref(), Some("502 provider outage"));
+
+        // The scheduler's failure backoff re-arms it (a completed row would refuse).
+        let rearmed = store
+            .defer_next_run(&job.id, now + 60_000 + 120_000)
+            .unwrap()
+            .expect("an active one-shot takes the backoff");
+        assert_eq!(
+            crate::cron::parse_iso_millis(rearmed.next_run_at.as_deref().unwrap()),
+            Some(now + 60_000 + 120_000)
+        );
+
+        // A one-shot that RAN cleanly still completes.
+        let second = store.claim_due(now + 300_000, now + 300_000).unwrap();
+        assert_eq!(second.len(), 1, "the re-armed one-shot is due again");
+        let done = store
+            .record_dispatch_result(
+                &second[0].id,
+                &DispatchResultOptions {
+                    now: Some(now + 300_001),
+                    outcome: "ran",
+                    error: None,
+                },
+            )
+            .unwrap()
+            .expect("the job is updated");
+        assert_eq!(done.status, JobStatus::Completed);
     }
 
     /// `cancel` must not acknowledge a change the merge discarded (review #2).
