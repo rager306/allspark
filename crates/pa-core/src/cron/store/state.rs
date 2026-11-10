@@ -436,6 +436,15 @@ pub(crate) fn read_jobs_state_checked(path: &Path) -> anyhow::Result<CronJobsSta
             path.display()
         )
     })?;
+    // The object check comes BEFORE any field lookup: `get` on a non-object answers
+    // `None`, which the per-field rule below reads as "no jobs", so a top-level `[]`
+    // or `null` became an empty catalog a writer then replaced (review #7).
+    if !parsed.is_object() {
+        anyhow::bail!(
+            "scheduled jobs state {} is not a JSON object ({parsed}); refusing to overwrite it",
+            path.display()
+        );
+    }
     let rows = |key: &str| -> anyhow::Result<&Vec<serde_json::Value>> {
         match parsed.get(key) {
             None | Some(serde_json::Value::Null) => Ok(&EMPTY_ROWS),
@@ -556,6 +565,36 @@ mod tests {
                 std::fs::read_to_string(&path).unwrap(),
                 corrupt,
                 "{label}: the original bytes stay for repair"
+            );
+        }
+    }
+
+    /// A top-level document that is valid JSON but not an object is not an empty catalog
+    /// (review #7, residual).
+    ///
+    /// The object check used to happen per FIELD: `parsed.get("jobs")` answers `None` for a
+    /// value that has no fields at all, so `[]`, `null`, `42` and `"text"` all read as "no
+    /// jobs" and the next create replaced them with a one-row catalog. Valid JSON never
+    /// reached the parse-error arm, so nothing refused the overwrite.
+    #[test]
+    fn a_catalog_that_is_not_a_json_object_is_refused() {
+        let now = 1_700_000_000_000;
+        for corrupt in ["[]", "null", "42", "\"text\"", "true"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("jobs.json");
+            std::fs::write(&path, corrupt).unwrap();
+            let store = AgentCronJobStore::new(path.clone());
+            let error = store
+                .create(&crate::cron::store::input("tick", "every 10m", now))
+                .expect_err("a catalog that is not an object must not be overwritten");
+            assert!(
+                error.to_string().contains("refusing to overwrite"),
+                "{corrupt}: the refusal must say why the file was kept: {error}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                corrupt,
+                "{corrupt}: the original bytes stay for repair"
             );
         }
     }
