@@ -215,10 +215,16 @@ impl AdmissionClient {
 
     /// Give a lease back without an AIMD signal.
     ///
-    /// Answers whether the supervisor CONFIRMED it, for the same reason as
-    /// [`Self::settle`]: an unconfirmed release leaves the slot held.
+    /// Answers whether the slot is now free: a confirmed release, or the
+    /// supervisor answering that this worker does not hold the lease (the answer
+    /// to an attempt whose reply was lost — the slot is already back). Anything
+    /// else is a link that never answered, and the slot is still charged, for the
+    /// same reason as [`Self::settle`].
     pub async fn release(&self, lease: u64) -> bool {
-        matches!(self.release_attempt(lease).await, ReleaseAttempt::Confirmed)
+        matches!(
+            self.release_attempt(lease).await,
+            ReleaseAttempt::Confirmed | ReleaseAttempt::Gone
+        )
     }
 
     /// One release round trip, keeping the distinction the retry logic needs: an
