@@ -27,9 +27,6 @@ mod event_stream;
 mod providers;
 mod stream;
 
-#[cfg(test)]
-mod prime_inference_differential_test;
-
 pub use event_stream::{AssistantMessageEventExt, AssistantMessageEventStream};
 pub use providers::faux;
 pub use providers::serves_chat_turns;

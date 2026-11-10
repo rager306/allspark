@@ -506,23 +506,20 @@ class TheGateRunsItsOwnTests(unittest.TestCase):
 class ParitySkipsAreCounted(unittest.TestCase):
     """Finding #1: a parity test with no TS reference exits 0, so the gate read it as a pass.
 
-    Three separate defects, each measured, each pinned here:
+    Two defects, each measured, each pinned here:
 
-    1. The unit is reported `ok` although no comparison happened — the tests return
-       normally and print their own SKIPPED line (cargo has no runtime skip).
+    1. The unit is reported `ok` although nothing ran — a test that skips returns normally
+       and prints its own SKIPPED line (cargo has no runtime skip).
     2. The FIRST fix grepped that line out of the unit logs and counted zero forever:
        `eprintln!` from a PASSING test is captured by nextest and by cargo test and never
-       written to the log. Measured on `pa-cli#test:differential_cli`: 0 `SKIPPED` lines
-       by default, 3 with `--success-output=final` (nextest) or `-- --nocapture` (cargo).
-       So the revealing flag has to be passed for exactly these units.
-    3. `package_e2e` prints a DIFFERENT sentence ("binary not installed", no
-       "set PA_TS_BINARY"), so a pattern tight enough to name one text finds four of five.
+       written to the log (0 `SKIPPED` lines by default, 3 with `--success-output=final`).
+       So the revealing flag has to be passed for the units that can skip.
 
-    The count stays advisory (the parity lane is advisory and the skip contract is
-    deliberate); what must not happen is the absence reading as a green.
+    The count stays advisory (the skip contract is deliberate); what must not happen is the
+    absence reading as a green.
     """
 
-    COUNT_STEP = "# A parity test with no TS reference returns NORMALLY"
+    COUNT_STEP = "# A test that skips at RUNTIME returns NORMALLY"
     END = 'if [[ $fail -ne 0 ]]; then'
 
     def run_block(self, logs):
@@ -585,45 +582,42 @@ class ParitySkipsAreCounted(unittest.TestCase):
     def test_the_skipped_comparisons_are_named(self):
         code, out = self.run_block(
             {
-                "pa-cli-test-differential_cli.log": "SKIPPED: TS prime-agent binary not found (set PA_TS_BINARY)\n",
+                "pa-cli-test-lock_compat_e2e.log": "SKIPPED: TS prime-agent binary not found\n",
                 "pa-cli-lib-pa_cli.log": "test result: ok. 12 passed;\n",
             }
         )
         self.assertEqual(code, 0, out)
-        self.assertIn("1 test(s) made NO comparison", out)
+        self.assertIn("1 test(s) skipped at runtime", out)
 
-    def test_both_skip_sentences_are_counted(self):
-        """`package_e2e` says "not installed". A counter that names one sentence misses it."""
+    def test_two_units_skipping_are_summed(self):
         code, out = self.run_block(
             {
-                "pa-cli-test-package_e2e.log": "SKIPPED: TS prime-agent binary not installed\n",
-                "pa-cli-test-differential_cli.log": "SKIPPED: TS prime-agent binary not found (set PA_TS_BINARY)\n",
+                "pa-cli-test-lock_compat_e2e.log": "SKIPPED: TS prime-agent binary not found\n",
+                "pa-jev-test-live_subq.log": "SKIPPED: live SubQ smoke\n",
             }
         )
         self.assertEqual(code, 0, out)
-        self.assertIn("2 test(s) made NO comparison", out)
+        self.assertIn("2 test(s) skipped at runtime", out)
 
     def test_the_count_survives_a_single_log(self):
         """`grep -c` over ONE file prints a bare count with no colon; `$2` summed zero."""
         code, out = self.run_block(
-            {"pa-cli-test-differential_cli.log": "SKIPPED: TS prime-agent binary not found (set PA_TS_BINARY)\n"}
+            {"pa-cli-test-lock_compat_e2e.log": "SKIPPED: TS prime-agent binary not found\n"}
         )
         self.assertEqual(code, 0, out)
-        self.assertIn("1 test(s) made NO comparison", out)
+        self.assertIn("1 test(s) skipped at runtime", out)
 
     def test_a_run_with_no_skips_says_nothing(self):
         code, out = self.run_block({"pa-cli-lib-pa_cli.log": "test result: ok. 12 passed;\n"})
         self.assertEqual(code, 0, out)
-        self.assertNotIn("made NO comparison", out)
+        self.assertNotIn("skipped at runtime", out)
 
     def test_the_parity_units_reveal_a_passing_tests_output(self):
         """Without the flag the SKIPPED line is captured and the counter counts zero."""
         for unit in (
-            "pa-cli#test:differential_cli",
-            "pa-cli#test:daemon_commands_e2e",
             "pa-cli#test:lock_compat_e2e",
-            "pa-cli#test:package_e2e",
-            "pa-cli#test:export_live_differential",
+            "pa-jev#test:live_subq",
+            "pa-core#test:jev_live_eval",
         ):
             argv = self.run_unit_argv(unit)
             self.assertTrue(

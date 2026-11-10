@@ -409,18 +409,19 @@ run_unit() {
     *) return 0;;
   esac
   local log="$OUT/tests/${pkg}-${kind}-${name//\//_}.log"
-  # The parity units print their own SKIPPED line from a PASSING test, and both runners
-  # CAPTURE the stdout/stderr of a passing test — the line never reaches `$log`, so the
-  # counter at the end of this script greps a string that was never written. Measured on
-  # `pa-cli#test:differential_cli`: 0 `SKIPPED` lines by default, 3 with the flag below.
-  # The flag is scoped to these five units because it is not free: on `pa-graph#lib` it
-  # took the log from 56 KiB to 233 KiB (x4) and the unit from 2.95 s to 3.30 s, and the
-  # gate has 287 units.
+  # A unit that SKIPS prints its own line from a PASSING test, and both runners CAPTURE
+  # the stdout/stderr of a passing test — the line never reaches `$log`, so the counter at
+  # the end of this script greps a string that was never written. The flag is scoped to the
+  # units that can skip because it is not free: on `pa-graph#lib` it took the log from
+  # 56 KiB to 233 KiB (x4) and the unit from 2.95 s to 3.30 s, and the gate has ~300 units.
+  #
+  # Upstream removed the TS comparison tests (#3870), so `differential_cli`,
+  # `export_live_differential` and `package_e2e` no longer exist. What still skips at
+  # runtime: the upgrade-compat pair (its TS golden may be absent) and the live-network
+  # lanes (jev/subq) — those are the units the counter at the end of this script needs.
   local reveal=0
   case "$unit" in
-    pa-cli#test:differential_cli|pa-cli#test:daemon_commands_e2e|\
-    pa-cli#test:lock_compat_e2e|pa-cli#test:package_e2e|\
-    pa-cli#test:export_live_differential) reveal=1;;
+    pa-cli#test:lock_compat_e2e|pa-jev#test:live_subq|pa-core#test:jev_live_eval) reveal=1;;
   esac
   # Free-space floor PER UNIT, not just at the gate's start: a long parallel run fills the
   # disk mid-flight, and an ENOSPC then reads as a code failure in whichever unit happened
@@ -578,30 +579,24 @@ else
   fi
 fi
 
-# A parity test with no TS reference returns NORMALLY: it prints its own SKIPPED line
-# and exits 0, so the runner counts it as passed and the per-unit verdict above says
-# `ok` although no comparison happened (review #1). Cargo has no runtime skip, so the
-# honest surface is a count.
+# A test that skips at RUNTIME returns NORMALLY: it prints its own SKIPPED line and exits
+# 0, so the runner counts it as passed and the per-unit verdict above says `ok` although
+# nothing was compared (review #1). Cargo has no runtime skip, so the honest surface is a
+# count.
 #
-# Two facts the first version of this counter got wrong, both measured:
-#   * `eprintln!` from a PASSING test is captured by nextest and by cargo test and never
-#     written to the log. Verified: the same unit logs 0 `SKIPPED` lines by default and 3
-#     with `--success-output=final` / `-- --nocapture`. That is why PARITY_UNITS below
-#     makes run_unit pass the revealing flag for exactly these units — a counter over
-#     logs nobody wrote to counts zero forever.
-#   * `package_e2e` prints a DIFFERENT sentence ("binary not installed", no
-#     "set PA_TS_BINARY"), so the pattern stops before the tail: the two texts share only
-#     the prefix. A pattern tight enough to name one finds four of five files.
+# One fact the first version of this counter got wrong, measured: `eprintln!` from a
+# PASSING test is captured by nextest and by cargo test and never written to the log (0
+# `SKIPPED` lines by default, 3 with `--success-output=final`). That is why run_unit passes
+# the revealing flag for the units that can skip — a counter over logs nobody wrote to
+# counts zero forever.
 #
-# Advisory, not red: the parity lane has been advisory since 2026-10-19 and its skip
-# contract is deliberate. What was wrong is that the absence READ as a green.
-# `$NF`, not `$2`: with ONE log file `grep -c` prints a bare count, with several it
-# prints `path:count`, and a two-file gate would otherwise sum zero.
-parity_skips=$(grep -hc 'SKIPPED: TS prime-agent binary not' "$OUT"/tests/*.log 2>/dev/null \
+# Advisory, not red: the skip contract is deliberate, and an absent comparison must not be
+# reported as a completed one. `$NF`, not `$2`: with ONE log file `grep -c` prints a bare
+# count, with several it prints `path:count`, and a two-file gate would otherwise sum zero.
+skipped=$(grep -hc 'SKIPPED: ' "$OUT"/tests/*.log 2>/dev/null \
   | awk '{ s += $NF } END { print s + 0 }')
-if [ "${parity_skips:-0}" -gt 0 ]; then
-  echo "parity: $parity_skips test(s) made NO comparison (no TS reference: set PA_TS_BINARY)"
-  echo "        counted as ok by the runner, so their units above are green without a diff"
+if [ "${skipped:-0}" -gt 0 ]; then
+  echo "skips: $skipped test(s) skipped at runtime and were counted as ok by the runner"
 fi
 
 if [[ $fail -ne 0 ]]; then

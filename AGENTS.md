@@ -33,12 +33,6 @@ Every contributor (human or agent) must read this before working on this repo.
   `gh pr create --repo PrimeIntellect-ai/prime-agent --base main`.
 - CI runs on the org's billing: `.github/workflows/continuous.yml` on `main` pushes and
   `release.yml` on version tags.
-- Parity ground truth (advisory since 2026-10-19): a read-only checkout of the TS
-  implementation (this repo at tag `v0.9.8`, the last TS release before the Rust port merged
-  to `main`). Clone it to `~/prime-agent`, the conventional location the parity scripts and
-  code fall back to; tooling that honors an override reads `PA_TS_REFERENCE`. The CI gate
-  that consumed it is disabled (see Merge gates); run parity diffs on demand.
-
 ## Live-system safety
 
 These rules exist because one violation killed a running agent session (2026-10-21 05:56 UTC):
@@ -228,9 +222,9 @@ directory. Treat the tree as shared state.
 - Bug fixes need a regression test that fails without the fix.
 - Keep test code in proportion to the change: one discriminating test per behavior change, not several that pin the same behavior or re-check behavior the PR does not change.
 - A new test file must be run by something: a runner, glob, loop, or run-time path in `.github/workflows/` or the Makefile. A name missing from those files can still be reached by a glob or a built path, so check those before calling a test unrun.
-- Verifiers over self-assessment: tmux user-level tests, differential tests against the TS binary
-  on PATH, golden corpora replayed against real captured data. No lane merges without its verifier
-  passing, rerun by the reviewer where feasible.
+- Verifiers over self-assessment: tmux user-level tests, golden corpora replayed against real
+  captured data. No lane merges without its verifier passing, rerun by the reviewer where
+  feasible.
 - Tests must wait for observable readiness, not fixed sleeps or retry-to-green loops. If a
   test must be disabled, give a reason at the test. Use isolated ports and temporary paths, and
   restore shared state. Run focused tests when changing their behavior.
@@ -568,15 +562,6 @@ cleanup becomes another run's missing directory.
   verifies the mirrors under `verus/` and skips cleanly without the toolchain. It is not part of
   `make check`, not part of `cargo test`, and not a CI job — a proof that does not close must never
   block a merge. See "Formal verification (Verus)" above.
-- **Parity-diff evidence is advisory, not a merge gate** (fork change, 2026-10-19): the
-  mandatory CI TS-parity step is disabled — upstream tests the TS reference itself, and the
-  per-shard TS download doubled CI load. The parity scripts stay in `scripts/review_*_parity.py`
-  and run on demand (`PA_TS_BINARY=<ts> python3 scripts/review_<scenario>_parity.py --receipt ...`);
-  the Rust differential tests keep their skip contract (no `PA_TS_BINARY` -> SKIPPED). When a PR
-  changes a user-visible surface, include a parity diff in the description when practical
-  (frame-diff, interactive behavior, wire bytes, user-visible invariants) — treat a mismatch as
-  a strong signal, not a blocker. Wire-compat with TS (`PI_*` names, socket leases, session
-  JSONL layout) stays binding regardless: parity beats branding on the wire.
 - `scripts/fork/prepush-gate.sh` is the local mirror of those gates and the default before a
   push. `--fast` is fmt + clippy; the full run covers the same 275 test units as
   `cargo test --workspace`, sharded across processes, with three properties that exist because
@@ -591,9 +576,8 @@ cleanup becomes another run's missing directory.
   dependency/cross-crate re-export. The latter two are architectural changes — an innocent-looking
   `pub use` is a very simple way to break encapsulation.
 - The compiled fallback model catalog `crates/pa-ai/src/models_generated.rs` is
-  hand-maintained Rust mirroring the TS `packages/ai/src/models.generated.ts` object
-  literal — edit it by hand, exactly like its TS source (there is no generator). The
-  parity fixture `crates/pa-models/tests/fixtures/catalog.v1.json` refreshes with
+  hand-maintained Rust — edit it by hand (there is no generator). The catalog fixture
+  `crates/pa-models/tests/fixtures/catalog.v1.json` refreshes with
   `scripts/generate-catalog-fixture.py`. Bulk data files are exempt from the size guidance.
 
 ## Adoption telemetry
@@ -615,7 +599,7 @@ Prime Agent. Audit with a repo-wide grep and classify every hit (user-visible
 vs wire-internal vs comment) before scrubbing, and list the preserved wire
 identifiers in the PR body so the reviewer can verify none were wrongly scrubbed.
 
-EXPLICIT EXCEPTION: wire-protocol identifiers that must stay byte-compatible with the TS product (e.g. the PI_PACKAGE_DIR env var, settings keys, provider IDs like prime-inference, harness _meta namespaces like ai.primeintellect.prime-agent, lockfile names) stay until/unless the TS side renames them — PARITY BEATS BRANDING ON THE WIRE.
+EXPLICIT EXCEPTION: wire-protocol identifiers (e.g. the PI_PACKAGE_DIR env var, settings keys, provider IDs like prime-inference, harness _meta namespaces like ai.primeintellect.prime-agent, lockfile names) stay unchanged, because existing installs, settings files, and clients depend on them — COMPATIBILITY BEATS BRANDING ON THE WIRE.
 
 ## Fork identity and isolation (allspark overlay)
 
@@ -683,7 +667,7 @@ written and no upstream socket is contacted.
   prompt and the roster cannot silently disagree (`readme-fork.md` §4).
 - RLM kernel API in the persistent Python REPL: `rlm.spawn/find_models/collect/list_subagents/delete_subagent/create_session/progress_note/rename`, `rlm.persistent_shells` (the re-attach path for `bash(persistent=True)` handles after a restart), `rlm.harness` CRUD, `rlm_heartbeat.create/list/update/delete`, `agent_message.send`, `agent_observe`, `mcp.*` (the generic MCP client), `compact`, `goal`, `refine`, `attach_image`, skills (markdown + Python) per the skill contract in the base system prompt.
 - System prompt structure: layered — cache-stable static layer files (core harness description with the full API surface, mandatory usage rules, opinionated guidelines, per-model additions from the model-prompts TOML rule map) followed by one dynamic tail (packages, project context, skills inventory, MCP servers, environment, session role); the harness digest stays a separate `[harness-digest]` user message. `prime-agent prompt` dumps the assembled prompt with its layer breakdown.
-- CLI shape: `prime-agent` with the same commands/flags as the TS product; headless modes (RPC/daemon/session-worker) with identical behavior.
+- CLI shape: `prime-agent` keeps its existing commands and flags; headless modes (RPC/daemon/session-worker) keep their behavior.
 
 ## Crates
 
