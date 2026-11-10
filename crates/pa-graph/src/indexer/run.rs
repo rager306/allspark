@@ -285,6 +285,26 @@ mod tests {
         std::fs::write(dir.join(name), body).expect("write");
     }
 
+    /// `seen` is a HashSet, not a Vec (review #34): the sweep only inserts and probes, so the
+    /// shapes agree on every tree and no state assertion separates them. The cost does: an
+    /// unchanged 12 000-file re-index measured 1.83 s as a `Vec` and 0.84 s as a `HashSet`.
+    #[test]
+    fn the_removal_sweep_probes_a_hash_set() {
+        let production = include_str!("run.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production code precedes the tests");
+        assert!(production.contains("let mut seen: HashSet<String> = HashSet::new();"));
+        assert!(
+            !production.contains("seen.push("),
+            "a HashSet is inserted into, never pushed"
+        );
+        assert!(production
+            .split("for rel in stored.keys()")
+            .nth(1)
+            .is_some_and(|sweep| sweep.contains("seen.contains(rel)")));
+    }
+
     /// `(functions, FTS rows, CONTAINS edges)` for the one file in the fixture.
     ///
     /// The three are what a reader observes about a file, and a transaction bug
