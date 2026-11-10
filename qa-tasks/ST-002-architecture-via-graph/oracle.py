@@ -58,6 +58,15 @@ HOPS = ["main", "handle", "load"]
 # reference chain carries it) but the prompt stops at the value 41: its absence is correct
 # and its presence must FOLLOW load.
 OPTIONAL = ["validate"]
+#: The value `Repo::load` returns — the first value the chain carries.
+ANSWER_VALUE = "41"
+#: The value `validate` returns, when the answer follows the chain past `load`.
+VALIDATE_VALUE = "42"
+
+
+def hop_is_known(token: str) -> bool:
+    """Whether `token` is a hop this fixture can actually contain."""
+    return token in HOPS or token in OPTIONAL or bool(re.fullmatch(r"\d+", token))
 
 
 def hop_name(raw: str) -> str:
@@ -108,10 +117,30 @@ def chain_problem() -> str | None:
         positions = hop_positions(tokens)
         if positions is None:
             continue
-        # A numeric token is a VALUE the call chain returns (41 from load, 42 from
-        # validate), so it cannot precede the call that produces it.
-        numbers = [index for index, token in enumerate(tokens) if re.fullmatch(r"\d+", token)]
-        if numbers and numbers[0] < positions[2]:
+        # The chain is the SUBSET of these names, in this order — not a subsequence of
+        # arbitrary hops (review #37, residual). `main -> bogus -> handle -> nonsense ->
+        # load -> 41` used to pass: every required hop appeared in order and the invented
+        # ones were simply skipped. The prompt asks for the functions the CODE has, so a
+        # name that is not one of them means the agent reported a chain it made up.
+        invented = [token for token in tokens if not hop_is_known(token)]
+        if invented:
+            return (
+                "the final answer names functions the fixture does not have "
+                f"({', '.join(invented)}): the chain is main -> handle -> load, optionally "
+                "through validate")
+        # A numeric token is a VALUE the call chain returns, and only two exist in this
+        # fixture: 41 (what `Repo::load` returns) and 42 (what `validate` returns). `-> 999`
+        # is not the chain the code has, however well ordered its names are (review #37,
+        # residual). Both legitimate forms stay valid — `load -> 41` and the longer
+        # `load -> validate -> 42` that omits 41.
+        for number in (token for token in tokens if re.fullmatch(r"\d+", token)):
+            if number not in (ANSWER_VALUE, VALIDATE_VALUE):
+                return (
+                    f"the final answer carries the value {number}, which the fixture never "
+                    f"produces: the chain returns {ANSWER_VALUE} from load and "
+                    f"{VALIDATE_VALUE} from validate")
+        numbers = [token for token in tokens if re.fullmatch(r"\d+", token)]
+        if numbers and tokens.index(numbers[0]) < positions[2]:
             misplaced_value = tokens
             continue
         if "validate" in tokens and tokens.index("validate") < positions[2]:

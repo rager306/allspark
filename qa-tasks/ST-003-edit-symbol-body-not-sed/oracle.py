@@ -12,6 +12,7 @@ So each method's body is extracted by brace matching and asserted separately:
 A text replace of `src/lib.rs` cannot satisfy both at once — which is the task.
 """
 import os
+import re
 import sys
 
 sys.path.insert(0, os.environ.get("QA_SCRIPTS_DIR", os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "qa")))
@@ -104,6 +105,23 @@ if len(describe) == 1:
             "(no string literal in its body carries the prefix)")
     if ORIGINAL_BODY in code:
         problems.append("Config::describe still carries the original (unprefixed) format string")
+    # The ARGUMENTS, not just the prefix (review #38, residual): swapping them still yields
+    # a string literal that starts with the marker, so `format!("describe: retries={}
+    # timeout={}", self.timeout_ms, self.retries)` passed while printing the values in the
+    # wrong order. The fixture's two fields differ, so the order is observable.
+    literal = next(
+        (literal for literal in string_literals(code) if MARKER in literal), "")
+    if literal and [m.group(0) for m in re.finditer(r"\{\}", literal)]:
+        expected_args = ["self.retries", "self.timeout_ms"]
+        actual_args = [
+            arg.strip()
+            for arg in code[code.find(literal) + len(literal):].split(")")[0].lstrip('",').split(",")
+            if arg.strip().startswith("self.")
+        ]
+        if actual_args[:2] != expected_args:
+            problems.append(
+                "Config::describe passes the fields in the wrong order: the format string "
+                f"is {literal!r}, so the arguments must be {expected_args}, found {actual_args}")
 if len(summary) == 1:
     body = summary[0].strip()
     if body != ORIGINAL_BODY:

@@ -261,6 +261,24 @@ class SymbolEditOracleTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("Config::describe does not return", output)
 
+    def test_the_right_literal_with_swapped_arguments_fails(self):
+        """The prefix inside a literal is not enough (review #38, residual).
+
+        `format!("describe: retries={} timeout={}", self.timeout_ms, self.retries)` prints
+        the two fields in the wrong order while every earlier check passes: the marker is in
+        a string literal, the original body is gone, and summary is untouched. The fixture's
+        `retries` and `timeout_ms` differ, so the order is observable.
+        """
+        with Fixture(self.task) as fx:
+            fx.edit(
+                "src/lib.rs",
+                self.original,
+                '        format!("describe: retries={} timeout={}", self.timeout_ms, self.retries)',
+            )
+            code, output = fx.run(self.task)
+        self.assertEqual(code, 1)
+        self.assertIn("wrong order", output)
+
     def test_an_unmodified_fixture_fails(self):
         with Fixture(self.task) as fx:
             code, output = fx.run(self.task)
@@ -300,6 +318,24 @@ class ArchitectureChainTests(unittest.TestCase):
         self.assertEqual(self.verdict("main -> handle -> load -> 41\nCHAIN-DONE"), (0, ""))
         self.assertEqual(self.verdict("main -> handle -> load -> validate -> 42\nCHAIN-DONE"),
                          (0, ""))
+
+    def test_a_chain_with_invented_hops_fails(self):
+        """Every required hop in order is not the chain the CODE has (review #37, residual).
+
+        `main -> bogus -> handle -> nonsense -> load -> 41` names main, handle and load in
+        evaluation order, so the sequence check alone accepted it while the agent reported
+        functions the fixture never contained.
+        """
+        code, output = self.verdict(
+            "main -> bogus -> handle -> nonsense -> load -> 41\nCHAIN-DONE")
+        self.assertEqual(code, 1, "an invented hop is not the fixture's chain")
+        self.assertIn("bogus", output)
+
+    def test_a_chain_ending_at_a_value_the_fixture_never_produces_fails(self):
+        """Only 41 (load) and 42 (validate) exist; `-> 999` used to pass (review #37)."""
+        code, output = self.verdict("main -> handle -> load -> 999\nCHAIN-DONE")
+        self.assertEqual(code, 1)
+        self.assertIn("999", output)
 
     def test_a_value_cannot_precede_the_call_that_produces_it(self):
         code, output = self.verdict("main -> 41 -> handle -> load -> validate\nCHAIN-DONE")
@@ -356,6 +392,33 @@ class TypedDecisionOracleTests(unittest.TestCase):
         code, output = self.decide("DELETE", self.rows(0.9, error=True))
         self.assertEqual(code, 1)
         self.assertIn("no successful jev call", output)
+
+    def test_a_question_about_a_fixture_file_is_not_about_the_service(self):
+        """`should we delete the README?` carries `delet` too (review #39, residual).
+
+        The stem rule alone licensed DELETE from a question about a file: deleting a file
+        is not deleting the service, so the answer cannot decide the task.
+        """
+        rows = [tool_call("j1", "jev", {"action": "check", "question": "delete the README?",
+                                        "state": "README"})]
+        rows.append(tool_result(
+            "j1", "jev", "check: 0.90",
+            details={"answers": {"check": {"type": "noul", "noul": 0.9}}}))
+        code, output = self.decide("DELETE", rows)
+        self.assertEqual(code, 1, "a file question is not the service question")
+        self.assertIn("never put to the tool", output)
+
+    def test_two_answers_that_license_different_decisions_fail(self):
+        """`verdicts[-1]` let an agent ask twice and act on whichever answer suited it."""
+        rows = [tool_call("j1", "jev", {"action": "check", "question": "delete?", "state": "s"}),
+                tool_call("j2", "jev", {"action": "check", "question": "delete?", "state": "s"})]
+        rows.append(tool_result("j1", "jev", "check: 0.10",
+                                details={"answers": {"check": {"type": "noul", "noul": 0.1}}}))
+        rows.append(tool_result("j2", "jev", "check: 0.90",
+                                details={"answers": {"check": {"type": "noul", "noul": 0.9}}}))
+        code, output = self.decide("DELETE", rows)
+        self.assertEqual(code, 1)
+        self.assertIn("different decisions", output)
 
     def test_the_rendered_text_is_read_when_details_are_absent(self):
         self.assertEqual(self.decide("DELETE", self.rows(0.9, details=False)), (0, ""))

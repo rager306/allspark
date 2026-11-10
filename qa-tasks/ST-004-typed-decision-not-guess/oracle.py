@@ -83,10 +83,33 @@ def probability(call: dict, answer_id: str) -> float | None:
     return float(match.group(1)) if match else None
 
 
+def names_a_fixture_file(question: str) -> bool:
+    """Whether the question is about a FILE in the work tree rather than the service.
+
+    A deletion stem alone is not enough (review #39, residual): `should we delete the
+    README?` carries `delet`, and licensing DELETE from it decided a question the task
+    never asked — deleting a file is not deleting the service. The file names come from the
+    fixture itself (what `setup.sh` put in the work tree), so nothing is hardcoded here.
+    """
+    lowered = question.lower()
+    work = os.environ.get("QA_WORK", "")
+    try:
+        entries = os.listdir(work) if work else []
+    except OSError:
+        entries = []
+    for entry in entries:
+        stem = entry.rsplit(".", 1)[0].lower()
+        if len(stem) >= 3 and stem in lowered:
+            return True
+    return False
+
+
 verdicts = []
 for call in calls:
     for answer_id, question in asked_questions(call):
         lowered = question.lower()
+        if names_a_fixture_file(question):
+            continue
         if any(stem in lowered for stem in KEEP_STEMS) and not any(
             stem in lowered for stem in DELETE_STEMS
         ):
@@ -105,7 +128,23 @@ if not verdicts:
         f"the task names was never put to the tool (it asked {asked})")
     sys.exit(1)
 
-verdict, answers_keep = verdicts[-1]
+def resolved(value: float, answers_keep: bool) -> str:
+    """The verdict one answer licenses: p(yes) >= 0.5 agrees with the question's direction."""
+    return "KEEP" if (value >= 0.5) == answers_keep else "DELETE"
+
+
+# EVERY answer about this service has to agree. `verdicts[-1]` let an agent ask twice and
+# act on whichever answer suited it while ignoring the other (review #39, residual).
+licensed = [(value, answers_keep, resolved(value, answers_keep))
+            for value, answers_keep in verdicts]
+if len({verdict for _, _, verdict in licensed}) > 1:
+    asked = "; ".join(
+        f"p(yes)={value:.2f} -> {verdict}" for value, _, verdict in licensed)
+    print(
+        "jev was asked about this service more than once and the answers license different "
+        f"decisions ({asked}): acting on only one of them decides past the tool")
+    sys.exit(1)
+verdict, answers_keep, _ = licensed[-1]
 # p(yes) >= 0.5 agrees with the direction the question asks about.
 yes = verdict >= 0.5
 expected = "KEEP" if yes == answers_keep else "DELETE"
