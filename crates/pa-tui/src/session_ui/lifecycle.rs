@@ -1046,7 +1046,7 @@ mod backfill_tests {
 
     /// The open's FIRST CONTENT FRAME waits one budget for the dock registries, not the request
     /// bound (review #15).
-
+    ///
     /// The mock answers `attach` and then leaves `heartbeats_list` and `list_kernel_bash`
     /// unanswered — a wedged daemon. The open must still return inside `DOCK_FIRST_FRAME_BUDGET`
     /// plus a wide margin (a scheduler hiccup on a loaded gate), and the dock's counts must be
