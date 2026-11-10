@@ -291,8 +291,47 @@ pub fn cleanup_socket_path_after_close(_path: &Path, _expected_identity: Option<
 
 /// Restrict the bound socket file to its owner (Unix mode 0o600; Windows
 /// named pipes use ACLs on the pipe object instead).
+///
+/// The guarantee is already established at bind time: `bind_transport` applies 0600 before it
+/// hands the listener out and fails the bind when it cannot, so this call is the second line —
+/// it covers a file replaced between the bind and here. What it must not do is discard its
+/// error: a silently failed chmod is exactly how the socket came back group-readable in review
+/// #24, and the caller has no way to notice. The failure is reported here (and the mode is read
+/// back, so a chmod that "succeeded" onto a mode the filesystem kept is reported too).
+///
+/// A group-readable *directory* is tolerated on purpose: `ensure_socket_dir_is_ours` refuses
+/// group/other WRITE (the bit that lets another user replace our file), while reading or
+/// traversing the directory grants nothing once the socket file itself is owner-only.
 pub fn restrict_socket_path(path: &Path) {
-    let _ = pa_core::platform::perms::restrict_file(path);
+    if let Err(error) = pa_core::platform::perms::restrict_file(path) {
+        tracing::warn!(
+            path = %path.display(),
+            %error,
+            "could not restrict the daemon socket file to its owner"
+        );
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        match std::fs::metadata(path) {
+            Ok(metadata) => {
+                let mode = metadata.permissions().mode() & 0o777;
+                if mode != 0o600 {
+                    tracing::warn!(
+                        path = %path.display(),
+                        mode = %format!("{mode:o}"),
+                        "the daemon socket file is not owner-only after restriction"
+                    );
+                }
+            }
+            Err(error) => tracing::warn!(
+                path = %path.display(),
+                %error,
+                "could not stat the daemon socket file after restriction"
+            ),
+        }
+    }
 }
 
 /// The bind-capture gap seam (the `PA_DAEMON_EVENT_LOG` seam family): a
@@ -337,6 +376,12 @@ mod tests {
         // Ours, but group- or world-writable: another user can unlink our socket file.
         assert!(!private_dir_is_ours(501, 501, 0o770));
         assert!(!private_dir_is_ours(501, 501, 0o707));
+        // Group-READ (or read+execute) is tolerated: what another user needs to replace our
+        // socket file is WRITE on the directory, and the file itself is 0600 from bind on
+        // (`bind_transport`), so listing or traversing the directory grants nothing. This is the
+        // "may the directory stay group-readable?" half of review #24 - yes, by design.
+        assert!(private_dir_is_ours(501, 501, 0o750));
+        assert!(private_dir_is_ours(501, 501, 0o755));
     }
 
     /// `prepare_socket_path` must RUN that check on the product's own socket directory.
@@ -574,6 +619,55 @@ mod tests {
         assert!(
             !socket.exists(),
             "the next bind's stale-socket prepare clears the preserved dead file"
+        );
+    }
+
+    /// A silently failed socket restriction is the defect itself (review #24).
+    ///
+    /// The old arm was `let _ = restrict_file(path)`: on a filesystem that refuses the chmod
+    /// (a mounted home, a FAT scratch dir) the daemon kept serving a socket the group could
+    /// reach, and nothing anywhere said so. The seam is reachable — restricting a path that
+    /// does not exist fails — so the rule is driven through the real function with a
+    /// capturing subscriber, not asserted from source text.
+    #[test]
+    fn a_failed_socket_restriction_is_reported_not_swallowed() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct Capture(Arc<Mutex<Vec<u8>>>);
+        impl Write for Capture {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+            type Writer = Capture;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(Capture(Arc::clone(&captured)))
+            .finish();
+        let missing = std::path::Path::new("/nonexistent-allspark-review-24/daemon.sock");
+        tracing::subscriber::with_default(subscriber, || restrict_socket_path(missing));
+        let logged = String::from_utf8_lossy(&captured.lock().unwrap()).to_string();
+        assert!(
+            logged.contains("could not restrict the daemon socket file"),
+            "a failed restriction must be reported, not discarded: {logged:?}"
+        );
+        assert!(
+            logged.contains("nonexistent-allspark-review-24"),
+            "the report must name the path that stayed unrestricted: {logged:?}"
         );
     }
 

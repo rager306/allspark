@@ -178,6 +178,7 @@ mod tests {
             status,
             is_default,
             has_tracked_workers: None,
+            process_start_id: None,
         }
     }
 

@@ -109,6 +109,12 @@ pub(crate) struct DaemonInfo {
     pub is_default: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub has_tracked_workers: Option<bool>,
+    /// The process identity of `pid` as THIS machine reports it at discovery time (never the
+    /// peer's greeting). A signal path re-reads it before delivering and refuses a pid that no
+    /// longer names the same process — the pid-reuse window review #5 left between discovery
+    /// and `shutdown --force`. Not serialized: it is an internal gate, not a wire field.
+    #[serde(skip)]
+    pub process_start_id: Option<String>,
 }
 
 /// The root this invocation reads, from the same socket resolution every
@@ -450,19 +456,17 @@ fn classify_reachable(probe: &ProbeResult) -> DaemonStatus {
 /// The hello's supervisor pid, but only when the socket really belongs to it.
 ///
 /// Every field of a HELLO is written by the peer, and `shutdown --force` escalates to
-/// SIGTERM/SIGKILL on whatever pid discovery ends up with — so a forged endpoint (or an
-/// older build that omits the start id) could name any live process of the invoking user and
-/// have it signalled. Two gates bind the claim to the socket:
+/// SIGTERM/SIGKILL on whatever pid discovery ends up with — so a forged endpoint could name
+/// any live process of the invoking user and have it signalled. The binding is the kernel's
+/// own answer for the connected socket (`SO_PEERCRED` on Linux, `LOCAL_PEERPID` on macOS),
+/// which a peer cannot forge: it names the process that made the connection, not a number the
+/// greeting reports. The hello's `supervisorProcessStartId`, when present, adds the pid-reuse
+/// gate on top.
 ///
-/// - the hello's `supervisorProcessStartId` must still match the live process (defeats pid
-///   reuse), and
-/// - with no start id, the kernel's own `SO_PEERCRED` answer for the connected socket must
-///   name the same pid. A peer cannot forge that: it is the process that made the
-///   connection, not a number the greeting reports.
-///
-/// `listener_pid` is `None` where the platform reports no peer pid (macOS `getpeereid`); the
-/// start-id gate and liveness are then the only binding available, which is the pre-existing
-/// behaviour there.
+/// A start id is NOT a substitute for the kernel pid: it is readable for any live process, so
+/// an attacker repeats it verbatim in a forged greeting. That is why the rule is uniform —
+/// no kernel pid, no pid — instead of "liveness plus start id on platforms without a peer
+/// pid", which let a greeting choose the kill target on macOS and the BSDs (review #5).
 pub(crate) fn verify_hello_supervisor_pid(
     pid: Option<u32>,
     expected_process_start_id: Option<&str>,
@@ -477,18 +481,10 @@ pub(crate) fn verify_hello_supervisor_pid(
         // EPERM-equivalent: the process exists but is not ours to signal.
         Ok(false) | Err(_) => return None,
     }
-    // The socket must belong to the process the greeting names. A start id does not prove
-    // that by itself: an attacker can read any live process's start id and repeat it in a
-    // forged greeting, and killing that process is exactly the damage here.
-    if let Some(listener_pid) = listener_pid {
-        if listener_pid != pid {
-            return None;
-        }
-    } else if PEER_PID_REPORTED {
-        // The probe could not learn the listener's pid. On a platform that reports it, the
-        // greeting's number is then bound to nothing and is refused; where the platform has
-        // no peer pid at all (macOS `getpeereid`), liveness plus the start id below is the
-        // gate that platform has always had.
+    // The socket must belong to the process the greeting names. No kernel answer (a platform
+    // whose peer credentials carry no pid, or a failed probe) leaves the claim bound to
+    // nothing, and a pid discovery cannot bind is a pid it must not signal.
+    if listener_pid? != pid {
         return None;
     }
     if let Some(expected) = expected_process_start_id {
@@ -498,9 +494,6 @@ pub(crate) fn verify_hello_supervisor_pid(
     }
     Some(pid)
 }
-
-/// Whether [`pa_types::platform::transport::PeerCredentials`] carries a pid on this platform.
-const PEER_PID_REPORTED: bool = cfg!(target_os = "linux");
 
 /// Discover every daemon in this state root and probe each. The root is
 /// explicit (the CLI passes the env-resolved root; tests pass fixture dirs).
@@ -578,6 +571,7 @@ fn discover_daemons_with(root: &DaemonStateRoot, named_pipes: bool) -> Vec<Daemo
                 DaemonStatus::OrphanFile
             };
             Some(DaemonInfo {
+                process_start_id: pid.and_then(pa_types::platform::process::process_start_id),
                 build_hash: probe.build_hash.clone(),
                 pid_source: pid.map(|_| {
                     if proc.is_some() {
@@ -891,6 +885,33 @@ mod tests {
                 "a recycled pid behind the socket is refused"
             );
         }
+    }
+
+    /// A pid the kernel did not bind to the socket is not a kill target (review #5).
+    ///
+    /// This is the non-Linux half: before the fix the rule fell back to liveness plus the
+    /// greeting's own start id whenever the platform reported no peer pid, and a start id is
+    /// readable from `/proc`/`sysctl` for ANY live process — so a forged endpoint named the
+    /// victim and the victim was signalled. The refusal is the same on every platform now: no
+    /// kernel pid, no pid. `listener_pid: None` is what a failed probe or a uid-only platform
+    /// reports, and it must produce `None`, not the greeting's number.
+    #[test]
+    fn a_hello_pid_without_a_kernel_listener_pid_is_refused() {
+        let live = std::process::id();
+        // What an attacker would send: a real pid and that pid's real start id.
+        let start_id = pa_types::platform::process::process_start_id(live)
+            .expect("the test process has an identity");
+        assert_eq!(
+            verify_hello_supervisor_pid(Some(live), Some(&start_id), None),
+            None,
+            "a greeting with no kernel-backed listener pid never supplies a kill target"
+        );
+        // Even a live pid of our own uid, with no start id at all.
+        assert_eq!(
+            verify_hello_supervisor_pid(Some(live), None, None),
+            None,
+            "liveness alone is not a binding"
+        );
     }
 
     /// The probe records the kernel's answer, not the greeting's (review #5).

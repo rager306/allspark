@@ -77,12 +77,40 @@ pub(crate) fn run_reap(json: bool, root: &DaemonStateRoot) -> i32 {
                         &mut skipped,
                     );
                 } else {
-                    kill_daemon(pid.unwrap_or(0));
-                    remove_socket_file(&action.daemon.socket_path);
-                    reaped.push((
-                        socket_path,
-                        format!("killed unreachable daemon (pid {})", pid.unwrap_or(0)),
-                    ));
+                    // The identity gate decides whether the pid is still the process discovery
+                    // saw (review #5). A dead pid leaves the file, a reused one leaves the file
+                    // AND the stranger alone, and only the same process is signalled.
+                    let target =
+                        signal_target(pid.unwrap_or(0), action.daemon.process_start_id.as_deref());
+                    if target == SignalTarget::Same {
+                        kill_daemon(pid.unwrap_or(0));
+                        remove_socket_file(&action.daemon.socket_path);
+                        reaped.push((
+                            socket_path,
+                            format!("killed unreachable daemon (pid {})", pid.unwrap_or(0)),
+                        ));
+                    } else if target == SignalTarget::Gone
+                        && remove_socket_file(&action.daemon.socket_path)
+                    {
+                        reaped.push((
+                            socket_path,
+                            format!(
+                                "removed stale socket file (pid {} is gone)",
+                                pid.unwrap_or(0)
+                            ),
+                        ));
+                    } else {
+                        // Never signal the stranger that now holds the number (review #5), and
+                        // leave the path alone: the next bind's stale-socket prepare owns that
+                        // decision.
+                        skipped.push((
+                            socket_path,
+                            format!(
+                                "pid {} no longer names the discovered daemon; not signalling",
+                                pid.unwrap_or(0)
+                            ),
+                        ));
+                    }
                 }
             }
             ReapActionKind::Shutdown => {
@@ -236,6 +264,7 @@ fn run_shutdown_converging(json: bool, force: bool, root: &DaemonStateRoot) -> i
                         stop_background_service(
                             &action.daemon.socket_path,
                             pid,
+                            action.daemon.process_start_id.as_deref(),
                             &mut handled_pids,
                             force,
                         ),
@@ -258,6 +287,7 @@ fn run_shutdown_converging(json: bool, force: bool, root: &DaemonStateRoot) -> i
                         stop_background_service(
                             &action.daemon.socket_path,
                             pid,
+                            action.daemon.process_start_id.as_deref(),
                             &mut handled_pids,
                             force,
                         ),
@@ -271,6 +301,7 @@ fn run_shutdown_converging(json: bool, force: bool, root: &DaemonStateRoot) -> i
                     apply_stop(
                         verified_force_kill(
                             pid,
+                            action.daemon.process_start_id.as_deref(),
                             &action.daemon.socket_path,
                             format!("killed unreachable background service (pid {pid})"),
                             &mut handled_pids,
@@ -292,6 +323,7 @@ fn run_shutdown_converging(json: bool, force: bool, root: &DaemonStateRoot) -> i
                     stop_background_service(
                         &action.daemon.socket_path,
                         pid,
+                        action.daemon.process_start_id.as_deref(),
                         &mut handled_pids,
                         force,
                     ),
@@ -337,6 +369,7 @@ fn apply_stop(
 fn stop_background_service(
     socket_path: &Path,
     pid: Option<u32>,
+    discovered_start_id: Option<&str>,
     handled_pids: &mut std::collections::HashSet<u32>,
     force: bool,
 ) -> StopOutcome {
@@ -361,10 +394,41 @@ fn stop_background_service(
     }
     verified_force_kill(
         pid,
+        discovered_start_id,
         socket_path,
         format!("force-killed unresponsive background service (pid {pid})"),
         handled_pids,
     )
+}
+
+/// Whether a pid may be signalled for the daemon discovery found there.
+///
+/// The gap between discovery and the signal is real: `doctor --fix` plans across a whole
+/// discovery pass, and `shutdown --force` runs the residual sweep afterwards. A pid captured
+/// then can be recycled by an unrelated process of the same user before the signal lands, which
+/// is exactly the class `shutdown --force` must never have (review #5). The identity is the
+/// start id read from THIS machine at discovery time, so one comparison decides it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignalTarget {
+    /// The pid still names the discovered process.
+    Same,
+    /// The pid is gone, or the platform cannot report an identity: an unbound signal is a
+    /// signal to nobody in particular, so it is refused.
+    Gone,
+    /// The pid names a DIFFERENT process now.
+    Reused,
+}
+
+/// The decision [`SignalTarget`] names, as one comparison.
+fn signal_target(pid: u32, discovered_start_id: Option<&str>) -> SignalTarget {
+    let Some(discovered) = discovered_start_id else {
+        return SignalTarget::Gone;
+    };
+    match pa_types::platform::process::process_start_id(pid) {
+        Some(current) if current == discovered => SignalTarget::Same,
+        Some(_) => SignalTarget::Reused,
+        None => SignalTarget::Gone,
+    }
 }
 
 /// Verified force-kill for one daemon (the supervisor-side contract the
@@ -374,10 +438,27 @@ fn stop_background_service(
 /// invisible listener stays discoverable for the sweep and the doctor.
 fn verified_force_kill(
     pid: u32,
+    discovered_start_id: Option<&str>,
     socket_path: &Path,
     success_action: String,
     handled_pids: &mut std::collections::HashSet<u32>,
 ) -> StopOutcome {
+    // The identity is re-read HERE, not trusted from the planner: discovery, the re-probe and
+    // this signal are separate steps, and a pid recycled in between would hand the signal to a
+    // process nobody asked to stop (review #5).
+    match signal_target(pid, discovered_start_id) {
+        SignalTarget::Same => {}
+        SignalTarget::Gone => {
+            return StopOutcome::Skipped(format!(
+                "background service (pid {pid}) is gone or has no readable identity; not signalling"
+            ))
+        }
+        SignalTarget::Reused => {
+            return StopOutcome::Skipped(format!(
+                "pid {pid} now names a different process than the discovered daemon; not signalling"
+            ))
+        }
+    }
     if !force_kill_daemon(pid) {
         return StopOutcome::Skipped(format!(
             "could not safely stop daemon (pid {pid}); it survived SIGKILL"
@@ -508,10 +589,13 @@ mod tests {
             .spawn()
             .expect("spawn a sleep child");
         let pid = child.id();
+        let discovered = pa_types::platform::process::process_start_id(pid)
+            .expect("a live child has an identity");
         let mut handled_pids = std::collections::HashSet::new();
 
         let outcome = verified_force_kill(
             pid,
+            Some(&discovered),
             &socket_path,
             "killed unreachable background service".to_string(),
             &mut handled_pids,
@@ -528,6 +612,93 @@ mod tests {
             !socket_path.exists(),
             "a confirmed death removes the socket file"
         );
+        let _ = child.wait();
+    }
+
+    /// A pid recycled between discovery and the signal is not the daemon (review #5).
+    ///
+    /// `doctor --fix` plans from one discovery pass and signals later; between the two the pid
+    /// can die and be reused by an unrelated process of the same user, and the old path sent
+    /// SIGTERM/SIGKILL to whatever held the number. The identity is captured at discovery
+    /// (start id, read from this machine) and re-read before the signal; a different process
+    /// must survive untouched and the stop must report why.
+    #[test]
+    fn verified_force_kill_refuses_a_pid_that_now_names_another_process() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let socket_path = tmp.path().join("daemon.sock");
+        std::fs::write(&socket_path, b"").expect("create the socket file");
+        let mut child = std::process::Command::new("sleep")
+            .arg("60")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn a sleep child");
+        let pid = child.id();
+        // The discovery-time identity of a DIFFERENT process: exactly what pid reuse looks
+        // like to this check.
+        let mut handled_pids = std::collections::HashSet::new();
+        let outcome = verified_force_kill(
+            pid,
+            Some("proc:recycled-pid"),
+            &socket_path,
+            "killed unreachable background service".to_string(),
+            &mut handled_pids,
+        );
+        match outcome {
+            StopOutcome::Skipped(reason) => assert!(
+                reason.contains("different process"),
+                "the refusal must say why it did not signal: {reason}"
+            ),
+            StopOutcome::Reaped(action) => {
+                panic!("a recycled pid must not be signalled, got: {action}")
+            }
+        }
+        // The unrelated process is still running: the gate ran BEFORE the signal.
+        assert!(
+            child.try_wait().expect("probe the child").is_none(),
+            "the process that now holds the pid must survive"
+        );
+        assert!(
+            !handled_pids.contains(&pid),
+            "a refused target is not recorded as handled"
+        );
+        assert!(
+            socket_path.exists(),
+            "a refused target keeps its socket file"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// With no readable identity there is no target: refuse, do not signal whatever holds the
+    /// number. This is the shape a platform without a process identity, or an unreadable
+    /// `/proc`, produces.
+    #[test]
+    fn verified_force_kill_refuses_an_unbound_pid() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let socket_path = tmp.path().join("daemon.sock");
+        std::fs::write(&socket_path, b"").expect("create the socket file");
+        let mut child = std::process::Command::new("sleep")
+            .arg("60")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn a sleep child");
+        let pid = child.id();
+        let mut handled_pids = std::collections::HashSet::new();
+        let outcome = verified_force_kill(
+            pid,
+            None,
+            &socket_path,
+            "killed unreachable background service".to_string(),
+            &mut handled_pids,
+        );
+        assert!(
+            matches!(outcome, StopOutcome::Skipped(_)),
+            "no identity, no signal"
+        );
+        assert!(child.try_wait().expect("probe the child").is_none());
+        let _ = child.kill();
         let _ = child.wait();
     }
 

@@ -3,27 +3,32 @@
 //! the shared [`TransportListener`] / [`TransportStream`] / [`BlockingTransportStream`] contracts.
 //! Endpoint naming lives in `pa-daemon::platform`.
 //!
-//! # Peer authentication: the Windows gap (review #23, CWE-290)
+//! # Peer authentication: what is checked, and what is not (review #23, CWE-290)
 //!
-//! The Unix transports ask the kernel who is at the other end (`SO_PEERCRED`/`getpeereid`, see
-//! [`super::transport`]). This one asks nothing, in either direction, and that is a real
-//! difference rather than an oversight to paper over:
+//! The Unix transports ask the kernel who is at the other end (`SO_PEERCRED`, or `getpeereid` +
+//! `LOCAL_PEERPID` on macOS; see [`super::transport`]). Here the client can now ask too: the
+//! blocking CLI client reports the SERVER's pid from `GetNamedPipeServerProcessId`
+//! ([`BlockingPipeClient`]'s `peer_credentials`), and the HELLO gate
+//! (`pa-cli::daemon_discovery::verify_hello_supervisor_pid`) only believes a greeting that names
+//! that process. A squatter on the pipe name is then named as itself and its greeting supplies no
+//! kill target.
+//!
+//! Two gaps remain, on purpose and stated rather than papered over:
 //!
 //! - The daemon's pipe name is fixed and machine-wide, and `ServerOptions::create` leaves the
 //!   default security descriptor in place, so the pipe is not owner-only. Another local account
-//!   can squat the name before the daemon starts, answer the greeting with the product's public
-//!   constants, and receive the victim's prompts.
-//! - A client that connects gets whichever server instance answered; it never asks the server
-//!   process for its identity.
+//!   can squat the name before the daemon starts and speak to the client; the pid check means the
+//!   client knows it is not talking to its own daemon (build/hello checks agreed already), but no
+//!   layer here refuses the conversation on ownership grounds.
+//! - Nothing authenticates a CLIENT to the server: on unix a foreign-uid accept is dropped, here
+//!   any process that opens the pipe is served.
 //!
-//! Closing it needs two things this crate cannot verify from here: a security descriptor that
-//! admits only the daemon's own user (`SECURITY_ATTRIBUTES`, or one converted from an SDDL
-//! string), and `GetNamedPipeServerProcessId` plus a token comparison on the client side before
-//! the HELLO is trusted. Both are Win32 calls the pinned-constant/`extern` style can express, but
-//! neither compiles or runs on the hosts this fork is developed and tested on, and a guard that
-//! cannot be exercised on the platform it protects is the class of defect this review exists to
-//! catch. The options, their costs, and what each would need to be verified are recorded as an
-//! open decision in the review's findings; this note makes the gap visible at the code.
+//! Both need Win32 calls this fork cannot exercise: a security descriptor built from
+//! `SECURITY_ATTRIBUTES`/SDDL, and `ImpersonateNamedPipeClient` or a token comparison on the
+//! server side. The pinned-constant/`extern` style can express them, but this tree has no Windows
+//! runner, and a guard that cannot be run on the platform it protects is the class of defect this
+//! review exists to catch. The options and their costs are in
+//! `.research/review-runs/20261109-041525-a01cd1a0e/DECISIONS-23-26.md`.
 
 use std::io;
 use std::sync::{Arc, Mutex};
@@ -36,7 +41,7 @@ use tokio::net::windows::named_pipe::{
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex as AsyncMutex;
 
-use super::transport::BlockingTransportStream;
+use super::transport::{BlockingTransportStream, PeerCredentials};
 
 /// `winerror.h` `ERROR_PIPE_BUSY`: the pipe name exists but no instance is
 /// listening (pinned constant, no windows-sys dependency).
@@ -205,6 +210,27 @@ impl BlockingTransportStream for BlockingPipeClient {
         Ok(Box::new(self.try_clone()))
     }
 
+    /// The SERVER process behind this connection, as the kernel names it
+    /// (`GetNamedPipeServerProcessId`). Windows has no `SO_PEERCRED` and no uid to report here,
+    /// so `uid` stays 0 (unspecified) and the pid is the whole answer.
+    ///
+    /// This is what lets the HELLO gate stay uniform: a discovery that cannot learn the listener
+    /// pid refuses the greeting's own claim (#5), which on Windows meant every daemon lost its
+    /// pid. The kernel pid is not forgeable by the peer — a squatter that owns the pipe name is
+    /// the process the kernel names, so its greeting can no longer point at the victim daemon.
+    ///
+    /// NOT EXERCISED ON WINDOWS by this fork's CI: the tree has no Windows runner, so this arm
+    /// is compile-checked (`cargo check --target x86_64-pc-windows-gnu`) and reviewed, not
+    /// executed. The decision it feeds is host-tested in `pa-cli`
+    /// (`a_hello_pid_without_a_kernel_listener_pid_is_refused`).
+    fn peer_credentials(&self) -> Option<PeerCredentials> {
+        let pid = self
+            .state
+            .runtime
+            .block_on(async { server_process_id(&*self.state.client.lock().await) });
+        pid.map(|pid| PeerCredentials { pid, uid: 0 })
+    }
+
     fn set_read_timeout(&self, timeout: Duration) -> io::Result<()> {
         *self
             .state
@@ -213,6 +239,28 @@ impl BlockingTransportStream for BlockingPipeClient {
             .map_err(|_| io::Error::other("read deadline lock poisoned"))? = Some(timeout);
         Ok(())
     }
+}
+
+/// The pid of the process that owns the server end of `client`'s pipe
+/// (`GetNamedPipeServerProcessId`, `PULONG` out), or `None` when the query fails.
+fn server_process_id(client: &NamedPipeClient) -> Option<u32> {
+    use std::os::windows::io::AsRawHandle as _;
+
+    // The kernel32 surface the query needs, as a hand-declared extern (repo policy: pinned
+    // constants and externs, no windows-sys dependency - the same wall `platform::process`
+    // builds for its identity queries).
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetNamedPipeServerProcessId(pipe: *mut std::ffi::c_void, pid: *mut u32) -> i32;
+    }
+
+    let mut pid: u32 = 0;
+    // SAFETY: `client`'s handle outlives the call (borrowed for it), and the callee writes one
+    // `u32` through a valid pointer.
+    let ok = unsafe {
+        GetNamedPipeServerProcessId(client.as_raw_handle(), std::ptr::from_mut(&mut pid))
+    };
+    (ok != 0).then_some(pid).filter(|pid| *pid > 0)
 }
 
 #[cfg(all(test, windows))]

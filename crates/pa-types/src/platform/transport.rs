@@ -174,7 +174,45 @@ impl UnixSocketAddress {
 pub async fn bind_transport(path: &Path) -> Result<Box<dyn TransportListener>> {
     let address = UnixSocketAddress::new(path)?;
     let listener = tokio::net::UnixListener::bind(address.effective())?;
+    // `bind` creates the socket file with `0777 & ~umask`, and the daemon used to
+    // narrow it only after the bind returned — a window in which any local user
+    // who could reach the file connected (the accept-side uid check refuses that
+    // connection, but the window exists only because the file was readable in the
+    // first place). Restrict here, before the listener is handed to the caller,
+    // and fail the bind when the restriction fails: a daemon must not serve a
+    // socket it could not make private (review #24, CWE-732).
+    restrict_bound_socket(address.effective())?;
     Ok(Box::new(listener))
+}
+
+/// Owner-only mode for a bound socket file (Unix).
+#[cfg(unix)]
+const SOCKET_FILE_MODE: u32 = 0o600;
+
+/// Make a freshly bound socket file owner-only, or fail the bind.
+///
+/// # Errors
+///
+/// Returns an error when the mode cannot be set or does not read back as the
+/// restricted mode, naming the path and what the file looks like, because the
+/// caller's only safe response is to stop binding.
+#[cfg(unix)]
+fn restrict_bound_socket(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(SOCKET_FILE_MODE))
+        .map_err(|error| anyhow::anyhow!("restrict socket {}: {error}", path.display()))?;
+    let mode = std::fs::metadata(path)
+        .map_err(|error| anyhow::anyhow!("stat socket {}: {error}", path.display()))?
+        .permissions()
+        .mode()
+        & 0o777;
+    if mode != SOCKET_FILE_MODE {
+        anyhow::bail!(
+            "socket {} is mode {mode:o} after restriction, not {SOCKET_FILE_MODE:o}",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 /// Connect to the endpoint at `path` asynchronously.
@@ -241,10 +279,10 @@ fn verify_peer_uid<F: std::os::fd::AsRawFd>(stream: &F, path: &Path) -> Result<(
 
 /// The kernel-reported identity of the process at the other end of a connected Unix socket.
 ///
-/// `SO_PEERCRED` reports the credentials captured when the connection was made, so neither
-/// field can be forged by the peer. Unlike a HELLO's `supervisorPid`, which the peer writes,
-/// the pid here is the kernel's own answer — the one fact that binds a claimed process to the
-/// socket a command was sent to.
+/// The kernel captures the credentials when the connection is made (`SO_PEERCRED` on Linux,
+/// `getpeereid` + `LOCAL_PEERPID` on macOS), so neither field can be forged by the peer. Unlike
+/// a HELLO's `supervisorPid`, which the peer writes, the pid here is the kernel's own answer —
+/// the one fact that binds a claimed process to the socket a command was sent to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeerCredentials {
     pub pid: u32,
@@ -291,9 +329,49 @@ pub fn socket_peer_credentials<F: std::os::fd::AsRawFd>(stream: &F) -> Option<Pe
         })
 }
 
-/// The BSD/macOS answer carries the uid only (`getpeereid` has no pid), so the pid half of
-/// [`PeerCredentials`] is unavailable there.
-#[cfg(all(unix, not(target_os = "linux")))]
+/// macOS carries BOTH halves: `getpeereid` answers the uid and `LOCAL_PEERPID` the pid of the
+/// process at the other end, both from the kernel. The pid is what binds a discovered daemon to
+/// the socket a command is sent to (review #5), so dropping it here left every macOS discovery
+/// trusting the HELLO's own claim.
+#[cfg(target_vendor = "apple")]
+#[must_use]
+pub fn socket_peer_credentials<F: std::os::fd::AsRawFd>(stream: &F) -> Option<PeerCredentials> {
+    let fd = stream.as_raw_fd();
+    let mut peer_uid: libc::uid_t = 0;
+    let mut peer_gid: libc::gid_t = 0;
+    // SAFETY: `getpeereid` writes one uid and one gid into the pointers given; the fd is
+    // owned by `stream` for the duration of the call.
+    let status = unsafe { libc::getpeereid(fd, &mut peer_uid, &mut peer_gid) };
+    if status != 0 {
+        return None;
+    }
+    let mut peer_pid: libc::pid_t = 0;
+    let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::pid_t>())
+        .expect("a pid_t is far smaller than socklen_t::MAX");
+    // SAFETY: `getsockopt` writes at most `length` bytes into `peer_pid`, whose size is exactly
+    // what `length` reports; the fd is owned by `stream` for the call.
+    let status = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            std::ptr::addr_of_mut!(peer_pid).cast(),
+            std::ptr::addr_of_mut!(length),
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+    u32::try_from(peer_pid)
+        .ok()
+        .filter(|pid| *pid > 0)
+        .map(|pid| PeerCredentials { pid, uid: peer_uid })
+}
+
+/// The remaining BSDs report the uid only (`getpeereid` has no pid and their `LOCAL_PEERCRED`
+/// swaps the socket's own credentials in place), so the pid half is unavailable there and a
+/// caller that needs a bound pid has to refuse rather than guess (review #5).
+#[cfg(all(unix, not(target_os = "linux"), not(target_vendor = "apple")))]
 #[must_use]
 pub fn socket_peer_credentials<F: std::os::fd::AsRawFd>(_stream: &F) -> Option<PeerCredentials> {
     None
@@ -305,6 +383,10 @@ pub fn socket_peer_credentials<F: std::os::fd::AsRawFd>(_stream: &F) -> Option<P
 /// process answered. Keeping the syscall and the rule apart means the rule has a test that
 /// runs everywhere — including as root, where every socket on the host is uid 0 and a
 /// socket-level test would be vacuous.
+// Both callers of this rule are Unix-only (there is no uid to compare on Windows), so on a
+// Windows build the function is compiled but unreachable; the `windows-cross` gate builds with
+// `-D warnings`, which would otherwise fail on the dead-code warning.
+#[cfg_attr(windows, allow(dead_code))]
 fn same_owner(peer_uid: u32, our_uid: u32, path: &Path) -> Result<()> {
     if peer_uid != our_uid {
         return Err(anyhow::anyhow!(
@@ -382,22 +464,35 @@ pub fn unix_listener_definitely_closed(path: &Path) -> bool {
     }
 }
 
-/// WINDOWS NAMED PIPES DO NOT AUTHENTICATE THEIR PEER (review #23, CWE-290).
+/// WHAT THE WINDOWS NAMED-PIPE TRANSPORT CHECKS, AND WHAT IT STILL DOES NOT (review #23).
 ///
-/// The unix arms above and below bind the connection to the kernel's answer for the peer
-/// (`SO_PEERCRED` / `getpeereid`) on BOTH sides: a client verifies the server it connected to,
-/// and a listener verifies the client it accepted. Neither is possible here with the same
-/// guarantee. `GetNamedPipeServerProcessId` answers a pid, but a pid is reused and says nothing
-/// about which install the process belongs to; the real equivalent is pid + process start id +
-/// executable identity, the ladder the installer's stop probe uses (`install-rust.sh`), and it
-/// does not exist in this crate yet. An impersonation check works the opposite way — the SERVER
-/// can verify a client, the CLIENT cannot verify the server — so it cannot close the
-/// forged-daemon case, which is the one that has already killed a live session on unix.
+/// The unix arms above bind both directions to the kernel's answer for the peer
+/// (`SO_PEERCRED` / `getpeereid` + `LOCAL_PEERPID`): a client verifies the server it connected to,
+/// and a listener verifies the client it accepted.
 ///
-/// Stated here so "the transport authenticates its peer" is not read as a claim about every
-/// platform. Closing it is a separate change that needs a Windows runner to prove, not a
-/// same-shape port of the unix check: `.research/review-runs/20261109-041525-a01cd1a0e/
-/// DECISIONS-23-26.md` carries the three mechanisms and what each does not give.
+/// The client half now has a kernel answer on Windows too: `BlockingPipeClient::peer_credentials`
+/// reports the SERVER's pid from `GetNamedPipeServerProcessId` (`windows_pipe.rs`). That is the
+/// one fact the forged-daemon case needs — a squatter that owns the pipe name is the process the
+/// kernel names, so its greeting can no longer hand `shutdown --force` the victim daemon's pid —
+/// and the HELLO gate in `pa-cli` refuses a claim the kernel does not bind, on every platform.
+///
+/// Two gaps stay open, and neither is closed here:
+///
+/// - **No uid, and therefore no owner check.** `windows_pipe.rs` creates the pipe with the default
+///   security descriptor, so a local account that observed the name can also connect to it
+///   before the daemon starts; the client's pid check tells it the server is not its own daemon
+///   (build/hello checks already did) but does not tell it the server is not allowed to talk at
+///   all.
+/// - **The server does not authenticate its client at all.** On unix a foreign-uid connection is
+///   dropped at accept; on Windows any client that opens the pipe is served. Closing that needs
+///   `ImpersonateNamedPipeClient` or an owner-only security descriptor, neither of which this
+///   tree can exercise (there is no Windows runner), and a guard nobody can run is the class of
+///   defect this review exists to catch.
+///
+/// The three mechanisms and what each fails to give are written up in
+/// `.research/review-runs/20261109-041525-a01cd1a0e/DECISIONS-23-26.md`. The pid arm is
+/// compile-checked by `make windows-cross` (a gate this tree runs) and reviewed; it is NOT
+/// executed by any test in this repository.
 #[cfg(windows)]
 impl TransportListener for super::windows_pipe::NamedPipeListener {
     fn accept(&self) -> AcceptFuture<'_> {
@@ -607,10 +702,11 @@ mod peer_credential_tests {
     #[test]
     fn the_non_linux_verifier_reads_peer_credentials() {
         let source = include_str!("transport.rs");
-        let non_linux = source
-            .split("#[cfg(all(unix, not(target_os = \"linux\")))]")
-            .nth(1)
-            .expect("the non-Linux verifier exists");
+        // The cfg AND the function name as one anchor: another non-Linux-only item lives
+        // above this one, so an ordinal split onto the Nth `cfg` silently lands elsewhere.
+        let anchor = "#[cfg(all(unix, not(target_os = \"linux\")))]\nfn verify_peer_uid";
+        let start = source.find(anchor).expect("the non-Linux verifier exists");
+        let non_linux = &source[start..];
         let body = &non_linux[..non_linux.find("\n}\n").expect("the fn ends")];
         assert!(
             body.contains("getpeereid"),
@@ -642,6 +738,60 @@ mod peer_credential_tests {
         connect_transport(&path)
             .await
             .expect("a socket this uid owns connects");
+    }
+
+    /// A socket is owner-only from the instant it exists (review #24, CWE-732).
+    ///
+    /// `bind` creates the socket file with `0777 & ~umask` — 0755 under the usual umask,
+    /// 0777 under a permissive one — and the daemon's later `chmod` left that window open
+    /// for anything connecting in between. The accept-side uid check refuses such a
+    /// connection only AFTER it is made, so the restriction has to happen at bind, and a
+    /// failed restriction has to fail the bind: the daemon must not serve a socket it could
+    /// not make private.
+    #[tokio::test]
+    async fn a_bound_socket_is_owner_only_before_it_is_handed_out() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("daemon.sock");
+        let listener = bind_transport(&path).await.expect("bind");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "the bound socket must be owner-only at bind time, not after the caller's chmod"
+        );
+        drop(listener);
+    }
+
+    /// macOS must report the peer PID, not just the uid (review #5).
+    ///
+    /// The demo that made this matter: macOS's verifier returns a uid-only credential, so
+    /// `verify_hello_supervisor_pid` fell back to "liveness + the greeting's own start id" and
+    /// any live process could be the target of `shutdown --force`. `LOCAL_PEERPID` answers the
+    /// pid from the kernel, so the uniform gate (no kernel pid, no pid) can hold there too.
+    ///
+    /// Pinned from source because the call needs the Darwin ABI: the arm is compiled by
+    /// `make windows-cross`/the darwin check, never executed on this Linux host.
+    #[test]
+    fn the_apple_arm_reads_the_peer_pid_from_the_kernel() {
+        let source = include_str!("transport.rs");
+        let anchor =
+            "#[cfg(target_vendor = \"apple\")]\n#[must_use]\npub fn socket_peer_credentials";
+        let start = source
+            .find(anchor)
+            .expect("the apple half of socket_peer_credentials exists");
+        let body = &source[start..start + source[start..].find("\n}\n").expect("the fn ends")];
+        assert!(
+            body.contains("LOCAL_PEERPID"),
+            "the apple arm must ask the kernel for the peer's pid: {body}"
+        );
+        assert!(
+            body.contains("getpeereid"),
+            "the uid half stays the kernel's answer too: {body}"
+        );
+        assert!(
+            body.contains("PeerCredentials { pid, uid: peer_uid }"),
+            "the returned credential must carry the kernel pid, not a zero: {body}"
+        );
     }
 
     /// The listener side must CALL the same check (review #24, CWE-306).
