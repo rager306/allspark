@@ -614,7 +614,8 @@ impl LspManager {
         // Start the server that owns the file before asking anyone: an import
         // rewrite is exactly what a server computes, and none of them can answer
         // for a file whose server never started.
-        let mut imports_unverified = match self.server_for(from) {
+        let owning = self.server_for(from);
+        let mut imports_unverified = match &owning {
             None => Some(format!(
                 "no language server is configured for `{}`, so imports were not updated",
                 from.display()
@@ -627,8 +628,28 @@ impl LspManager {
                 )),
             },
         };
+        // The owning client's roster key, so the answer can say whether THAT
+        // server — not merely some live one — was asked.
+        let owning_key = owning.as_ref().and_then(|server| {
+            canonical_root(from, server)
+                .ok()
+                .map(|root| (server.name.clone(), root))
+        });
         let clients = self.clients().await;
+        let mut asked_owning = false;
         for client in &clients {
+            // Only a server that ADVERTISED `workspace/willRenameFiles` can
+            // compute import edits; a request it never registered is either
+            // refused or answered with a meaningless `null`, and reading that
+            // `null` as "no imports needed" is the same silent success this
+            // function exists to prevent (review #14). The advertisement is the
+            // distinction between "the server looked and found nothing" (a real
+            // success) and "the server was never going to look".
+            if !client_advertises_will_rename(client) {
+                continue;
+            }
+            let key = (client.name.clone(), client.root.clone());
+            asked_owning |= owning_key.as_ref() == Some(&key);
             match client.rename_files(&renames).await {
                 Ok(Some(edit)) => {
                     touched.extend(crate::client::apply_workspace_edit(&edit).await?);
@@ -651,12 +672,19 @@ impl LspManager {
         for client in &clients {
             let _ = client.did_rename_files(&renames);
         }
-        // The answer must not claim more than was verified: when no server could
-        // be asked, say so instead of letting the caller report a complete
-        // refactor (the prompt used to promise exactly that, review #14).
-        if clients.is_empty() && imports_unverified.is_none() {
-            imports_unverified =
-                Some("no language server was live, so imports were not updated".to_string());
+        // The answer must not claim more than was verified: when the file's OWN
+        // server never answered `workspace/willRenameFiles` — because none was
+        // live, or because the one that started does not implement the request —
+        // say so instead of letting the caller report a complete refactor (the
+        // prompt used to promise exactly that, review #14).
+        if !asked_owning && imports_unverified.is_none() {
+            let name = owning
+                .as_ref()
+                .map_or("no language server", |server| server.name.as_str());
+            imports_unverified = Some(format!(
+                "`{name}` does not implement `workspace/willRenameFiles`, so imports were not \
+                 updated"
+            ));
         }
         Ok(RenameReport {
             touched,
@@ -720,6 +748,22 @@ impl LspManager {
             self.shut_down(&client).await;
         }
     }
+}
+
+/// Whether `client` asked for `workspace/willRenameFiles` in its `initialize` answer.
+///
+/// Only that advertisement makes the request meaningful: a server that never
+/// registered it answers `MethodNotFound`, and the permissive ones answer `null`,
+/// which is indistinguishable from "looked, found no imports". Sending the
+/// request anyway and reading `null` as success is what let a rename report a
+/// complete refactor it never computed (review #14).
+fn client_advertises_will_rename(client: &LspClient) -> bool {
+    client
+        .capabilities()
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.file_operations.as_ref())
+        .is_some_and(|operations| operations.will_rename.is_some())
 }
 
 /// Canonicalize the file and resolve its project root, falling back to the
@@ -915,6 +959,148 @@ mod tests {
             reason.contains("could not be started"),
             "the reason must name the failed server: {reason}"
         );
+    }
+
+    /// The three answers a live server can give `workspace/willRenameFiles`, as a
+    /// stdio LSP script. `advertise` asked for the request and answered "no edits";
+    /// `silent` never asked for it and still answers `null`; `refuse` never asked
+    /// and answers `MethodNotFound` (a real server without the capability).
+    const FAKE_LSP_SERVER: &str = r#"#!/usr/bin/env python3
+import json
+import sys
+
+MODE = sys.argv[1] if len(sys.argv) > 1 else "silent"
+
+
+def read_message():
+    headers = {}
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None
+        line = line.strip()
+        if not line:
+            break
+        key, _, value = line.partition(b":")
+        headers[key.strip().lower()] = value.strip()
+    return json.loads(sys.stdin.buffer.read(int(headers.get(b"content-length", b"0"))))
+
+
+def send(message):
+    body = json.dumps(message).encode()
+    sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(body))
+    sys.stdout.buffer.write(body)
+    sys.stdout.buffer.flush()
+
+
+while True:
+    message = read_message()
+    if message is None:
+        break
+    method = message.get("method")
+    request_id = message.get("id")
+    if method == "initialize":
+        capabilities = {}
+        if MODE == "advertise":
+            capabilities["workspace"] = {
+                "fileOperations": {
+                    "willRename": {"filters": [{"pattern": {"glob": "**"}}]}
+                }
+            }
+        send({"jsonrpc": "2.0", "id": request_id,
+              "result": {"capabilities": capabilities,
+                         "serverInfo": {"name": "fake-lsp"}}})
+    elif method == "workspace/willRenameFiles":
+        if MODE == "refuse":
+            send({"jsonrpc": "2.0", "id": request_id,
+                  "error": {"code": -32601, "message": "method not found"}})
+        else:
+            send({"jsonrpc": "2.0", "id": request_id, "result": None})
+    elif method is not None and request_id is not None:
+        send({"jsonrpc": "2.0", "id": request_id, "result": None})
+"#;
+
+    /// A manager whose `.fake` files are served by [`FAKE_LSP_SERVER`] in `mode`.
+    ///
+    /// `python3` is the interpreter the repo's other stdio fixtures use; its
+    /// absence would be an environment defect, so the test fails rather than skips.
+    fn fake_server_manager(dir: &std::path::Path, mode: &str) -> LspManager {
+        let script = dir.join("fake-lsp.py");
+        std::fs::write(&script, FAKE_LSP_SERVER).expect("write the fake server");
+        let python = [
+            "/usr/bin/python3",
+            "/usr/local/bin/python3",
+            "/opt/homebrew/bin/python3",
+        ]
+        .into_iter()
+        .find(|path| std::path::Path::new(path).exists())
+        .unwrap_or("python3");
+        let overrides = serde_json::json!({
+            "fake-lsp": {
+                "command": python,
+                "args": [script.to_string_lossy(), mode],
+                "extensions": ["fake"],
+                "languageId": "plaintext",
+            }
+        });
+        LspManager::new().with_server_overrides(overrides.as_object())
+    }
+
+    /// A CONFIGURED server that starts and answers is not enough: a rename must
+    /// know whether that server actually implements `workspace/willRenameFiles`
+    /// (review #14, the remaining half).
+    ///
+    /// The previous code started the owning server and then treated ANY answer —
+    /// including the `null` of a server that never registered the request — as
+    /// "imports are fine", so a project whose only server lacks the capability got
+    /// a reported complete refactor with no import touched. The advertisement is
+    /// the difference between "the server looked" and "the server was never asked".
+    ///
+    /// Red on the pre-fix code: both cases returned `imports_unverified == None`.
+    #[tokio::test]
+    async fn a_server_that_does_not_implement_the_rename_request_is_not_trusted() {
+        for mode in ["silent", "refuse"] {
+            let dir = tempfile::tempdir().unwrap();
+            let manager = fake_server_manager(dir.path(), mode);
+            let from = dir.path().join("module.fake");
+            let to = dir.path().join("renamed.fake");
+            std::fs::write(&from, "content\n").unwrap();
+
+            let report = manager
+                .rename_file(&from, &to)
+                .await
+                .unwrap_or_else(|error| panic!("[{mode}] the move itself must succeed: {error}"));
+            assert!(to.exists() && !from.exists(), "[{mode}] the file moved");
+            let reason = report.imports_unverified.unwrap_or_else(|| {
+                panic!("[{mode}] a server without willRenameFiles cannot have verified imports")
+            });
+            assert!(
+                reason.contains("does not implement") && reason.contains("fake-lsp"),
+                "[{mode}] the reason must name the gap and the server: {reason}"
+            );
+            manager.shutdown_all().await;
+        }
+    }
+
+    /// The other half of the same contract: a server that DID advertise the
+    /// request and answered "no edits" is a real success, so the report stays
+    /// quiet. Without this the previous test could be satisfied by never
+    /// trusting any server, which is a different lie.
+    #[tokio::test]
+    async fn a_server_that_answered_the_rename_request_is_trusted() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = fake_server_manager(dir.path(), "advertise");
+        let from = dir.path().join("module.fake");
+        let to = dir.path().join("renamed.fake");
+        std::fs::write(&from, "content\n").unwrap();
+
+        let report = manager.rename_file(&from, &to).await.expect("the move");
+        assert!(to.exists() && !from.exists(), "the file moved");
+        assert_eq!(
+            report.imports_unverified, None,
+            "an advertised request that answered is a verified rewrite"
+        );
+        manager.shutdown_all().await;
     }
 
     /// A missing source must fail loudly rather than report a successful move.
