@@ -265,12 +265,23 @@ pub(crate) fn draw(
     let frame_area = ratatui::layout::Rect::new(0, 0, area.width, area.height);
     let width = area.width as usize;
     let height = area.height as usize;
-    // The frame is exactly `height` rows, always (see `AgentView::render_frame`): this paint is
-    // ratatui's per-cell diff of the alternate screen, where a cell that became blank is
-    // repainted, so a frame that got SHORTER has nothing left on screen to clear and
-    // `terminal.clearOnShrink` is not consulted here. The setting belongs to the one path that
-    // writes the user's scrollback — `AgentView::stream_flush_to` (`view/flush.rs`) — and TS
-    // v0.9.8 places it the same way (`doRender` only; `renderFullscreen` never reads it).
+    // `terminal.clearOnShrink` is NOT consulted here, and review #41's reading of that as a
+    // missing consumer was wrong. Two facts, both measured:
+    //
+    // 1. There is no second scrollback path. `stream_flush_to` (`view/flush.rs`) is the only
+    //    writer of the user's native scrollback, reached through
+    //    `interactive/render.rs::flush_to_main_screen` from `suspend` and `finish`; every other
+    //    stdout write in the crate is a mode sequence. The flush reads the setting, and
+    //    `view::tests::the_shrink_repaint_follows_the_clear_on_shrink_setting` goes red when it
+    //    stops reading it (checked by hard-coding `finish(out, true)`).
+    // 2. Even a frame that DID come back shorter could not leave rows behind here. This paint is
+    //    a cell GRID: the widget covers `frame_area` every frame, and ratatui repaints every cell
+    //    of it, so a row the new frame does not fill is written blank. Measured on ratatui 0.29
+    //    with a 4-row `Text` followed by a 1-row `Text` in the same area: rows 1..3 came back
+    //    empty.
+    //
+    // TS v0.9.8 splits it the same way: `doRender` (the inline differ) reads
+    // `clearOnShrink`; `renderFullscreen` never does.
     let frame = view.render_frame(width, height);
     let cursor = view.frame_cursor();
     // The frame's embedded OSC 8 sequences drive the paint backend's hyperlink injection; install
@@ -333,50 +344,4 @@ pub fn render_frame_text(view: &mut AgentView, width: u16, height: u16) -> Vec<S
             stripped.iter().map(|s| s.content.as_str()).collect()
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::session::TranscriptItem;
-    use crate::theme::Theme;
-
-    /// The alt-screen paint has nothing to clear when content shrinks (review #41).
-    ///
-    /// `terminal.clearOnShrink` is read by the inline flush — the one path that writes the
-    /// user's scrollback, where a shrunk frame does leave physical rows behind. The fullscreen
-    /// paint diffs cells into a fixed grid, so the invariant it relies on is this one: the
-    /// composed frame is EXACTLY the terminal's height, before and after the transcript shrinks.
-    /// A frame that came back shorter would leave stale rows on the alternate screen and would
-    /// be the second scrollback-shaped path the setting would then have to cover.
-    #[test]
-    fn the_fullscreen_frame_is_height_exact_across_a_shrink() {
-        let mut view = AgentView::new(Theme::builtin("prime", crate::theme::ColorMode::Color256));
-        for index in 0..40 {
-            view.push(TranscriptItem::UserMessage {
-                text: format!("reply {index}"),
-            });
-        }
-        for height in [10usize, 24, 40] {
-            let grown = view.render_frame(80, height);
-            assert_eq!(grown.len(), height, "a full transcript still composes {height} rows");
-
-            view.clear_chat();
-            let shrunk = view.render_frame(80, height);
-            assert_eq!(
-                shrunk.len(),
-                height,
-                "a frame that shrank must still compose {height} rows, or the paint leaves \
-                 the previous frame's rows on the alternate screen"
-            );
-            let text: String = shrunk
-                .iter()
-                .flat_map(|line| line.iter().map(|span| span.content.as_str()))
-                .collect();
-            assert!(
-                !text.contains("reply 39"),
-                "the cleared transcript's rows must be gone from the new frame"
-            );
-        }
-    }
 }
