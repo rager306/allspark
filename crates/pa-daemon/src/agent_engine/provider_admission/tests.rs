@@ -2242,6 +2242,35 @@ async fn a_settle_against_a_dead_link_reports_no_confirmation() {
     );
 }
 
+/// A drop that lands OUTSIDE a runtime cannot spawn a retry, and used to lose the
+/// lease with it (review #9's third shape).
+///
+/// `Drop` runs in teardowns where `tokio::runtime::Handle::try_current()` answers
+/// `Err`. The pre-fix code checked the handle and, finding none, returned having
+/// done nothing at all: no attempt, no record, and the slot stayed charged for the
+/// life of a live worker. Now the lease is recorded BEFORE the spawn is attempted,
+/// so the next admission round trip through the client drains it.
+#[cfg(unix)]
+#[test]
+fn a_release_dropped_outside_a_runtime_is_recorded_for_a_later_retry() {
+    let client = AdmissionClient::link(
+        Arc::new(crate::supervisor_link::SupervisorLink::new(
+            std::path::PathBuf::from("/nonexistent-out-of-runtime-release.sock"),
+        )),
+        "worker-a".to_string(),
+    );
+    assert!(
+        tokio::runtime::Handle::try_current().is_err(),
+        "this test must run outside a runtime: that is the shape under test"
+    );
+    client.release_detached(44);
+    assert_eq!(
+        client.pending_release_count(),
+        1,
+        "a release with no runtime to retry in must still be recorded"
+    );
+}
+
 /// A detached release that fails once is RETRIED, and the retry is what frees the slot (#9).
 ///
 /// The old code spawned exactly one best-effort `release` and dropped its answer, so a
