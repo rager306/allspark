@@ -13,6 +13,59 @@ branch (`feat/allspark-identity`). `fork.3` points at the SAME commit as `fork.2
 (`375ad95cf`) and is a duplicate tag, not a separate release — it has no entry here
 because nothing shipped between them. `FORK.md` carries the same correction.
 
+## fork.019 — upstream main @ 42a07c13c (3 commits past `6abb29e69`)
+
+- Tag: `allspark-v0.10.3-beta.17-fork.019`
+- Base: upstream `main` at `42a07c13c`. No newer tag exists — `v0.10.3-beta.17` is still the
+  newest, and this merge follows the branch, not a tag.
+
+### What upstream brought
+
+- **Accumulated function-call arguments survive a `done` item with empty arguments** (#4014):
+  a streaming Responses item that finalizes without arguments used to REPLACE the arguments
+  collected so far, so a long tool call arrived truncated.
+- **Two signed Bedrock thinking blocks under one index stay separate** (#4013): both carried
+  the same index, and the merge collapsed them into one — the provider then rejected the
+  replay as a signature it had not issued.
+- **The TS comparison suite is gone** (#3870): 42 files, 5 706 deletions. The Rust port is no
+  longer checked against TS v0.9.8, and the parity-diff merge gate and its docs policy are
+  removed.
+
+### What #3870 cost this fork, and the two departures from "upstream wins"
+
+Six deleted files had no other consumer here, so they are gone: the differential replay
+harness (3 files), `differential_cli.rs`, `export_live_differential.rs`, and
+`pa-ai/src/prime_inference_differential_test.rs`.
+
+**`package_e2e.rs` was not deleted whole.** Two of its four tests were never about TS:
+`project_package_list_cannot_run_a_project_npm_command` and
+`local_package_install_fails_before_writing_or_running_it` are the execution-boundary e2e for
+#3907 (a repository's `npmCommand` must never run; `package install --local` must refuse before
+writing). They moved verbatim to
+`crates/pa-cli/tests/package_execution_boundary_e2e.rs`, which the shard enumerator runs.
+
+**The gate's skip counter changed subject rather than dying.** It counted
+`SKIPPED: TS prime-agent binary not` — a string only the deleted units printed. It is now the
+general `SKIPPED: ` over the units that can skip at runtime (upgrade-compat, live jev/subq), and
+`run_unit` reveals a passing test's output for exactly those. The gate's own guard
+(`ParitySkipsAreCounted`) was updated with it.
+
+### Other conflicts
+
+| file | resolution |
+|---|---|
+| `daemon_commands_e2e.rs` | the FORK's 12-entry `SCRUB_ENV` (upstream ships 10): the two extra are `PRIME_AGENT_SESSION_DIR` and `PRIME_AGENT_DAEMON_SOCKET`, which a session running the gate exports and which redirect a sandbox daemon's roster scan at the live install |
+| `command_breadth.rs` | upstream's deletion stands; the TS command list it compared against lives in `pa-types` and nothing else reads it |
+| `AGENTS.md` | `## Live-system safety` kept verbatim; the parity-ground-truth bullet and the parity-diff merge-gate bullet dropped (their scripts no longer exist); Verus and `prepush-gate.sh` bullets kept |
+| `pa-cli/README.md` | upstream's wording plus a note naming the fork's own modules (`daemon_discovery/`, `print_runtime/`) |
+| `.cursor/BUGBOT.md` | upstream's edits kept; the fork's `Live-system safety` and `Parallel agents share one tree` sections stay |
+
+### Verified
+
+`cargo check --workspace --all-targets` clean; `cargo clippy --workspace --all-targets --
+-D warnings` clean; `pa-ai --lib` 497 passed, including both new upstream tests. The new
+`package_execution_boundary_e2e` passes 2/2.
+
 ## fork.018 — upstream main @ 6abb29e69 (4 commits past `v0.10.3-beta.17`)
 
 - Tag: `allspark-v0.10.3-beta.17-fork.018`
