@@ -654,3 +654,86 @@ fn assistant_text(message: &pa_types::session::AgentMessage) -> Option<String> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use serde_json::json;
+
+    use super::*;
+    use crate::rpc::commands::tests::test_state;
+
+    /// Review #11, the half the conversion test misses: `abort_bash` must reach a
+    /// run that is STILL IN FLIGHT.
+    ///
+    /// `bash_runs_the_command_and_abort_bash_has_a_run_to_stop` calls the abort
+    /// after its command has already answered, so it proves the reply shape and
+    /// nothing about cancellation; the run it "aborts" no longer exists and the
+    /// slot is empty, which is why a no-op abort passes it. Here the command is
+    /// provably running (it wrote its first marker and is inside `sleep`) when the
+    /// abort arrives, and the assertion is on what that abort did to it.
+    ///
+    /// Red on a no-op abort: the run then sleeps out its 30 seconds, blows the
+    /// 10-second settle bound, and reports `cancelled: false`.
+    #[tokio::test]
+    async fn abort_bash_cancels_a_command_that_is_still_running() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let state = test_state(dir.path()).await;
+        let started = dir.path().join("started.marker");
+        let finished = dir.path().join("finished.marker");
+        let command = format!(
+            "touch {}; sleep 30; touch {}",
+            started.display(),
+            finished.display()
+        );
+        let running = tokio::spawn({
+            let state = Arc::clone(&state);
+            async move { handle(&state, "bash", &json!({ "command": command })).await }
+        });
+
+        // Readiness is the command's OWN first effect, polled to a deadline: once
+        // the marker exists the shell has spawned and is inside the sleep, so the
+        // abort below reaches a live process tree rather than a future that has
+        // not started.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !started.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the command never started"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            state.user_bash.is_running(),
+            "an in-flight run must report busy while it streams"
+        );
+
+        let aborted = handle(&state, "abort_bash", &json!({}))
+            .await
+            .expect("abort_bash answers");
+        assert!(matches!(aborted, ResponseData::Absent));
+
+        let settled = tokio::time::timeout(std::time::Duration::from_secs(10), running)
+            .await
+            .expect("the abort must settle the in-flight run, not wait out its sleep")
+            .expect("the bash handler joins")
+            .expect("bash answers with a result");
+        let ResponseData::Present(result) = settled else {
+            panic!("bash answers with a body: {settled:?}");
+        };
+        assert_eq!(
+            result["cancelled"],
+            json!(true),
+            "the settled run must report the cancellation: {result}"
+        );
+        assert!(
+            !finished.exists(),
+            "the killed command must not reach its next statement"
+        );
+        assert!(
+            !state.user_bash.is_running(),
+            "the slot must be free once the aborted run settled"
+        );
+    }
+}
