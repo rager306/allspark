@@ -18,6 +18,24 @@ const SHUTDOWN_CONVERGENCE_TIMEOUT_MS: u128 = 10_000;
 /// Deliberate TS divergence (TS fires SIGKILL and returns without verifying):
 /// a stop path must not claim a stop a D-state process never performed.
 pub(super) fn force_kill_daemon(pid: u32) -> bool {
+    force_kill_daemon_identified(pid, None)
+}
+
+/// [`force_kill_daemon`] with the process identity the caller already resolved, re-checked
+/// IMMEDIATELY BEFORE the SIGKILL escalation (review #5, residual).
+///
+/// The escalation waits a second after SIGTERM. That second is the window: a SIGTERM that
+/// lands kills the daemon discovery named, the kernel may recycle its pid, and a blind
+/// `SIGKILL` then reaches a process nobody asked to stop. `None` keeps the caller's own
+/// gate authoritative (the residual sweep has already matched a socket's listener).
+pub(super) fn force_kill_daemon_identified(pid: u32, expected_start_id: Option<&str>) -> bool {
+    // The gate comes FIRST, not just before the escalation: if the pid already names a
+    // different process, nothing here was asked to kill it, so no signal is sent at all.
+    if let Some(expected) = expected_start_id {
+        if process_start_id(pid).as_deref() != Some(expected) {
+            return true;
+        }
+    }
     kill_daemon(pid);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     while std::time::Instant::now() < deadline {
@@ -25,6 +43,13 @@ pub(super) fn force_kill_daemon(pid: u32) -> bool {
             return true;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if let Some(expected) = expected_start_id {
+        // The pid now names a different process (or none): the daemon this call was asked
+        // to kill is already gone, so the kill is complete and the escalation is not sent.
+        if process_start_id(pid).as_deref() != Some(expected) {
+            return true;
+        }
     }
     let _ = kill_pid(pid as i32, Signal::Kill);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
@@ -309,6 +334,36 @@ mod tests {
         assert!(
             force_kill_daemon(child.id()),
             "a TERM-killable process must die before SIGKILL"
+        );
+        let _ = child.wait();
+    }
+
+    /// A pid that now names ANOTHER process must not receive the SIGKILL escalation
+    /// (review #5, residual).
+    ///
+    /// The gate in `verified_force_kill` runs once, then the ladder waits a second for
+    /// SIGTERM. That second is the window: the daemon that was asked about is already
+    /// gone, the kernel recycles its pid, and a blind SIGKILL reaches a stranger. The
+    /// shape below is that window — a TERM-ignoring process whose identity no longer
+    /// matches what the caller resolved — so no escalation may reach it.
+    #[test]
+    fn a_pid_that_no_longer_names_the_discovered_process_is_not_signalled() {
+        let mut child = spawn_term_ignoring_shell();
+        let pid = child.id();
+        assert!(
+            force_kill_daemon_identified(pid, Some("0")),
+            "the daemon the caller asked about is gone, so the kill is complete"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(
+            is_alive(pid),
+            "a pid whose start id no longer matches must not receive SIGKILL"
+        );
+        // The escalation still works for the SAME process, or the gate above would be
+        // indistinguishable from a stop path that never kills anything.
+        assert!(
+            force_kill_daemon_identified(pid, process_start_id(pid).as_deref()),
+            "a matching identity still escalates and confirms the death"
         );
         let _ = child.wait();
     }

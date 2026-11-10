@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use super::format::{print_reap_report, print_shutdown_report};
 use super::kill::{
-    force_kill_daemon, force_stop_tracked_workers, kill_daemon, remove_socket_file,
+    force_kill_daemon_identified, force_stop_tracked_workers, kill_daemon, remove_socket_file,
     terminate_verified_residuals,
 };
 use super::plan::{
@@ -459,7 +459,9 @@ fn verified_force_kill(
             ))
         }
     }
-    if !force_kill_daemon(pid) {
+    // The identity the gate above resolved rides the escalation too: the SIGKILL comes a
+    // second later, and by then the pid may name a different process (review #5).
+    if !force_kill_daemon_identified(pid, discovered_start_id) {
         return StopOutcome::Skipped(format!(
             "could not safely stop daemon (pid {pid}); it survived SIGKILL"
         ));
