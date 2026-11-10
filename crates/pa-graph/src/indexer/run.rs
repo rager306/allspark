@@ -285,7 +285,7 @@ mod tests {
         std::fs::write(dir.join(name), body).expect("write");
     }
 
-    /// `seen` is a HashSet, not a Vec (review #34): the sweep only inserts and probes, so the
+    /// `seen` is a `HashSet`, not a `Vec` (review #34): the sweep only inserts and probes, so the
     /// shapes agree on every tree and no state assertion separates them. The cost does: an
     /// unchanged 12 000-file re-index measured 1.83 s as a `Vec` and 0.84 s as a `HashSet`.
     #[test]
