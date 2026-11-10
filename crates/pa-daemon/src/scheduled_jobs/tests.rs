@@ -106,6 +106,7 @@ async fn a_fire_at_a_killed_session_cancels_and_skips() {
         user_bash: Arc::new(crate::user_bash::UserBash::new()),
         store: Arc::new(AgentCronJobStore::for_session_artifacts()),
         recovery: Arc::new(std::sync::Mutex::new(None)),
+        dispatch_ids: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     };
     // The dead-target cancel registers the artifact partition itself (a fresh store knows
     // nothing of the session yet).
@@ -174,6 +175,7 @@ async fn an_unreadable_session_file_does_not_cancel_the_schedule() {
         user_bash: Arc::new(crate::user_bash::UserBash::new()),
         store: Arc::new(AgentCronJobStore::for_session_artifacts()),
         recovery: Arc::new(std::sync::Mutex::new(None)),
+        dispatch_ids: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     };
     hooks
         .store
@@ -254,6 +256,7 @@ async fn a_session_without_a_recorded_state_does_not_cancel_the_schedule() {
         user_bash: Arc::new(crate::user_bash::UserBash::new()),
         store: Arc::new(AgentCronJobStore::for_session_artifacts()),
         recovery: Arc::new(std::sync::Mutex::new(None)),
+        dispatch_ids: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     };
     hooks
         .store
@@ -319,6 +322,7 @@ async fn a_session_that_recorded_its_end_cancels_the_schedule() {
         user_bash: Arc::new(crate::user_bash::UserBash::new()),
         store: Arc::new(AgentCronJobStore::for_session_artifacts()),
         recovery: Arc::new(std::sync::Mutex::new(None)),
+        dispatch_ids: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     };
     hooks
         .store
@@ -390,6 +394,7 @@ async fn an_unclassifiable_state_row_does_not_cancel_the_schedule() {
         user_bash: Arc::new(crate::user_bash::UserBash::new()),
         store: Arc::new(AgentCronJobStore::for_session_artifacts()),
         recovery: Arc::new(std::sync::Mutex::new(None)),
+        dispatch_ids: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     };
     hooks
         .store
@@ -407,6 +412,149 @@ async fn an_unclassifiable_state_row_does_not_cancel_the_schedule() {
         .find(|candidate| candidate.id == job.id)
         .expect("the job stays in the store");
     assert_eq!(row.status, JobStatus::Active);
+}
+
+/// A plain cron fire's queue key is its DISPATCH id, not a process counter (review #6).
+///
+/// The counter restarted at zero in every worker life, so a respawned worker minted a key an
+/// earlier life had already used; admission replaces on a matching key, so that life's
+/// restored fire was removed by the new one. The dispatch record is durable, so its id is the
+/// only half of the key that cannot collide across lives: two independent hook instances —
+/// the closest thing to two worker lives here — produce the SAME key for the same claim.
+#[tokio::test]
+async fn a_plain_fire_is_keyed_by_its_dispatch_identity() {
+    let dir = std::env::temp_dir().join(format!("pa-sched-key-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let session = write_active_session(&dir);
+    let job = AgentCronJob {
+        source: Some("cron".to_string()),
+        ..heartbeat_job("cron-key", "nightly sweep", DeliveryMode::Steer, &session)
+    };
+
+    // Park one fire through each of two independent hook instances, both serving the same
+    // claimed dispatch.
+    let mut keys = Vec::new();
+    for _ in 0..2 {
+        let core = Arc::new(std::sync::Mutex::new(
+            crate::worker::SessionCore::test_core(None, "/w".to_string()),
+        ));
+        let hooks = Arc::new(QueueHooks {
+            core: Arc::clone(&core),
+            work_notify: Arc::new(Notify::new()),
+            user_bash: Arc::new(crate::user_bash::UserBash::new()),
+            store: Arc::new(AgentCronJobStore::for_session_artifacts()),
+            recovery: Arc::new(std::sync::Mutex::new(None)),
+            dispatch_ids: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        });
+        let dispatch = pa_core::cron::store::AgentCronDispatch {
+            id: "dispatch-durable-identity".to_string(),
+            job: job.clone(),
+        };
+        let _end = AgentCronSchedulerHooks::begin_dispatch(&*hooks, &dispatch);
+        let spawned_job = job.clone();
+        let run = tokio::spawn(async move {
+            pa_core::cron::scheduler::AgentCronSchedulerHooks::run_job(&*hooks, &spawned_job).await
+        });
+        let park_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let parked = {
+                let mut core = core.lock().unwrap();
+                core.steering
+                    .pop_front()
+                    .or_else(|| core.follow_up.pop_front())
+            };
+            if let Some(item) = parked {
+                keys.push(item.queue_key.expect("a plain fire carries a key"));
+                break;
+            }
+            assert!(std::time::Instant::now() < park_deadline, "never parked");
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        // Releasing the settle so the spawned fire does not outlive the test.
+        let _ = run.await;
+    }
+    assert_eq!(
+        keys[0], keys[1],
+        "the key must come from the durable dispatch, not a per-process counter"
+    );
+    assert_eq!(
+        keys[0], "cron:cron-key:dispatch-durable-identity",
+        "{keys:?}"
+    );
+}
+
+/// A claim re-armed after a crash does not enqueue a second copy of a fire that survived
+/// (review #6).
+///
+/// `recover_interrupted_in_state` re-arms the claim, and the journal also restores the lane
+/// the previous life had durably queued. Firing again without looking is exactly the
+/// duplicate the finding names: the same wake runs twice. The job's interruption marker plus
+/// a queued `cron:<job>:` row is the evidence that the handoff already happened. A PLAIN cron
+/// job on purpose: a heartbeat has its own deferral rule and would pass this test by
+/// accident.
+#[tokio::test]
+async fn a_rearmed_claim_whose_fire_survived_is_not_enqueued_twice() {
+    let dir = std::env::temp_dir().join(format!("pa-sched-replay-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let session = write_active_session(&dir);
+    let core = Arc::new(std::sync::Mutex::new(
+        crate::worker::SessionCore::test_core(None, "/w".to_string()),
+    ));
+    let hooks = QueueHooks {
+        core: Arc::clone(&core),
+        work_notify: Arc::new(Notify::new()),
+        user_bash: Arc::new(crate::user_bash::UserBash::new()),
+        store: Arc::new(AgentCronJobStore::for_session_artifacts()),
+        recovery: Arc::new(std::sync::Mutex::new(None)),
+        dispatch_ids: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+    };
+    let mut job = AgentCronJob {
+        source: Some("cron".to_string()),
+        ..heartbeat_job(
+            "cron-replay",
+            "resume the goal",
+            DeliveryMode::Steer,
+            &session,
+        )
+    };
+    job.last_error = Some("Interrupted before scheduled operation completion".to_string());
+    // The row the previous worker life durably queued, restored onto the lane.
+    {
+        let mut core = core.lock().unwrap();
+        core.follow_up.push_back(crate::worker::QueuedItem {
+            priority: crate::worker::QueuePriority::Background,
+            message: "resume the goal".to_string(),
+            preview: None,
+            custom_message: None,
+            agent_message: None,
+            admission_id: None,
+            images: Vec::new(),
+            queue_key: Some("cron:cron-replay:dispatch-from-the-previous-life".to_string()),
+            done: None,
+            queue_visible: true,
+            policy: crate::worker::TurnPolicy::Injected,
+            forced_batch: false,
+        });
+    }
+
+    let verdict = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        AgentCronSchedulerHooks::run_job(&hooks, &job),
+    )
+    .await
+    .expect("a replay must answer at once, not park a second copy and wait for its settle")
+    .expect("the skip is not an error");
+    assert_eq!(
+        verdict,
+        Some("skipped"),
+        "the surviving fire is the delivery"
+    );
+    let core = core.lock().unwrap();
+    assert_eq!(
+        core.follow_up.len(),
+        1,
+        "the restored fire must stay the only copy"
+    );
 }
 
 /// A settle timeout must not report live work as skipped (review #12).
@@ -431,6 +579,7 @@ async fn a_settle_timeout_never_reports_live_work_as_skipped() {
         user_bash: Arc::new(crate::user_bash::UserBash::new()),
         store: Arc::new(AgentCronJobStore::for_session_artifacts()),
         recovery: Arc::new(std::sync::Mutex::new(None)),
+        dispatch_ids: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     };
     let job = heartbeat_job("hb-timeout", "still going", DeliveryMode::Steer, &session);
     let key = format!("heartbeat:{}", job.id);
@@ -537,6 +686,7 @@ async fn withdrawing_a_parked_fire_checkpoints_the_removal() {
         user_bash: Arc::new(crate::user_bash::UserBash::new()),
         store: Arc::new(AgentCronJobStore::for_session_artifacts()),
         recovery: Arc::clone(&journal),
+        dispatch_ids: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     };
     let job = heartbeat_job("hb-wd", "still going", DeliveryMode::Steer, &session);
     let key = format!("heartbeat:{}", job.id);
@@ -626,6 +776,7 @@ async fn heartbeat_fire_parks_the_labeled_preview_on_its_lane() {
         user_bash: Arc::new(crate::user_bash::UserBash::new()),
         store: Arc::new(AgentCronJobStore::for_session_artifacts()),
         recovery: Arc::new(std::sync::Mutex::new(None)),
+        dispatch_ids: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     });
     let steer_heartbeat = heartbeat_job("hb-1", "steer the mission", DeliveryMode::Steer, &session);
     let follow_up_heartbeat = heartbeat_job(
@@ -740,6 +891,7 @@ async fn settles_classify_ran_failed_or_skipped() {
             user_bash: Arc::new(crate::user_bash::UserBash::new()),
             store: Arc::new(AgentCronJobStore::for_session_artifacts()),
             recovery: Arc::new(std::sync::Mutex::new(None)),
+            dispatch_ids: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         });
         let job = heartbeat_job("hb-1", "steer the mission", DeliveryMode::Steer, session);
         let hooks_for_run = Arc::clone(&hooks);

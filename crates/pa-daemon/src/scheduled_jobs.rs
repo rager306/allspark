@@ -3,6 +3,7 @@
 //! into the session queue. Deviation: TS `promptHeartbeat` steers a running
 //! turn mid-stream; this port's lanes deliver at the next turn boundary.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -27,11 +28,12 @@ use crate::worker::{QueuedItem, SessionCore, Worker};
 /// turn must not pin the dispatch lane forever).
 const FIRE_SETTLE_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 
-/// A per-process monotonic counter: the unique half of a plain cron fire's queue key.
-fn next_fire_sequence() -> u64 {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-}
+/// The `last_error` an interrupted dispatch's recovery stamps on its job
+/// (`cron::store::state::recover_interrupted_in_state`): the mark that this row's next fire is a
+/// REPLAY of a claim whose handoff to the queue is unknown (review #6). Kept as a literal
+/// because the store's `state` module is private to `pa-core`; the producer is the one place
+/// that writes it.
+const INTERRUPTED_FIRE_MARKER: &str = "Interrupted before scheduled operation completion";
 
 /// The session-artifact directory for one session file: `<sessions>/../session-artifacts/<id>`.
 pub(crate) fn session_artifact_dir(session_file: &Path, session_id: &str) -> Option<PathBuf> {
@@ -49,9 +51,39 @@ pub(crate) struct QueueHooks {
     store: Arc<AgentCronJobStore>,
     /// The worker recovery journal (the fire checkpoint's busy evidence).
     recovery: Arc<Mutex<Option<crate::journal::WorkerRecoveryJournal>>>,
+    /// The dispatch each claimed job is serving, handed over by `begin_dispatch`: job id ->
+    /// dispatch id. The queue key's unique half comes from here, so it is DURABLE (the dispatch
+    /// record is on disk) and a respawned worker cannot mint a key a previous life already
+    /// used — that collision evicted a restored fire (review #6).
+    dispatch_ids: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl QueueHooks {
+    /// Is a fire for `job_id` still parked in either lane?
+    ///
+    /// A restored journal row keeps the key the previous worker life minted, so this is the
+    /// only evidence that a claim being retried after a crash already has its prompt in the
+    /// queue (review #6: reconciliation by dispatch identity, not by a fresh enqueue).
+    fn fire_is_already_queued(&self, job_id: &str) -> bool {
+        let prefix = format!("cron:{job_id}:");
+        // The lanes are the whole evidence: create restores the previous life's journal
+        // snapshot onto them (`restore_queue_snapshot`), so a survived handoff is a parked
+        // row here. Reading the journal as well would need a second lock order for no fact
+        // the lanes do not already hold.
+        let core = self
+            .core
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        core.steering
+            .iter()
+            .chain(core.follow_up.iter())
+            .any(|item| {
+                item.queue_key
+                    .as_deref()
+                    .is_some_and(|key| key.starts_with(&prefix))
+            })
+    }
+
     /// The session's activity snapshot: busy flags off the core plus the bash slot.
     fn activity(&self) -> HeartbeatSessionActivity {
         let core = self
@@ -153,6 +185,25 @@ impl QueueHooks {
 }
 
 impl AgentCronSchedulerHooks for QueueHooks {
+    /// Remember which dispatch a claimed job is serving: the queue key derives from it, so the
+    /// fire's identity is the DURABLE dispatch id rather than a per-process counter (review #6).
+    fn begin_dispatch(
+        &self,
+        dispatch: &pa_core::cron::store::AgentCronDispatch,
+    ) -> Option<Box<dyn FnOnce() + Send>> {
+        self.dispatch_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(dispatch.job.id.clone(), dispatch.id.clone());
+        let ids = Arc::clone(&self.dispatch_ids);
+        let job_id = dispatch.job.id.clone();
+        Some(Box::new(move || {
+            ids.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&job_id);
+        }))
+    }
+
     async fn run_job(&self, job: &AgentCronJob) -> anyhow::Result<Option<&'static str>> {
         // A persisted job whose target is no longer live (killed — `archived` — or deleted)
         // cancels the session's jobs and skips: a fire can never revive a stopped session.
@@ -182,10 +233,26 @@ impl AgentCronSchedulerHooks for QueueHooks {
         // (review #12). A heartbeat keeps its `heartbeat:<id>` key, whose replace-on-enqueue
         // dedupe is the TS behaviour; a plain cron fire gets a key unique to THIS dispatch, so
         // identifying it does not also change how successive fires stack.
+        //
+        // The unique half is the DURABLE dispatch id, not a process counter (review #6): a
+        // respawned worker restarts a counter at zero, so its first fire minted a key an earlier
+        // worker life had already used, and the admission's replace-on-key removed the row that
+        // life had restored from the journal — a durable, not-yet-run prompt silently dropped.
+        // A dispatch id is minted once and recorded on disk, so two lives cannot collide.
+        let dispatch_id = self
+            .dispatch_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&job.id)
+            .cloned();
         let queue_key = Some(if heartbeat {
             format!("heartbeat:{}", job.id)
         } else {
-            format!("cron:{}:{}", job.id, next_fire_sequence())
+            format!(
+                "cron:{}:{}",
+                job.id,
+                dispatch_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+            )
         });
         // A heartbeat rides its delivery-mode lane; a plain cron job queues on the follow-up lane.
         let rides_steering =
@@ -193,6 +260,18 @@ impl AgentCronSchedulerHooks for QueueHooks {
         // The key survives the admission (the item owns it): the settle timeout reads it back to
         // ask whether the fire is still parked.
         let fire_key = queue_key.clone();
+        // A claim RE-ARMED from an interrupted dispatch may already be durably queued (review
+        // #6). Recovery restores the interrupted life's lane from the journal, so a fire for a
+        // job carrying the interruption marker whose `cron:<job>:` row is still queued is a
+        // REPLAY of a prompt that survived: enqueueing a second copy would run the same wake
+        // twice. The skip is the right record — a one-shot completes because its wake is
+        // delivered, and a recurring job keeps its schedule. Read BEFORE the lanes are locked
+        // below (two locks, never nested).
+        if job.last_error.as_deref() == Some(INTERRUPTED_FIRE_MARKER)
+            && self.fire_is_already_queued(&job.id)
+        {
+            return Ok(Some("skipped"));
+        }
         {
             let mut core = self
                 .core
@@ -415,6 +494,7 @@ impl ScheduledJobs {
                 user_bash,
                 store: Arc::clone(&store),
                 recovery,
+                dispatch_ids: Arc::new(Mutex::new(HashMap::new())),
             }),
             store,
             scheduler: tokio::sync::Mutex::new(None),
