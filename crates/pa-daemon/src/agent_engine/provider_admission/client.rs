@@ -11,6 +11,7 @@
 //! deadline, or a wedged link holds a settle for ten minutes while the lease it
 //! is settling stays in flight (review #38).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,6 +35,23 @@ pub enum AdmissionClient {
     Link {
         link: Arc<SupervisorLink>,
         worker_token: String,
+        /// Releases whose confirmation the supervisor never gave, retried for as
+        /// long as this client lives (review #9). Shared by every clone, so the
+        /// worker's one client value owns one ledger.
+        ///
+        /// The bounded ladder in `release_detached` covers a link that fails for a
+        /// moment. An outage LONGER than the ladder used to end the story: the lease
+        /// id was dropped with the task and the slot stayed charged for the life of a
+        /// LIVE worker, which no reaper reclaims — holder reaping runs on worker
+        /// EXIT, and the dead-holder reaper only knows departed workers. The drainer
+        /// keeps retrying the idempotent release until the supervisor confirms it, so
+        /// the capacity comes back when the link does instead of at the worker's
+        /// death.
+        pending: Arc<std::sync::Mutex<Vec<u64>>>,
+        /// Whether the one drainer is running: a flag rather than a task per lease,
+        /// so a burst of aborted streams does not multiply retry loops against a
+        /// dead supervisor.
+        draining: Arc<AtomicBool>,
     },
 }
 
@@ -53,7 +71,12 @@ impl AdmissionClient {
     /// dead worker's slots are reaped).
     #[must_use]
     pub fn link(link: Arc<SupervisorLink>, worker_token: String) -> Self {
-        AdmissionClient::Link { link, worker_token }
+        AdmissionClient::Link {
+            link,
+            worker_token,
+            pending: Arc::new(std::sync::Mutex::new(Vec::new())),
+            draining: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     #[must_use]
@@ -69,10 +92,16 @@ impl AdmissionClient {
     /// Take one stream slot. [`StreamAdmission::Unadmitted`] is fail-open;
     /// [`StreamAdmission::Refused`] is the open breaker (fail over).
     pub async fn acquire_stream(&self, key: &ProviderKey) -> StreamAdmission {
+        // An admission round trip is the moment a recovered link is worth
+        // noticing: releases the ladder could not confirm get retried here
+        // instead of waiting for the worker's death (review #9).
+        self.drain_pending();
         match self {
             AdmissionClient::Disabled => StreamAdmission::Unadmitted,
             AdmissionClient::Local(registry) => registry.acquire_stream(key, LOCAL_HOLDER).await,
-            AdmissionClient::Link { link, worker_token } => {
+            AdmissionClient::Link {
+                link, worker_token, ..
+            } => {
                 let Some(data) = self
                     .call(
                         link,
@@ -109,6 +138,7 @@ impl AdmissionClient {
         key: &ProviderKey,
         spawn_id: &str,
     ) -> Option<(StreamLease, Duration)> {
+        self.drain_pending();
         match self {
             AdmissionClient::Disabled => None,
             AdmissionClient::Local(registry) => registry
@@ -130,7 +160,9 @@ impl AdmissionClient {
                         stagger,
                     )
                 }),
-            AdmissionClient::Link { link, worker_token } => {
+            AdmissionClient::Link {
+                link, worker_token, ..
+            } => {
                 let data = self
                     .call(
                         link,
@@ -166,7 +198,9 @@ impl AdmissionClient {
                 registry.settle(lease, outcome);
                 true
             }
-            AdmissionClient::Link { link, worker_token } => {
+            AdmissionClient::Link {
+                link, worker_token, ..
+            } => {
                 let mut command = lease_command(worker_token, "settle_stream", lease);
                 command["outcome"] = serde_json::json!(outcome.as_wire());
                 if let StreamOutcome::RateLimited(reason) = outcome {
@@ -184,60 +218,196 @@ impl AdmissionClient {
     /// Answers whether the supervisor CONFIRMED it, for the same reason as
     /// [`Self::settle`]: an unconfirmed release leaves the slot held.
     pub async fn release(&self, lease: u64) -> bool {
+        matches!(self.release_attempt(lease).await, ReleaseAttempt::Confirmed)
+    }
+
+    /// One release round trip, keeping the distinction the retry logic needs: an
+    /// ANSWER that the lease is not held means the slot is free (the answer to a
+    /// lost earlier attempt), while a LINK failure means it is still charged.
+    async fn release_attempt(&self, lease: u64) -> ReleaseAttempt {
         match self {
-            AdmissionClient::Disabled => true,
+            AdmissionClient::Disabled => ReleaseAttempt::Confirmed,
             AdmissionClient::Local(registry) => {
                 registry.release(lease);
-                true
+                ReleaseAttempt::Confirmed
             }
-            AdmissionClient::Link { link, worker_token } => self
-                .call_within(
-                    link,
-                    lease_command(worker_token, "release_stream", lease),
-                    request_budget("release_stream"),
-                )
-                .await
-                .is_some(),
+            AdmissionClient::Link {
+                link, worker_token, ..
+            } => {
+                let request = lease_command(worker_token, "release_stream", lease);
+                let Ok(response) = link
+                    .request(request, request_budget("release_stream"))
+                    .await
+                else {
+                    return ReleaseAttempt::Unreachable;
+                };
+                if response.success {
+                    return ReleaseAttempt::Confirmed;
+                }
+                // The supervisor's ownership refusal is the answer to a release whose
+                // earlier attempt DID land: the lease is gone, which is the goal.
+                // Retrying it would keep the drainer awake for the worker's lifetime.
+                if response
+                    .error
+                    .is_some_and(|error| error.contains(NOT_HELD_MARKER))
+                {
+                    return ReleaseAttempt::Gone;
+                }
+                ReleaseAttempt::Unreachable
+            }
         }
     }
 
     /// The fire-and-forget release a `Drop` can afford (the abort path and
     /// a dropped stream): never blocks the caller.
     ///
-    /// The release is retried with backoff, and only a CONFIRMED one ends the ladder. One
-    /// best-effort attempt was not enough: a supervisor link that failed for a moment (a
-    /// supervisor restart, a dropped connection) left a live worker holding a slot nobody
-    /// could free — holder reaping runs on worker EXIT, and the dead-holder reaper only
-    /// reclaims leases of workers that are gone, so the slot stayed charged until the worker
-    /// died, and enough of them pushed later requests through the whole 600-second
-    /// admission budget (review #9). The release is idempotent, so a retry after a lost
-    /// answer costs nothing.
+    /// A short ladder first, because a link that failed for a moment (a supervisor
+    /// restart, a dropped connection) usually answers the next attempt. The lease
+    /// is recorded BEFORE that ladder starts, and a failed ladder leaves it in
+    /// [`PendingReleases`]: an outage longer than the ladder used to drop the id
+    /// with the task, and the slot stayed charged for the life of a LIVE worker —
+    /// holder reaping runs on worker EXIT, and the dead-holder reaper only knows
+    /// workers that are gone, so enough leaks pushed later requests through the
+    /// whole 600-second admission budget (review #9). The drainer keeps retrying
+    /// the idempotent release until the supervisor confirms it.
     pub fn release_detached(&self, lease: u64) {
-        if !self.is_enabled() {
+        let pending = match self {
+            // A local registry releases in-process and synchronously.
+            AdmissionClient::Local(registry) => {
+                registry.release(lease);
+                return;
+            }
+            // A disabled plane mints no lease, so there is nothing to release.
+            AdmissionClient::Disabled => return,
+            AdmissionClient::Link { pending, .. } => pending,
+        };
+        // Recorded first: the record is what survives the ladder, and doing it
+        // after a failed attempt would lose the lease if the task is cancelled.
+        pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(lease);
+        let client = self.clone();
+        let Some(handle) = runtime_handle() else {
+            // No runtime (a teardown): nothing can be spawned HERE, but the lease
+            // is recorded, so the next admission round trip through this client
+            // starts the drainer. Only a worker that never talks to the provider
+            // again is left to the supervisor's holder reaping.
+            return;
+        };
+        handle.spawn(async move {
+            client.retry_pending_release(lease).await;
+            client.drain_pending();
+        });
+    }
+
+    /// The first rungs of one release's ladder, inline in the spawning task.
+    async fn retry_pending_release(&self, lease: u64) {
+        for attempt in 0..RELEASE_ATTEMPTS {
+            match self.release_attempt(lease).await {
+                ReleaseAttempt::Confirmed | ReleaseAttempt::Gone => {
+                    self.forget_pending(lease);
+                    return;
+                }
+                ReleaseAttempt::Unreachable => {}
+            }
+            if attempt + 1 < RELEASE_ATTEMPTS {
+                tokio::time::sleep(RELEASE_BACKOFF[attempt.min(RELEASE_BACKOFF.len() - 1)]).await;
+            }
+        }
+        tracing::warn!(
+            lease,
+            "provider admission: release unconfirmed after the retry ladder; keeping it for \
+             retry while this worker runs"
+        );
+    }
+
+    /// Spawn the one drainer if a lease is pending and none is running.
+    ///
+    /// Called at every admission round trip, so a link that comes back is used by
+    /// the next call the worker makes rather than only by a new lease's drop.
+    fn drain_pending(&self) {
+        let AdmissionClient::Link {
+            pending, draining, ..
+        } = self
+        else {
+            return;
+        };
+        let Some(handle) = runtime_handle() else {
+            return;
+        };
+        let has_pending = !pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty();
+        if !has_pending || draining.swap(true, Ordering::SeqCst) {
             return;
         }
         let client = self.clone();
-        // A drop can land outside a runtime (a teardown); there the
-        // supervisor's own holder reaping covers the slot.
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                for attempt in 0..RELEASE_ATTEMPTS {
-                    if client.release(lease).await {
-                        return;
-                    }
-                    if attempt + 1 < RELEASE_ATTEMPTS {
-                        tokio::time::sleep(RELEASE_BACKOFF[attempt.min(RELEASE_BACKOFF.len() - 1)])
-                            .await;
-                    }
+        handle.spawn(async move { client.drain_pending_loop().await });
+    }
+
+    /// Retry every recorded lease until it is confirmed, then stop.
+    ///
+    /// The pause between rounds is [`PENDING_RELEASE_PAUSE`]: the drainer is the
+    /// slow lane, so it must not hammer a supervisor that is down, and it is on
+    /// nobody's path — a confirmed release clears the id and the loop ends.
+    async fn drain_pending_loop(&self) {
+        let AdmissionClient::Link {
+            pending, draining, ..
+        } = self
+        else {
+            return;
+        };
+        loop {
+            let first = pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .first()
+                .copied();
+            let Some(lease) = first else {
+                draining.store(false, Ordering::SeqCst);
+                // A lease recorded between the empty read and the flag clear must
+                // not be stranded: re-check under the cleared flag.
+                let raced = !pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_empty();
+                if raced && !draining.swap(true, Ordering::SeqCst) {
+                    continue;
                 }
-                // Out of attempts: the supervisor is not answering at all. Its holder reaping
-                // frees the lease when this worker exits, so nothing else can be done here.
-                tracing::warn!(
-                    lease,
-                    "provider admission: release still unconfirmed after retries; \
-                     the slot is reaped when this worker exits"
-                );
-            });
+                return;
+            };
+            match self.release_attempt(lease).await {
+                ReleaseAttempt::Confirmed | ReleaseAttempt::Gone => {
+                    self.forget_pending(lease);
+                    continue;
+                }
+                ReleaseAttempt::Unreachable => {}
+            }
+            tokio::time::sleep(PENDING_RELEASE_PAUSE).await;
+        }
+    }
+
+    fn forget_pending(&self, lease: u64) {
+        if let AdmissionClient::Link { pending, .. } = self {
+            pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|queued| *queued != lease);
+        }
+    }
+
+    /// How many unconfirmed releases the ledger still holds (tests observe the
+    /// retention directly; the counter is the ledger's own length).
+    #[cfg(test)]
+    pub(super) fn pending_release_count(&self) -> usize {
+        match self {
+            AdmissionClient::Link { pending, .. } => pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            AdmissionClient::Local(_) | AdmissionClient::Disabled => 0,
         }
     }
 
@@ -273,6 +443,31 @@ impl AdmissionClient {
     }
 }
 
+/// What one release round trip established.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReleaseAttempt {
+    /// The supervisor took the release: the slot is free.
+    Confirmed,
+    /// The supervisor ANSWERED that this worker does not hold the lease. That is
+    /// the answer to a release whose earlier attempt landed and whose answer was
+    /// lost — the slot is already free, so a retry would be permanent noise.
+    Gone,
+    /// No answer (a dead or restarting link): the slot is still charged.
+    Unreachable,
+}
+
+/// The supervisor's ownership refusal for a lease this worker no longer holds
+/// (`supervisor/provider_admission.rs` answers it for every `settle_stream` /
+/// `release_stream` against a lease the registry does not hold). Matched by text
+/// because the two ends only meet on the JSON wire.
+const NOT_HELD_MARKER: &str = "not held by this worker";
+
+/// The current runtime's handle, when there is one: a `Drop` can run in a
+/// teardown with no runtime, where nothing can be spawned.
+fn runtime_handle() -> Option<tokio::runtime::Handle> {
+    tokio::runtime::Handle::try_current().ok()
+}
+
 /// The holder name a local (in-process) client reports: one process, one
 /// pool, so the reaper never needs to tell holders apart.
 const LOCAL_HOLDER: &str = "local";
@@ -295,6 +490,14 @@ const RELEASE_ATTEMPTS: usize = 3;
 /// The pause between detached-release attempts. The first retry is immediate enough to hide
 /// from a caller, and the last is long enough to outlast a supervisor's own restart window.
 const RELEASE_BACKOFF: [Duration; 2] = [Duration::from_millis(250), Duration::from_secs(2)];
+
+/// How long the pending-release drainer waits between rounds.
+///
+/// Longer than the ladder's last rung on purpose: the drainer is the slow lane for
+/// a supervisor that is down or restarting, it is on nobody's path, and a slot
+/// that comes back a few seconds late is far cheaper than a retry storm against a
+/// dead link (review #9).
+const PENDING_RELEASE_PAUSE: Duration = Duration::from_secs(15);
 
 /// The deadline for a settle/release round trip.
 ///

@@ -2311,3 +2311,181 @@ async fn a_detached_release_is_retried_until_the_supervisor_confirms_it() {
     }
     server.await.expect("the fake supervisor joins");
 }
+
+/// Review #9, the remaining half: the slot must come back once the link DOES.
+///
+/// The ladder covers a supervisor restart of a few seconds. An outage longer than
+/// the ladder used to end the story — the lease id was dropped with the retry task,
+/// and holder reaping only runs when the WORKER exits, so a live worker lost a slot
+/// for the rest of its life; enough of those pushed later requests through the whole
+/// 600-second admission budget.
+///
+/// The fake supervisor refuses the whole ladder and then recovers, so nothing the
+/// ladder does can free the slot; the release that arrives afterwards is the
+/// ledger's. Red on the pre-fix code: the unconfirmed lease id was gone once the
+/// ladder ended, so no further release ever reached the recovered supervisor.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_unconfirmed_release_is_retried_after_the_link_returns() {
+    use crate::protocol::{response_failure, response_line, response_success};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("sup.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).expect("bind fake supervisor");
+    let (releases_tx, mut releases_rx) = tokio::sync::mpsc::unbounded_channel::<u64>();
+    tokio::spawn(async move {
+        let mut served = 0usize;
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            // The ladder's rungs are refused; the supervisor is "back" afterwards.
+            served += 1;
+            let recovered = served > 3;
+            let releases = releases_tx.clone();
+            tokio::spawn(async move {
+                let (reader, mut writer) = stream.into_split();
+                writer
+                    .write_all(
+                        b"{\"type\":\"daemon_hello\",\"protocol\":{\"name\":\"prime-agent.daemon\",\"version\":7}}\n",
+                    )
+                    .await
+                    .expect("hello");
+                let mut reader = BufReader::new(reader);
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.is_err() {
+                    return;
+                }
+                let request: serde_json::Value =
+                    serde_json::from_str(line.trim()).expect("json request");
+                let id = request["id"].as_str();
+                let response = if recovered {
+                    response_success(id, "provider_admission", Some(serde_json::json!({})))
+                } else {
+                    response_failure(id, "provider_admission", "link is restarting", None)
+                };
+                writer
+                    .write_all(
+                        serde_json::to_string(&response_line(&response))
+                            .expect("serialize")
+                            .as_bytes(),
+                    )
+                    .await
+                    .expect("write");
+                writer.write_all(b"\n").await.expect("newline");
+                if let Some(lease) = request["command"]["leaseId"].as_u64() {
+                    let _ = releases.send(lease);
+                }
+            });
+        }
+    });
+
+    let client = AdmissionClient::link(
+        Arc::new(crate::supervisor_link::SupervisorLink::new(socket)),
+        "worker-a".to_string(),
+    );
+    client.release_detached(42);
+
+    // The ladder's own attempts, observed as the supervisor receiving them. The
+    // count is the fake supervisor's cut-off (three refused rungs), so a change to
+    // the ladder's length shows up here as a mismatch rather than silently passing.
+    for attempt in 0..3 {
+        let lease = tokio::time::timeout(Duration::from_secs(20), releases_rx.recv())
+            .await
+            .unwrap_or_else(|_| panic!("the ladder's attempt {attempt} never arrived"))
+            .expect("the fake supervisor reports its releases");
+        assert_eq!(lease, 42, "every attempt is the same retained lease");
+    }
+    // The supervisor is up again. A recovered link is noticed by the next admission
+    // round trip, and the retained lease is released on it without waiting for
+    // another stream to be dropped.
+    let _ = tokio::time::timeout(Duration::from_secs(1), client.acquire_stream(&key())).await;
+
+    let lease = tokio::time::timeout(Duration::from_secs(30), releases_rx.recv())
+        .await
+        .expect("the recovered supervisor must receive the retained release")
+        .expect("the fake supervisor reports its releases");
+    assert_eq!(lease, 42, "the retained lease is the one released");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while client.pending_release_count() != 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "a confirmed release must leave the ledger"
+        );
+        tokio::task::yield_now().await;
+    }
+}
+
+/// A supervisor that answers "not held by this worker" has NOT lost the slot: that
+/// is the answer to a release whose earlier attempt landed and whose reply was
+/// lost. Keeping it in the ledger would make the drainer retry it every pause for
+/// the worker's whole life (review #9's other side).
+///
+/// Red on the pre-fix shape: `release()` collapsed every unsuccessful round trip
+/// into one answer, so the refusal looked like a failure and the ledger never
+/// drained.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_lease_the_supervisor_does_not_hold_leaves_the_ledger() {
+    use crate::protocol::{response_failure, response_line};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("sup.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).expect("bind fake supervisor");
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                let (reader, mut writer) = stream.into_split();
+                writer
+                    .write_all(
+                        b"{\"type\":\"daemon_hello\",\"protocol\":{\"name\":\"prime-agent.daemon\",\"version\":7}}\n",
+                    )
+                    .await
+                    .expect("hello");
+                let mut reader = BufReader::new(reader);
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.is_err() {
+                    return;
+                }
+                let request: serde_json::Value =
+                    serde_json::from_str(line.trim()).expect("json request");
+                // The supervisor's own wording for a lease it does not hold.
+                let response = response_failure(
+                    request["id"].as_str(),
+                    "provider_admission",
+                    "provider admission lease is not held by this worker",
+                    None,
+                );
+                writer
+                    .write_all(
+                        serde_json::to_string(&response_line(&response))
+                            .expect("serialize")
+                            .as_bytes(),
+                    )
+                    .await
+                    .expect("write");
+                writer.write_all(b"\n").await.expect("newline");
+            });
+        }
+    });
+
+    let client = AdmissionClient::link(
+        Arc::new(crate::supervisor_link::SupervisorLink::new(socket)),
+        "worker-a".to_string(),
+    );
+    client.release_detached(43);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while client.pending_release_count() != 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "a lease the supervisor does not hold must leave the ledger"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
