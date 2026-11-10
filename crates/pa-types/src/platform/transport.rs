@@ -825,12 +825,8 @@ mod peer_credential_tests {
             !body.contains("let _ = verify_peer_uid"),
             "a discarded verdict is the defect this pin exists for: {body}"
         );
-        let refusal = body
-            .find(".is_err()")
-            .expect("the verdict is consumed");
-        let retry = body
-            .find("continue")
-            .expect("a refused peer retries");
+        let refusal = body.find(".is_err()").expect("the verdict is consumed");
+        let retry = body.find("continue").expect("a refused peer retries");
         assert!(
             retry > refusal,
             "the refusal must RETRY the loop (an error would spend the accept loop's \
