@@ -794,13 +794,17 @@ mod peer_credential_tests {
         );
     }
 
-    /// The listener side must CALL the same check (review #24, CWE-306).
+    /// The listener side must CALL the same check **and act on its answer** (review #24,
+    /// CWE-306; the "act on it" half is the wave-2 residual).
     ///
     /// The accepted-peer uid is the only fact that separates the daemon's owner from any
-    /// other local user who connected before the socket's path was restricted. Same shape
-    /// as the client pin below: the refusal is not observable from a connection this
-    /// process builds (the uid always matches, and a second uid needs a privilege the test
-    /// may not drop to), so the check is on the mechanism.
+    /// other local user who connected before the socket's path was restricted. A behavioral
+    /// test needs a second uid to connect, which a test may not be able to obtain (this file
+    /// has no privilege to drop), so the claim is pinned on the mechanism — but the pin has
+    /// to cover the shape that actually failed once: calling the check and discarding its
+    /// answer. `let _ = verify_peer_uid(..)` and `if err && false { continue }` both keep a
+    /// CALL present while admitting every peer, and both stayed green on the first version
+    /// of this test.
     #[test]
     fn the_listener_accept_runs_the_owner_check() {
         let source = include_str!("transport.rs");
@@ -813,8 +817,25 @@ mod peer_credential_tests {
             .expect("the impl ends");
         let body = &source[start..end];
         assert!(
-            body.contains("verify_peer_uid("),
-            "accept must verify the connected peer's uid before dispatching it: {body}"
+            body.contains("verify_peer_uid(&stream, &listener_label(self)).is_err()"),
+            "accept must CONSUME the check's verdict (`is_err()`), not merely call it — a \
+             discarded result admits every peer: {body}"
+        );
+        assert!(
+            !body.contains("let _ = verify_peer_uid"),
+            "a discarded verdict is the defect this pin exists for: {body}"
+        );
+        let refusal = body
+            .find(".is_err()")
+            .expect("the verdict is consumed");
+        let retry = body
+            .find("continue")
+            .expect("a refused peer retries");
+        assert!(
+            retry > refusal,
+            "the refusal must RETRY the loop (an error would spend the accept loop's \
+             give-up budget, so a peer that connects repeatedly could end the supervisor): \
+             {body}"
         );
     }
 
