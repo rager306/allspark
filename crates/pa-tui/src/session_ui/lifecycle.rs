@@ -11,6 +11,16 @@ use super::{
     EXIT_DETACH_TIMEOUT_MS, EXIT_STATS_TIMEOUT_MS, UI_REQUEST_TIMEOUT_MS,
 };
 
+/// How long the open's first content frame waits for the two optional dock registries
+/// (`heartbeats_list`, `list_kernel_bash`).
+///
+/// The dock's counts are first-frame state — the 2026-09-26 zero-shift ruling, pinned by
+/// `chat_open_first_frame_headless` — so the open does wait for them. It waits for ONE SECOND,
+/// not `UI_REQUEST_TIMEOUT_MS`: a daemon that answers inside the budget is unchanged, and a
+/// stalled one costs the first frame this budget instead of two ten-second bounds, with the
+/// landed reads still folded and the missed ones left to the background refresh (review #15).
+const DOCK_FIRST_FRAME_BUDGET: Duration = Duration::from_millis(1_000);
+
 impl SessionUi {
     /// Create/attach per the session selection and return the live state.
     #[allow(clippy::too_many_arguments)]
@@ -226,18 +236,25 @@ impl SessionUi {
         Ok(session)
     }
 
-    /// The open's two optional dock registries, read CONCURRENTLY under one request bound
-    /// (review #15).
+    /// The open's two optional dock registries, read CONCURRENTLY under
+    /// [`DOCK_FIRST_FRAME_BUDGET`] (review #15).
     ///
-    /// `heartbeats_list` and `list_kernel_bash` are independent reads behind the same
-    /// `UI_REQUEST_TIMEOUT_MS` each; awaiting them in sequence made a wedged daemon cost two
-    /// bounds before the first content frame, so the dock fold is one round trip, not two.
+    /// `heartbeats_list` and `list_kernel_bash` are independent reads; awaiting them in
+    /// sequence made a wedged daemon cost two `UI_REQUEST_TIMEOUT_MS` bounds before the first
+    /// content frame, so they are issued together — and each is bounded by the FIRST FRAME's
+    /// budget, not the request bound: a daemon that answers in time is unchanged, and one that
+    /// stalls costs the frame a second instead of ten. A read that misses the budget yields
+    /// `None` and its fold moves to the background refresh, so the dock still fills in.
     /// Each epoch advances first, so a refresh in flight from before the attach is dropped at
     /// fold time rather than overwriting the new session's rows.
     async fn read_dock_registries(&mut self) -> (Option<Value>, Option<Value>) {
         self.heartbeat_refresh_epoch += 1;
         self.bash_list_epoch += 1;
-        tokio::join!(self.read_heartbeat_catalog(), self.read_bash_activities())
+        let (heartbeats, bash_activities) = tokio::join!(
+            tokio::time::timeout(DOCK_FIRST_FRAME_BUDGET, self.read_heartbeat_catalog()),
+            tokio::time::timeout(DOCK_FIRST_FRAME_BUDGET, self.read_bash_activities()),
+        );
+        (heartbeats.ok().flatten(), bash_activities.ok().flatten())
     }
 
     /// Spec §10.2-§10.5: reattach after a restart — the fresh client replaces the dead one, the
@@ -477,9 +494,15 @@ impl SessionUi {
                 let (heartbeats, bash_activities) = self.read_dock_registries().await;
                 if let Some(data) = heartbeats {
                     self.fold_heartbeat_catalog(&data);
+                } else {
+                    // Missed the first frame's budget: the background refresh fills the dock in
+                    // rather than holding the paint for the request bound.
+                    self.spawn_heartbeat_refresh();
                 }
                 if let Some(data) = bash_activities {
                     self.fold_bash_activities(data);
+                } else {
+                    self.spawn_bash_activity_refresh();
                 }
             }
             DockFold::Fresh | DockFold::Held => self.spawn_heartbeat_refresh(),
@@ -1019,6 +1042,102 @@ mod backfill_tests {
         })
         .await
         .expect("mock session open and both panel opens complete within ten seconds");
+    }
+
+    /// The open's FIRST CONTENT FRAME waits one budget for the dock registries, not the request
+    /// bound (review #15).
+
+    /// The mock answers `attach` and then leaves `heartbeats_list` and `list_kernel_bash`
+    /// unanswered — a wedged daemon. The open must still return inside `DOCK_FIRST_FRAME_BUDGET`
+    /// plus a wide margin (a scheduler hiccup on a loaded gate), and the dock's counts must be
+    /// the cleared ones: the missed reads belong to the background refresh.
+    ///
+    /// The old shape (each read bounded by `UI_REQUEST_TIMEOUT_MS`) cannot finish before 10 s,
+    /// so the assertion separates the two by an order of magnitude rather than by timing noise.
+    #[tokio::test]
+    async fn the_open_waits_one_budget_for_a_wedged_dock_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("wedged.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            write.write_all(b"{\"type\":\"daemon_hello\",\"protocol\":{\"name\":\"prime-agent.daemon\",\"version\":7},\"serverCapabilities\":[\"kernel_bash_activity\"],\"clientId\":\"mock\"}\n").await.unwrap();
+            let mut lines = BufReader::new(read).lines();
+            while let Some(line) = lines.next_line().await.unwrap() {
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let kind = request["command"]["type"].as_str().unwrap();
+                if matches!(kind, "heartbeats_list" | "list_kernel_bash") {
+                    // The wedged read: no reply, ever. The open must not wait out the request
+                    // bound for it.
+                    continue;
+                }
+                let data = match kind {
+                    "attach" => json!({
+                        "activeSessionId": "s1", "snapshot": {
+                            "activeSessionId": "s1",
+                            "summary": {"id": "s1", "cwd": "/tmp"},
+                            "state": {"sessionId": "s1", "cwd": "/tmp", "isStreaming": false},
+                            "messages": [], "lastEventSequence": 0,
+                        }, "replay": {"status": "complete", "toSequence": 0},
+                        "lastEventSequence": 0,
+                    }),
+                    _ => json!({}),
+                };
+                let mut reply = serde_json::to_vec(&json!({
+                    "type": "response", "id": request["id"], "command": kind,
+                    "success": true, "data": data,
+                }))
+                .unwrap();
+                reply.push(b'\n');
+                write.write_all(&reply).await.unwrap();
+            }
+        });
+        let mut options =
+            crate::interactive::tests::options(crate::interactive::ModelSelection::default());
+        options.socket_path = socket.clone();
+        options.session = SessionSelection::Attach("s1".to_string());
+        let (client, _events) = DaemonClient::connect(&socket).await.unwrap();
+        let opened = tokio::time::timeout(Duration::from_secs(4), async {
+            SessionUi::open(
+                client,
+                &options,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                ActivityUpdates {
+                    heartbeats: mpsc::unbounded_channel().0,
+                    bash: mpsc::unbounded_channel().0,
+                    factory: mpsc::unbounded_channel().0,
+                    commands: mpsc::unbounded_channel().0,
+                    cache_rate: mpsc::unbounded_channel().0,
+                },
+                mpsc::unbounded_channel().0,
+            )
+            .await
+        })
+        .await;
+        let session = opened
+            .expect("the open must not wait out UI_REQUEST_TIMEOUT_MS for a wedged dock registry")
+            .expect("the attach landed");
+        assert!(
+            session.heartbeat_catalog.is_empty(),
+            "a missed read leaves the cleared catalog: {:?}",
+            session.heartbeat_catalog
+        );
+        assert_eq!(
+            crate::bash_view::parse_bash_activities(&session.bash_activities).len(),
+            0,
+            "a missed read leaves the cleared bash registry"
+        );
+        drop(session);
+        server.abort();
     }
 
     #[tokio::test]

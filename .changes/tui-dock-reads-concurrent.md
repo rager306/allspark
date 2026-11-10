@@ -1,1 +1,1 @@
-- Fixed opening an existing session reading the two optional dock registries one after the other: they are now issued together under one request bound, so a slow daemon cannot hold the first content frame for two 10-second timeouts.
+- Fixed opening an existing session waiting out two 10-second daemon timeouts for its dock: the two optional dock reads are issued together under a one-second first-frame budget, so a slow daemon costs the first frame a second at most and the dock fills in from the background refresh.
