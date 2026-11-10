@@ -107,9 +107,25 @@ impl QueueHooks {
             Ok(_) => {}
         }
         match crate::session_store::read_session_info(path) {
-            Some(info) if info.id == job.session_id && info.state.as_deref() == Some("active") => {
-                TargetState::Live
-            }
+            Some(info) if info.id == job.session_id => match info.state.as_deref() {
+                Some("active") => TargetState::Live,
+                // A RECORDED end is the only evidence that may cancel the session's
+                // whole schedule; `hidden`/`sleep` normalize to `archived` upstream.
+                Some("archived" | "crash") => TargetState::Gone,
+                // A session file with no `session_state` row at all (every session
+                // written before the row existed) or a state this build cannot read.
+                // Both are "unknown", not "gone": the cancel is persisted, so guessing
+                // here deleted an older session's schedule on its first fire
+                // (review #13, residual).
+                Some(other) => TargetState::Indeterminate(format!(
+                    "{} records the state {other:?}, which this build cannot classify",
+                    path.display()
+                )),
+                None => TargetState::Indeterminate(format!(
+                    "{} records no lifecycle state",
+                    path.display()
+                )),
+            },
             Some(_) => TargetState::Gone,
             // Present but unreadable or not a session this build understands: a transient
             // failure (a rewrite in flight, a lock that was momentarily held) looks exactly

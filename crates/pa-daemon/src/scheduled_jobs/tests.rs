@@ -201,6 +201,214 @@ async fn an_unreadable_session_file_does_not_cancel_the_schedule() {
     );
 }
 
+/// A session that records NO lifecycle state is not a dead session (review #13,
+/// residual).
+///
+/// `read_session_info` answers `state: None` for a session file written before the
+/// `session_state` entry existed — and for a state row this build cannot read. The fire
+/// path collapsed every readable-but-not-`active` row into `Gone` and PERSISTED a
+/// cancellation of the session's whole schedule, so the first fire of an older session's
+/// schedule deleted it for good. Absence is not deletion: the three answers stay
+/// distinct, and only a recorded end (`archived`/`crash`) may cancel.
+#[tokio::test]
+async fn a_session_without_a_recorded_state_does_not_cancel_the_schedule() {
+    let dir = std::env::temp_dir().join(format!("pa-sched-nostate-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // A pre-state-row session: the header and a message, and no `session_state` entry.
+    let mut session = crate::session_store::SessionFile::create("/w", None, 0);
+    session.append_message(&serde_json::json!({
+        "role": "user", "content": "hi", "timestamp": 1u64
+    }));
+    let session_file = dir.join(crate::session_store::session_file_name(
+        session.session_id(),
+    ));
+    session.set_path(session_file.clone());
+    session.rewrite().unwrap();
+    let session_id = session.session_id().to_string();
+    let info = crate::session_store::read_session_info(&session_file).expect("the file folds");
+    assert_eq!(info.state, None, "the fixture records no state");
+
+    let store = AgentCronJobStore::for_session_artifacts();
+    let artifact_dir = session_artifact_dir(&session_file, &session_id).unwrap();
+    std::fs::create_dir_all(&artifact_dir).unwrap();
+    store.register_session_artifact(&session_id, &artifact_dir);
+    let job = store
+        .create(&CreateAgentCronJobInput {
+            active_session_id: session_id.clone(),
+            session_id: session_id.clone(),
+            session_file: session_file.to_string_lossy().to_string(),
+            cwd: "/w".to_string(),
+            prompt: "pre-state ping".to_string(),
+            schedule_text: "every 10s".to_string(),
+            now: Some(1),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let core = Arc::new(std::sync::Mutex::new(
+        crate::worker::SessionCore::test_core(None, "/w".to_string()),
+    ));
+    let hooks = QueueHooks {
+        core: Arc::clone(&core),
+        work_notify: Arc::new(Notify::new()),
+        user_bash: Arc::new(crate::user_bash::UserBash::new()),
+        store: Arc::new(AgentCronJobStore::for_session_artifacts()),
+        recovery: Arc::new(std::sync::Mutex::new(None)),
+    };
+    hooks
+        .store
+        .register_session_artifact(&session_id, &artifact_dir);
+
+    let verdict = AgentCronSchedulerHooks::run_job(&hooks, &job).await;
+    assert!(
+        verdict.is_err(),
+        "a missing state is not a confirmed end: {verdict:?}"
+    );
+    let stored = hooks.store.list();
+    let row = stored
+        .iter()
+        .find(|candidate| candidate.id == job.id)
+        .expect("the job stays in the store");
+    assert_eq!(
+        row.status,
+        JobStatus::Active,
+        "a session that never recorded an end must keep its schedule"
+    );
+    let core = core.lock().unwrap();
+    assert!(
+        core.steering.is_empty() && core.follow_up.is_empty(),
+        "nothing was fired at a target the fire could not classify"
+    );
+}
+
+/// A session that recorded its own end still cancels (the other side of the
+/// three-valued decision).
+#[tokio::test]
+async fn a_session_that_recorded_its_end_cancels_the_schedule() {
+    let dir = std::env::temp_dir().join(format!("pa-sched-crash-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (session_id, session_file) = write_active_session(&dir);
+    let store = AgentCronJobStore::for_session_artifacts();
+    let artifact_dir = session_artifact_dir(&session_file, &session_id).unwrap();
+    std::fs::create_dir_all(&artifact_dir).unwrap();
+    store.register_session_artifact(&session_id, &artifact_dir);
+    let job = store
+        .create(&CreateAgentCronJobInput {
+            active_session_id: session_id.clone(),
+            session_id: session_id.clone(),
+            session_file: session_file.to_string_lossy().to_string(),
+            cwd: "/w".to_string(),
+            prompt: "post-crash ping".to_string(),
+            schedule_text: "every 10s".to_string(),
+            now: Some(1),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // The supervisor's crash record, not a kill: the second confirmed end.
+    let mut session = crate::session_store::SessionFile::open(&session_file).unwrap();
+    let _ = session.append_session_state("crash");
+    session.rewrite().unwrap();
+
+    let core = Arc::new(std::sync::Mutex::new(
+        crate::worker::SessionCore::test_core(None, "/w".to_string()),
+    ));
+    let hooks = QueueHooks {
+        core: Arc::clone(&core),
+        work_notify: Arc::new(Notify::new()),
+        user_bash: Arc::new(crate::user_bash::UserBash::new()),
+        store: Arc::new(AgentCronJobStore::for_session_artifacts()),
+        recovery: Arc::new(std::sync::Mutex::new(None)),
+    };
+    hooks
+        .store
+        .register_session_artifact(&session_id, &artifact_dir);
+    assert_eq!(
+        AgentCronSchedulerHooks::run_job(&hooks, &job)
+            .await
+            .unwrap(),
+        Some("skipped")
+    );
+    let stored = hooks.store.list();
+    let row = stored
+        .iter()
+        .find(|candidate| candidate.id == job.id)
+        .expect("the job stays in the store");
+    assert_eq!(row.status, JobStatus::Cancelled);
+}
+
+/// A state row this build cannot read is "unknown", not a recorded end (review #13,
+/// residual).
+///
+/// Another build's `session_state` row — or a truncated one — folds to `state: None`
+/// (`fold_scan_entry` keeps the last VALID status, and there is none). Treating that as
+/// `Gone` persisted a cancellation of the session's whole schedule.
+#[tokio::test]
+async fn an_unclassifiable_state_row_does_not_cancel_the_schedule() {
+    let dir = std::env::temp_dir().join(format!("pa-sched-badstate-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut session = crate::session_store::SessionFile::create("/w", None, 0);
+    session.append_message(&serde_json::json!({
+        "role": "user", "content": "hi", "timestamp": 1u64
+    }));
+    let session_file = dir.join(crate::session_store::session_file_name(
+        session.session_id(),
+    ));
+    session.set_path(session_file.clone());
+    session.rewrite().unwrap();
+    // A state row from a build whose status is not a string: valid JSON, unreadable status.
+    let mut raw = std::fs::read_to_string(&session_file).unwrap();
+    raw.push_str("{\"type\":\"session_state\",\"id\":\"bad\",\"timestamp\":\"t\",\"state\":{\"status\":42}}\n");
+    std::fs::write(&session_file, raw).unwrap();
+    let session_id = session.session_id().to_string();
+    let info = crate::session_store::read_session_info(&session_file).expect("the file folds");
+    assert_eq!(info.state, None, "the fixture's only state is unreadable");
+
+    let store = AgentCronJobStore::for_session_artifacts();
+    let artifact_dir = session_artifact_dir(&session_file, &session_id).unwrap();
+    std::fs::create_dir_all(&artifact_dir).unwrap();
+    store.register_session_artifact(&session_id, &artifact_dir);
+    let job = store
+        .create(&CreateAgentCronJobInput {
+            active_session_id: session_id.clone(),
+            session_id: session_id.clone(),
+            session_file: session_file.to_string_lossy().to_string(),
+            cwd: "/w".to_string(),
+            prompt: "bad-state ping".to_string(),
+            schedule_text: "every 10s".to_string(),
+            now: Some(1),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let core = Arc::new(std::sync::Mutex::new(
+        crate::worker::SessionCore::test_core(None, "/w".to_string()),
+    ));
+    let hooks = QueueHooks {
+        core: Arc::clone(&core),
+        work_notify: Arc::new(Notify::new()),
+        user_bash: Arc::new(crate::user_bash::UserBash::new()),
+        store: Arc::new(AgentCronJobStore::for_session_artifacts()),
+        recovery: Arc::new(std::sync::Mutex::new(None)),
+    };
+    hooks
+        .store
+        .register_session_artifact(&session_id, &artifact_dir);
+
+    assert!(
+        AgentCronSchedulerHooks::run_job(&hooks, &job)
+            .await
+            .is_err(),
+        "an unreadable state row is an indeterminate read"
+    );
+    let stored = hooks.store.list();
+    let row = stored
+        .iter()
+        .find(|candidate| candidate.id == job.id)
+        .expect("the job stays in the store");
+    assert_eq!(row.status, JobStatus::Active);
+}
+
 /// A settle timeout must not report live work as skipped (review #12).
 ///
 /// The window is 15 minutes, so the decision — not the wait — is what the test drives. A fire
