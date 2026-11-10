@@ -415,7 +415,8 @@ async fn an_unclassifiable_state_row_does_not_cancel_the_schedule() {
 /// still PARKED never ran: it is withdrawn (it must not execute later behind the scheduler's
 /// back) and reported as a skip. A fire the runner already picked up is executing: reporting a
 /// skip would have `record_dispatch_result` complete a running one-shot and stamp a recurring
-/// job's `lastSkippedAt`, so it must report that the turn owns the outcome instead.
+/// job's `lastSkippedAt`. A running ONE-SHOT records a clean run (its wake is delivered); a
+/// running RECURRING job records an unknown outcome and backs off.
 #[tokio::test]
 async fn a_settle_timeout_never_reports_live_work_as_skipped() {
     let dir = std::env::temp_dir().join(format!("pa-sched-timeout-{}", uuid::Uuid::new_v4()));
@@ -434,13 +435,27 @@ async fn a_settle_timeout_never_reports_live_work_as_skipped() {
     let job = heartbeat_job("hb-timeout", "still going", DeliveryMode::Steer, &session);
     let key = format!("heartbeat:{}", job.id);
 
-    // The runner already gathered the fire: nothing is parked under its key.
+    // The runner already gathered the fire: nothing is parked under its key. This is a
+    // RECURRING job, so the schedule must not record a clean run for work whose end this
+    // path cannot see (review #12, residual).
+    let error = hooks
+        .on_settle_timeout(&job, Some(key.as_str()))
+        .expect_err("a running recurring fire has an UNKNOWN outcome, not a clean run");
+    assert!(
+        error.to_string().contains("outcome is unknown"),
+        "the recorded error must say what is unknown: {error}"
+    );
+
+    // A running ONE-SHOT is different: its wake is durably queued, so completing it is
+    // correct and the turn owns the outcome.
+    let mut once = job.clone();
+    once.schedule.kind = pa_core::cron::ScheduleKind::Once;
     assert!(
         hooks
-            .on_settle_timeout(&job, Some(key.as_str()))
-            .expect("no error")
+            .on_settle_timeout(&once, Some(key.as_str()))
+            .expect("a delivered one-shot wake is not an error")
             .is_none(),
-        "a fire that left the lane is running, so it is not a skip"
+        "a running one-shot is a delivered wake, not a skip and not a failure"
     );
 
     // The fire is still parked: it never ran.
@@ -474,6 +489,97 @@ async fn a_settle_timeout_never_reports_live_work_as_skipped() {
     assert!(
         core.steering.is_empty() && core.follow_up.is_empty(),
         "the withdrawn fire must not execute later behind the scheduler's back"
+    );
+}
+
+/// A withdrawn fire is checkpointed, not only removed from memory (review #12, residual).
+///
+/// The parked row is part of the journal's queue snapshot, so a crash between the withdrawal
+/// and the next checkpoint restored it on respawn: the fire the scheduler had already
+/// recorded as skipped (completing its one-shot) would then execute behind its back.
+#[tokio::test]
+async fn withdrawing_a_parked_fire_checkpoints_the_removal() {
+    let dir = std::env::temp_dir().join(format!("pa-sched-wd-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let session = write_active_session(&dir);
+    let core = Arc::new(std::sync::Mutex::new(
+        crate::worker::SessionCore::test_core(None, "/w".to_string()),
+    ));
+    let active_session_id = core.lock().unwrap().active_session_id.clone();
+    let journal = {
+        let mut journal =
+            crate::journal::WorkerRecoveryJournal::open(&dir.join("recovery.jsonl")).unwrap();
+        // The snapshot BEFORE the withdrawal: this is what a respawn would restore.
+        journal
+            .record_queue_snapshot(
+                &active_session_id,
+                &[crate::journal::WorkerQueueItemRecord {
+                    message: "still going".to_string(),
+                    priority: None,
+                    preview: None,
+                    custom_message: None,
+                    queue_key: Some("heartbeat:hb-wd".to_string()),
+                    queue_visible: true,
+                    policy: "injected".to_string(),
+                    forced_batch: false,
+                    images: Vec::new(),
+                }],
+                &[],
+                false,
+            )
+            .unwrap();
+        journal
+    };
+    let journal = Arc::new(std::sync::Mutex::new(Some(journal)));
+    let hooks = QueueHooks {
+        core: Arc::clone(&core),
+        work_notify: Arc::new(Notify::new()),
+        user_bash: Arc::new(crate::user_bash::UserBash::new()),
+        store: Arc::new(AgentCronJobStore::for_session_artifacts()),
+        recovery: Arc::clone(&journal),
+    };
+    let job = heartbeat_job("hb-wd", "still going", DeliveryMode::Steer, &session);
+    let key = format!("heartbeat:{}", job.id);
+    {
+        let mut core = core.lock().unwrap();
+        core.follow_up.push_back(crate::worker::QueuedItem {
+            priority: crate::worker::QueuePriority::Background,
+            message: "still going".to_string(),
+            preview: None,
+            custom_message: None,
+            agent_message: None,
+            admission_id: None,
+            images: Vec::new(),
+            queue_key: Some(key.clone()),
+            done: None,
+            queue_visible: true,
+            policy: crate::worker::TurnPolicy::Injected,
+            forced_batch: false,
+        });
+    }
+
+    assert_eq!(
+        hooks
+            .on_settle_timeout(&job, Some(key.as_str()))
+            .expect("no error"),
+        Some("skipped")
+    );
+    let after = journal
+        .lock()
+        .unwrap()
+        .as_ref()
+        .expect("the journal stays open")
+        .latest_queue_snapshot(&active_session_id)
+        .expect("the checkpoint wrote a snapshot");
+    let keys: Vec<&str> = after
+        .0
+        .iter()
+        .chain(after.1.iter())
+        .filter_map(|item| item.queue_key.as_deref())
+        .collect();
+    assert!(
+        keys.is_empty(),
+        "a respawn would restore the withdrawn fire from the journal: {keys:?}"
     );
 }
 

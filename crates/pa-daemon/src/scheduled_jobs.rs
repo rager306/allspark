@@ -303,25 +303,66 @@ impl QueueHooks {
     /// Classify a fire whose settle window expired, by where its queue item is.
     ///
     /// - Still PARKED in a lane: it never ran, so it is withdrawn (it must not execute later
-    ///   behind the scheduler's back) and reported as a skip — no run happened.
+    ///   behind the scheduler's back), the withdrawal is checkpointed so a respawn cannot
+    ///   restore it, and it is reported as a skip — no run happened.
     /// - Gone from the lanes, i.e. the runner picked it up: never report a skip.
     ///   `record_dispatch_result` completes a one-shot on a skip, which would close a prompt
     ///   that is executing right now and stamp a recurring job's `lastSkippedAt` for work in
-    ///   flight. The turn owns its own outcome, so the fire counts as a run.
+    ///   flight.
+    ///   - A ONE-SHOT records a clean run (`Ok(None)`): its wake is durably queued, so
+    ///     completing it is correct and the turn owns the outcome.
+    ///   - A RECURRING job records an unknown outcome (`Err`): the scheduler stores the error
+    ///     and follows with the failure backoff, which stretches the next fire. Recording a
+    ///     clean run for a fire whose end this path cannot see was the residual.
     fn on_settle_timeout(
         &self,
         job: &AgentCronJob,
         fire_key: Option<&str>,
     ) -> anyhow::Result<Option<&'static str>> {
         if Self::withdraw_parked_fire(&self.core, fire_key) {
+            // The withdrawal is a durable fact, not just an in-memory one (review #12,
+            // residual): the parked row is part of the journal's queue snapshot, so a crash
+            // between this skip and the next checkpoint restored it on respawn and the
+            // "withdrawn" fire executed behind the scheduler's back — after its one-shot had
+            // already been completed. One checkpoint makes the removal part of the recovery
+            // evidence, and the all-empty lanes flip the verdict to idle in the same append.
+            crate::worker::checkpoint_queue_recovery(
+                &self.recovery,
+                &self.core,
+                crate::worker::QueueCheckpoint::Settle {
+                    operation: "cron_fire_withdrawn",
+                },
+            );
             return Ok(Some("skipped"));
         }
+        // The fire left the lanes: the runner is executing it, so nothing here may call it a
+        // skip. What the SCHEDULE may record still differs by schedule kind (review #12,
+        // residual).
+        if job.schedule.kind == pa_core::cron::ScheduleKind::Once {
+            // A one-shot's wake HAS been delivered: its prompt is durably queued and running.
+            // Completing it is right, and re-arming it would mint a second dispatch and run the
+            // same wake twice. The turn owns its own outcome.
+            tracing::warn!(
+                job = %job.id,
+                "a one-shot fire outlived its settle window while running; the wake is \
+                 delivered and the turn owns the outcome"
+            );
+            return Ok(None);
+        }
+        // A recurring job has no such cover: `Ok(None)` records a clean run — `run_count`,
+        // `last_run_at`, and a cleared failure streak — for work whose outcome this fire cannot
+        // see. Report the unknown outcome instead: the scheduler stores it as `last_error` and
+        // follows with the failure backoff, which STRETCHES the next fire rather than dropping
+        // it, so nothing is lost and nothing is claimed.
         tracing::warn!(
             job = %job.id,
-            "a scheduled fire outlived its settle window while running; leaving the outcome \
-             to its turn"
+            "a scheduled fire outlived its settle window while running; recording an unknown \
+             outcome and backing the schedule off"
         );
-        Ok(None)
+        Err(anyhow::anyhow!(
+            "scheduled fire outlived its settle window ({FIRE_SETTLE_TIMEOUT_MS} ms) while \
+             running; its outcome is unknown"
+        ))
     }
 
     /// Remove a still-parked fire from its lane, returning whether it was there.
