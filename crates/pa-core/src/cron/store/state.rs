@@ -328,7 +328,7 @@ pub(crate) fn recover_interrupted_in_state(
                         .unwrap_or_else(|| iso_from_millis(now)),
                 );
             }
-            job.last_error = Some("Interrupted before scheduled operation completion".to_string());
+            job.last_error = Some(super::INTERRUPTED_FIRE_MARKER.to_string());
             job.updated_at = iso_from_millis(now);
             recovered.push(job.clone());
             job

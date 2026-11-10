@@ -517,7 +517,9 @@ async fn a_rearmed_claim_whose_fire_survived_is_not_enqueued_twice() {
             &session,
         )
     };
-    job.last_error = Some("Interrupted before scheduled operation completion".to_string());
+    // The producer's own constant, not a copied literal: a rename on either side would
+    // otherwise turn the replay guard off silently (review #6, residual).
+    job.last_error = Some(pa_core::cron::store::INTERRUPTED_FIRE_MARKER.to_string());
     // The row the previous worker life durably queued, restored onto the lane.
     {
         let mut core = core.lock().unwrap();

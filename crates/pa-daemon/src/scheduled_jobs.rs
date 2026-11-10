@@ -30,10 +30,11 @@ const FIRE_SETTLE_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 
 /// The `last_error` an interrupted dispatch's recovery stamps on its job
 /// (`cron::store::state::recover_interrupted_in_state`): the mark that this row's next fire is a
-/// REPLAY of a claim whose handoff to the queue is unknown (review #6). Kept as a literal
-/// because the store's `state` module is private to `pa-core`; the producer is the one place
-/// that writes it.
-const INTERRUPTED_FIRE_MARKER: &str = "Interrupted before scheduled operation completion";
+/// REPLAY of a claim whose handoff to the queue is unknown (review #6).
+///
+/// One definition, in `pa-core`: this used to be a copied literal, so renaming the
+/// producer's text would have turned the replay guard off without a single test failing.
+use pa_core::cron::store::INTERRUPTED_FIRE_MARKER;
 
 /// The session-artifact directory for one session file: `<sessions>/../session-artifacts/<id>`.
 pub(crate) fn session_artifact_dir(session_file: &Path, session_id: &str) -> Option<PathBuf> {

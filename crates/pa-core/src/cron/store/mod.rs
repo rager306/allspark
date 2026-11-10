@@ -17,6 +17,13 @@ mod session_artifacts;
 mod state;
 
 pub use session_artifacts::read_scheduled_jobs_artifact;
+/// The `last_error` text a RECOVERED claim carries, written by `state.rs`'s re-arm path.
+///
+/// It is exported because a reader outside this crate must recognise it, and a copied
+/// literal in the reader is a second source of truth: rename the write and the reader
+/// silently stops matching, which turns the replay guard (review #6) off with no test
+/// failing. One definition, both sides read it.
+pub const INTERRUPTED_FIRE_MARKER: &str = "Interrupted before scheduled operation completion";
 
 pub const SESSION_SCHEDULED_JOBS_FILENAME: &str = "scheduled-jobs.json";
 
