@@ -1,9 +1,9 @@
 # Reference
 
-`Worker::run` is invoked from `spawn_worker` (`worker.run()`), `Backup::run` from
-`unrelated` (`backup.run()`). Both are called, and both call sites are textually
-identical, so a `grep "run()"` cannot tell which receiver each belongs to: only the
-symbol layer (receiver type) or the language server's references answer it.
+`Worker::run` is invoked from `spawn_worker`, `Backup::run` from `unrelated`. Both are
+called, and both call sites read the same text, `x.run()`, so a `grep "run()"` cannot
+tell which receiver each belongs to: only the symbol layer (the receiver's TYPE) or the
+language server's references answer it.
 
 The answer has to be the structured mapping the prompt asks for:
 

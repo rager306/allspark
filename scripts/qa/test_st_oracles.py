@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -138,6 +139,39 @@ class SymbolNavigationOracleTests(unittest.TestCase):
         self.assertIn("Backup::run was modified", output)
 
 
+class FixturePremiseTests(unittest.TestCase):
+    """ST-001's fixture must be a trap: the two call sites cannot disclose the mapping.
+
+    Review #36: the prompt claimed both call sites read `x.run()` while the fixture spelled
+    `worker.run()` / `backup.run()`, so a text search mapped each receiver to its type and the
+    "symbol-aware lookup" the task exists to test was never needed. These pin the fixture, and
+    the prompt, against drifting apart again.
+    """
+
+    task = "ST-001-symbol-nav-not-grep"
+
+    def source(self) -> str:
+        return (TASKS / self.task / "fixture" / "src" / "lib.rs").read_text(encoding="utf-8")
+
+    def test_the_two_call_sites_are_textually_identical(self):
+        sites = [line.strip() for line in self.source().splitlines() if ".run()" in line]
+        self.assertEqual(len(sites), 2, f"expected exactly two call sites: {sites}")
+        self.assertEqual(
+            sites[0], sites[1],
+            "the call sites differ, so a text search maps each receiver to its type "
+            f"without the symbol layer: {sites}")
+
+    def test_the_prompt_quotes_the_call_site_the_fixture_has(self):
+        prompt = (TASKS / self.task / "task.yaml").read_text(encoding="utf-8")
+        match = re.search(r"call sites? read `([^`]+)`", prompt)
+        self.assertIsNotNone(match, "the prompt no longer states the call-site form it traps")
+        form = match.group(1)
+        occurrences = [line.strip() for line in self.source().splitlines() if line.strip() == form]
+        self.assertEqual(
+            len(occurrences), 2,
+            f"the prompt promises {form!r} at both sites; the fixture has {occurrences}")
+
+
 class ArchitectureOracleTests(unittest.TestCase):
     """ST-002: a SUCCESSFUL graph call, and the chain in the FINAL answer."""
 
@@ -209,11 +243,74 @@ class SymbolEditOracleTests(unittest.TestCase):
         self.assertIn("Config::describe does not return", output)
         self.assertIn("Config::summary's body is not byte-identical", output)
 
+    def test_a_marker_in_a_comment_inside_the_describe_body_fails(self):
+        """Review #38's residual case: the marker is in describe's CODE-adjacent comment.
+
+        The body-wide `in` check cannot tell a comment from a statement, so a body that
+        carries `// describe: retries=` and returns something else satisfied it.
+        """
+        with Fixture(self.task) as fx:
+            fx.edit("src/lib.rs", self.describe_doc, self.describe_doc + " describe: retries=")
+            fx.edit(
+                "src/lib.rs",
+                '        format!("retries={} timeout={}", self.retries, self.timeout_ms)\n    }',
+                '        // describe: retries= and timeout= are gone\n'
+                '        String::from("nope")\n    }',
+            )
+            code, output = fx.run(self.task)
+        self.assertEqual(code, 1)
+        self.assertIn("Config::describe does not return", output)
+
     def test_an_unmodified_fixture_fails(self):
         with Fixture(self.task) as fx:
             code, output = fx.run(self.task)
         self.assertEqual(code, 1)
         self.assertIn("Config::describe does not return", output)
+
+
+class ArchitectureChainTests(unittest.TestCase):
+    """ST-002's chain: every hop in evaluation order, not four names anywhere.
+
+    Review #37's residual: the old check only asked whether each of four names appeared
+    somewhere in the answer, so `validate -> load -> handle -> main` (source order,
+    reversed) passed. The answer is graded as the ordered list the prompt asks for, and a
+    hop that is missing or misplaced fails.
+    """
+
+    task = "ST-002-architecture-via-graph"
+
+    def verdict(self, answer: str) -> tuple[int, str]:
+        rows = [tool_call("c1", "graph", {"action": "trace"}),
+                tool_result("c1", "graph", "main -> handle -> load"),
+                assistant(answer)]
+        with Fixture(self.task) as fx:
+            return fx.run(self.task, rows)
+
+    def test_the_reversed_chain_fails(self):
+        code, output = self.verdict("validate -> load -> handle -> main\nCHAIN-DONE")
+        self.assertEqual(code, 1, output)
+
+    def test_a_chain_that_omits_a_hop_fails(self):
+        code, output = self.verdict("main -> load -> validate\nCHAIN-DONE")
+        self.assertEqual(code, 1)
+        self.assertIn("handle", output)
+
+    def test_a_chain_ending_at_the_value_the_prompt_names_passes(self):
+        """The prompt asks for the chain to the value 41, so stopping there is correct."""
+        self.assertEqual(self.verdict("main -> handle -> load -> 41\nCHAIN-DONE"), (0, ""))
+        self.assertEqual(self.verdict("main -> handle -> load -> validate -> 42\nCHAIN-DONE"),
+                         (0, ""))
+
+    def test_a_value_cannot_precede_the_call_that_produces_it(self):
+        code, output = self.verdict("main -> 41 -> handle -> load -> validate\nCHAIN-DONE")
+        self.assertEqual(code, 1, "41 is a value, not a call: the chain is main -> handle -> ...")
+        self.assertIn("value before", output)
+
+    def test_prose_naming_every_function_is_not_a_chain(self):
+        code, output = self.verdict(
+            "main calls handle, which calls load and then validate. CHAIN-DONE")
+        self.assertEqual(code, 1)
+        self.assertIn("ordered", output)
 
 
 class TypedDecisionOracleTests(unittest.TestCase):
@@ -262,6 +359,59 @@ class TypedDecisionOracleTests(unittest.TestCase):
 
     def test_the_rendered_text_is_read_when_details_are_absent(self):
         self.assertEqual(self.decide("DELETE", self.rows(0.9, details=False)), (0, ""))
+
+    def test_an_unrelated_jev_question_is_not_the_requested_verdict(self):
+        """Review #39's residual: the probability came from ANY successful jev call.
+
+        A `check` about something else (here: whether the README is long) is not the
+        task's question, so its 0.9 must not license a DELETE.
+        """
+        rows = [
+            tool_call("j1", "jev", {"action": "check", "question": "is the README long?",
+                                     "state": "README"}),
+            tool_result("j1", "jev", "check: 0.90",
+                        details={"answers": {"check": {"type": "noul", "noul": 0.9}}}),
+        ]
+        code, output = self.decide("DELETE", rows)
+        self.assertEqual(code, 1)
+        self.assertIn("no jev call asked", output)
+
+    def test_an_inverted_question_flips_the_word_it_licenses(self):
+        """`should we keep it?` at 0.90 licenses KEEP, not DELETE.
+
+        The stems name the direction; p(yes) agreeing with it is the decision. Comparing
+        `p >= 0.5` straight to DELETE would invert an inverted question.
+        """
+        rows = [
+            tool_call("j1", "jev", {"action": "check", "question": "should we keep it?",
+                                     "state": "README"}),
+            tool_result("j1", "jev", "check: 0.90",
+                        details={"answers": {"check": {"type": "noul", "noul": 0.9}}}),
+        ]
+        self.assertEqual(self.decide("KEEP", rows), (0, ""))
+        code, _ = self.decide("DELETE", rows)
+        self.assertEqual(code, 1)
+
+    def test_the_answer_is_read_under_the_asks_own_id(self):
+        """The verdict is the answer for the id the call asked, not the first in the map.
+
+        The stray answer sorts first and says 0.90; the requested question's own answer
+        says 0.10, so the honest decision is KEEP.
+        """
+        rows = [
+            tool_call("j1", "jev", {"action": "ask", "state": "README", "questions": [
+                {"id": "should-delete", "type": "noul",
+                 "instructions": "should this legacy service be deleted now?"}]}),
+            tool_result("j1", "jev", "aaa: 0.90\nshould-delete: 0.10",
+                        details={"answers": {
+                            "aaa": {"type": "noul", "noul": 0.9},
+                            "should-delete": {"type": "noul", "noul": 0.1},
+                        }}),
+        ]
+        code, output = self.decide("DELETE", rows)
+        self.assertEqual(code, 1)
+        self.assertIn("0.10", output)
+        self.assertEqual(self.decide("KEEP", rows), (0, ""))
 
 
 if __name__ == "__main__":

@@ -35,28 +35,84 @@ if not calls:
     print("no successful jev call: the decision was not reached through the typed tool")
     sys.exit(1)
 
+# The decision the task asks for is whether this service should be DELETED now. A jev
+# call about anything else (how long the README is, how urgent the ticket is) is not an
+# answer to it, so its probability cannot license either word in decision.txt (#39).
+# The stems are how the question can be phrased; an inverted phrasing ("should we keep
+# it?") flips which word p(yes) licenses.
+DELETE_STEMS = ("delet", "remov", "retire", "decommission", "deprecat")
+KEEP_STEMS = ("keep", "retain", "preserv")
 
-def probability(call: dict) -> float | None:
-    """The noul answer of one jev result: the structured detail, else the text."""
+
+def asked_questions(call: dict) -> list[tuple[str, str]]:
+    """`(answer id, question text)` pairs the call asked, from its own arguments."""
+    arguments = json.loads(call["arguments"])
+    questions = []
+    if isinstance(arguments.get("questions"), list):
+        for question in arguments["questions"]:
+            if not isinstance(question, dict):
+                continue
+            questions.append((
+                str(question.get("id") or ""),
+                " ".join(str(question.get(key) or "")
+                         for key in ("instructions", "question", "true", "false")),
+            ))
+    else:
+        questions.append((
+            str(arguments.get("id") or arguments.get("action") or "check"),
+            " ".join(str(arguments.get(key) or "")
+                     for key in ("question", "instructions", "true", "false")),
+        ))
+    return questions
+
+
+def probability(call: dict, answer_id: str) -> float | None:
+    """The noul answer under `answer_id`: the structured detail, else the text line."""
     result = qa_oracle.result_of(rows, call)
     answers = (result.get("details") or {}).get("answers") or {}
-    for answer in answers.values():
-        if isinstance(answer, dict) and isinstance(answer.get("noul"), (int, float)):
-            return float(answer["noul"])
-    # The rendered line is `<id>: <p>` (`tool.rs::render_result`); the id is the
-    # caller's, so match the shape rather than a known name.
-    match = re.search(r"^[^:\n]+:\s*(0\.\d+|1(?:\.0+)?)\s*$", result.get("text", ""), re.MULTILINE)
+    answer = answers.get(answer_id)
+    if isinstance(answer, dict) and isinstance(answer.get("noul"), (int, float)):
+        return float(answer["noul"])
+    # The rendered line is `<id>: <p>` (`tool.rs::render_result`): match the id that was
+    # asked, never any line.
+    match = re.search(
+        rf"^{re.escape(answer_id)}:\s*(0\.\d+|1(?:\.0+)?)\s*$",
+        result.get("text", ""),
+        re.MULTILINE,
+    )
     return float(match.group(1)) if match else None
 
 
-probabilities = [p for p in (probability(call) for call in calls) if p is not None]
-if not probabilities:
-    print("the jev result carried no readable probability: the typed verdict cannot be compared")
-    sys.exit(1)
-verdict = probabilities[-1]
-expected = "DELETE" if verdict >= 0.5 else "KEEP"
-if text != expected:
+verdicts = []
+for call in calls:
+    for answer_id, question in asked_questions(call):
+        lowered = question.lower()
+        if any(stem in lowered for stem in KEEP_STEMS) and not any(
+            stem in lowered for stem in DELETE_STEMS
+        ):
+            answers_keep = True
+        elif any(stem in lowered for stem in DELETE_STEMS):
+            answers_keep = False
+        else:
+            continue
+        value = probability(call, answer_id)
+        if value is not None:
+            verdicts.append((value, answers_keep))
+if not verdicts:
+    asked = [question for call in calls for _, question in asked_questions(call)]
     print(
-        f"decision.txt holds {text}, but jev answered p(yes)={verdict:.2f} ({expected}): "
-        "the task asked the agent to ACT on the verdict, not to decide past it")
+        "no jev call asked whether this service should be deleted: the typed question "
+        f"the task names was never put to the tool (it asked {asked})")
+    sys.exit(1)
+
+verdict, answers_keep = verdicts[-1]
+# p(yes) >= 0.5 agrees with the direction the question asks about.
+yes = verdict >= 0.5
+expected = "KEEP" if yes == answers_keep else "DELETE"
+if text != expected:
+    asked = "keep it?" if answers_keep else "delete it now?"
+    print(
+        f"decision.txt holds {text}, but jev answered p(yes)={verdict:.2f} "
+        f"({expected}) to {asked!r}: the task asked the agent to ACT on the verdict, "
+        "not to decide past it")
     sys.exit(1)

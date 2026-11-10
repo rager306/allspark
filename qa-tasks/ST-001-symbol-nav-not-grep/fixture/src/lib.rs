@@ -23,11 +23,11 @@ impl Backup {
 }
 
 pub fn spawn_worker(id: u32) -> u32 {
-    let worker = Worker { id };
-    worker.run()
+    let x = Worker { id };
+    x.run()
 }
 
 pub fn unrelated() -> u32 {
-    let backup = Backup { id: 7 };
-    backup.run()
+    let x = Backup { id: 7 };
+    x.run()
 }
