@@ -476,23 +476,21 @@ pub fn unix_listener_definitely_closed(path: &Path) -> bool {
 /// kernel names, so its greeting can no longer hand `shutdown --force` the victim daemon's pid —
 /// and the HELLO gate in `pa-cli` refuses a claim the kernel does not bind, on every platform.
 ///
-/// Two gaps stay open, and neither is closed here:
+/// The SERVER half is enforced by the pipe's DACL, not by a token check: every instance
+/// `windows_pipe.rs` creates carries `D:P(A;;GA;;;SY)(A;;GA;;;OW)` (see `OWNER_ONLY_SDDL`), so
+/// the kernel refuses another local account's open — the Windows analogue of dropping a
+/// foreign-uid accept. That also covers the window this comment used to name: another account can
+/// still create the NAME first, but it cannot connect to an instance this process created, and
+/// `first_pipe_instance` makes the squat a bind failure rather than a served pipe.
 ///
-/// - **No uid, and therefore no owner check.** `windows_pipe.rs` creates the pipe with the default
-///   security descriptor, so a local account that observed the name can also connect to it
-///   before the daemon starts; the client's pid check tells it the server is not its own daemon
-///   (build/hello checks already did) but does not tell it the server is not allowed to talk at
-///   all.
-/// - **The server does not authenticate its client at all.** On unix a foreign-uid connection is
-///   dropped at accept; on Windows any client that opens the pipe is served. Closing that needs
-///   `ImpersonateNamedPipeClient` or an owner-only security descriptor, neither of which this
-///   tree can exercise (there is no Windows runner), and a guard nobody can run is the class of
-///   defect this review exists to catch.
-///
-/// The three mechanisms and what each fails to give are written up in
-/// `.research/review-runs/20261109-041525-a01cd1a0e/DECISIONS-23-26.md`. The pid arm is
-/// compile-checked by `make windows-cross` (a gate this tree runs) and reviewed; it is NOT
-/// executed by any test in this repository.
+/// What is still not done: no client identity is NAMED (no impersonation, so no per-connection
+/// client uid/pid is reported), and the name can still be squatted. The three mechanisms and what
+/// each fails to give are written up in
+/// `.research/review-runs/20261109-041525-a01cd1a0e/DECISIONS-23-26.md`. Both halves are
+/// compile-checked by `make windows-cross` (a gate this tree runs) and reviewed; the DACL text and
+/// the fact that both creation sites pass it are pinned by
+/// `windows_pipe_owner_only_tests`, which runs on every host. The Win32 calls themselves are
+/// exercised by a real Windows runner (`cargo test -p pa-types`), never by this one.
 #[cfg(windows)]
 impl TransportListener for super::windows_pipe::NamedPipeListener {
     fn accept(&self) -> AcceptFuture<'_> {
@@ -665,6 +663,95 @@ pub fn connect_blocking(path: &Path) -> std::io::Result<Box<dyn BlockingTranspor
     let name = pipe_name(path).map_err(std::io::Error::other)?;
     let client = super::windows_pipe::BlockingPipeClient::connect(&name)?;
     Ok(Box::new(client))
+}
+
+/// The Windows pipe instances are owner-only (review #23, CWE-290).
+///
+/// Two claims, each pinned where it can fail:
+///
+/// 1. The DACL text itself is asserted here, on any host: it must be PROTECTED (`D:P`) and must
+///    name nobody but Local System and the object's owner. This is the descriptor the kernel is
+///    handed, so a typo in it is a hole — `D:(A;;GA;;;WD)` (Everyone, inheritable) is the exact
+///    shape the finding is about, and it fails this test.
+/// 2. Every instance creation goes through `create_owner_only`. A restriction on the FIRST
+///    instance only would leave the replacement the `accept` loop creates — the instances clients
+///    actually connect to — on the default descriptor. The pin requires BOTH creation sites to
+///    call the helper, and the helper to pass the parsed descriptor (`security.as_ptr()`) rather
+///    than a null pointer, so "the call is present but the descriptor is absent" is red too.
+///
+/// The Win32 calls themselves are compiled by `make windows-cross` and executed by a real Windows
+/// runner (`cargo test -p pa-types`), not on this host.
+#[cfg(test)]
+mod windows_pipe_owner_only_tests {
+    const SOURCE: &str = include_str!("windows_pipe.rs");
+
+    /// The slice of `windows_pipe.rs` between `start` and the next `\n}\n`.
+    fn body_after(source: &str, start: usize) -> &str {
+        &source[start..start + source[start..].find("\n}\n").expect("the item ends")]
+    }
+
+    #[test]
+    fn the_pipe_dacl_is_protected_and_owner_only() {
+        let anchor = "const OWNER_ONLY_SDDL: &str = \"";
+        let start = SOURCE
+            .find(anchor)
+            .expect("the owner-only descriptor exists");
+        let rest = &SOURCE[start + anchor.len()..];
+        let sddl = &rest[..rest.find('"').expect("the literal ends")];
+        assert!(
+            sddl.starts_with("D:P"),
+            "a PROTECTED DACL: an inherited entry must not be able to widen it: {sddl}"
+        );
+        assert!(
+            sddl.contains("(A;;GA;;;OW)"),
+            "the owner keeps full access — otherwise the daemon cannot open its own pipe: {sddl}"
+        );
+        assert!(
+            sddl.contains("(A;;GA;;;SY)"),
+            "Local System keeps full access (the platform's own services): {sddl}"
+        );
+        for everyone in [";;;WD", ";;;BU", ";;;AU", ";;;AN", ";;;BG"] {
+            assert!(
+                !sddl.contains(everyone),
+                "{everyone} names a group, not the owner — that is the finding: {sddl}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_pipe_instance_is_created_with_the_owner_only_descriptor() {
+        let sites = SOURCE.matches("ServerOptions::new()").count();
+        assert_eq!(
+            sites, 2,
+            "the listener's first instance and its replacement are the two creation sites; a \
+             third means a new path this pin does not cover"
+        );
+        assert_eq!(
+            SOURCE.matches("create_owner_only(").count(),
+            3,
+            "one definition plus both creation sites"
+        );
+        // The fallback the finding is about: a bare `ServerOptions::create` keeps the DEFAULT
+        // descriptor. Its absence is the property, so name the exact spelling that would be it.
+        assert!(
+            !SOURCE.contains(".create("),
+            "no instance may be created with the default descriptor"
+        );
+        let start = SOURCE
+            .find("fn create_owner_only(")
+            .expect("the helper exists");
+        let body = body_after(SOURCE, start);
+        assert!(
+            body.contains("create_with_security_attributes_raw(name, security.as_ptr())"),
+            "the helper must hand the kernel the parsed descriptor, not a null pointer (a null \
+             pointer is `create` with a different name): {body}"
+        );
+        assert!(
+            body.contains("OwnerOnlySecurity::new()?"),
+            "a descriptor that cannot be built must FAIL the creation, never fall back to the \
+             default one: {body}"
+        );
+    }
 }
 
 #[cfg(all(test, unix))]

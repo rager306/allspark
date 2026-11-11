@@ -13,21 +13,33 @@
 //! that process. A squatter on the pipe name is then named as itself and its greeting supplies no
 //! kill target.
 //!
-//! Two gaps remain, on purpose and stated rather than papered over:
+//! The SERVER side is owner-only. Every instance is created through
+//! [`create_owner_only_instance`], which passes a `SECURITY_ATTRIBUTES` carrying the descriptor
+//! `D:P(A;;GA;;;OW)` (see [`OWNER_ONLY_SDDL`]): a protected DACL granting full access to the
+//! pipe's owner and to nobody else. The kernel then refuses another local account's
+//! `CreateFile` — the Windows analogue of the Unix listener dropping a foreign-uid accept, and
+//! the reason "any process that opens the pipe is served" no longer holds. This is the same
+//! mechanism the review's suggested fix names, and it removes the impersonation check from the
+//! critical path rather than adding a second, weaker one.
 //!
-//! - The daemon's pipe name is fixed and machine-wide, and `ServerOptions::create` leaves the
-//!   default security descriptor in place, so the pipe is not owner-only. Another local account
-//!   can squat the name before the daemon starts and speak to the client; the pid check means the
-//!   client knows it is not talking to its own daemon (build/hello checks agreed already), but no
-//!   layer here refuses the conversation on ownership grounds.
-//! - Nothing authenticates a CLIENT to the server: on unix a foreign-uid accept is dropped, here
-//!   any process that opens the pipe is served.
+//! Two limits remain, stated rather than papered over:
 //!
-//! Both need Win32 calls this fork cannot exercise: a security descriptor built from
-//! `SECURITY_ATTRIBUTES`/SDDL, and `ImpersonateNamedPipeClient` or a token comparison on the
-//! server side. The pinned-constant/`extern` style can express them, but this tree has no Windows
-//! runner, and a guard that cannot be run on the platform it protects is the class of defect this
-//! review exists to catch. The options and their costs are in
+//! - Another local account can still create the NAME before the daemon starts (its own instance
+//!   carries its own descriptor). `first_pipe_instance` turns that into a bind FAILURE — the
+//!   daemon does not serve a pipe it did not create — and a client that does connect elsewhere
+//!   is caught by the pid gate above: the squatter is named as itself, and its greeting supplies
+//!   no kill target. Nothing here can prevent the squat; it can only refuse to be the squatted.
+//! - We do not `ImpersonateNamedPipeClient` on accept, so a served peer is not NAMED (no client
+//!   uid/pid is reported anywhere); ownership is enforced at connect time by the DACL instead.
+//!   A token comparison would add a second layer, and it needs Win32 calls this fork cannot
+//!   exercise — shipping one blind is the defect class this review exists to catch.
+//!
+//! NOT EXERCISED ON WINDOWS by this fork's CI: the tree has no Windows runner on this host, so
+//! the cross target is compile-checked (`cargo check --target x86_64-pc-windows-gnu`, and the
+//! `make windows-cross` gate) and reviewed, not executed. The `#[cfg(all(test, windows))]`
+//! round-trip below is the verifier a real Windows runner (the on-demand
+//! `windows-runtime-triage` battery's `cargo test -p pa-types`) executes against this path: a
+//! descriptor the daemon itself cannot open would fail it. The options and their costs are in
 //! `.research/review-runs/20261109-041525-a01cd1a0e/DECISIONS-23-26.md`.
 
 use std::io;
@@ -52,6 +64,130 @@ const BUSY_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 /// error instead of hanging the caller.
 const BUSY_RETRY_DEADLINE: Duration = Duration::from_secs(10);
 
+/// The DACL every pipe instance is created with, as SDDL (review #23, CWE-290).
+///
+/// `D:P` is a PROTECTED DACL: no inherited entry can widen it, so the pipe's effective access is
+/// exactly what is written here regardless of the directory the process runs in. The two ACEs
+/// grant full access to Local System (`SY`, the Windows analogue of uid 0 on a Unix socket) and
+/// to the object's OWNER (`OW`, the SID the kernel resolves to whoever created the pipe) — and to
+/// nobody else.
+const OWNER_ONLY_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;OW)";
+
+/// The Win32 security surface, as a hand-declared extern wall (repo policy: pinned constants and
+/// externs, no windows-sys dependency — the same wall `platform::process` and `windows_console`
+/// build).
+mod winapi {
+    // The Win32 header names stay verbatim: the pinned-constants wall mirrors them.
+    #![allow(non_snake_case)]
+
+    use std::ffi::c_void;
+
+    /// `sddl.h` `SDDL_REVISION_1`: the only revision `ConvertStringSecurityDescriptor…` accepts.
+    pub(crate) const SDDL_REVISION_1: u32 = 1;
+
+    // `#[link]` on each block, not a bare `extern`: a hand-declared import without its library
+    // fails at LINK time on Windows (which no `cargo check` on this host reaches) rather than at
+    // compile time.
+    #[link(name = "advapi32")]
+    extern "system" {
+        /// `sddl.h`: parse SDDL into a self-relative `SECURITY_DESCRIPTOR` allocated with
+        /// `LocalAlloc` (the caller frees it with `LocalFree`).
+        pub(crate) fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            string_security_descriptor: *const u16,
+            revision: u32,
+            security_descriptor: *mut *mut c_void,
+            size: *mut u32,
+        ) -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        pub(crate) fn LocalFree(memory: *mut c_void) -> *mut c_void;
+    }
+}
+
+/// `SECURITY_ATTRIBUTES` (`winbase.h`): the descriptor `CreateNamedPipeW` copies into the new
+/// kernel object. `nLength` must be this exact size — the kernel validates it.
+#[repr(C)]
+struct SecurityAttributes {
+    length: u32,
+    descriptor: *mut std::ffi::c_void,
+    inherit_handle: i32,
+}
+
+/// One instance's owner-only security: the parsed [`OWNER_ONLY_SDDL`] descriptor plus the
+/// `SECURITY_ATTRIBUTES` that points at it. Dropped right after the instance is created;
+/// `CreateNamedPipeW` copies the descriptor into the object, so nothing points at this afterwards.
+struct OwnerOnlySecurity {
+    attributes: SecurityAttributes,
+}
+
+impl OwnerOnlySecurity {
+    fn new() -> io::Result<Self> {
+        let sddl: Vec<u16> = OWNER_ONLY_SDDL
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut descriptor: *mut std::ffi::c_void = std::ptr::null_mut();
+        let mut size: u32 = 0;
+        // SAFETY: `sddl` is NUL-terminated and outlives the call; the callee writes one pointer
+        // and one length through valid pointers.
+        let parsed = unsafe {
+            winapi::ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                winapi::SDDL_REVISION_1,
+                std::ptr::from_mut(&mut descriptor),
+                std::ptr::from_mut(&mut size),
+            )
+        };
+        if parsed == 0 || descriptor.is_null() {
+            // A descriptor this process cannot build is a pipe it must not create: without the
+            // DACL the instance would fall back to the default (world-accessible) descriptor.
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self {
+            attributes: SecurityAttributes {
+                length: u32::try_from(std::mem::size_of::<SecurityAttributes>())
+                    .expect("SECURITY_ATTRIBUTES is far smaller than u32::MAX"),
+                descriptor,
+                inherit_handle: 0,
+            },
+        })
+    }
+
+    /// The `SECURITY_ATTRIBUTES` pointer `CreateNamedPipeW` takes, borrowed for the call.
+    fn as_ptr(&mut self) -> *mut std::ffi::c_void {
+        std::ptr::from_mut(&mut self.attributes).cast()
+    }
+}
+
+impl Drop for OwnerOnlySecurity {
+    fn drop(&mut self) {
+        // SAFETY: the pointer came from `ConvertStringSecurityDescriptor…`, which allocates with
+        // `LocalAlloc`; it is freed exactly once, here.
+        unsafe {
+            winapi::LocalFree(self.attributes.descriptor);
+        }
+    }
+}
+
+/// Create ONE pipe instance whose DACL is [`OWNER_ONLY_SDDL`].
+///
+/// Every instance in this module is created through here, both halves included: a listener's
+/// first instance and its replacement, which is why the restriction cannot be dropped by a later
+/// instance (the kernel applies the DACL of the instance a client connects to).
+///
+/// A descriptor failure FAILS the creation rather than falling back to the default descriptor: a
+/// pipe that cannot be made owner-only must not be served.
+fn create_owner_only(options: &ServerOptions, name: &str) -> io::Result<NamedPipeServer> {
+    let mut security = OwnerOnlySecurity::new()?;
+    // SAFETY: `security` holds a valid, self-relative SECURITY_DESCRIPTOR from
+    // `ConvertStringSecurityDescriptorToSecurityDescriptorW` and lives across the call;
+    // `CreateNamedPipeW` copies the descriptor into the new kernel object, so the pointer itself
+    // need not outlive it.
+    unsafe { options.create_with_security_attributes_raw(name, security.as_ptr()) }
+}
+
 /// A listening named-pipe endpoint. One instance waits for the next client at all times; `accept`
 /// connects that instance and has already created its replacement, so the pipe name stays
 /// connectable - the named-pipe equivalent of a backlog.
@@ -66,9 +202,7 @@ impl NamedPipeListener {
     /// fails when another process owns the name (a live Unix socket blocking
     /// `bind`); a stale pipe cannot exist - instances die with their process.
     pub(crate) fn bind(name: &str) -> io::Result<Self> {
-        let first = ServerOptions::new()
-            .first_pipe_instance(true)
-            .create(name)?;
+        let first = create_owner_only(ServerOptions::new().first_pipe_instance(true), name)?;
         Ok(Self {
             name: name.to_string(),
             pending: AsyncMutex::new(Some(first)),
@@ -80,7 +214,7 @@ impl NamedPipeListener {
     /// keeping clients off the busy path.
     pub(crate) async fn accept(&self) -> io::Result<NamedPipeServer> {
         let mut pending = self.pending.lock().await;
-        let next = ServerOptions::new().create(&self.name)?;
+        let next = create_owner_only(&ServerOptions::new(), &self.name)?;
         let server = pending
             .replace(next)
             .expect("a listening instance is always kept ready");

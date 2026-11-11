@@ -1,0 +1,1 @@
+- Windows: every daemon named-pipe instance is created with an owner-only security descriptor (`D:P(A;;GA;;;SY)(A;;GA;;;OW)`), so another local account can no longer connect to the daemon's pipe; a descriptor that cannot be built now fails the bind instead of serving an open pipe.
