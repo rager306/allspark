@@ -158,9 +158,22 @@ def fixture_root(prefix: str):
 # candidate daemons to shut down BY SOCKET PATH, which is the mechanism AGENTS.md's
 # install rule exists to keep out of a live session. The fixture installs a fake
 # launcher and never opens a socket.
+#
+# `auto` is the DEFAULT, and it is the only mode that decides anything: it runs the
+# fixture exactly when this process lives inside a prime-agent session, and the
+# shipped installer otherwise. The question is asked of the same two arms the guard
+# uses — the session markers, then the process-tree walk that a scrubbed environment
+# cannot remove ([`daemon_ancestor_socket`]) — so the default cannot be steered by the
+# environment the caller happens to pass. A `real`/`fixture` request is obeyed as
+# written, which is how the release gate names its subject and how a test names the
+# refusal; `auto` is just the safe answer for a caller that did not think about it.
 REAL_INSTALLER = "real"
 FIXTURE_INSTALLER = "fixture"
+AUTO_INSTALLER = "auto"
+# The CONCRETE modes: what may be published into a feed.
 INSTALLER_MODES = (REAL_INSTALLER, FIXTURE_INSTALLER)
+# Every accepted `--installer-mode` value.
+INSTALLER_MODE_CHOICES = (AUTO_INSTALLER, *INSTALLER_MODES)
 
 # The stand-in installer written into the feed under `fixture`. It records the
 # environment it was handed (so a probe can assert the isolation), installs a fake
@@ -293,6 +306,38 @@ def daemon_ancestor_socket(
     return None
 
 
+def session_marker() -> str | None:
+    """The socket the session EXPORTED, or None; "the worker marker" when only that.
+
+    The cheap arm: the daemon exports the supervisor socket and the worker role to
+    its children, so an ordinary in-session invocation carries one. It is also the
+    scrubbable arm — `env -i` drops both — which is why it is never the only one.
+    """
+    socket_path = os.environ.get("PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET")
+    if socket_path:
+        return socket_path
+    if os.environ.get("PRIME_AGENT_INTERNAL_DAEMON_WORKER"):
+        return os.environ.get("PRIME_AGENT_DAEMON_SOCKET") or "the worker marker"
+    return None
+
+
+def live_session_reason() -> str | None:
+    """Why this run must not start the shipped installer, or None when it may.
+
+    ONE definition of the question, read by both the refusal
+    ([`guard_session`], [`guard_live_daemon_ancestor`]) and the mode default
+    ([`resolve_installer_mode`]): a harness that refused one way and defaulted the
+    other would be deciding twice, and only one of the two answers would be tested.
+    """
+    marker = session_marker()
+    if marker:
+        return f"inside a prime-agent session ({marker})"
+    ancestor = daemon_ancestor_socket()
+    if ancestor:
+        return f"under a live daemon ({ancestor})"
+    return None
+
+
 def guard_session() -> None:
     """Refuse to run the REAL installer from inside a live agent session.
 
@@ -307,8 +352,7 @@ def guard_session() -> None:
     2026-10-21 incident reached a live supervisor. [`guard_live_daemon_ancestor`]
     is the arm that survives a scrubbed environment.
     """
-    if os.environ.get("PRIME_AGENT_INTERNAL_DAEMON_WORKER") \
-            or os.environ.get("PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET"):
+    if session_marker():
         raise SystemExit(
             "refusing to run the real installer from inside a prime-agent session: "
             "it stops daemons by socket path, and this session's supervisor answers "
@@ -329,6 +373,37 @@ def guard_live_daemon_ancestor() -> None:
             "refusing to run the real installer from under a live daemon "
             f"({ancestor}): it stops daemons by socket path, and that is this "
             "session's own supervisor. Run this harness outside the session (CI does).")
+
+
+def resolve_installer_mode(requested: str, *, session_reason: str | None) -> str:
+    """The installer mode this run will actually use.
+
+    `real` and `fixture` are obeyed as written: the release gate names its subject
+    (`release.yml` runs outside every session) and a test names the refusal. `auto`
+    — the default — answers with the fixture exactly when this process lives inside
+    a prime-agent session, and with the shipped installer otherwise.
+
+    `session_reason` is REQUIRED, like `isolated_environment`'s `live_installer`:
+    whether this run may start a socket-probing installer is the one decision this
+    module must never make silently, and the caller gets it from
+    [`live_session_reason`] — one definition, so the refusal and the default can
+    never answer the same question differently. It also makes the mapping a pure
+    function in its test, which is why the guard battery does not need a daemon
+    ancestor to pin it.
+
+    Why the default must not be `real`: the shipped installer stops daemons BY
+    SOCKET PATH, so a plain `python3 scripts/release/test_channel_install.py` inside
+    a session used to abort (safe) and, before the process-tree walk existed, could
+    reach a live supervisor (not safe). Defaulting to `auto` makes the safe path the
+    one nobody has to know about, while a release runner still exercises the shipped
+    script without passing a flag.
+    """
+    if requested in INSTALLER_MODES:
+        return requested
+    if requested != AUTO_INSTALLER:
+        raise ValueError(
+            f"unknown installer mode {requested!r}: expected one of {INSTALLER_MODE_CHOICES}")
+    return FIXTURE_INSTALLER if session_reason else REAL_INSTALLER
 
 
 def guard_isolated_sockets(root: Path, platform: str | None = None) -> None:

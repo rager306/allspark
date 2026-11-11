@@ -2563,9 +2563,14 @@ def signal_identity(pid, expected_start_id, require_install_executable,
     need BOTH sides, so a hello that simply left `supervisorProcessStartId` out
     skipped the pid-reuse gate and the signal still went out. The Rust
     supervisor always advertises one (filled from the kernel), so on the Rust
-    path its absence is the anomaly — refuse. A TS daemon's hello is not held to
-    it: the field is a Rust-only extension, and the TS product never sends one,
-    which is exactly the compatibility the earlier conditional was protecting.
+    path its absence is the anomaly — refuse.
+
+    A TypeScript daemon is NOT held to it, and the reason is the protocol, not
+    seniority: the field is OPTIONAL there (the TS supervisor copies it from its
+    ownership record when that record has one, and drops it otherwise), so an
+    absent id cannot be told apart from a legitimate omission. That leaves a TS
+    daemon's pid-reuse window unguarded by design, bounded by the peer-pid
+    binding and the re-validation before every signal.
     """
     if PEER_PID is None:
         return "the kernel did not report the socket peer's pid"

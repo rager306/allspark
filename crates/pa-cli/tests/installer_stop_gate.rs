@@ -671,7 +671,17 @@ impl PayloadDaemon {
             // for writing when a parallel fixture daemon execs it, and the kernel
             // answers `ETXTBSY` ("text file busy"). The rename publishes a complete
             // file, so a concurrent spawn either misses it or executes it whole.
-            let staging = libexec.join("prime-agent.copy");
+            //
+            // The staging name must be UNIQUE per caller: two tests in this binary run
+            // in parallel threads and share the payload directory, so a fixed
+            // `prime-agent.copy` made them copy over each other's in-flight file — one
+            // renamed it away while the other was still writing, and the spawn died on
+            // `ETXTBSY` exactly as the shared-path case did before the rename.
+            let staging = libexec.join(format!(
+                "prime-agent.copy-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
             std::fs::copy("/usr/bin/python3", &staging).expect("copy python3 as the payload");
             make_executable(&staging);
             std::fs::rename(&staging, &payload).expect("publish the payload");

@@ -21,11 +21,12 @@ So the harness itself fails closed, before an environment is built:
     fixture socket that long instead of relying on TMPDIR to contain it;
   * the guard also refuses a socket path that resolves outside the fixture root.
 
-And the probe has a second mode for the case where no shipped installer may start
-at all: `--installer-mode fixture` publishes a stand-in installer that installs a
-fake launcher and opens no socket, so the CHANNEL flow (publish, download,
-install, reinstall, user-state preservation) stays under test inside a session.
-`release.yml` keeps the default `real` mode, and a test holds that.
+And the probe resolves its mode instead of assuming one: the `auto` default
+answers `fixture` inside a session — publishing a stand-in installer that installs
+a fake launcher and opens no socket — and `real` on a release runner, so the
+CHANNEL flow (publish, download, install, reinstall, user-state preservation) stays
+under test inside a session while `release.yml`, which passes no mode flag, still
+exercises the shipped installer end to end. A test holds that mapping.
 
 Run: python3 scripts/release/test_channel_install_guard.py  (make install-harness-gates)
 """
@@ -55,9 +56,15 @@ class TheSessionGuardTests(unittest.TestCase):
         (self.root / "tmp").mkdir()
 
     def session_env(self) -> dict:
-        # A live session's markers (measured on 2026-11-09).
+        """ONE live session marker (measured on 2026-11-09), the others cleared.
+
+        Both are named, because `patch.dict` only rewrites the keys it is given:
+        this battery may run under a real daemon (it does, under an agent), and an
+        ambient worker marker would keep a case green whichever arm was mutated.
+        """
         return {"PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET":
-                "/tmp/prime-agent-rust-0/daemon.sock"}
+                "/tmp/prime-agent-rust-0/daemon.sock",
+                "PRIME_AGENT_INTERNAL_DAEMON_WORKER": ""}
 
     def outside_a_session(self):
         # These cases are about the OTHER arms, and this battery may itself run
@@ -67,8 +74,17 @@ class TheSessionGuardTests(unittest.TestCase):
                           {"PRIME_AGENT_INTERNAL_DAEMON_WORKER": "",
                            "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET": ""})
 
+    def markers_only(self):
+        """The marker arm ON ITS OWN: no daemon ancestor to refuse for it.
+
+        This battery runs under a live daemon (it is an agent session), so without
+        this patch the process-tree arm answers for every case here and a marker
+        regression stays green — the discrimination the tests exist for.
+        """
+        return patch.object(harness, "daemon_ancestor_socket", return_value=None)
+
     def test_a_session_invocation_is_refused_before_an_environment_is_built(self):
-        with patch.dict(os.environ, self.session_env()):
+        with patch.dict(os.environ, self.session_env()), self.markers_only():
             with self.assertRaises(SystemExit) as caught:
                 harness.isolated_environment(self.root / "user", "http://127.0.0.1:1",
                                              live_installer=True)
@@ -77,7 +93,11 @@ class TheSessionGuardTests(unittest.TestCase):
     def test_the_worker_marker_alone_is_enough(self):
         # The supervisor socket variable is one marker; the worker role is the
         # other, and a worker's parent has both — but neither is guaranteed.
-        with patch.dict(os.environ, {"PRIME_AGENT_INTERNAL_DAEMON_WORKER": "1"}):
+        with patch.dict(os.environ,
+                        {"PRIME_AGENT_INTERNAL_DAEMON_WORKER": "1",
+                         "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET": "",
+                         "PRIME_AGENT_DAEMON_SOCKET": ""}), \
+                self.markers_only():
             with self.assertRaises(SystemExit):
                 harness.isolated_environment(self.root / "user", "http://127.0.0.1:1",
                                              live_installer=True)
@@ -204,8 +224,8 @@ class TheSessionGuardTests(unittest.TestCase):
         # deliberately made safe, and a `real` run that asked for the fixture gate
         # would start the shipped installer with no refusal at all.
         self.assertIn(
-            "live_installer=args.installer_mode == REAL_INSTALLER", source,
-            "the channel harness must pass the live-installer decision from its own mode")
+            "live_installer=mode == REAL_INSTALLER", source,
+            "the channel harness must pass the live-installer decision from its RESOLVED mode")
 
 
 class TheReleaseGateKeepsTheRealInstallerTests(unittest.TestCase):
@@ -213,9 +233,10 @@ class TheReleaseGateKeepsTheRealInstallerTests(unittest.TestCase):
 
     `release.yml` runs OUTSIDE every session (a release runner), and the shipped
     installer's own end-to-end behaviour is the thing that gate exists to prove. So
-    the release workflow must invoke the channel probe in its default (`real`)
-    mode — passing `--installer-mode fixture` there would turn a real install into a
-    fake-launcher install and still report a green gate.
+    the release workflow must invoke the channel probe with no mode flag — the
+    `auto` default answers `real` there, and `TheInstallerModeTests` pins that
+    mapping — and never with `--installer-mode fixture`, which would turn a real
+    install into a fake-launcher install and still report a green gate.
     """
 
     def test_release_workflows_run_the_channel_probe_without_the_fixture_mode(self):
@@ -223,7 +244,7 @@ class TheReleaseGateKeepsTheRealInstallerTests(unittest.TestCase):
         release = (repo / ".github/workflows/release.yml").read_text()
         self.assertIn("test_channel_install.py", release,
                       "release.yml must run the channel install probe")
-        # Every workflow that runs the probe runs it in the default (`real`) mode:
+        # Every workflow that runs the probe leaves the mode to the `auto` default:
         # asking for the fixture there would turn a real install into a
         # fake-launcher install and still report a green gate.
         ran = 0
@@ -247,6 +268,55 @@ class TheReleaseGateKeepsTheRealInstallerTests(unittest.TestCase):
         self.assertIn("curl -fsSL", script,
                       "the fixture must still exercise the channel download")
 
+
+class TheInstallerModeTests(unittest.TestCase):
+    """`auto` — the DEFAULT — is what a caller who did not think about modes gets.
+
+    The mapped question is a pure function of "does this run live inside a
+    session?", so it is pinned here without a daemon ancestor and without a
+    socket: the same input the guard reads, one answer, two callers.
+    """
+
+    def test_auto_inside_a_session_answers_fixture(self):
+        self.assertEqual(
+            harness.resolve_installer_mode(harness.AUTO_INSTALLER,
+                                           session_reason="under a live daemon (/x.sock)"),
+            harness.FIXTURE_INSTALLER)
+
+    def test_auto_outside_a_session_answers_real(self):
+        # A release runner: no marker, no daemon ancestor. The gate's subject must
+        # stay the SHIPPED installer even though the flag is not spelled out.
+        self.assertEqual(
+            harness.resolve_installer_mode(harness.AUTO_INSTALLER, session_reason=None),
+            harness.REAL_INSTALLER)
+
+    def test_an_explicit_mode_is_obeyed_in_both_directions(self):
+        # The release gate names `real`; a test names `fixture`. Neither may be
+        # second-guessed by where the run happens to live.
+        for session_reason in (None, "inside a prime-agent session (the worker marker)"):
+            self.assertEqual(
+                harness.resolve_installer_mode(harness.REAL_INSTALLER,
+                                               session_reason=session_reason),
+                harness.REAL_INSTALLER)
+            self.assertEqual(
+                harness.resolve_installer_mode(harness.FIXTURE_INSTALLER,
+                                               session_reason=session_reason),
+                harness.FIXTURE_INSTALLER)
+
+    def test_the_cli_default_is_auto(self):
+        """`release.yml` passes no mode flag, so the parser's default decides.
+
+        Read from the shipped parser rather than its source text: the default is a
+        behaviour, and a source assertion would keep passing while the value moved.
+        """
+        import test_channel_install as probe
+        args = probe.build_parser().parse_args(
+            ["--archive", "a.tar.gz", "--installer", "i.sh", "--report", "r.json"])
+        self.assertEqual(args.installer_mode, harness.AUTO_INSTALLER)
+
+    def test_an_unknown_mode_is_refused(self):
+        with self.assertRaises(ValueError):
+            harness.resolve_installer_mode("yolo", session_reason=None)
 
 class TheFixtureChannelProbeTests(unittest.TestCase):
     """The channel probe's `fixture` mode: the flow without the shipped installer.
@@ -284,7 +354,7 @@ class TheFixtureChannelProbeTests(unittest.TestCase):
             f"#!/bin/sh\nprintf 'decoy\\n' > {self.root / 'DECOY-RAN'}\n")
         self.decoy.chmod(0o755)
 
-    def invoke(self, mode: str, *, under_fake_supervisor: bool = False):
+    def invoke(self, mode: str | None, *, under_fake_supervisor: bool = False):
         """Run the channel probe, optionally under a daemon-shaped ancestor.
 
         The ancestor is a shell script NAMED `prime-agent`, spawned with the
@@ -292,7 +362,8 @@ class TheFixtureChannelProbeTests(unittest.TestCase):
         would replace its argv). That is the shape the ancestor walk reads, so the
         refusal is pinned here without depending on what this host happens to run
         under — and without ever letting the real installer start anywhere, CI
-        included.
+        included. A `None` mode passes no `--installer-mode` at all, which is how
+        the release workflow invokes the probe.
         """
         env = {**os.environ, "FIXTURE_INSTALLER_RECORD": str(self.record)}
         env.pop("PRIME_AGENT_INTERNAL_DAEMON_WORKER", None)
@@ -300,8 +371,9 @@ class TheFixtureChannelProbeTests(unittest.TestCase):
         probe = [sys.executable, str(HERE / "test_channel_install.py"),
                  "--archive", str(self.archive),
                  "--installer", str(self.decoy),
-                 "--report", str(self.report),
-                 "--installer-mode", mode]
+                 "--report", str(self.report)]
+        if mode is not None:
+            probe += ["--installer-mode", mode]
         if not under_fake_supervisor:
             return subprocess.run(probe, capture_output=True, text=True, env=env, timeout=300)
         supervisor = self.root / "prime-agent"
@@ -315,7 +387,7 @@ class TheFixtureChannelProbeTests(unittest.TestCase):
              *probe],
             capture_output=True, text=True, env=env, timeout=300)
 
-    def run_probe(self, mode: str, *, under_fake_supervisor: bool = False) -> tuple[int, dict]:
+    def run_probe(self, mode: str | None, *, under_fake_supervisor: bool = False) -> tuple[int, dict]:
         process = self.invoke(mode, under_fake_supervisor=under_fake_supervisor)
         report = json.loads(self.report.read_text()) if self.report.is_file() else {}
         return process.returncode, report
@@ -357,6 +429,30 @@ class TheFixtureChannelProbeTests(unittest.TestCase):
         self.assertEqual(report, {}, "no report: the guard refused before the flow")
         self.assertFalse((self.root / "DECOY-RAN").exists(),
                          "no installer ran: the refusal precedes the flow")
+
+    def test_the_default_mode_inside_a_session_runs_the_stand_in(self):
+        """NO `--installer-mode` argument, under a daemon-shaped ancestor.
+
+        The default is `auto`, so the probe must answer `fixture` here and run the
+        CHANNEL flow without a socket-probing installer — the safe path for a caller
+        who did not think about modes. The earlier battery only ever passed a mode
+        explicitly, so a default that drifted back to `real` would have kept every
+        test green while an in-session run started the shipped script.
+        """
+        if self.report.exists():
+            self.report.unlink()
+        status, report = self.run_probe(None, under_fake_supervisor=True)
+        self.assertEqual(status, 0, report.get("error"))
+        self.assertEqual(report.get("installer_mode"), "fixture", report)
+        self.assertEqual(report.get("requested_installer_mode"), "auto", report)
+        # The FAKE ancestor named the socket, not this host's own supervisor: the
+        # decision must come from the process tree the probe was given.
+        reason = report.get("installer_mode_reason", "")
+        self.assertIn("under a live daemon", reason)
+        self.assertIn("fixture-daemon.sock", reason)
+        self.assertIs(report.get("fixture_installer_ran"), True, report)
+        self.assertFalse((self.root / "DECOY-RAN").exists(),
+                         "the shipped installer must not start in a session")
 
     def test_the_ancestor_refusal_names_the_socket_it_found(self):
         """The refusal must tell the operator WHICH daemon it saw: a bare "refused"

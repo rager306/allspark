@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
 """Exercise the current curl installer and reinstall against a local channel.
 
-Two installer modes, because the probe has two jobs:
+Three installer modes, because the probe has two jobs:
 
-  * `real` (the default) runs the SHIPPED installer — the release gate's subject,
-    on a release runner with no session to protect. It is fail-closed by
-    construction: `isolated_environment` refuses when the run is under a live
-    daemon (the process-tree walk, which a scrubbed environment cannot remove) or
-    when its fixture sockets could leave the fixture root.
+  * `auto` (the DEFAULT) asks where this run lives and answers with one of the
+    two concrete modes: `fixture` inside a prime-agent session (by exported
+    marker, or by the process tree when the markers were scrubbed), `real`
+    otherwise. So the safe path is the one nobody has to know about: a bare
+    `python3 scripts/release/test_channel_install.py` inside a session runs the
+    stand-in, and the same command on a release runner runs the shipped script.
+  * `real` runs the SHIPPED installer — the release gate's subject, on a release
+    runner with no session to protect. It is fail-closed by construction:
+    `isolated_environment` refuses when the run is under a live daemon (the
+    process-tree walk, which a scrubbed environment cannot remove) or when its
+    fixture sockets could leave the fixture root.
   * `fixture` publishes a stand-in installer instead and asserts the CHANNEL flow
     — publish, download, install, reinstall, user state — without executing the
-    shipped script at all. That is what a probe inside an agent session (and the
-    harness's own CI battery) runs, because the shipped installer stops daemons by
-    socket path and AGENTS.md forbids starting it from a session.
+    shipped script at all.
+
+`release.yml` passes no `--installer-mode`, so it runs `auto` on a runner with no
+daemon ancestor: the release gate still exercises the shipped installer end to end,
+and a test holds that the resolution really answers `real` there.
 
 No provider requests are made either way.
 """
@@ -26,37 +34,63 @@ from pathlib import Path
 from test_legacy_upgrade import (
     FIXTURE_INSTALLER,
     FIXTURE_INSTALLER_SCRIPT,
-    INSTALLER_MODES,
+    INSTALLER_MODE_CHOICES,
     REAL_INSTALLER,
+    AUTO_INSTALLER,
     archive_identity,
     digest,
     digest_text,
     execute,
     fixture_root,
     isolated_environment,
+    live_session_reason,
     publish_installer,
     publish_archive,
     release_server,
+    resolve_installer_mode,
 )
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The CLI's parser, exposed so a test can read the mode DEFAULT itself.
+
+    The default is load-bearing beyond the flag: `release.yml` passes no
+    `--installer-mode`, so whatever this default says decides whether the release
+    gate exercises the shipped installer or a stand-in.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", required=True, type=Path)
     parser.add_argument("--installer", required=True, type=Path)
     parser.add_argument("--report", required=True, type=Path)
-    parser.add_argument("--installer-mode", choices=INSTALLER_MODES, default=REAL_INSTALLER,
-                        help="real: the shipped installer (release gate, outside sessions); "
-                             "fixture: a stand-in that installs a fake launcher and opens no "
-                             "socket")
-    args = parser.parse_args()
+    parser.add_argument("--installer-mode", choices=INSTALLER_MODE_CHOICES,
+                        default=AUTO_INSTALLER,
+                        help="auto (default): the shipped installer outside a live session, "
+                             "the stand-in inside one (the process tree decides); real: "
+                             "always the shipped installer (release gate); fixture: always "
+                             "the stand-in, which installs a fake launcher and opens no socket")
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    # Only `auto` asks the question: an explicit mode is obeyed as written, and
+    # the guard for a `real` run is asked again where it matters
+    # (`isolated_environment`, from the resolved mode).
+    session_reason = (live_session_reason()
+                      if args.installer_mode == AUTO_INSTALLER else None)
+    mode = resolve_installer_mode(args.installer_mode, session_reason=session_reason)
     version, platform = archive_identity(args.archive)
     report = {"version": version, "platform": platform, "archive_sha256": digest(args.archive),
-              "installer_mode": args.installer_mode, "steps": []}
-    if args.installer_mode == REAL_INSTALLER:
+              "installer_mode": mode, "requested_installer_mode": args.installer_mode,
+              "steps": []}
+    if mode == REAL_INSTALLER:
         report["installer_sha256"] = digest(args.installer)
     else:
         report["installer_sha256"] = digest_text(FIXTURE_INSTALLER_SCRIPT)
+    if args.installer_mode == AUTO_INSTALLER:
+        # Why the default chose what it chose: the operator reads this instead of
+        # wondering whether the shipped installer was skipped by accident.
+        report["installer_mode_reason"] = session_reason
     try:
         # A SHORT fixture root: the installer re-anchors its sockets at /tmp when
         # TMPDIR is longer than the unix socket limit, and that is the machine's
@@ -64,13 +98,13 @@ def main() -> int:
         with fixture_root("prime-channel-install-") as root:
             feed = root / "feed"
             publish_archive(feed, args.archive)
-            publish_installer(feed, args.installer, args.installer_mode)
+            publish_installer(feed, args.installer, mode)
             (feed / "stable").write_text(version + "\n")
             (feed / "latest.json").write_text(json.dumps({"version": version, "binaries": [
                 {"platform": platform, "file": args.archive.name, "sha256": digest(args.archive)}]}))
             with release_server(feed) as base:
                 env = isolated_environment(root / "user", base,
-                                           live_installer=args.installer_mode == REAL_INSTALLER)
+                                           live_installer=mode == REAL_INSTALLER)
                 prefix = root / "user" / "prefix with spaces"
                 env.update(PRIME_AGENT_RUST_PREFIX=str(prefix), PRIME_AGENT_ALLOW_HTTP="1")
                 # The fixture installer's evidence outlives the fixture root when
@@ -97,7 +131,7 @@ def main() -> int:
                     for name, content in witnesses.items():
                         if (state / name).read_text() != content:
                             raise ValueError(f"Installer changed user state: {name}")
-                if args.installer_mode == FIXTURE_INSTALLER:
+                if mode == FIXTURE_INSTALLER:
                     # The claim the fixture mode exists to make: the bytes that ran
                     # were the stand-in, not the shipped installer. A regression that
                     # put the real file back would fail here, not on a live socket.
