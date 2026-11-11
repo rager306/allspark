@@ -65,8 +65,24 @@ impl QueueHooks {
     /// A restored journal row keeps the key the previous worker life minted, so this is the
     /// only evidence that a claim being retried after a crash already has its prompt in the
     /// queue (review #6: reconciliation by dispatch identity, not by a fresh enqueue).
-    fn fire_is_already_queued(&self, job_id: &str) -> bool {
-        let prefix = format!("cron:{job_id}:");
+    fn fire_is_already_queued(&self, job: &AgentCronJob) -> bool {
+        // The FULL key, not the job prefix (review #6, residual). A prefix match answers
+        // "already delivered" for ANY earlier dispatch of the same job, so a re-arm serving
+        // dispatch D2 skipped its wake because the lane still held D1's parked row — the
+        // exact opposite of the guard's purpose. The key already carries the durable dispatch
+        // id (`cron:<job>:<dispatch>`), so the identity to compare is the one this claim is
+        // serving; `None` (no dispatch recorded) falls back to the job prefix, which is the
+        // only evidence a re-arm can have when the id is unknown.
+        let dispatch_id = self
+            .dispatch_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&job.id)
+            .cloned();
+        let key_prefix = match &dispatch_id {
+            Some(id) => format!("cron:{}:{id}", job.id),
+            None => format!("cron:{}:", job.id),
+        };
         // The lanes are the whole evidence: create restores the previous life's journal
         // snapshot onto them (`restore_queue_snapshot`), so a survived handoff is a parked
         // row here. Reading the journal as well would need a second lock order for no fact
@@ -79,9 +95,13 @@ impl QueueHooks {
             .iter()
             .chain(core.follow_up.iter())
             .any(|item| {
-                item.queue_key
-                    .as_deref()
-                    .is_some_and(|key| key.starts_with(&prefix))
+                item.queue_key.as_deref().is_some_and(|key| {
+                    if dispatch_id.is_some() {
+                        key == key_prefix
+                    } else {
+                        key.starts_with(&key_prefix)
+                    }
+                })
             })
     }
 
@@ -269,7 +289,7 @@ impl AgentCronSchedulerHooks for QueueHooks {
         // delivered, and a recurring job keeps its schedule. Read BEFORE the lanes are locked
         // below (two locks, never nested).
         if job.last_error.as_deref() == Some(INTERRUPTED_FIRE_MARKER)
-            && self.fire_is_already_queued(&job.id)
+            && self.fire_is_already_queued(job)
         {
             return Ok(Some("skipped"));
         }

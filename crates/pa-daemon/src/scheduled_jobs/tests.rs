@@ -1081,3 +1081,93 @@ async fn rlm_heartbeat_mutation_hook_fires_into_the_session_queue() {
     assert_eq!(details["status"], "active");
     assert_eq!(details["runCount"], 0);
 }
+
+/// A re-armed claim must be matched by the DISPATCH it is retrying, not by the job id
+/// (review #6, residual).
+///
+/// `fire_is_already_queued` matched `key.starts_with("cron:<job>:")`, so ANY earlier
+/// dispatch's parked row answered "already delivered" for a NEW dispatch — and the re-arm
+/// silently skipped a wake that had never been queued. The two rows below carry the same job
+/// and different dispatch ids; only the current one may count as the delivery.
+#[tokio::test]
+async fn a_rearmed_claim_is_matched_by_its_own_dispatch_not_by_any_earlier_one() {
+    let dir = std::env::temp_dir().join(format!("pa-sched-dispatch-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let session = write_active_session(&dir);
+    let core = Arc::new(std::sync::Mutex::new(
+        crate::worker::SessionCore::test_core(None, "/w".to_string()),
+    ));
+    let dispatch_ids = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    // The re-arm serves `dispatch-now`; the lane holds a row from `dispatch-before`.
+    dispatch_ids
+        .lock()
+        .unwrap()
+        .insert("cron-dispatch".to_string(), "dispatch-now".to_string());
+    let hooks = QueueHooks {
+        core: Arc::clone(&core),
+        work_notify: Arc::new(Notify::new()),
+        user_bash: Arc::new(crate::user_bash::UserBash::new()),
+        store: Arc::new(AgentCronJobStore::for_session_artifacts()),
+        recovery: Arc::new(std::sync::Mutex::new(None)),
+        dispatch_ids: Arc::clone(&dispatch_ids),
+    };
+    let mut job = AgentCronJob {
+        source: Some("cron".to_string()),
+        ..heartbeat_job(
+            "cron-dispatch",
+            "resume the goal",
+            DeliveryMode::Steer,
+            &session,
+        )
+    };
+    job.last_error = Some(pa_core::cron::store::INTERRUPTED_FIRE_MARKER.to_string());
+    {
+        let mut core = core.lock().unwrap();
+        core.follow_up.push_back(crate::worker::QueuedItem {
+            priority: crate::worker::QueuePriority::Background,
+            message: "the OLD dispatch's prompt".to_string(),
+            preview: None,
+            custom_message: None,
+            agent_message: None,
+            admission_id: None,
+            images: Vec::new(),
+            queue_key: Some("cron:cron-dispatch:dispatch-before".to_string()),
+            done: None,
+            queue_visible: true,
+            policy: crate::worker::TurnPolicy::Injected,
+            forced_batch: false,
+        });
+    }
+
+    // The decision itself, not the queue: `run_job` parks the fire and waits for its settle,
+    // which needs a live runner. What the guard must answer is whether THIS claim's dispatch
+    // is already in a lane, and here only an earlier one is.
+    assert!(
+        !hooks.fire_is_already_queued(&job),
+        "the parked row belongs to an earlier dispatch, so this claim was NOT delivered"
+    );
+
+    // The other half, so the guard cannot pass by never matching: the SAME dispatch in the
+    // lane IS the delivery.
+    core.lock()
+        .unwrap()
+        .follow_up
+        .push_back(crate::worker::QueuedItem {
+            priority: crate::worker::QueuePriority::Background,
+            message: "the current dispatch's prompt".to_string(),
+            preview: None,
+            custom_message: None,
+            agent_message: None,
+            admission_id: None,
+            images: Vec::new(),
+            queue_key: Some("cron:cron-dispatch:dispatch-now".to_string()),
+            done: None,
+            queue_visible: true,
+            policy: crate::worker::TurnPolicy::Injected,
+            forced_batch: false,
+        });
+    assert!(
+        hooks.fire_is_already_queued(&job),
+        "the current dispatch's own parked row IS the delivery"
+    );
+}
