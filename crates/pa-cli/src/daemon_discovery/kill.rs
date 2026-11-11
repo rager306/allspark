@@ -416,7 +416,8 @@ mod tests {
             .filter_map(|rest| rest.split('{').next())
             .collect();
         assert_eq!(
-            conditions.len(), 2,
+            conditions.len(),
+            2,
             "the ladder must consult the identity rule at BOTH ends — before any signal and \
              before the SIGKILL escalation; one check leaves the pid-reuse window open: {body}"
         );
