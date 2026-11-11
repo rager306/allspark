@@ -1050,6 +1050,124 @@ async fn the_settle_window_classifies_by_where_the_fire_is_and_what_it_schedules
     );
 }
 
+/// A recurring fire whose settle window expires is recorded as an UNKNOWN run: the failure
+/// lands on the row and the failure backoff stretches the next fire (review #12, "recurring
+/// counted as ran").
+///
+/// Driven through the real scheduler, because the RECORDING is its job: `run_job` returns the
+/// error, `run_due` stores it in `last_error` and applies the backoff, and the row is what an
+/// operator reads. Paused time runs the 15-minute window out for free once the fire has been
+/// gathered — a fire still in its lane is a skip instead, which the classifier test covers.
+#[tokio::test(start_paused = true)]
+async fn a_recurring_settle_timeout_stores_the_unknown_outcome_and_backs_the_schedule_off() {
+    let dir = std::env::temp_dir().join(format!("pa-sched-backoff-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let session = write_active_session(&dir);
+    let store = Arc::new(AgentCronJobStore::new(dir.join("jobs.json")));
+    // Due a minute before the wall clock the hooks report (`now` defaults to the system clock;
+    // only the settle WAIT is paused time).
+    let created = store
+        .create(&CreateAgentCronJobInput {
+            active_session_id: session.0.clone(),
+            session_id: session.0.clone(),
+            session_file: session.1.to_string_lossy().to_string(),
+            cwd: "/w".to_string(),
+            prompt: "nightly sweep".to_string(),
+            schedule_text: "every 1m".to_string(),
+            now: Some(crate::util::now_ms().saturating_sub(120_000)),
+            ..Default::default()
+        })
+        .unwrap();
+    let core = Arc::new(std::sync::Mutex::new(
+        crate::worker::SessionCore::test_core(None, "/w".to_string()),
+    ));
+    // The SAME store the scheduler claims from: `run_dispatch` looks the claimed job up by id,
+    // and a second, empty store would answer "gone" and record a skip.
+    let hooks = Arc::new(QueueHooks {
+        core: Arc::clone(&core),
+        work_notify: Arc::new(Notify::new()),
+        user_bash: Arc::new(crate::user_bash::UserBash::new()),
+        store: Arc::clone(&store),
+        recovery: Arc::new(std::sync::Mutex::new(None)),
+        dispatch_ids: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+    });
+    let scheduler = Arc::new(pa_core::cron::scheduler::AgentCronScheduler::new(
+        Arc::clone(&store),
+        Arc::clone(&hooks),
+    ));
+    let pass = {
+        let scheduler = Arc::clone(&scheduler);
+        tokio::spawn(async move { scheduler.run_due().await })
+    };
+    // The runner gathers the fire: the item leaves the lane while its settle sender stays alive,
+    // which is exactly "running right now" to the settle-timeout arm.
+    let mut gathered = None;
+    for _ in 0..10_000 {
+        // ONE lock: `or_else` on a temporary guard would re-enter the mutex and deadlock.
+        let item = {
+            let mut core = core.lock().unwrap();
+            core.follow_up
+                .pop_front()
+                .or_else(|| core.steering.pop_front())
+        };
+        if let Some(item) = item {
+            gathered = Some(item);
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    let gathered = gathered.expect("the fire never parked, so nothing waited on the window");
+    // The runtime is now idle apart from the window: paused time advances to it on its own.
+    let ran = pass
+        .await
+        .expect("the dispatch pass")
+        .expect("no state error");
+    assert_eq!(
+        ran, 1,
+        "a fire with an UNKNOWN outcome is not a skip: it is counted as a run"
+    );
+    drop(gathered);
+
+    let row = store
+        .list()
+        .into_iter()
+        .find(|candidate| candidate.id == created.id)
+        .expect("the job stays in the store");
+    assert_eq!(
+        row.status,
+        JobStatus::Active,
+        "a recurring job keeps its schedule"
+    );
+    assert_eq!(
+        row.last_error.as_deref(),
+        Some(
+            "scheduled fire outlived its settle window (900000 ms) while running; its outcome is \
+             unknown"
+        ),
+        "the row must say the outcome is unknown, not report a clean run"
+    );
+    assert_eq!(row.run_count, 1);
+    assert!(
+        row.last_skipped_at.is_none(),
+        "live work must not be stamped as skipped"
+    );
+    // The failure backoff stretched the next fire past the bare one-minute cadence.
+    let next = row
+        .next_run_at
+        .as_deref()
+        .and_then(crate::util::iso_to_unix_ms)
+        .expect("the job keeps a next run");
+    assert!(
+        next >= crate::util::now_ms() + 100_000,
+        "the failure backoff must push the next fire out: {:?}",
+        row.next_run_at
+    );
+    assert!(
+        store.get_claimed_job(&created.id).is_none(),
+        "the claim is released with the result"
+    );
+}
+
 /// `run_job`'s settle-timeout arm must delegate that decision, not answer a skip itself.
 ///
 /// The classifier above is testable; whether the fire path calls it is a separate fact, and
