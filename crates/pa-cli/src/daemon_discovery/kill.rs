@@ -346,15 +346,6 @@ mod tests {
         let _ = child.wait();
     }
 
-    /// A pid that now names ANOTHER process must not receive the SIGKILL escalation
-    /// (review #5, residual).
-    ///
-    /// The gate in `verified_force_kill` runs once, then the ladder waits a second for
-    /// SIGTERM. That second is the window: the daemon that was asked about is already
-    /// gone, the kernel recycles its pid, and a blind SIGKILL reaches a stranger. The
-    /// shape below is that window — a TERM-ignoring process whose identity no longer
-    /// matches what the caller resolved — so no escalation may reach it.
-    #[test]
     /// The identity rule, stated as a decision (review #5).
     ///
     /// The failure this finding names is a RACE — the pid is recycled inside the one-second
