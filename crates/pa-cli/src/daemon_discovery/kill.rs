@@ -406,12 +406,27 @@ mod tests {
             .map(|at| start + at)
             .expect("the function ends");
         let body = &source[start..end];
-        let gates = body.matches("signal_identity_matches(").count();
+        // The CONDITION, not a call count (review #5's own residual, measured): counting
+        // `signal_identity_matches(` stays green under `... && false`, because the call is
+        // still there — only its verdict stopped mattering. Each gate's condition must be the
+        // call alone.
+        let conditions: Vec<&str> = body
+            .split("if !signal_identity_matches(expected_start_id, pid)")
+            .skip(1)
+            .filter_map(|rest| rest.split('{').next())
+            .collect();
         assert_eq!(
-            gates, 2,
+            conditions.len(), 2,
             "the ladder must consult the identity rule at BOTH ends — before any signal and \
              before the SIGKILL escalation; one check leaves the pid-reuse window open: {body}"
         );
+        for condition in conditions {
+            assert!(
+                condition.trim().is_empty(),
+                "the gate must hang on the identity verdict ALONE; anything appended can \
+                 deactivate it (`&& false` keeps the call and admits the pid): {condition:?}"
+            );
+        }
     }
 
     #[test]
