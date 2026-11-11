@@ -2160,12 +2160,16 @@ def read_line(sock, deadline, buf):
     return None
 
 # The kernel's answer for the CURRENT connection, filled by connect(): the
-# pid that bound the socket and, where the platform answers it, its uid.
+# pid that bound the socket, where the platform answers it its uid, and the
+# process GENERATION of that pid (its start id) — read here, while the kernel
+# is still naming the process that bound the socket, so a pid reused after
+# this moment is a different generation rather than a silent substitution.
 PEER_PID = None
 PEER_UID = None
+PEER_START_ID = None
 
 def connect():
-    global PEER_PID, PEER_UID
+    global PEER_PID, PEER_UID, PEER_START_ID
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(HELLO_TIMEOUT_S)
     sock.connect(path)
@@ -2174,6 +2178,7 @@ def connect():
     # listening end (SO_PEERCRED / LOCAL_PEERPID), not of a peer that could
     # have been replaced since.
     PEER_PID, PEER_UID = peer_credentials(sock)
+    PEER_START_ID = process_start_id(PEER_PID) if PEER_PID else None
     return sock
 
 def wait_hello(sock):
@@ -2548,29 +2553,48 @@ def install_owns_executable(executable):
     real_exe = os.path.realpath(executable)
     return any(real_exe == root or real_exe.startswith(root + os.sep) for root in OWN_ROOTS)
 
-def signal_identity(pid, expected_start_id, require_install_executable,
-                    require_start_id=False):
+def signal_generation(pid, hello, require_claim):
+    """The process generation a signal to `pid` is anchored to (review #18).
+
+    The hello's CLAIM when it carries one: a Rust supervisor fills it from the
+    kernel, so a value that no longer matches the live process IS the reused-pid
+    case the gate exists for, and it must never be replaced by whatever the
+    kernel says now (that would make the check compare the kernel with itself).
+
+    When the claim is absent, the KERNEL's own answer for the socket's peer
+    stands in: `connect()` reads the peer pid and that pid's start id on the same
+    connected socket, before a byte is exchanged, so the generation is fixed
+    while the kernel still names the process that bound the listening end. The
+    pid is bound to that same peer (`signal_identity` refuses anything else), and
+    the re-validation before every signal compares the live process against the
+    generation recorded here — which is what closes the TypeScript half of #18:
+    the field is OPTIONAL in that protocol, so its absence cannot be read as a
+    lie, and it no longer leaves the reuse window unguarded either.
+
+    `require_claim` is the Rust path. Its supervisor always advertises the id,
+    so an absent one is the anomaly and the kernel's answer is NOT a substitute:
+    a hello that lost the field is refused, never repaired.
+    """
+    claimed = hello.get("supervisorProcessStartId")
+    if isinstance(claimed, str) and claimed:
+        return claimed
+    if require_claim:
+        return None
+    return PEER_START_ID
+
+def signal_identity(pid, expected_start_id, require_install_executable):
     """Why this pid may still be signalled, or the reason it may not.
 
     Bound to the KERNEL's answers, not to the hello: the pid must be the one
     that bound the socket (SO_PEERCRED / LOCAL_PEERPID), its process start id
-    must still be the one the hello described (a reused pid is another
-    process), and — for a Rust daemon, which IS the payload binary — it must run
-    this install's own payload. A TypeScript daemon runs `node`, so the payload
-    test cannot apply to it; the peer binding still does.
+    must still be the generation `signal_generation` resolved for it (a reused
+    pid is another process), and — for a Rust daemon, which IS the payload
+    binary — it must run this install's own payload. A TypeScript daemon runs
+    `node`, so the payload test cannot apply to it; the peer binding still does.
 
-    `require_start_id` closes the second half of review #18: the check used to
-    need BOTH sides, so a hello that simply left `supervisorProcessStartId` out
-    skipped the pid-reuse gate and the signal still went out. The Rust
-    supervisor always advertises one (filled from the kernel), so on the Rust
-    path its absence is the anomaly — refuse.
-
-    A TypeScript daemon is NOT held to it, and the reason is the protocol, not
-    seniority: the field is OPTIONAL there (the TS supervisor copies it from its
-    ownership record when that record has one, and drops it otherwise), so an
-    absent id cannot be told apart from a legitimate omission. That leaves a TS
-    daemon's pid-reuse window unguarded by design, bounded by the peer-pid
-    binding and the re-validation before every signal.
+    A generation is REQUIRED: no id from the hello and none from the kernel
+    means the reuse window is unguarded, and an unguarded window is a refusal,
+    not a signal.
     """
     if PEER_PID is None:
         return "the kernel did not report the socket peer's pid"
@@ -2581,14 +2605,10 @@ def signal_identity(pid, expected_start_id, require_install_executable,
     if require_install_executable and not install_owns_executable(real_executable_of(pid)):
         return "the process on its socket does not run this install's payload"
     if not expected_start_id:
-        if require_start_id:
-            return "its hello carries no process start id, so pid reuse cannot be ruled out"
-        return None
+        return "no process start id is known for the pid, so pid reuse cannot be ruled out"
     actual_start_id = process_start_id(pid)
     if not actual_start_id:
-        if require_start_id:
-            return "the kernel reports no process start id for the pid it names"
-        return None
+        return "the kernel reports no process start id for the pid it names"
     if actual_start_id != expected_start_id:
         return "the pid now belongs to a different process"
     return None
@@ -2627,11 +2647,15 @@ def kill_supervisor():
         return "not-daemon"
     # THE IDENTITY BINDING (review #18): the hello is the responder's CLAIM.
     # Bind the pid to the kernel's answer for this socket, to this install's
-    # own payload tree, and to the process generation the hello described —
-    # otherwise a forged responder could name any live Prime Agent daemon on
-    # the machine (another user's, another install's) and have it killed.
-    refusal = signal_identity(pid, current.get("supervisorProcessStartId"),
-                              owner == "rust", require_start_id=(owner == "rust"))
+    # own payload tree, and to the process generation it belongs to — otherwise
+    # a forged responder could name any live Prime Agent daemon on the machine
+    # (another user's, another install's) and have it killed.
+    #
+    # The generation is resolved ONCE, here: the hello's claim when it carries
+    # one, else the kernel's answer for the peer pid. Re-deriving it inside the
+    # signal loop would compare the kernel with itself and never notice a reuse.
+    generation = signal_generation(pid, current, require_claim=(owner == "rust"))
+    refusal = signal_identity(pid, generation, owner == "rust")
     if refusal:
         progress("pid %d not signalled: %s" % (pid, refusal))
         return "unbound"
@@ -2642,8 +2666,7 @@ def kill_supervisor():
         # decision and the kill is long enough for the pid to be reused, and
         # SIGKILL lands a moment after SIGTERM did. The kernel's answers are
         # re-read, not remembered.
-        refusal = signal_identity(pid, current.get("supervisorProcessStartId"),
-                                  owner == "rust", require_start_id=(owner == "rust"))
+        refusal = signal_identity(pid, generation, owner == "rust")
         if refusal:
             progress("pid %d not signalled: %s" % (pid, refusal))
             return "killed" if signalled else "unbound"

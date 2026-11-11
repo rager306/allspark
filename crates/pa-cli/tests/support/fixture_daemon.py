@@ -6,6 +6,10 @@ argv: <socket> <pid|self> <deaf|honour>
 env:  FIXTURE_EXECUTABLE   - the path the hello advertises as runtime.executablePath
       FIXTURE_START_ID     - the process start id the hello CLAIMS (a forged value)
       FIXTURE_OMIT_START_ID - "1" leaves supervisorProcessStartId out of the hello
+      FIXTURE_KIND         - "ts" greets like the TypeScript supervisor: no rust build
+                             id, a TS schema, and (unless FIXTURE_START_ID says
+                             otherwise) NO process start id, which is what that
+                             protocol does when its ownership record has none
 """
 import json, os, socket, subprocess, sys
 
@@ -36,21 +40,30 @@ server.bind(path)
 server.listen(8)
 print(os.getpid(), flush=True)
 pid = os.getpid() if pid_arg == "self" else int(pid_arg)
+typescript = os.environ.get("FIXTURE_KIND") == "ts"
 hello = {
     "type": "daemon_hello",
     "socketPath": path,
     "protocol": {"name": "prime-agent.daemon", "version": 7},
-    "schemaId": "protocol-7-schema-30-8e4b17c2a9f5",
+    # The TS product's schema id moves with every release; any id in the family is
+    # the TypeScript daemon of some version. It never carries the rust build id,
+    # and it carries the executable path only as a claim the probe must not trust.
+    "schemaId": ("protocol-7-schema-29-a5c9d20f8b13" if typescript
+                 else "protocol-7-schema-30-8e4b17c2a9f5"),
     "appVersion": "0.0.0",
-    "runtime": {"buildId": "pa-daemon-rs-0.0.0",
-                "executablePath": os.environ.get("FIXTURE_EXECUTABLE", "")},
+    "runtime": {"executablePath": os.environ.get("FIXTURE_EXECUTABLE", "")},
     "supervisorPid": pid,
 }
-# The pid-reuse identity, the way the shipped supervisor carries it: the claimed
-# pid's OWN start id by default, a forged one under FIXTURE_START_ID, and absent
-# under FIXTURE_OMIT_START_ID (an older build's hello).
+if not typescript:
+    hello["runtime"]["buildId"] = "pa-daemon-rs-0.0.0"
+# The pid-reuse identity: the claimed pid's OWN start id by default, a forged one
+# under FIXTURE_START_ID, and absent under FIXTURE_OMIT_START_ID (an older build's
+# hello). The TS daemon omits it by default: the field is optional in that
+# protocol, which is the whole reason the probe must anchor the signal to the
+# kernel's answer when no claim arrives.
 if os.environ.get("FIXTURE_OMIT_START_ID") != "1":
-    claimed = os.environ.get("FIXTURE_START_ID") or kernel_start_id(pid)
+    default = None if typescript else kernel_start_id(pid)
+    claimed = os.environ.get("FIXTURE_START_ID") or default
     if claimed:
         hello["supervisorProcessStartId"] = claimed
 while True:

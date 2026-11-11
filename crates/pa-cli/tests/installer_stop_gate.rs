@@ -677,10 +677,14 @@ impl PayloadDaemon {
             // `prime-agent.copy` made them copy over each other's in-flight file — one
             // renamed it away while the other was still writing, and the spawn died on
             // `ETXTBSY` exactly as the shared-path case did before the rename.
+            // The staging name must be unique per CALL, not per thread: three
+            // fixture daemons can be started from one test in sequence, and a
+            // repeated name lets the second copy write a file the first spawn is
+            // still exec'ing (`ETXTBSY`).
             let staging = libexec.join(format!(
-                "prime-agent.copy-{}-{:?}",
+                "prime-agent.copy-{}-{}",
                 std::process::id(),
-                std::thread::current().id()
+                STAGING_SEQUENCE.fetch_add(1, Ordering::SeqCst)
             ));
             std::fs::copy("/usr/bin/python3", &staging).expect("copy python3 as the payload");
             make_executable(&staging);
@@ -724,6 +728,10 @@ impl Drop for PayloadDaemon {
     }
 }
 
+/// Distinguishes the payload copies one test publishes in sequence (see
+/// [`PayloadDaemon::start_with`]).
+static STAGING_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// The fixture daemon's script: a test SUPPORT file, not a `.tmp` scratch one
 /// (a scratch dir is disposable and this must survive).
 const REPO_FIXTURE_DAEMON: &str = concat!(
@@ -732,6 +740,19 @@ const REPO_FIXTURE_DAEMON: &str = concat!(
 );
 
 fn run_probe_forced(probe: &Path, socket: &Path, prefix: &Path, payload_dir: &str) -> Output {
+    run_probe_forced_kind(probe, socket, prefix, payload_dir, "ours")
+}
+
+/// [`run_probe_forced`] with the candidate KIND the shell would pass: `ours` for
+/// the pinned and fork sockets, `ts` for the TypeScript candidates (classified by
+/// schema, and running `node`, so the install-payload gate cannot apply to them).
+fn run_probe_forced_kind(
+    probe: &Path,
+    socket: &Path,
+    prefix: &Path,
+    payload_dir: &str,
+    kind: &str,
+) -> Output {
     Command::new(
         [
             "/usr/bin/python3",
@@ -743,7 +764,7 @@ fn run_probe_forced(probe: &Path, socket: &Path, prefix: &Path, payload_dir: &st
         .expect("python3"),
     )
     .arg(probe)
-    .arg("--kind=ours")
+    .arg(format!("--kind={kind}"))
     .arg("--force=1")
     .arg(format!("--prefix={}", prefix.display()))
     .arg(format!("--payload-dir={payload_dir}"))
@@ -892,6 +913,80 @@ fn a_forced_stop_refuses_a_rust_daemon_whose_hello_omits_its_process_start_id() 
     assert!(
         reused.child.try_wait().expect("wait").is_none(),
         "the daemon whose hello claimed another generation must still be running"
+    );
+}
+
+/// THE START ID IS A GENERATION, NOT A FRESH READING (review #18, the residual a
+/// previous wave documented instead of closing).
+///
+/// The Rust hello always carries `supervisorProcessStartId`, and a claim that no
+/// longer matches the live process is the pid-reuse case the gate exists for — so
+/// it must be the value compared, never replaced by whatever the kernel says now.
+/// The TypeScript hello may leave the field out; its generation then comes from the
+/// kernel's answer for the peer, read when the socket was connected. Both halves
+/// are the same rule: the signal is anchored to a generation resolved once, and
+/// every signal re-reads the kernel against it.
+///
+/// The fixture below keeps `supervisorPid` honest (it names the process that bound
+/// the socket, so the peer binding cannot answer for the gate) and stamps the
+/// rust-shaped payload, so the install-root and peer gates both pass: only the
+/// generation decision can refuse or allow the signal.
+#[test]
+fn the_signal_generation_comes_from_the_claim_then_from_the_kernel() {
+    let dir = tempfile::tempdir().expect("scratch dir");
+    let Some(probe) = probe_file(dir.path()) else {
+        eprintln!("skipping: no python3 for the installer's probe");
+        return;
+    };
+    let prefix = dir.path().join("install");
+
+    // A Rust daemon whose claimed generation is not its own: refused. The pid is
+    // the peer, so a probe that "repairs" the claim from the kernel would signal it.
+    let mut stale_claim = PayloadDaemon::start_with(
+        &dir.path().join("stale-claim"),
+        &prefix,
+        "self",
+        None,
+        &[("FIXTURE_START_ID", "proc:1")],
+    );
+    let output = run_probe_forced(&probe, &stale_claim.socket, &prefix, "");
+    assert_eq!(
+        verdict(&output),
+        "rust:kill-unbound:0",
+        "the claimed generation must be the one compared: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        stale_claim.child.try_wait().expect("wait").is_none(),
+        "a claim that names another generation must not authorise a signal"
+    );
+
+    // The TypeScript half: no start id in the hello (the protocol's own option),
+    // the pid is the peer, and the kernel's answer for it stands in — so the
+    // signal goes out instead of being refused for a field the protocol may omit.
+    let mut typescript = PayloadDaemon::start_with(
+        &dir.path().join("typescript"),
+        &prefix,
+        "self",
+        None,
+        &[("FIXTURE_KIND", "ts")],
+    );
+    let output = run_probe_forced_kind(&probe, &typescript.socket, &prefix, "", "ts");
+    let ts_verdict = verdict(&output);
+    assert!(
+        ts_verdict.starts_with("ts:stopped-killed") || ts_verdict.starts_with("ts:kill-gone"),
+        "a TS daemon with no claimed start id is still signalled, on the kernel's \
+         answer for the peer: {ts_verdict} / {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while typescript.child.try_wait().expect("wait").is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        typescript.child.try_wait().expect("wait").is_some(),
+        "the TS daemon on the peer pid was signalled"
     );
 }
 
