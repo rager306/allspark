@@ -11,14 +11,16 @@ use super::{
     EXIT_DETACH_TIMEOUT_MS, EXIT_STATS_TIMEOUT_MS, UI_REQUEST_TIMEOUT_MS,
 };
 
-/// How long the open's first content frame waits for the two optional dock registries
-/// (`heartbeats_list`, `list_kernel_bash`).
+/// How long the open's first content frame waits for the three optional dock reads
+/// (`roster_subscribe`, `heartbeats_list`, `list_kernel_bash`).
 ///
 /// The dock's counts are first-frame state — the 2026-09-26 zero-shift ruling, pinned by
 /// `chat_open_first_frame_headless` — so the open does wait for them. It waits for ONE SECOND,
 /// not `UI_REQUEST_TIMEOUT_MS`: a daemon that answers inside the budget is unchanged, and a
 /// stalled one costs the first frame this budget instead of two ten-second bounds, with the
 /// landed reads still folded and the missed ones left to the background refresh (review #15).
+/// The roster snapshot carries the same bound: it seeds the subagent counts, and an unbounded
+/// wait on it held the frame for the client's 30 s request bound (measured).
 const DOCK_FIRST_FRAME_BUDGET: Duration = Duration::from_millis(1_000);
 
 impl SessionUi {
@@ -475,7 +477,15 @@ impl SessionUi {
         // returns to the editor.
         self.roster.clear();
         self.subagents_focused = false;
-        self.subscribe_roster().await;
+        // The roster snapshot seeds the dock's subagent counts, so it is first-frame state like
+        // the dock registries below — and, like them, OPTIONAL data on the paint path, bounded by
+        // the SAME first-frame budget (review #15). It used to be awaited unbounded: the client's
+        // default request bound (30 s) was the only ceiling, measured with a supervisor that
+        // answers `attach` and then goes silent on `roster_subscribe` alone — 30.0 s before the
+        // first content frame. A miss leaves the roster empty; the daemon registers the
+        // subscription before it answers, so the next `roster_update` push refills the counts
+        // without a second request.
+        let _ = tokio::time::timeout(DOCK_FIRST_FRAME_BUDGET, self.subscribe_roster()).await;
         // The dock's heartbeat rows follow `dock_fold`: a first-content-frame attach folds the
         // fresh fetch BEFORE the attach returns (the operator's 2026-09-26 zero-shift ruling).
         match dock_fold {
@@ -1166,6 +1176,102 @@ mod backfill_tests {
              one of each from the frame)"
         );
         drop(session);
+        server.abort();
+    }
+
+    /// The roster snapshot is bounded by the SAME first-frame budget (review #15's remaining
+    /// half).
+    ///
+    /// `roster_subscribe` seeds the dock's subagent counts, but it is optional data on the paint
+    /// path: it was awaited without a bound, so a supervisor that answers `attach` and then goes
+    /// silent on this one command held the first content frame for the client's default request
+    /// bound — measured at 30.0 s. The mock here does exactly that; the open must return inside
+    /// `DOCK_FIRST_FRAME_BUDGET` plus a wide margin, with an empty roster (the push refills it).
+    #[tokio::test]
+    async fn a_wedged_roster_subscribe_does_not_hold_the_first_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("roster-wedged.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let (asked_tx, mut asked_rx) = mpsc::unbounded_channel::<()>();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            write.write_all(b"{\"type\":\"daemon_hello\",\"protocol\":{\"name\":\"prime-agent.daemon\",\"version\":7},\"serverCapabilities\":[],\"clientId\":\"mock\"}\n").await.unwrap();
+            let mut lines = BufReader::new(read).lines();
+            while let Some(line) = lines.next_line().await.unwrap() {
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let kind = request["command"]["type"].as_str().unwrap();
+                if kind == "roster_subscribe" {
+                    // The wedged read: no reply, ever. The send proves the open ISSUED it — a
+                    // "bounded" open that dropped the future un-polled would pass the timing
+                    // half alone.
+                    let _ = asked_tx.send(());
+                    continue;
+                }
+                let data = match kind {
+                    "attach" => json!({
+                        "activeSessionId": "s1", "snapshot": {
+                            "activeSessionId": "s1",
+                            "summary": {"id": "s1", "cwd": "/tmp"},
+                            "state": {"sessionId": "s1", "cwd": "/tmp", "isStreaming": false},
+                            "messages": [], "lastEventSequence": 0,
+                        }, "replay": {"status": "complete", "toSequence": 0},
+                        "lastEventSequence": 0,
+                    }),
+                    _ => json!({}),
+                };
+                let mut reply = serde_json::to_vec(&json!({
+                    "type": "response", "id": request["id"], "command": kind,
+                    "success": true, "data": data,
+                }))
+                .unwrap();
+                reply.push(b'\n');
+                write.write_all(&reply).await.unwrap();
+            }
+        });
+        let mut options =
+            crate::interactive::tests::options(crate::interactive::ModelSelection::default());
+        options.socket_path = socket.clone();
+        options.session = SessionSelection::Attach("s1".to_string());
+        let (client, _events) = DaemonClient::connect(&socket).await.unwrap();
+        let opened = tokio::time::timeout(Duration::from_secs(4), async {
+            SessionUi::open(
+                client,
+                &options,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                ActivityUpdates {
+                    heartbeats: mpsc::unbounded_channel().0,
+                    bash: mpsc::unbounded_channel().0,
+                    factory: mpsc::unbounded_channel().0,
+                    commands: mpsc::unbounded_channel().0,
+                    cache_rate: mpsc::unbounded_channel().0,
+                },
+                mpsc::unbounded_channel().0,
+            )
+            .await
+        })
+        .await;
+        let session = opened
+            .expect("the open must not wait out the client's request bound for a wedged roster")
+            .expect("the attach landed");
+        assert!(
+            session.roster.is_empty(),
+            "a missed snapshot leaves no roster rows: {:?}",
+            session.roster
+        );
+        drop(session);
+        tokio::time::timeout(Duration::from_secs(5), asked_rx.recv())
+            .await
+            .expect("the open issued roster_subscribe rather than skipping it")
+            .expect("the mock saw it");
         server.abort();
     }
 
