@@ -477,10 +477,10 @@ pub fn unix_listener_definitely_closed(path: &Path) -> bool {
 /// and the HELLO gate in `pa-cli` refuses a claim the kernel does not bind, on every platform.
 ///
 /// The SERVER half is enforced by the pipe's DACL, not by a token check: every instance
-/// `windows_pipe.rs` creates carries `D:P(A;;GA;;;SY)(A;;GA;;;OW)` (see `OWNER_ONLY_SDDL`), so
-/// the kernel refuses another local account's open — the Windows analogue of dropping a
-/// foreign-uid accept. That also covers the window this comment used to name: another account can
-/// still create the NAME first, but it cannot connect to an instance this process created, and
+/// `windows_pipe.rs` creates carries [`owner_only_sddl`] of this process's user SID, so the kernel
+/// refuses another local account's open — the Windows analogue of dropping a foreign-uid accept.
+/// That also covers the window this comment used to name: another account can still create the
+/// NAME first, but it cannot connect to an instance this process created, and
 /// `first_pipe_instance` makes the squat a bind failure rather than a served pipe.
 ///
 /// What is still not done: no client identity is NAMED (no impersonation, so no per-connection
