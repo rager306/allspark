@@ -28,20 +28,85 @@ use crate::worker::{QueuedItem, SessionCore, Worker};
 /// turn must not pin the dispatch lane forever).
 const FIRE_SETTLE_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 
-/// The `last_error` an interrupted dispatch's recovery stamps on its job
-/// (`cron::store::state::recover_interrupted_in_state`): the mark that this row's next fire is a
-/// REPLAY of a claim whose handoff to the queue is unknown (review #6).
-///
-/// One definition, in `pa-core`: this used to be a copied literal, so renaming the
-/// producer's text would have turned the replay guard off without a single test failing.
-use pa_core::cron::store::INTERRUPTED_FIRE_MARKER;
-
 /// The session-artifact directory for one session file: `<sessions>/../session-artifacts/<id>`.
 pub(crate) fn session_artifact_dir(session_file: &Path, session_id: &str) -> Option<PathBuf> {
     session_file
         .parent()?
         .parent()
         .map(|root| root.join("session-artifacts").join(session_id))
+}
+
+/// Is `status` one of the fold's END statuses?
+///
+/// The listing fold normalizes `hidden` and `sleep` to `archived` and keeps anything else
+/// verbatim, so the end set is those four spellings. This is the fold's mapping restated where
+/// the destructive decision can see it; `is_recorded_end_agrees_with_the_fold` fails if the two
+/// ever disagree, which is the only way this copy can go stale.
+fn is_recorded_end(status: &str) -> bool {
+    matches!(status, "archived" | "crash" | "hidden" | "sleep")
+}
+
+/// What the file's newest `session_state` row says, read directly rather than through the
+/// listing fold.
+enum NewestStateRow {
+    /// The newest state row carries a readable status (the fold's `state` value).
+    Recorded(String),
+    /// A state row at or after the newest readable one cannot be classified by this build.
+    Unreadable,
+    /// No state row at all (the fold read one, so the file changed under it).
+    Missing,
+}
+
+/// Classify the session file's newest `session_state` row.
+///
+/// `None` when the file cannot be read at all. Lines that do not parse as JSON at all are
+/// ignored exactly as the fold ignores them: an unrelated corrupt row is not evidence about
+/// the lifecycle, and treating it as one would leave a dead session's schedule uncancellable
+/// forever. A line that NAMES a state row and does not parse (a torn append, another build's
+/// shape) is unclassifiable, not absent.
+fn newest_state_row(path: &Path) -> Option<NewestStateRow> {
+    const STATE_TYPE: &str = "session_state";
+    let file = std::fs::File::open(path).ok()?;
+    let mut status: Option<String> = None;
+    let mut unreadable_after: Option<bool> = None;
+    for line in std::io::BufRead::lines(std::io::BufReader::new(file)) {
+        let Ok(line) = line else {
+            return None;
+        };
+        if !line.contains(STATE_TYPE) {
+            continue;
+        }
+        match serde_json::from_str::<Value>(&line) {
+            Ok(value) => {
+                if value.get("type").and_then(Value::as_str) != Some(STATE_TYPE) {
+                    continue;
+                }
+                // The fold's own test: a string `state.status`, whatever its value.
+                match value
+                    .get("state")
+                    .and_then(|state| state.get("status"))
+                    .and_then(Value::as_str)
+                {
+                    Some(found) => {
+                        status = Some(found.to_string());
+                        unreadable_after = Some(false);
+                    }
+                    None => unreadable_after = Some(true),
+                }
+            }
+            // The bytes name a state row and do not parse: a torn append or another build's
+            // shape. Unclassifiable, not absent — treating it as absent is exactly how a
+            // replaced `archived` row read as a recorded end.
+            Err(_) => unreadable_after = Some(true),
+        }
+    }
+    Some(if unreadable_after == Some(true) {
+        NewestStateRow::Unreadable
+    } else if let Some(status) = status {
+        NewestStateRow::Recorded(status)
+    } else {
+        NewestStateRow::Missing
+    })
 }
 
 /// The scheduler hooks: how a claimed job reaches this session.
@@ -60,29 +125,32 @@ pub(crate) struct QueueHooks {
 }
 
 impl QueueHooks {
-    /// Is a fire for `job_id` still parked in either lane?
+    /// Is the INTERRUPTED dispatch's fire still parked in either lane?
     ///
     /// A restored journal row keeps the key the previous worker life minted, so this is the
     /// only evidence that a claim being retried after a crash already has its prompt in the
     /// queue (review #6: reconciliation by dispatch identity, not by a fresh enqueue).
+    ///
+    /// The identity is the INTERRUPTED dispatch's, read from the recovery marker — not the
+    /// one this claim is serving. The current claim was minted by `claim_due` seconds ago,
+    /// after recovery released the old one, so no lane can hold a row keyed by it; matching
+    /// it answered "not delivered" for every real recovery and let the duplicate through
+    /// (review #6, residual).
+    ///
+    /// With no id in the marker there is no identity to compare, and the answer is NOT to
+    /// skip: a same-job prefix match would answer "already delivered" for ANY earlier
+    /// dispatch of the job — the exact opposite of the guard's purpose — while a duplicate
+    /// wake is recoverable and a lost one is not. Older builds wrote the bare marker, so that
+    /// shape reaches this path too.
     fn fire_is_already_queued(&self, job: &AgentCronJob) -> bool {
-        // The FULL key, not the job prefix (review #6, residual). A prefix match answers
-        // "already delivered" for ANY earlier dispatch of the same job, so a re-arm serving
-        // dispatch D2 skipped its wake because the lane still held D1's parked row — the
-        // exact opposite of the guard's purpose. The key already carries the durable dispatch
-        // id (`cron:<job>:<dispatch>`), so the identity to compare is the one this claim is
-        // serving; `None` (no dispatch recorded) falls back to the job prefix, which is the
-        // only evidence a re-arm can have when the id is unknown.
-        let dispatch_id = self
-            .dispatch_ids
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&job.id)
-            .cloned();
-        let key_prefix = match &dispatch_id {
-            Some(id) => format!("cron:{}:{id}", job.id),
-            None => format!("cron:{}:", job.id),
+        let Some(dispatch_id) = job
+            .last_error
+            .as_deref()
+            .and_then(pa_core::cron::store::interrupted_fire_dispatch)
+        else {
+            return false;
         };
+        let key = format!("cron:{}:{dispatch_id}", job.id);
         // The lanes are the whole evidence: create restores the previous life's journal
         // snapshot onto them (`restore_queue_snapshot`), so a survived handoff is a parked
         // row here. Reading the journal as well would need a second lock order for no fact
@@ -91,18 +159,13 @@ impl QueueHooks {
             .core
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // EXACT key equality: the marker names the dispatch, so only that dispatch's row is
+        // evidence. A prefix (`cron:<job>:`) would answer "already delivered" for any earlier
+        // dispatch of the same job — the defect this guard exists to prevent.
         core.steering
             .iter()
             .chain(core.follow_up.iter())
-            .any(|item| {
-                item.queue_key.as_deref().is_some_and(|key| {
-                    if dispatch_id.is_some() {
-                        key == key_prefix
-                    } else {
-                        key.starts_with(&key_prefix)
-                    }
-                })
-            })
+            .any(|item| item.queue_key.as_deref() == Some(key.as_str()))
     }
 
     /// The session's activity snapshot: busy flags off the core plus the bash slot.
@@ -162,9 +225,11 @@ impl QueueHooks {
         match crate::session_store::read_session_info(path) {
             Some(info) if info.id == job.session_id => match info.state.as_deref() {
                 Some("active") => TargetState::Live,
-                // A RECORDED end is the only evidence that may cancel the session's
-                // whole schedule; `hidden`/`sleep` normalize to `archived` upstream.
-                Some("archived" | "crash") => TargetState::Gone,
+                // A RECORDED end is the only evidence that may cancel the session's whole
+                // schedule; `hidden`/`sleep` normalize to `archived` upstream. The fold keeps
+                // the last status it could READ, so this branch is CONFIRMED against the
+                // newest state row before it cancels anything (review #13, residual).
+                Some("archived" | "crash") => Self::confirmed_end(path),
                 // A session file with no `session_state` row at all (every session
                 // written before the row existed) or a state this build cannot read.
                 // Both are "unknown", not "gone": the cancel is persisted, so guessing
@@ -185,6 +250,37 @@ impl QueueHooks {
             // like this, so it is never "gone".
             None => TargetState::Indeterminate(format!(
                 "{} is present but could not be read as a session",
+                path.display()
+            )),
+        }
+    }
+
+    /// The fold's recorded end, confirmed against the newest `session_state` row.
+    ///
+    /// The fold keeps the last status it could READ, which is the right answer for a listing
+    /// and the wrong one for a destructive decision: an `archived` row followed by one this
+    /// build cannot parse still reads as `archived`, and `Gone` PERSISTS a cancellation of the
+    /// session's whole schedule on evidence the session may already have replaced (review
+    /// #13, residual). Cancelling is not reversible, so this branch — and only this branch —
+    /// pays one sequential read to ask the file itself.
+    fn confirmed_end(path: &Path) -> TargetState {
+        match newest_state_row(path) {
+            Some(NewestStateRow::Recorded(status)) if is_recorded_end(&status) => TargetState::Gone,
+            Some(NewestStateRow::Recorded(status)) => TargetState::Indeterminate(format!(
+                "{} records the state {status:?} while the listing fold reported an end",
+                path.display()
+            )),
+            Some(NewestStateRow::Unreadable) => TargetState::Indeterminate(format!(
+                "{} records a lifecycle row this build cannot read after the end the fold \
+                 reported; it may already have been replaced",
+                path.display()
+            )),
+            Some(NewestStateRow::Missing) => TargetState::Indeterminate(format!(
+                "{} no longer records the lifecycle row the fold read",
+                path.display()
+            )),
+            None => TargetState::Indeterminate(format!(
+                "{} could not be re-read to confirm its recorded end",
                 path.display()
             )),
         }
@@ -283,14 +379,12 @@ impl AgentCronSchedulerHooks for QueueHooks {
         let fire_key = queue_key.clone();
         // A claim RE-ARMED from an interrupted dispatch may already be durably queued (review
         // #6). Recovery restores the interrupted life's lane from the journal, so a fire for a
-        // job carrying the interruption marker whose `cron:<job>:` row is still queued is a
+        // job whose recovery marker names a dispatch already parked under this job's key is a
         // REPLAY of a prompt that survived: enqueueing a second copy would run the same wake
         // twice. The skip is the right record — a one-shot completes because its wake is
         // delivered, and a recurring job keeps its schedule. Read BEFORE the lanes are locked
         // below (two locks, never nested).
-        if job.last_error.as_deref() == Some(INTERRUPTED_FIRE_MARKER)
-            && self.fire_is_already_queued(job)
-        {
+        if self.fire_is_already_queued(job) {
             return Ok(Some("skipped"));
         }
         {
@@ -422,10 +516,10 @@ impl QueueHooks {
         if Self::withdraw_parked_fire(&self.core, fire_key) {
             // The withdrawal is a durable fact, not just an in-memory one (review #12,
             // residual): the parked row is part of the journal's queue snapshot, so a crash
-            // between this skip and the next checkpoint restored it on respawn and the
-            // "withdrawn" fire executed behind the scheduler's back — after its one-shot had
-            // already been completed. One checkpoint makes the removal part of the recovery
-            // evidence, and the all-empty lanes flip the verdict to idle in the same append.
+            // between this verdict and the next checkpoint restored it on respawn and the
+            // "withdrawn" fire executed behind the scheduler's back. One checkpoint makes the
+            // removal part of the recovery evidence, and the all-empty lanes flip the verdict
+            // to idle in the same append.
             crate::worker::checkpoint_queue_recovery(
                 &self.recovery,
                 &self.core,
@@ -433,6 +527,24 @@ impl QueueHooks {
                     operation: "cron_fire_withdrawn",
                 },
             );
+            // The fire NEVER RAN. For a recurring job that is a skip: the run did not happen
+            // and the schedule keeps its cadence. For a ONE-SHOT it is not: a skip COMPLETES
+            // the row (`record_dispatch_result`), and completion claims the wake was
+            // delivered — a quota-resume or goal-backoff prompt would be gone without ever
+            // having been queued. Report the undelivered fire instead, so the scheduler
+            // records the failure and its backoff re-arms the only wake this job represents
+            // (review #6's at-least-once rule).
+            if job.schedule.kind == pa_core::cron::ScheduleKind::Once {
+                tracing::warn!(
+                    job = %job.id,
+                    "a one-shot fire sat in its lane past the settle window; the wake was \
+                     never delivered, so the schedule is re-armed rather than completed"
+                );
+                return Err(anyhow::anyhow!(
+                    "one-shot fire waited {FIRE_SETTLE_TIMEOUT_MS} ms in its lane without being \
+                     delivered; the wake is re-armed"
+                ));
+            }
             return Ok(Some("skipped"));
         }
         // The fire left the lanes: the runner is executing it, so nothing here may call it a

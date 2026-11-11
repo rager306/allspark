@@ -414,6 +414,143 @@ async fn an_unclassifiable_state_row_does_not_cancel_the_schedule() {
     assert_eq!(row.status, JobStatus::Active);
 }
 
+/// `is_recorded_end` restates the listing fold's status mapping, so the two must agree.
+///
+/// The cancel path asks this function, the listing asks the fold; a status the fold normalizes
+/// but this set omits would leave a dead session's schedule firing, and one it keeps while this
+/// set claims is an end cancels a live schedule. Driven through a real session file on both
+/// sides rather than by comparing source text.
+#[test]
+fn is_recorded_end_agrees_with_the_fold() {
+    for status in [
+        "active",
+        "archived",
+        "crash",
+        "hidden",
+        "sleep",
+        "paused",
+        "interrupted",
+    ] {
+        let dir = std::env::temp_dir().join(format!("pa-sched-status-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut session = crate::session_store::SessionFile::create("/w", None, 0);
+        let _ = session.append_session_state(status);
+        let path = dir.join(crate::session_store::session_file_name(
+            session.session_id(),
+        ));
+        session.set_path(path.clone());
+        session.rewrite().unwrap();
+        let folded = crate::session_store::read_session_info(&path)
+            .expect("the file folds")
+            .state
+            .expect("the fixture records a state");
+        assert_eq!(
+            is_recorded_end(status),
+            matches!(folded.as_str(), "archived" | "crash"),
+            "{status:?} folds to {folded:?}, so the cancel path must agree with it"
+        );
+    }
+}
+
+/// A recorded end that a LATER, unreadable state row has replaced is not a recorded end
+/// (review #13, residual).
+///
+/// The listing fold keeps the last status it could READ, which is right for a listing and
+/// wrong for a destructive decision: `archived` followed by another build's state row still
+/// folds to `archived`, and cancelling the session's whole schedule on that is irreversible.
+/// The cancelled fixture below is the same file with the trailing row removed, so the test
+/// cannot pass by never cancelling at all.
+#[tokio::test]
+async fn an_end_superseded_by_an_unreadable_state_row_does_not_cancel_the_schedule() {
+    for superseded in [true, false] {
+        let dir = std::env::temp_dir().join(format!(
+            "pa-sched-endstate-{}-{superseded}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (session_id, session_file) = write_active_session(&dir);
+        {
+            let mut session = crate::session_store::SessionFile::open(&session_file).unwrap();
+            let _ = session.append_session_state("archived");
+            session.rewrite().unwrap();
+        }
+        if superseded {
+            // Another build's status shape: a valid row whose status is not a string. The
+            // fold keeps `archived`; the file's NEWEST state row is this one.
+            let mut raw = std::fs::read_to_string(&session_file).unwrap();
+            raw.push_str(
+                "{\"type\":\"session_state\",\"id\":\"newer\",\"timestamp\":\"t\",\
+                 \"state\":{\"status\":{\"phase\":\"archived\"}}}\n",
+            );
+            std::fs::write(&session_file, raw).unwrap();
+        }
+        let info = crate::session_store::read_session_info(&session_file).expect("the file folds");
+        assert_eq!(
+            info.state.as_deref(),
+            Some("archived"),
+            "the fixture must reproduce the stale fold: {superseded}"
+        );
+
+        let store = AgentCronJobStore::for_session_artifacts();
+        let artifact_dir = session_artifact_dir(&session_file, &session_id).unwrap();
+        std::fs::create_dir_all(&artifact_dir).unwrap();
+        store.register_session_artifact(&session_id, &artifact_dir);
+        let job = store
+            .create(&CreateAgentCronJobInput {
+                active_session_id: session_id.clone(),
+                session_id: session_id.clone(),
+                session_file: session_file.to_string_lossy().to_string(),
+                cwd: "/w".to_string(),
+                prompt: "post-end ping".to_string(),
+                schedule_text: "every 10s".to_string(),
+                now: Some(1),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let core = Arc::new(std::sync::Mutex::new(
+            crate::worker::SessionCore::test_core(None, "/w".to_string()),
+        ));
+        let hooks = QueueHooks {
+            core: Arc::clone(&core),
+            work_notify: Arc::new(Notify::new()),
+            user_bash: Arc::new(crate::user_bash::UserBash::new()),
+            store: Arc::new(AgentCronJobStore::for_session_artifacts()),
+            recovery: Arc::new(std::sync::Mutex::new(None)),
+            dispatch_ids: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        };
+        hooks
+            .store
+            .register_session_artifact(&session_id, &artifact_dir);
+
+        let verdict = AgentCronSchedulerHooks::run_job(&hooks, &job).await;
+        let row = hooks
+            .store
+            .list()
+            .into_iter()
+            .find(|candidate| candidate.id == job.id)
+            .expect("the job stays in the store");
+        if superseded {
+            assert!(
+                verdict.is_err(),
+                "an end the newest state row supersedes is indeterminate: {verdict:?}"
+            );
+            assert_eq!(
+                row.status,
+                JobStatus::Active,
+                "the schedule must survive a state row this build cannot classify"
+            );
+        } else {
+            assert_eq!(
+                verdict.unwrap(),
+                Some("skipped"),
+                "the confirmed-end control must still cancel"
+            );
+            assert_eq!(row.status, JobStatus::Cancelled);
+        }
+    }
+}
+
 /// A plain cron fire's queue key is its DISPATCH id, not a process counter (review #6).
 ///
 /// The counter restarted at zero in every worker life, so a respawned worker minted a key an
@@ -517,9 +654,12 @@ async fn a_rearmed_claim_whose_fire_survived_is_not_enqueued_twice() {
             &session,
         )
     };
-    // The producer's own constant, not a copied literal: a rename on either side would
+    // The producer's own marker, carrying the id of the claim being replayed: the guard
+    // reads the dispatch identity from THIS text, and a rename on either side would
     // otherwise turn the replay guard off silently (review #6, residual).
-    job.last_error = Some(pa_core::cron::store::INTERRUPTED_FIRE_MARKER.to_string());
+    job.last_error = Some(pa_core::cron::store::interrupted_fire_marker(
+        "dispatch-from-the-previous-life",
+    ));
     // The row the previous worker life durably queued, restored onto the lane.
     {
         let mut core = core.lock().unwrap();
@@ -732,6 +872,181 @@ async fn withdrawing_a_parked_fire_checkpoints_the_removal() {
     assert!(
         keys.is_empty(),
         "a respawn would restore the withdrawn fire from the journal: {keys:?}"
+    );
+}
+
+/// The real settle window, driven end to end: where the fire IS and what it schedules decide
+/// its verdict (review #12, and the one-shot half of review #6).
+///
+/// The 15-minute window is why the classifier is normally tested directly, and that leaves the
+/// arm itself pinned only by source text. Paused time closes the gap: drive the fire until it
+/// parks, then either leave it parked or gather it as the runner would, expire the window, and
+/// read the verdict the scheduler actually receives.
+///
+/// - Still parked, RECURRING: never ran, so it is withdrawn (it must not execute later behind
+///   the scheduler's back), the removal is checkpointed, and the schedule records a skip.
+/// - Still parked, ONE-SHOT: also never ran, but a skip COMPLETES the row, and completion
+///   claims the wake was delivered. The undelivered fire is reported instead, so the failure
+///   backoff re-arms the only wake the job represents.
+/// - Gathered, RECURRING: running right now, so nothing here may call it a skip — a skip
+///   stamps `lastSkippedAt` for work in flight. Its outcome is unknown, which the scheduler
+///   stores as `last_error` and follows with the failure backoff.
+/// - Gathered, ONE-SHOT: the wake IS delivered and the turn owns the outcome.
+#[tokio::test(start_paused = true)]
+async fn the_settle_window_classifies_by_where_the_fire_is_and_what_it_schedules() {
+    struct Outcome {
+        verdict: anyhow::Result<Option<&'static str>>,
+        lanes_empty: bool,
+        checkpoint_empty: bool,
+    }
+
+    async fn run_fire(once: bool, gathered_by_runner: bool) -> Outcome {
+        let dir = std::env::temp_dir().join(format!("pa-sched-window-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let session = write_active_session(&dir);
+        let core = Arc::new(std::sync::Mutex::new(
+            crate::worker::SessionCore::test_core(None, "/w".to_string()),
+        ));
+        let active_session_id = core.lock().unwrap().active_session_id.clone();
+        let journal = {
+            let mut journal =
+                crate::journal::WorkerRecoveryJournal::open(&dir.join("recovery.jsonl")).unwrap();
+            journal
+                .record_queue_snapshot(&active_session_id, &[], &[], false)
+                .unwrap();
+            journal
+        };
+        let hooks = Arc::new(QueueHooks {
+            core: Arc::clone(&core),
+            work_notify: Arc::new(Notify::new()),
+            user_bash: Arc::new(crate::user_bash::UserBash::new()),
+            store: Arc::new(AgentCronJobStore::for_session_artifacts()),
+            recovery: Arc::new(std::sync::Mutex::new(Some(journal))),
+            dispatch_ids: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        });
+        let mut job = AgentCronJob {
+            source: Some("cron".to_string()),
+            ..heartbeat_job(
+                "cron-window",
+                "nightly sweep",
+                DeliveryMode::Steer,
+                &session,
+            )
+        };
+        if once {
+            job.schedule = pa_core::cron::AgentCronSchedule {
+                kind: pa_core::cron::ScheduleKind::Once,
+                expression: "in 5m".to_string(),
+                interval_ms: None,
+            };
+        }
+        let run = {
+            let hooks = Arc::clone(&hooks);
+            let job = job.clone();
+            tokio::spawn(async move { AgentCronSchedulerHooks::run_job(&*hooks, &job).await })
+        };
+        // Parked means waiting in the lane for the runner: yield (never sleep) so the paused
+        // clock does not move.
+        let mut gathered = None;
+        for _ in 0..10_000 {
+            let popped = {
+                let mut core = core.lock().unwrap();
+                core.follow_up
+                    .pop_front()
+                    .or_else(|| core.steering.pop_front())
+            };
+            if popped.is_some() {
+                gathered = popped;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let gathered = gathered.expect("the fire never parked, so nothing waited on the window");
+        // Either the arm sees a fire that never left its lane, or the item is held OUT of the
+        // lane with its settle sender alive — exactly a runner that gathered the fire and is
+        // still working. Dropping it instead would settle the fire with a closed channel, which
+        // is the other arm.
+        let held = if gathered_by_runner {
+            Some(gathered)
+        } else {
+            core.lock().unwrap().follow_up.push_back(gathered);
+            None
+        };
+        tokio::time::advance(std::time::Duration::from_millis(
+            FIRE_SETTLE_TIMEOUT_MS + 1_000,
+        ))
+        .await;
+        let verdict = run.await.expect("the fire task");
+        let lanes_empty = {
+            let core = core.lock().unwrap();
+            core.follow_up.is_empty() && core.steering.is_empty()
+        };
+        let checkpoint_empty = hooks
+            .recovery
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("the journal stays open")
+            .latest_queue_snapshot(&active_session_id)
+            .is_some_and(|(steering, follow_up, _)| steering.is_empty() && follow_up.is_empty());
+        drop(held);
+        Outcome {
+            verdict,
+            lanes_empty,
+            checkpoint_empty,
+        }
+    }
+
+    // Gathered, recurring: running, so the outcome is unknown rather than a skip.
+    let outcome = run_fire(false, true).await;
+    assert!(
+        outcome
+            .verdict
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.to_string().contains("outcome is unknown")),
+        "a running recurring fire's outcome is unknown, not a skip: {:?}",
+        outcome.verdict
+    );
+
+    // Gathered, one-shot: the wake is delivered and the turn owns the outcome.
+    let outcome = run_fire(true, true).await;
+    assert_eq!(
+        outcome.verdict.expect("a delivered wake is not an error"),
+        None,
+        "a running one-shot is a delivered wake"
+    );
+
+    // Parked, recurring: withdrawn, checkpointed, and reported as the skip it is.
+    let outcome = run_fire(false, false).await;
+    assert_eq!(
+        outcome.verdict.expect("a parked recurring fire is a skip"),
+        Some("skipped"),
+        "a recurring fire that never left the lane is a skip"
+    );
+    assert!(
+        outcome.lanes_empty,
+        "the withdrawn fire must leave the lane"
+    );
+    assert!(
+        outcome.checkpoint_empty,
+        "the withdrawal must be checkpointed, or a respawn restores the fire"
+    );
+
+    // Parked, one-shot: the wake was never delivered, so completing the row would lose it.
+    let outcome = run_fire(true, false).await;
+    assert!(
+        outcome
+            .verdict
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.to_string().contains("re-armed")),
+        "an undelivered one-shot must not be recorded as a completed wake: {:?}",
+        outcome.verdict
+    );
+    assert!(
+        outcome.lanes_empty,
+        "the withdrawn one-shot must leave the lane"
     );
 }
 
@@ -1082,15 +1397,20 @@ async fn rlm_heartbeat_mutation_hook_fires_into_the_session_queue() {
     assert_eq!(details["runCount"], 0);
 }
 
-/// A re-armed claim must be matched by the DISPATCH it is retrying, not by the job id
-/// (review #6, residual).
+/// A re-armed claim is matched by the INTERRUPTED dispatch named in its recovery marker,
+/// and never by a same-job prefix (review #6, residual).
 ///
-/// `fire_is_already_queued` matched `key.starts_with("cron:<job>:")`, so ANY earlier
-/// dispatch's parked row answered "already delivered" for a NEW dispatch — and the re-arm
-/// silently skipped a wake that had never been queued. The two rows below carry the same job
-/// and different dispatch ids; only the current one may count as the delivery.
+/// The old guard compared the lane rows against the dispatch the NEW claim serves. That id is
+/// minted by `claim_due` after recovery already released the old claim, so no lane can hold a
+/// row keyed by it: the guard answered "not delivered" for every real recovery and the
+/// duplicate it exists to prevent went through. The identity that matters is the one the
+/// PREVIOUS life used, and recovery now writes it into the job's marker.
+///
+/// With no id in the marker there is nothing to compare. Skipping on a job prefix is what let
+/// an earlier dispatch's row answer for a new one; a duplicate wake is recoverable and a lost
+/// one is not, so the id-less shape must ENQUEUE.
 #[tokio::test]
-async fn a_rearmed_claim_is_matched_by_its_own_dispatch_not_by_any_earlier_one() {
+async fn a_rearmed_claim_is_matched_by_the_interrupted_dispatch_not_by_a_job_prefix() {
     let dir = std::env::temp_dir().join(format!("pa-sched-dispatch-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let session = write_active_session(&dir);
@@ -1098,11 +1418,13 @@ async fn a_rearmed_claim_is_matched_by_its_own_dispatch_not_by_any_earlier_one()
         crate::worker::SessionCore::test_core(None, "/w".to_string()),
     ));
     let dispatch_ids = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
-    // The re-arm serves `dispatch-now`; the lane holds a row from `dispatch-before`.
+    // The re-arm is serving a FRESH dispatch, minted by `claim_due` after recovery released the
+    // interrupted one. The lane holds no row keyed by it: that is the real shape, and matching
+    // it is exactly the bug this test pins.
     dispatch_ids
         .lock()
         .unwrap()
-        .insert("cron-dispatch".to_string(), "dispatch-now".to_string());
+        .insert("cron-dispatch".to_string(), "dispatch-new".to_string());
     let hooks = QueueHooks {
         core: Arc::clone(&core),
         work_notify: Arc::new(Notify::new()),
@@ -1120,54 +1442,48 @@ async fn a_rearmed_claim_is_matched_by_its_own_dispatch_not_by_any_earlier_one()
             &session,
         )
     };
-    job.last_error = Some(pa_core::cron::store::INTERRUPTED_FIRE_MARKER.to_string());
-    {
-        let mut core = core.lock().unwrap();
-        core.follow_up.push_back(crate::worker::QueuedItem {
-            priority: crate::worker::QueuePriority::Background,
-            message: "the OLD dispatch's prompt".to_string(),
-            preview: None,
-            custom_message: None,
-            agent_message: None,
-            admission_id: None,
-            images: Vec::new(),
-            queue_key: Some("cron:cron-dispatch:dispatch-before".to_string()),
-            done: None,
-            queue_visible: true,
-            policy: crate::worker::TurnPolicy::Injected,
-            forced_batch: false,
-        });
-    }
+    let park = |key: &str| {
+        core.lock()
+            .unwrap()
+            .follow_up
+            .push_back(crate::worker::QueuedItem {
+                priority: crate::worker::QueuePriority::Background,
+                message: "a parked fire".to_string(),
+                preview: None,
+                custom_message: None,
+                agent_message: None,
+                admission_id: None,
+                images: Vec::new(),
+                queue_key: Some(key.to_string()),
+                done: None,
+                queue_visible: true,
+                policy: crate::worker::TurnPolicy::Injected,
+                forced_batch: false,
+            });
+    };
 
-    // The decision itself, not the queue: `run_job` parks the fire and waits for its settle,
-    // which needs a live runner. What the guard must answer is whether THIS claim's dispatch
-    // is already in a lane, and here only an earlier one is.
+    // The marker names `dispatch-interrupted`; the lane holds `dispatch-other` — a row from
+    // some other dispatch of the same job. That is NOT this claim's delivery.
+    job.last_error = Some(pa_core::cron::store::interrupted_fire_marker(
+        "dispatch-interrupted",
+    ));
+    park("cron:cron-dispatch:dispatch-other");
     assert!(
         !hooks.fire_is_already_queued(&job),
-        "the parked row belongs to an earlier dispatch, so this claim was NOT delivered"
+        "another dispatch's row must not answer for the interrupted one"
     );
 
-    // The other half, so the guard cannot pass by never matching: the SAME dispatch in the
-    // lane IS the delivery.
-    core.lock()
-        .unwrap()
-        .follow_up
-        .push_back(crate::worker::QueuedItem {
-            priority: crate::worker::QueuePriority::Background,
-            message: "the current dispatch's prompt".to_string(),
-            preview: None,
-            custom_message: None,
-            agent_message: None,
-            admission_id: None,
-            images: Vec::new(),
-            queue_key: Some("cron:cron-dispatch:dispatch-now".to_string()),
-            done: None,
-            queue_visible: true,
-            policy: crate::worker::TurnPolicy::Injected,
-            forced_batch: false,
-        });
+    // The interrupted dispatch's own row IS the delivery.
+    park("cron:cron-dispatch:dispatch-interrupted");
     assert!(
         hooks.fire_is_already_queued(&job),
-        "the current dispatch's own parked row IS the delivery"
+        "the interrupted dispatch's own parked row is the delivery"
+    );
+
+    // A row keyed by the bare job prefix (an older build's shape) is not an identity either.
+    job.last_error = Some(pa_core::cron::store::INTERRUPTED_FIRE_MARKER.to_string());
+    assert!(
+        !hooks.fire_is_already_queued(&job),
+        "an id-less marker has no identity to compare, so the wake must be enqueued"
     );
 }

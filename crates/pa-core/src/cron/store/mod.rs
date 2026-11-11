@@ -25,6 +25,32 @@ pub use session_artifacts::read_scheduled_jobs_artifact;
 /// failing. One definition, both sides read it.
 pub const INTERRUPTED_FIRE_MARKER: &str = "Interrupted before scheduled operation completion";
 
+/// The `last_error` a re-armed claim carries: the marker PLUS the dispatch id the lost
+/// claim was serving.
+///
+/// The id is the whole point (review #6, residual). Recovery already knows which dispatch
+/// it is replaying, and the queue key the previous worker life minted from that id
+/// (`cron:<job>:<dispatch>`) is the only evidence that the wake reached the session queue
+/// before the crash. Reducing the claim to its job id — the shape a bare marker leaves —
+/// threw that identity away, so a surviving row from the interrupted dispatch could not be
+/// told from any other dispatch's row, and the re-arm delivered the same wake twice.
+///
+/// The channel is `last_error` because it is the one per-job text row both processes
+/// already persist; [`interrupted_fire_dispatch`] is the only reader, so the format has one
+/// writer and one parser.
+#[must_use]
+pub fn interrupted_fire_marker(dispatch_id: &str) -> String {
+    format!("{INTERRUPTED_FIRE_MARKER} (dispatch {dispatch_id})")
+}
+
+/// The dispatch id [`interrupted_fire_marker`] recorded, or `None` for a marker with no id
+/// (a row an older build wrote) or for any other `last_error` text.
+#[must_use]
+pub fn interrupted_fire_dispatch(last_error: &str) -> Option<&str> {
+    let rest = last_error.strip_prefix(INTERRUPTED_FIRE_MARKER)?;
+    rest.strip_prefix(" (dispatch ")?.strip_suffix(')')
+}
+
 pub const SESSION_SCHEDULED_JOBS_FILENAME: &str = "scheduled-jobs.json";
 
 /// One claimed dispatch of a due job.

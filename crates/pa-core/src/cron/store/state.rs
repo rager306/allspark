@@ -294,16 +294,13 @@ pub(crate) fn recover_interrupted_in_state(
     if interrupted.is_empty() {
         return;
     }
-    let interrupted_ids: std::collections::HashSet<String> = interrupted
-        .iter()
-        .map(|dispatch| dispatch.job_id.clone())
-        .collect();
-    // The window each claim covered: a re-armed one-shot returns to the moment it was due.
-    let scheduled_for: HashMap<String, String> = interrupted
-        .iter()
-        .filter(|dispatch| !dispatch.scheduled_for.is_empty())
-        .map(|dispatch| (dispatch.job_id.clone(), dispatch.scheduled_for.clone()))
-        .collect();
+    // Job id -> the one claim whose handoff is unknown. `claim_due_in_state` refuses a second
+    // claim while one is outstanding, so a job has at most one, and its dispatch ID is the
+    // recovery's only handle on the identity the previous life already used (below).
+    let mut interrupted_claims: HashMap<&str, &AgentCronDispatchRecord> = HashMap::new();
+    for dispatch in &interrupted {
+        interrupted_claims.insert(dispatch.job_id.as_str(), dispatch);
+    }
     match dispatch_ids {
         Some(ids) => state
             .dispatches
@@ -315,20 +312,29 @@ pub(crate) fn recover_interrupted_in_state(
         .clone()
         .into_iter()
         .map(|mut job| {
-            if !interrupted_ids.contains(&job.id) || job.status != JobStatus::Active {
+            let Some(claim) = interrupted_claims.get(job.id.as_str()) else {
+                return job;
+            };
+            if job.status != JobStatus::Active {
                 return job;
             }
             if job.schedule.kind == ScheduleKind::Once {
                 // Re-arm, never complete: nothing recorded that this prompt was handed to the
                 // session, and completing it destroys the only wake the one-shot represents.
-                job.next_run_at = Some(
-                    scheduled_for
-                        .get(&job.id)
-                        .cloned()
-                        .unwrap_or_else(|| iso_from_millis(now)),
-                );
+                // It returns to the moment it was due, so the next pass fires it.
+                job.next_run_at = Some(if claim.scheduled_for.is_empty() {
+                    iso_from_millis(now)
+                } else {
+                    claim.scheduled_for.clone()
+                });
             }
-            job.last_error = Some(super::INTERRUPTED_FIRE_MARKER.to_string());
+            // The marker carries the DISPATCH ID, not just the fact of an interruption
+            // (review #6, residual). A re-arm is a REPLAY of this claim, and the queue key the
+            // previous life minted from the id (`cron:<job>:<dispatch>`) is the only evidence
+            // that the prompt already reached the session queue. Reducing the claim to its job
+            // id threw that identity away, so a surviving row from the interrupted dispatch
+            // looked like some other dispatch's and the re-arm delivered the same wake twice.
+            job.last_error = Some(super::interrupted_fire_marker(&claim.id));
             job.updated_at = iso_from_millis(now);
             recovered.push(job.clone());
             job
@@ -673,9 +679,12 @@ mod tests {
             Some(due_iso.as_str()),
             "it returns to the moment it was due, so the next pass fires it"
         );
-        assert!(
-            state.jobs[0].last_error.is_some(),
-            "the recovery stamps why the wake is late"
+        // The stamp carries the DISPATCH it is replaying, so the fire path can recognise a
+        // prompt that survived the crash in the queue (review #6, residual).
+        assert_eq!(
+            state.jobs[0].last_error.as_deref(),
+            Some(crate::cron::store::interrupted_fire_marker(&dispatch_id).as_str()),
+            "the recovery must name the interrupted dispatch, not just the job"
         );
         assert!(
             state.dispatches.is_empty(),

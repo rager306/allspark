@@ -503,13 +503,20 @@ mod tests {
         assert!(store.get_claimed_job(&job.id).is_none());
         let second = store.claim_due(now + 1_200_000, now + 1_200_000).unwrap();
         assert_eq!(second.len(), 1);
+        let interrupted_dispatch = second[0].id.clone();
         let recovered = store
             .recover_interrupted_dispatches(now + 1_300_000)
             .unwrap();
         assert_eq!(recovered.len(), 1);
+        // The recovery keeps the interrupted dispatch's IDENTITY, not just the fact of the
+        // interruption: the replay guard needs it to recognise a fire that already reached
+        // the queue (review #6, residual).
         assert_eq!(
-            recovered[0].last_error.as_deref(),
-            Some("Interrupted before scheduled operation completion")
+            recovered[0]
+                .last_error
+                .as_deref()
+                .and_then(crate::cron::store::interrupted_fire_dispatch),
+            Some(interrupted_dispatch.as_str())
         );
     }
 
