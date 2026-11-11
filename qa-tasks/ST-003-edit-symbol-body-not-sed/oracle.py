@@ -86,6 +86,22 @@ def string_literals(code: str) -> list[str]:
     return literals
 
 
+def returned_expression(code: str) -> str:
+    """The expression a `-> String` body RETURNS: its tail expression, or a `return` argument.
+
+    The last non-empty, non-closing statement of the body is the value in Rust. A body that
+    mentions the marker in a dead `let` and then returns something else is not the change the
+    task asked for (review #38, residual).
+    """
+    lines = [line for line in code.splitlines() if line.strip() and line.strip() != "}"]
+    if not lines:
+        return ""
+    tail = lines[-1]
+    if "return " in tail:
+        tail = tail.split("return ", 1)[1]
+    return tail
+
+
 problems = []
 describe = qa_oracle.fn_bodies(text, "describe")
 summary = qa_oracle.fn_bodies(text, "summary")
@@ -109,14 +125,31 @@ if len(describe) == 1:
     # a string literal that starts with the marker, so `format!("describe: retries={}
     # timeout={}", self.timeout_ms, self.retries)` passed while printing the values in the
     # wrong order. The fixture's two fields differ, so the order is observable.
-    literal = next(
-        (literal for literal in string_literals(code) if MARKER in literal), "")
-    if literal and [m.group(0) for m in re.finditer(r"\{\}", literal)]:
+    # The literal must be the one the function RETURNS, not merely one it mentions
+    # (review #38, residual): `let _unused = "describe: retries= …"; String::from("nope")`
+    # satisfied the "a literal carries the marker" check while returning the wrong text.
+    # The returned expression is what `-> String` produces, so the marker has to sit in the
+    # literal the tail of the body returns.
+    tail = returned_expression(code)
+    # The marker must be in the literal THE FUNCTION RETURNS, and that literal must be the
+    # format string the return uses — a dead `let` that mentions it is not the change.
+    returned_literals = string_literals(tail)
+    if not any(MARKER in literal for literal in returned_literals):
+        problems.append(
+            "Config::describe's RETURNED text does not carry the `describe: retries=` form "
+            f"(returned {tail.strip()!r}); a marker in an unused binding is not the change")
+    else:
+        # The ARGUMENTS, not just the prefix (review #38, residual): swapping them still
+        # yields a literal that starts with the marker, so `format!("describe: retries={}
+        # timeout={}", self.timeout_ms, self.retries)` printed the values in the wrong
+        # order. The fixture's two fields differ, so the order is observable.
+        literal = next(literal for literal in returned_literals if MARKER in literal)
         expected_args = ["self.retries", "self.timeout_ms"]
+        after = tail[tail.find(literal) + len(literal):]
         actual_args = [
-            arg.strip()
-            for arg in code[code.find(literal) + len(literal):].split(")")[0].lstrip('",').split(",")
-            if arg.strip().startswith("self.")
+            part.strip()
+            for part in after.split(")")[0].lstrip('",').split(",")
+            if part.strip().startswith("self.")
         ]
         if actual_args[:2] != expected_args:
             problems.append(

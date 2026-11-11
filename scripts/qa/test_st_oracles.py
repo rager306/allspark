@@ -279,6 +279,24 @@ class SymbolEditOracleTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("wrong order", output)
 
+    def test_a_marker_in_an_unused_binding_does_not_satisfy_the_return(self):
+        """Review #38's residual: the marker must be in what the body RETURNS.
+
+        `let _unused = "describe: retries= …"; String::from("nope")` puts the marker in a
+        string literal inside the body and returns something else entirely — the earlier
+        check ("a literal in the body carries the marker") passed it.
+        """
+        with Fixture(self.task) as fx:
+            fx.edit(
+                "src/lib.rs",
+                self.original,
+                '        let _unused = "describe: retries= timeout=";\n'
+                '        String::from("nope")',
+            )
+            code, output = fx.run(self.task)
+        self.assertEqual(code, 1)
+        self.assertIn("RETURNED text does not carry", output)
+
     def test_an_unmodified_fixture_fails(self):
         with Fixture(self.task) as fx:
             code, output = fx.run(self.task)
@@ -342,6 +360,12 @@ class ArchitectureChainTests(unittest.TestCase):
         self.assertEqual(code, 1, "41 is a value, not a call: the chain is main -> handle -> ...")
         self.assertIn("value before", output)
 
+    def test_a_value_without_its_producer_fails(self):
+        """`load -> 42` names a value only `validate` returns, with no `validate` (review #37)."""
+        code, output = self.verdict("main -> handle -> load -> 42\nCHAIN-DONE")
+        self.assertEqual(code, 1)
+        self.assertIn("names no `validate` call", output)
+
     def test_prose_naming_every_function_is_not_a_chain(self):
         code, output = self.verdict(
             "main calls handle, which calls load and then validate. CHAIN-DONE")
@@ -358,7 +382,10 @@ class TypedDecisionOracleTests(unittest.TestCase):
              error: bool = False) -> list[dict]:
         rows = []
         if call:
-            rows.append(tool_call("j1", "jev", {"action": "check", "question": "delete?",
+            # The question names the SERVICE (review #39): a deletion stem alone is not the
+            # task's question, and `delete?` used to license any verdict.
+            rows.append(tool_call("j1", "jev", {"action": "check",
+                                                 "question": "delete this legacy service?",
                                                  "state": "README"}))
             rows.append(tool_result(
                 "j1", "jev",
@@ -393,6 +420,17 @@ class TypedDecisionOracleTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("no successful jev call", output)
 
+    def test_a_deletion_stem_on_a_non_service_question_is_not_the_task_question(self):
+        """`should we delete the temp cache?` carries `delet` and is not about the service."""
+        rows = [tool_call("j1", "jev", {"action": "check",
+                                        "question": "should we delete the temp cache?"})]
+        rows.append(tool_result(
+            "j1", "jev", "check: 0.90",
+            details={"answers": {"check": {"type": "noul", "noul": 0.9}}}))
+        code, output = self.decide("DELETE", rows)
+        self.assertEqual(code, 1)
+        self.assertIn("never put to the tool", output)
+
     def test_a_question_about_a_fixture_file_is_not_about_the_service(self):
         """`should we delete the README?` carries `delet` too (review #39, residual).
 
@@ -410,8 +448,10 @@ class TypedDecisionOracleTests(unittest.TestCase):
 
     def test_two_answers_that_license_different_decisions_fail(self):
         """`verdicts[-1]` let an agent ask twice and act on whichever answer suited it."""
-        rows = [tool_call("j1", "jev", {"action": "check", "question": "delete?", "state": "s"}),
-                tool_call("j2", "jev", {"action": "check", "question": "delete?", "state": "s"})]
+        rows = [tool_call("j1", "jev", {"action": "check",
+                                         "question": "delete this legacy service?", "state": "s"}),
+                tool_call("j2", "jev", {"action": "check",
+                                         "question": "delete this legacy service?", "state": "s"})]
         rows.append(tool_result("j1", "jev", "check: 0.10",
                                 details={"answers": {"check": {"type": "noul", "noul": 0.1}}}))
         rows.append(tool_result("j2", "jev", "check: 0.90",
@@ -446,7 +486,8 @@ class TypedDecisionOracleTests(unittest.TestCase):
         `p >= 0.5` straight to DELETE would invert an inverted question.
         """
         rows = [
-            tool_call("j1", "jev", {"action": "check", "question": "should we keep it?",
+            tool_call("j1", "jev", {"action": "check",
+                                     "question": "should we keep this legacy service?",
                                      "state": "README"}),
             tool_result("j1", "jev", "check: 0.90",
                         details={"answers": {"check": {"type": "noul", "noul": 0.9}}}),

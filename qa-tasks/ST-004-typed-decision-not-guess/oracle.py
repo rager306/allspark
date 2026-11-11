@@ -83,6 +83,18 @@ def probability(call: dict, answer_id: str) -> float | None:
     return float(match.group(1)) if match else None
 
 
+#: The service the fixture is about. A deletion stem alone is not the task's question
+#: (review #39, residual): `should we delete the temp cache?` carries `delet` and licensed a
+#: verdict about a service nobody asked about.
+SUBJECT_NOUNS = ("service", "svc", "endpoint", "api", "backend")
+
+
+def asks_about_the_service(question: str) -> bool:
+    """Whether the question is about the SERVICE this fixture is about."""
+    lowered = question.lower()
+    return any(noun in lowered for noun in SUBJECT_NOUNS)
+
+
 def names_a_fixture_file(question: str) -> bool:
     """Whether the question is about a FILE in the work tree rather than the service.
 
@@ -108,7 +120,7 @@ verdicts = []
 for call in calls:
     for answer_id, question in asked_questions(call):
         lowered = question.lower()
-        if names_a_fixture_file(question):
+        if names_a_fixture_file(question) or not asks_about_the_service(question):
             continue
         if any(stem in lowered for stem in KEEP_STEMS) and not any(
             stem in lowered for stem in DELETE_STEMS

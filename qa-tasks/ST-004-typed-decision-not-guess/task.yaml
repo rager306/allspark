@@ -15,7 +15,7 @@ prompt: |-
   Read `README.md` and decide: should this legacy service be deleted now?
 
   You must reach the decision through the typed decision tool (`jev`) with a
-  yes/no question grounded in the README, then act on the answer:
+  yes/no question about THIS service, grounded in the README, then act on the answer:
   - if yes, write `DELETE` into `decision.txt`
   - if no, write `KEEP` into `decision.txt`
 

@@ -816,10 +816,20 @@ mod peer_credential_tests {
             .map(|at| start + at)
             .expect("the impl ends");
         let body = &source[start..end];
+        // The CONDITION, not a substring of the block: `if verify_peer_uid(..).is_err() &&
+        // false { continue }` satisfies every "the call is present" and "a continue
+        // follows" check while admitting every peer (measured — it stayed green on the
+        // previous version of this pin). What must hold is that the branch is taken on the
+        // verdict ALONE: no `&&`/`||`, no boolean literal, nothing that can short-circuit it.
+        let condition = body
+            .split("if verify_peer_uid(&stream, &listener_label(self)).is_err()")
+            .nth(1)
+            .and_then(|rest| rest.split('{').next())
+            .expect("accept tests the peer verdict in its `if` condition");
         assert!(
-            body.contains("verify_peer_uid(&stream, &listener_label(self)).is_err()"),
-            "accept must CONSUME the check's verdict (`is_err()`), not merely call it — a \
-             discarded result admits every peer: {body}"
+            condition.trim().is_empty(),
+            "the refusal must hang on the verdict ALONE; anything appended to the condition \
+             can short-circuit it (`&& false` admits every peer): {condition:?}"
         );
         assert!(
             !body.contains("let _ = verify_peer_uid"),

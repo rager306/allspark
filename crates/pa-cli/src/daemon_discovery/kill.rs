@@ -17,6 +17,21 @@ const SHUTDOWN_CONVERGENCE_TIMEOUT_MS: u128 = 10_000;
 /// process is confirmed gone (zombies count as dead — [`is_process_alive`]).
 /// Deliberate TS divergence (TS fires SIGKILL and returns without verifying):
 /// a stop path must not claim a stop a D-state process never performed.
+/// Whether the pid still names the process the caller resolved.
+///
+/// The same decision at BOTH ends of the ladder: before any signal, and again before the
+/// SIGKILL escalation a second later (review #5). Extracted so the decision has one
+/// definition and a test that can state what it means — the RACE itself (a pid recycled
+/// inside that second) cannot be reproduced in-process, so what is pinned here is the rule,
+/// plus a source check that the ladder consults it at both ends.
+fn signal_identity_matches(expected_start_id: Option<&str>, pid: u32) -> bool {
+    let Some(expected) = expected_start_id else {
+        // No resolved identity: the caller's own gate is authoritative.
+        return true;
+    };
+    process_start_id(pid).as_deref() == Some(expected)
+}
+
 /// The process identity the caller already resolved is re-checked IMMEDIATELY BEFORE the
 /// SIGKILL escalation (review #5, residual), and once more before the escalation is allowed
 /// at all.
@@ -28,10 +43,8 @@ const SHUTDOWN_CONVERGENCE_TIMEOUT_MS: u128 = 10_000;
 pub(super) fn force_kill_daemon_identified(pid: u32, expected_start_id: Option<&str>) -> bool {
     // The gate comes FIRST, not just before the escalation: if the pid already names a
     // different process, nothing here was asked to kill it, so no signal is sent at all.
-    if let Some(expected) = expected_start_id {
-        if process_start_id(pid).as_deref() != Some(expected) {
-            return true;
-        }
+    if !signal_identity_matches(expected_start_id, pid) {
+        return true;
     }
     kill_daemon(pid);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
@@ -41,12 +54,10 @@ pub(super) fn force_kill_daemon_identified(pid: u32, expected_start_id: Option<&
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    if let Some(expected) = expected_start_id {
-        // The pid now names a different process (or none): the daemon this call was asked
-        // to kill is already gone, so the kill is complete and the escalation is not sent.
-        if process_start_id(pid).as_deref() != Some(expected) {
-            return true;
-        }
+    // The pid now names a different process (or none): the daemon this call was asked to
+    // kill is already gone, so the kill is complete and the escalation is not sent.
+    if !signal_identity_matches(expected_start_id, pid) {
+        return true;
     }
     let _ = kill_pid(pid as i32, Signal::Kill);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
@@ -344,9 +355,33 @@ mod tests {
     /// shape below is that window — a TERM-ignoring process whose identity no longer
     /// matches what the caller resolved — so no escalation may reach it.
     #[test]
-    fn a_pid_that_no_longer_names_the_discovered_process_is_not_signalled() {
+    /// The identity rule, stated as a decision (review #5).
+    ///
+    /// The failure this finding names is a RACE — the pid is recycled inside the one-second
+    /// grace between SIGTERM and SIGKILL — and no in-process test can produce that: the
+    /// kernel assigns pid numbers, and a test cannot make the same number belong to another
+    /// process while the ladder is sleeping. So the rule has its own definition and its own
+    /// test, and a second test below pins that the ladder CONSULTS it at both ends; the two
+    /// together discriminate the mutation the earlier version of this test missed (removing
+    /// only the pre-SIGKILL check left a `Some("0")` fixture green, because the FIRST gate
+    /// returned before the ladder ran).
+    #[test]
+    fn the_identity_rule_refuses_a_pid_that_no_longer_matches() {
         let mut child = spawn_term_ignoring_shell();
         let pid = child.id();
+        let real = process_start_id(pid).expect("the fixture has a start id");
+        assert!(
+            signal_identity_matches(Some(&real), pid),
+            "the same process passes the gate"
+        );
+        assert!(
+            !signal_identity_matches(Some("0"), pid),
+            "a different start id is a different process"
+        );
+        assert!(
+            signal_identity_matches(None, pid),
+            "no resolved identity leaves the caller's own gate authoritative"
+        );
         assert!(
             force_kill_daemon_identified(pid, Some("0")),
             "the daemon the caller asked about is gone, so the kill is complete"
@@ -354,15 +389,38 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(150));
         assert!(
             is_alive(pid),
-            "a pid whose start id no longer matches must not receive SIGKILL"
+            "a pid whose start id no longer matches must receive NO signal at all"
         );
-        // The escalation still works for the SAME process, or the gate above would be
-        // indistinguishable from a stop path that never kills anything.
         assert!(
-            force_kill_daemon_identified(pid, process_start_id(pid).as_deref()),
-            "a matching identity still escalates and confirms the death"
+            force_kill_daemon_identified(pid, Some(&real)),
+            "a matching identity escalates and confirms the death"
         );
         let _ = child.wait();
+    }
+
+    /// Both ends of the ladder consult the identity rule — and this pins the SOURCE, because
+    /// the race the rule exists for cannot be staged from a test.
+    ///
+    /// `force_kill_daemon_identified` sends SIGTERM, sleeps a second, then escalates. The
+    /// check before the SIGKILL is the one the wave-2 review removed in a mutation and the
+    /// test did not notice; a pin on the call sites is what makes that removal fail.
+    #[test]
+    fn the_escalation_re_checks_the_identity_it_started_with() {
+        let source = include_str!("kill.rs");
+        let start = source
+            .find("pub(super) fn force_kill_daemon_identified")
+            .expect("the identified form exists");
+        let end = source[start..]
+            .find("\n}\n")
+            .map(|at| start + at)
+            .expect("the function ends");
+        let body = &source[start..end];
+        let gates = body.matches("signal_identity_matches(").count();
+        assert_eq!(
+            gates, 2,
+            "the ladder must consult the identity rule at BOTH ends — before any signal and \
+             before the SIGKILL escalation; one check leaves the pid-reuse window open: {body}"
+        );
     }
 
     #[test]

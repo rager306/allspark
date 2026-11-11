@@ -58,9 +58,11 @@ HOPS = ["main", "handle", "load"]
 # reference chain carries it) but the prompt stops at the value 41: its absence is correct
 # and its presence must FOLLOW load.
 OPTIONAL = ["validate"]
-#: The value `Repo::load` returns — the first value the chain carries.
+#: The value `Repo::load` returns — the first value the chain carries, and the value the
+#: prompt asks the chain to end at.
 ANSWER_VALUE = "41"
-#: The value `validate` returns, when the answer follows the chain past `load`.
+#: The value `validate` returns. It may appear ONLY after `validate` appears, because a value
+#: cannot precede the call that produces it (review #37, residual: `load -> 42` was accepted).
 VALIDATE_VALUE = "42"
 
 
@@ -140,6 +142,12 @@ def chain_problem() -> str | None:
                     f"produces: the chain returns {ANSWER_VALUE} from load and "
                     f"{VALIDATE_VALUE} from validate")
         numbers = [token for token in tokens if re.fullmatch(r"\d+", token)]
+        # 42 is `validate`'s value: without a `validate` token it has no producer in this
+        # chain, and naming it after `load` would claim a call that did not happen.
+        if VALIDATE_VALUE in numbers and "validate" not in tokens:
+            return (
+                f"the final answer carries {VALIDATE_VALUE}, which only `validate` returns, "
+                "but the chain names no `validate` call")
         if numbers and tokens.index(numbers[0]) < positions[2]:
             misplaced_value = tokens
             continue
