@@ -1054,11 +1054,17 @@ mod backfill_tests {
     ///
     /// The old shape (each read bounded by `UI_REQUEST_TIMEOUT_MS`) cannot finish before 10 s,
     /// so the assertion separates the two by an order of magnitude rather than by timing noise.
+    ///
+    /// The second half is the HANDOFF, not the budget: a read that misses the budget must hand its
+    /// registry to the background refresh, or the dock stays empty until the 2 s poll. The mock
+    /// counts the two request types it received, so dropping either `spawn_*_refresh` on the miss
+    /// path leaves the count at one and this test goes red.
     #[tokio::test]
     async fn the_open_waits_one_budget_for_a_wedged_dock_registry() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("wedged.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let (seen_tx, mut seen_rx) = mpsc::unbounded_channel::<String>();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let (read, mut write) = stream.into_split();
@@ -1069,7 +1075,8 @@ mod backfill_tests {
                 let kind = request["command"]["type"].as_str().unwrap();
                 if matches!(kind, "heartbeats_list" | "list_kernel_bash") {
                     // The wedged read: no reply, ever. The open must not wait out the request
-                    // bound for it.
+                    // bound for it, and the miss must land on the background refresh.
+                    let _ = seen_tx.send(kind.to_string());
                     continue;
                 }
                 let data = match kind {
@@ -1135,6 +1142,28 @@ mod backfill_tests {
             crate::bash_view::parse_bash_activities(&session.bash_activities).len(),
             0,
             "a missed read leaves the cleared bash registry"
+        );
+        // The handoff: each missed registry is re-asked by the background refresh, so the dock
+        // fills in on the next round trip. Wait for the observable count, not a fixed sleep.
+        let (heartbeats, shells) = tokio::time::timeout(Duration::from_secs(5), async {
+            let (mut heartbeats, mut shells) = (0, 0);
+            while heartbeats < 2 || shells < 2 {
+                match seen_rx.recv().await {
+                    Some(kind) if kind == "heartbeats_list" => heartbeats += 1,
+                    Some(kind) if kind == "list_kernel_bash" => shells += 1,
+                    // A closed channel cannot satisfy the wait: stop instead of spinning.
+                    Some(_) | None => break,
+                }
+            }
+            (heartbeats, shells)
+        })
+        .await
+        .expect("the background refresh asks both registries again");
+        assert!(
+            heartbeats >= 2 && shells >= 2,
+            "a missed read must hand its registry to the background refresh, not leave it to the \
+             2 s poll (requests seen: {heartbeats} heartbeats_list, {shells} list_kernel_bash, \
+             one of each from the frame)"
         );
         drop(session);
         server.abort();
