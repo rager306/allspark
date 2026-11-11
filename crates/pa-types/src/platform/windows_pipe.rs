@@ -13,14 +13,14 @@
 //! that process. A squatter on the pipe name is then named as itself and its greeting supplies no
 //! kill target.
 //!
-//! The SERVER side is owner-only. Every instance is created through
-//! [`create_owner_only_instance`], which passes a `SECURITY_ATTRIBUTES` carrying the descriptor
-//! `D:P(A;;GA;;;OW)` (see [`OWNER_ONLY_SDDL`]): a protected DACL granting full access to the
-//! pipe's owner and to nobody else. The kernel then refuses another local account's
-//! `CreateFile` — the Windows analogue of the Unix listener dropping a foreign-uid accept, and
-//! the reason "any process that opens the pipe is served" no longer holds. This is the same
-//! mechanism the review's suggested fix names, and it removes the impersonation check from the
-//! critical path rather than adding a second, weaker one.
+//! The SERVER side is owner-only. Every instance is created through [`create_owner_only`], which
+//! passes a `SECURITY_ATTRIBUTES` carrying `D:P(A;;GA;;;SY)(A;;GA;;;<user>)` (built by
+//! [`super::transport::owner_only_sddl`], with `<user>` read from this process's token): a
+//! protected DACL granting full access to Local System and to the calling user, and to nobody
+//! else. The kernel then refuses another local account's `CreateFile` — the Windows analogue of
+//! the Unix listener dropping a foreign-uid accept, and the reason "any process that opens the
+//! pipe is served" no longer holds. A descriptor that cannot be built FAILS the bind; there is no
+//! fallback to the default descriptor.
 //!
 //! Two limits remain, stated rather than papered over:
 //!
@@ -34,12 +34,14 @@
 //!   A token comparison would add a second layer, and it needs Win32 calls this fork cannot
 //!   exercise — shipping one blind is the defect class this review exists to catch.
 //!
-//! NOT EXERCISED ON WINDOWS by this fork's CI: the tree has no Windows runner on this host, so
-//! the cross target is compile-checked (`cargo check --target x86_64-pc-windows-gnu`, and the
-//! `make windows-cross` gate) and reviewed, not executed. The `#[cfg(all(test, windows))]`
-//! round-trip below is the verifier a real Windows runner (the on-demand
-//! `windows-runtime-triage` battery's `cargo test -p pa-types`) executes against this path: a
-//! descriptor the daemon itself cannot open would fail it. The options and their costs are in
+//! NOT EXERCISED ON WINDOWS on this host: there is no Windows runner here, so the Win32 calls are
+//! compile-checked (`cargo check`/`clippy --target x86_64-pc-windows-gnu --all-targets`, the
+//! `make windows-cross` gate) and reviewed, not executed. Two things back that up instead of hope:
+//! the `#[cfg(all(test, windows))]` round-trips below run in the `windows-runtime-triage`
+//! battery on a real runner (a descriptor the daemon itself cannot open would fail them), and the
+//! parts a blind port usually gets wrong are pinned on EVERY host by
+//! `transport::windows_pipe_owner_only_tests` (the serialized descriptor text, the token query it
+//! comes from, and that both creation sites pass it). The options and their costs are in
 //! `.research/review-runs/20261109-041525-a01cd1a0e/DECISIONS-23-26.md`.
 
 use std::io;
@@ -64,14 +66,14 @@ const BUSY_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 /// error instead of hanging the caller.
 const BUSY_RETRY_DEADLINE: Duration = Duration::from_secs(10);
 
-/// The DACL every pipe instance is created with, as SDDL (review #23, CWE-290).
-///
-/// `D:P` is a PROTECTED DACL: no inherited entry can widen it, so the pipe's effective access is
-/// exactly what is written here regardless of the directory the process runs in. The two ACEs
-/// grant full access to Local System (`SY`, the Windows analogue of uid 0 on a Unix socket) and
-/// to the object's OWNER (`OW`, the SID the kernel resolves to whoever created the pipe) — and to
-/// nobody else.
-const OWNER_ONLY_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;OW)";
+/// `sddl.h` `SDDL_REVISION_1`: the only revision the SDDL parser accepts.
+const SDDL_REVISION_1: u32 = 1;
+/// `winnt.h` `TOKEN_QUERY`: read the token's user, nothing else.
+const TOKEN_QUERY: u32 = 0x0008;
+/// `winnt.h` `TokenUser`: the `TOKEN_USER` information class.
+const TOKEN_USER_CLASS: u32 = 1;
+/// A SID's textual form is far shorter than this; the walk stops at the NUL the callee wrote.
+const MAX_SID_CHARS: usize = 256;
 
 /// The Win32 security surface, as a hand-declared extern wall (repo policy: pinned constants and
 /// externs, no windows-sys dependency — the same wall `platform::process` and `windows_console`
@@ -82,12 +84,9 @@ mod winapi {
 
     use std::ffi::c_void;
 
-    /// `sddl.h` `SDDL_REVISION_1`: the only revision `ConvertStringSecurityDescriptor…` accepts.
-    pub(crate) const SDDL_REVISION_1: u32 = 1;
-
-    // `#[link]` on each block, not a bare `extern`: a hand-declared import without its library
-    // fails at LINK time on Windows (which no `cargo check` on this host reaches) rather than at
-    // compile time.
+    // `#[link]` on each block, not a bare `extern`: a hand-declared import without its library is
+    // a LINK-time failure on Windows (which no `cargo check` on this host reaches), not a
+    // compile-time one.
     #[link(name = "advapi32")]
     extern "system" {
         /// `sddl.h`: parse SDDL into a self-relative `SECURITY_DESCRIPTOR` allocated with
@@ -98,10 +97,31 @@ mod winapi {
             security_descriptor: *mut *mut c_void,
             size: *mut u32,
         ) -> i32;
+        /// `securitybaseapi.h`: an access token for `process`, asked for `access`.
+        pub(crate) fn OpenProcessToken(
+            process: *mut c_void,
+            access: u32,
+            token: *mut *mut c_void,
+        ) -> i32;
+        /// `securitybaseapi.h`: one `TOKEN_INFORMATION_CLASS` record out of the token.
+        pub(crate) fn GetTokenInformation(
+            token: *mut c_void,
+            class: u32,
+            information: *mut c_void,
+            information_length: u32,
+            return_length: *mut u32,
+        ) -> i32;
+        /// `sddl.h`: the textual `S-1-5-…` form of a SID, allocated with `LocalAlloc`.
+        pub(crate) fn ConvertSidToStringSidW(sid: *mut c_void, string_sid: *mut *mut u16) -> i32;
     }
 
     #[link(name = "kernel32")]
     extern "system" {
+        /// `processthreadsapi.h`: the pseudo-handle for this process (never closed).
+        pub(crate) fn GetCurrentProcess() -> *mut c_void;
+        /// `handleapi.h`.
+        pub(crate) fn CloseHandle(handle: *mut c_void) -> i32;
+        /// `winbase.h`.
         pub(crate) fn LocalFree(memory: *mut c_void) -> *mut c_void;
     }
 }
@@ -115,27 +135,39 @@ struct SecurityAttributes {
     inherit_handle: i32,
 }
 
-/// One instance's owner-only security: the parsed [`OWNER_ONLY_SDDL`] descriptor plus the
-/// `SECURITY_ATTRIBUTES` that points at it. Dropped right after the instance is created;
-/// `CreateNamedPipeW` copies the descriptor into the object, so nothing points at this afterwards.
+/// The pipe's security: a descriptor granting full access to Local System and to THIS process's
+/// user, and to nobody else.
+///
+/// The user's SID is read from the process token (`OpenProcessToken` + `GetTokenInformation` +
+/// `ConvertSidToStringSidW`) and written into the SDDL literally instead of using the `OW` (Owner
+/// Rights) or `CO` (Creator Owner) placeholders. All three would express "the owner"; the concrete
+/// SID was chosen because it is checkable without a Windows host — the string this process is
+/// about to hand `CreateNamedPipeW` names exactly one account, and the pinned test asserts that
+/// text. `OW` would resolve through the Owner Rights SID at access-check time, and `CO` only
+/// applies to inheritable ACEs, which this is not; neither property is something this fork can
+/// observe here.
+///
+/// `D:P` is a PROTECTED DACL: no inherited entry can widen it, whatever directory the process runs
+/// in, so the effective access is exactly these two ACEs.
+///
+/// Dropped right after the instance is created; `CreateNamedPipeW` copies the descriptor into the
+/// object, so nothing points at this afterwards.
 struct OwnerOnlySecurity {
     attributes: SecurityAttributes,
 }
 
 impl OwnerOnlySecurity {
     fn new() -> io::Result<Self> {
-        let sddl: Vec<u16> = OWNER_ONLY_SDDL
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
+        let sddl = super::transport::owner_only_sddl(&current_user_sid_string()?);
+        let wide: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
         let mut descriptor: *mut std::ffi::c_void = std::ptr::null_mut();
         let mut size: u32 = 0;
-        // SAFETY: `sddl` is NUL-terminated and outlives the call; the callee writes one pointer
+        // SAFETY: `wide` is NUL-terminated and outlives the call; the callee writes one pointer
         // and one length through valid pointers.
         let parsed = unsafe {
             winapi::ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                sddl.as_ptr(),
-                winapi::SDDL_REVISION_1,
+                wide.as_ptr(),
+                SDDL_REVISION_1,
                 std::ptr::from_mut(&mut descriptor),
                 std::ptr::from_mut(&mut size),
             )
@@ -171,7 +203,89 @@ impl Drop for OwnerOnlySecurity {
     }
 }
 
-/// Create ONE pipe instance whose DACL is [`OWNER_ONLY_SDDL`].
+/// This process's user SID in its textual `S-1-5-…` form (`TOKEN_USER.User.Sid` →
+/// `ConvertSidToStringSidW`).
+///
+/// An error here is an error, never a fallback: a caller that cannot name its own user cannot
+/// describe who may open its pipe, and the default descriptor is what the finding is about.
+fn current_user_sid_string() -> io::Result<String> {
+    use std::ffi::c_void;
+
+    // SAFETY: every call is checked; each buffer outlives the call it is passed to, the token is
+    // closed on every path below, and the two `LocalAlloc` strings are freed after they are read.
+    unsafe {
+        let mut token: *mut c_void = std::ptr::null_mut();
+        if winapi::OpenProcessToken(
+            winapi::GetCurrentProcess(),
+            TOKEN_QUERY,
+            std::ptr::from_mut(&mut token),
+        ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if token.is_null() {
+            return Err(io::Error::other(
+                "the process token query returned no token",
+            ));
+        }
+        // The size probe: a null buffer reports the length the record needs.
+        let mut needed: u32 = 0;
+        winapi::GetTokenInformation(
+            token,
+            TOKEN_USER_CLASS,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::from_mut(&mut needed),
+        );
+        if needed == 0 {
+            let error = io::Error::last_os_error();
+            winapi::CloseHandle(token);
+            return Err(error);
+        }
+        let mut record = vec![0u8; needed as usize];
+        let filled = winapi::GetTokenInformation(
+            token,
+            TOKEN_USER_CLASS,
+            record.as_mut_ptr().cast(),
+            needed,
+            std::ptr::from_mut(&mut needed),
+        );
+        let error = io::Error::last_os_error();
+        winapi::CloseHandle(token);
+        if filled == 0 {
+            return Err(error);
+        }
+        // `TOKEN_USER` is `{ SID_AND_ATTRIBUTES User }`, and `SID_AND_ATTRIBUTES` opens with the
+        // `PSID` this needs — offset zero. The record is a byte buffer, so read the pointer
+        // unaligned.
+        let sid: *mut c_void = std::ptr::read_unaligned(record.as_ptr().cast::<*mut c_void>());
+        if sid.is_null() {
+            return Err(io::Error::other("the process token names no user SID"));
+        }
+        let mut text: *mut u16 = std::ptr::null_mut();
+        if winapi::ConvertSidToStringSidW(sid, std::ptr::from_mut(&mut text)) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if text.is_null() {
+            return Err(io::Error::other("the SID conversion returned no string"));
+        }
+        // A SID string is well under this; the walk stops at the NUL the callee wrote.
+        let mut length = 0;
+        while length < MAX_SID_CHARS && *text.add(length) != 0 {
+            length += 1;
+        }
+        let sid_string = String::from_utf16_lossy(std::slice::from_raw_parts(text, length));
+        winapi::LocalFree(text.cast());
+        // A descriptor built from an empty SID would be `…;;;)`, which the parser rejects; fail
+        // here with the reason instead of surfacing the parser's error.
+        if sid_string.is_empty() {
+            return Err(io::Error::other("the user SID is empty"));
+        }
+        Ok(sid_string)
+    }
+}
+
+/// Create ONE pipe instance whose DACL is built by [`OwnerOnlySecurity`].
 ///
 /// Every instance in this module is created through here, both halves included: a listener's
 /// first instance and its replacement, which is why the restriction cannot be dropped by a later

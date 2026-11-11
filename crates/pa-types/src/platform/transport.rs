@@ -517,6 +517,23 @@ impl TransportStream for tokio::net::windows::named_pipe::NamedPipeClient {
     }
 }
 
+/// The Windows pipe's descriptor text for one concrete owner SID (review #23, CWE-290).
+///
+/// Two ACEs and no more: full access for Local System and full access for `owner_sid`. `D:P` is a
+/// PROTECTED DACL, so no inherited or default entry can widen it. The caller resolves the SID from
+/// the process token (`windows_pipe::current_user_sid_string`); naming the concrete SID instead of
+/// the `OW`/`CO` placeholders keeps the access check free of a resolution step this fork cannot
+/// observe on a Windows host.
+///
+/// Kept here, platform-agnostic, so the SERIALIZED form — the exact text the kernel is handed — is
+/// testable on any host.
+// Both callers are Windows-only (there is no pipe on unix), so on a unix build the function is
+// compiled but unreachable; the workspace `-D warnings` gate would otherwise fail on dead code.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn owner_only_sddl(owner_sid: &str) -> String {
+    format!("D:P(A;;GA;;;SY)(A;;GA;;;{owner_sid})")
+}
+
 /// The pipe name handed to `CreateNamedPipe`/`CreateFile` (must be UTF-8): an existing pipe path
 /// passes through - the local `\\.\pipe\`/ `\\?\pipe\` and remote `\\server\pipe\` forms,
 /// case-insensitively like the pipe namespace. Any other explicit path (a unix-style socket path)
@@ -667,84 +684,110 @@ pub fn connect_blocking(path: &Path) -> std::io::Result<Box<dyn BlockingTranspor
 
 /// The Windows pipe instances are owner-only (review #23, CWE-290).
 ///
-/// Two claims, each pinned where it can fail:
+/// Three claims, each pinned where it can fail:
 ///
-/// 1. The DACL text itself is asserted here, on any host: it must be PROTECTED (`D:P`) and must
-///    name nobody but Local System and the object's owner. This is the descriptor the kernel is
-///    handed, so a typo in it is a hole — `D:(A;;GA;;;WD)` (Everyone, inheritable) is the exact
-///    shape the finding is about, and it fails this test.
-/// 2. Every instance creation goes through `create_owner_only`. A restriction on the FIRST
-///    instance only would leave the replacement the `accept` loop creates — the instances clients
-///    actually connect to — on the default descriptor. The pin requires BOTH creation sites to
-///    call the helper, and the helper to pass the parsed descriptor (`security.as_ptr()`) rather
-///    than a null pointer, so "the call is present but the descriptor is absent" is red too.
+/// 1. **The serialized descriptor.** [`owner_only_sddl`] is the exact text the kernel is handed.
+///    It must be PROTECTED (`D:P`) and must grant access to Local System and the caller's user only
+///    — no group, and no `OW`/`CO` placeholder whose meaning is resolved later. `D:(A;;GA;;;WD)`
+///    (Everyone, inheritable) is the shape the finding is about and fails here.
+/// 2. **The descriptor is the one created from the token.** `OwnerOnlySecurity::new` must derive
+///    the SID from the process token (`current_user_sid_string`) and pass it through
+///    `owner_only_sddl` — not fall back to a literal, the placeholders, or the default descriptor.
+/// 3. **Every instance goes through the helper.** A restriction on the FIRST instance only would
+///    leave the replacement the `accept` loop creates — the instances clients actually connect to
+///    — on the default descriptor. Both creation sites must call `create_owner_only`, and the
+///    helper must hand the kernel the parsed descriptor (`security.as_ptr()`), not a null
+///    pointer; a failed parse must fail the creation rather than fall through.
 ///
 /// The Win32 calls themselves are compiled by `make windows-cross` and executed by a real Windows
 /// runner (`cargo test -p pa-types`), not on this host.
 #[cfg(test)]
 mod windows_pipe_owner_only_tests {
-    const SOURCE: &str = include_str!("windows_pipe.rs");
+    const PIPE_SOURCE: &str = include_str!("windows_pipe.rs");
 
-    /// The slice of `windows_pipe.rs` between `start` and the next `\n}\n`.
+    /// The slice of `source` between `start` and the next `\n}\n`.
     fn body_after(source: &str, start: usize) -> &str {
         &source[start..start + source[start..].find("\n}\n").expect("the item ends")]
     }
 
+    /// An ordinary user SID, the shape `ConvertSidToStringSidW` returns.
+    const USER_SID: &str = "S-1-5-21-1111111111-2222222222-3333333333-1001";
+
     #[test]
-    fn the_pipe_dacl_is_protected_and_owner_only() {
-        let anchor = "const OWNER_ONLY_SDDL: &str = \"";
-        let start = SOURCE
-            .find(anchor)
-            .expect("the owner-only descriptor exists");
-        let rest = &SOURCE[start + anchor.len()..];
-        let sddl = &rest[..rest.find('"').expect("the literal ends")];
+    fn the_pipe_descriptor_is_protected_and_names_the_owner_and_system_only() {
+        let sddl = super::owner_only_sddl(USER_SID);
+        assert_eq!(
+            sddl, "D:P(A;;GA;;;SY)(A;;GA;;;S-1-5-21-1111111111-2222222222-3333333333-1001)",
+            "the descriptor is exactly these two ACEs"
+        );
         assert!(
             sddl.starts_with("D:P"),
             "a PROTECTED DACL: an inherited entry must not be able to widen it: {sddl}"
         );
-        assert!(
-            sddl.contains("(A;;GA;;;OW)"),
-            "the owner keeps full access — otherwise the daemon cannot open its own pipe: {sddl}"
-        );
-        assert!(
-            sddl.contains("(A;;GA;;;SY)"),
-            "Local System keeps full access (the platform's own services): {sddl}"
-        );
-        for everyone in [";;;WD", ";;;BU", ";;;AU", ";;;AN", ";;;BG"] {
+        for name in ["OW", "CO", "WD", "BU", "AU", "AN", "BG"] {
             assert!(
-                !sddl.contains(everyone),
-                "{everyone} names a group, not the owner — that is the finding: {sddl}"
+                !sddl.contains(&format!(";;;{name})")),
+                "{name} is a placeholder or a group, not a concrete user — the pipe must name \
+                 the SID it admits: {sddl}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_descriptor_is_built_from_the_process_token() {
+        let start = PIPE_SOURCE
+            .find("impl OwnerOnlySecurity {")
+            .expect("the security wrapper exists");
+        let body = body_after(PIPE_SOURCE, start);
+        assert!(
+            body.contains("current_user_sid_string()?"),
+            "the owner SID comes from the token, and a failed query FAILS the pipe: {body}"
+        );
+        assert!(
+            body.contains("owner_only_sddl(&current_user_sid_string()?)"),
+            "and it is serialized by the shared pure builder, not by an inline literal: {body}"
+        );
+        let sid_start = PIPE_SOURCE
+            .find("fn current_user_sid_string()")
+            .expect("the token query exists");
+        let sid_body = body_after(PIPE_SOURCE, sid_start);
+        for call in [
+            "OpenProcessToken",
+            "GetTokenInformation",
+            "ConvertSidToStringSidW",
+        ] {
+            assert!(
+                sid_body.contains(call),
+                "the SID resolution must call {call}: {sid_body}"
             );
         }
     }
 
     #[test]
     fn every_pipe_instance_is_created_with_the_owner_only_descriptor() {
-        let sites = SOURCE.matches("ServerOptions::new()").count();
         assert_eq!(
-            sites, 2,
+            PIPE_SOURCE.matches("ServerOptions::new()").count(),
+            2,
             "the listener's first instance and its replacement are the two creation sites; a \
              third means a new path this pin does not cover"
         );
         assert_eq!(
-            SOURCE.matches("create_owner_only(").count(),
+            PIPE_SOURCE.matches("create_owner_only(").count(),
             3,
             "one definition plus both creation sites"
         );
-        // The fallback the finding is about: a bare `ServerOptions::create` keeps the DEFAULT
-        // descriptor. Its absence is the property, so name the exact spelling that would be it.
         assert!(
-            !SOURCE.contains(".create("),
+            !PIPE_SOURCE.contains(".create("),
             "no instance may be created with the default descriptor"
         );
-        let start = SOURCE
+        let start = PIPE_SOURCE
             .find("fn create_owner_only(")
             .expect("the helper exists");
-        let body = body_after(SOURCE, start);
+        let body = body_after(PIPE_SOURCE, start);
         assert!(
             body.contains("create_with_security_attributes_raw(name, security.as_ptr())"),
             "the helper must hand the kernel the parsed descriptor, not a null pointer (a null \
-             pointer is `create` with a different name): {body}"
+             pointer is `create` under a different name): {body}"
         );
         assert!(
             body.contains("OwnerOnlySecurity::new()?"),
