@@ -1168,6 +1168,89 @@ async fn a_recurring_settle_timeout_stores_the_unknown_outcome_and_backs_the_sch
     );
 }
 
+/// A fire that had already left the lane writes NO withdrawal checkpoint (review #12,
+/// "checkpoint discard").
+///
+/// The checkpoint exists to make a REAL removal survive a respawn. Writing it unconditionally
+/// also rewrote the journal's queue snapshot for a fire the runner had already gathered — a
+/// durable record claiming a withdrawal that never happened, which then erased the lane state a
+/// respawn would need. The sentinel row below is the pre-fire snapshot: it must still be there
+/// afterwards.
+#[tokio::test]
+async fn a_fire_that_left_the_lane_writes_no_withdrawal_checkpoint() {
+    let dir = std::env::temp_dir().join(format!("pa-sched-nockpt-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let session = write_active_session(&dir);
+    let core = Arc::new(std::sync::Mutex::new(
+        crate::worker::SessionCore::test_core(None, "/w".to_string()),
+    ));
+    let active_session_id = core.lock().unwrap().active_session_id.clone();
+    let journal = {
+        let mut journal =
+            crate::journal::WorkerRecoveryJournal::open(&dir.join("recovery.jsonl")).unwrap();
+        journal
+            .record_queue_snapshot(
+                &active_session_id,
+                &[crate::journal::WorkerQueueItemRecord {
+                    message: "a fire someone else parked".to_string(),
+                    priority: None,
+                    preview: None,
+                    custom_message: None,
+                    queue_key: Some("cron:cron-nockpt:someone-elses-dispatch".to_string()),
+                    queue_visible: true,
+                    policy: "injected".to_string(),
+                    forced_batch: false,
+                    images: Vec::new(),
+                }],
+                &[],
+                false,
+            )
+            .unwrap();
+        journal
+    };
+    let hooks = QueueHooks {
+        core: Arc::clone(&core),
+        work_notify: Arc::new(Notify::new()),
+        user_bash: Arc::new(crate::user_bash::UserBash::new()),
+        store: Arc::new(AgentCronJobStore::for_session_artifacts()),
+        recovery: Arc::new(std::sync::Mutex::new(Some(journal))),
+        dispatch_ids: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+    };
+    let job = AgentCronJob {
+        source: Some("cron".to_string()),
+        ..heartbeat_job(
+            "cron-nockpt",
+            "nightly sweep",
+            DeliveryMode::Steer,
+            &session,
+        )
+    };
+
+    // The fire is NOT in a lane: the runner gathered it, so nothing was withdrawn.
+    let error = hooks
+        .on_settle_timeout(&job, Some("cron:cron-nockpt:the-gathered-dispatch"))
+        .expect_err("a running recurring fire's outcome is unknown");
+    assert!(error.to_string().contains("outcome is unknown"), "{error}");
+    let after = hooks
+        .recovery
+        .lock()
+        .unwrap()
+        .as_ref()
+        .expect("the journal stays open")
+        .latest_queue_snapshot(&active_session_id)
+        .expect("the seeded snapshot stays");
+    assert_eq!(
+        after
+            .0
+            .iter()
+            .chain(after.1.iter())
+            .filter_map(|item| item.queue_key.as_deref())
+            .collect::<Vec<_>>(),
+        vec!["cron:cron-nockpt:someone-elses-dispatch"],
+        "a non-withdrawal must not rewrite the queue snapshot"
+    );
+}
+
 /// `run_job`'s settle-timeout arm must delegate that decision, not answer a skip itself.
 ///
 /// The classifier above is testable; whether the fire path calls it is a separate fact, and
