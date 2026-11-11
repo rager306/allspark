@@ -237,7 +237,8 @@ class ArchitectureOracleTests(unittest.TestCase):
     """ST-002: a SUCCESSFUL graph call, and the chain in the FINAL answer."""
 
     task = "ST-002-architecture-via-graph"
-    chain = "main -> handle -> load -> validate -> 42\nCHAIN-DONE"
+    # The prompt stops at 41, so the reference answer does too (review #37's residual).
+    chain = "main -> handle -> load -> 41\nCHAIN-DONE"
 
     def rows(self, *, result: bool = True, error: bool = False,
              answer: str | None = None) -> list[dict]:
@@ -393,10 +394,14 @@ class ArchitectureChainTests(unittest.TestCase):
         self.assertIn("handle", output)
 
     def test_a_chain_ending_at_the_value_the_prompt_names_passes(self):
-        """The prompt asks for the chain to the value 41, so stopping there is correct."""
+        """The prompt asks for the chain to the value 41, and 41 is where it must end."""
         self.assertEqual(self.verdict("main -> handle -> load -> 41\nCHAIN-DONE"), (0, ""))
-        self.assertEqual(self.verdict("main -> handle -> load -> validate -> 42\nCHAIN-DONE"),
-                         (0, ""))
+
+    def test_a_chain_running_past_the_prompted_value_fails(self):
+        """`... -> validate -> 42` answers a question the prompt did not ask (review #37)."""
+        code, output = self.verdict("main -> handle -> load -> validate -> 42\nCHAIN-DONE")
+        self.assertEqual(code, 1)
+        self.assertIn("ends at the value 42", output)
 
     def test_a_chain_with_invented_hops_fails(self):
         """Every required hop in order is not the chain the CODE has (review #37, residual).

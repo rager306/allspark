@@ -148,6 +148,14 @@ def chain_problem() -> str | None:
             return (
                 f"the final answer carries {VALIDATE_VALUE}, which only `validate` returns, "
                 "but the chain names no `validate` call")
+        # The prompt stops at 41. Reporting the chain PAST it (`... -> validate -> 42`) is a
+        # different question's answer: it names a value the task never asked for, and an
+        # oracle that accepts it grades whichever ending the agent happened to write
+        # (review #37's residual). The answer must END at ANSWER_VALUE.
+        if numbers and numbers[-1] != ANSWER_VALUE:
+            return (
+                f"the final answer ends at the value {numbers[-1]}, not {ANSWER_VALUE}: the "
+                f"prompt asks for the chain to {ANSWER_VALUE}, which is what load returns")
         if numbers and tokens.index(numbers[0]) < positions[2]:
             misplaced_value = tokens
             continue
