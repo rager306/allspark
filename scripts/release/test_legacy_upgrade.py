@@ -457,7 +457,8 @@ def guard_live_daemon_ancestor() -> None:
             "refusing to run the real installer: this process's ancestry could not be "
             "read, so the run cannot be shown to be outside a live daemon, and it "
             "stops daemons by socket path. Run this harness where its process tree is "
-            "readable (CI's release runner is), or pass --installer-mode fixture.")
+            "readable (CI's release runner is). This harness has no fixture mode: its "
+            "subject is a caller-supplied installer, so a stand-in would test nothing.")
 
 
 def resolve_installer_mode(requested: str, *, session_reason: str | None) -> str:

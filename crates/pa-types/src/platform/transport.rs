@@ -975,6 +975,26 @@ mod peer_credential_tests {
         );
     }
 
+    /// The peer verdict must be CONSUMED, not merely called (reviews #16/#17, the shape that
+    /// stayed green).
+    ///
+    /// The first version of both pins below asked whether `verify_peer_uid(` APPEARS in the
+    /// function. `let _checked = verify_peer_uid(&stream, path);` satisfies that and admits
+    /// every peer — measured: the mutation passes all 166 `pa-types` tests. What must hold is
+    /// that the call's result is PROPAGATED: the statement carrying it binds nothing and ends
+    /// in `?`. A formatting change can only make this stricter, never looser.
+    fn peer_verdict_is_propagated(body: &str) -> bool {
+        let statements: Vec<&str> = body
+            .split(';')
+            .filter(|statement| statement.contains("verify_peer_uid("))
+            .collect();
+        !statements.is_empty()
+            && statements.iter().all(|statement| {
+                let trimmed = statement.trim();
+                !trimmed.starts_with("let") && trimmed.ends_with('?')
+            })
+    }
+
     /// The blocking CLI client must CALL the check (review #16, CWE-290).
     ///
     /// It is the transport behind `allspark send` and `allspark shutdown`; the async
@@ -991,8 +1011,9 @@ mod peer_credential_tests {
             .expect("the function ends");
         let body = &source[start..end];
         assert!(
-            body.contains("verify_peer_uid("),
-            "connect_blocking must verify the peer's uid before handing the stream on: {body}"
+            peer_verdict_is_propagated(body),
+            "connect_blocking must PROPAGATE the peer verdict, not merely call it: \
+             `let _checked = verify_peer_uid(..)` starts the client and admits every peer: {body}"
         );
     }
 
@@ -1038,8 +1059,9 @@ mod peer_credential_tests {
             .expect("the function ends");
         let body = &source[start..end];
         assert!(
-            body.contains("verify_peer_uid("),
-            "connect_transport must verify the peer's uid before handing the stream on: {body}"
+            peer_verdict_is_propagated(body),
+            "connect_transport must PROPAGATE the peer verdict, not merely call it: \
+             `let _checked = verify_peer_uid(..)` starts the client and admits every peer: {body}"
         );
     }
 }
