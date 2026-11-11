@@ -128,6 +128,26 @@ class SymbolNavigationOracleTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("does not report both call sites", output)
 
+    def test_a_marker_in_a_dead_branch_does_not_satisfy_the_return(self):
+        """Review #36's residual: the marker must be in what `run` RETURNS.
+
+        `if false { return self.id * 10; }` beside a live `self.id * 4` kept the old
+        presence/absence pair green while the method returned the wrong number.
+        """
+        answer = "Worker::run <- spawn_worker\nBackup::run <- unrelated\nNAV-DONE"
+        with Fixture(self.task) as fx:
+            fx.edit(
+                "src/lib.rs",
+                self.original_worker,
+                "    pub fn run(&self) -> u32 {\n"
+                "        if false { return self.id * 10; }\n"
+                "        self.id * 4\n"
+                "    }",
+            )
+            code, output = fx.run(self.task, [assistant(answer)])
+        self.assertEqual(code, 1)
+        self.assertIn("does not RETURN", output)
+
     def test_the_marker_landing_in_the_backup_body_fails(self):
         answer = "Worker::run <- spawn_worker\nBackup::run <- unrelated\nNAV-DONE"
         with Fixture(self.task) as fx:
@@ -136,7 +156,9 @@ class SymbolNavigationOracleTests(unittest.TestCase):
             fx.edit("src/lib.rs", backup, "        self.id * 10")
             code, output = fx.run(self.task, [assistant(answer)])
         self.assertEqual(code, 1)
-        self.assertIn("Backup::run was modified", output)
+        # The claim is that Backup's RETURNED value changed (review #36: a body-wide
+        # presence check would miss a marker moved into a dead branch).
+        self.assertIn("Backup::run's RETURNED value changed", output)
 
 
 class FixturePremiseTests(unittest.TestCase):

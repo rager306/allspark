@@ -33,15 +33,35 @@ source = open(path, encoding="utf-8").read()
 problems = []
 worker_body = qa_oracle.impl_method_body(source, "Worker", "run")
 backup_body = qa_oracle.impl_method_body(source, "Backup", "run")
+def returned_expression(body: str) -> str:
+    """The expression a `-> u32` body RETURNS: its tail, or the argument of a bare `return`."""
+    lines = [line for line in body.splitlines() if line.strip() and line.strip() != "}"]
+    if not lines:
+        return ""
+    tail = lines[-1]
+    if "return " in tail:
+        tail = tail.split("return ", 1)[1]
+    return tail
+
+
 if worker_body is None or backup_body is None:
     problems.append("the fixture does not carry both `Worker::run` and `Backup::run`")
 else:
-    if "self.id * 10" not in worker_body:
-        problems.append("Worker::run was not changed to return `self.id * 10`")
+    # The RETURNED value, not any occurrence in the body (review #36, residual): a marker in
+    # a dead branch (`if false { return self.id * 10; }`) beside a live `self.id * 4` passed
+    # the presence/absence pair while the method returned the wrong number.
+    worker_returned = returned_expression(worker_body)
+    if "self.id * 10" not in worker_returned:
+        problems.append(
+            "Worker::run does not RETURN `self.id * 10`; a copy in a dead branch is not the "
+            f"change (returns {worker_returned.strip()!r})")
     if "self.id * 2" in worker_body:
         problems.append("Worker::run still carries the original `self.id * 2`")
-    if "self.id * 3" not in backup_body:
-        problems.append("Backup::run was modified; the task asked to leave it untouched")
+    backup_returned = returned_expression(backup_body)
+    if "self.id * 3" not in backup_returned:
+        problems.append(
+            "Backup::run's RETURNED value changed; the task asked to leave it untouched "
+            f"(returns {backup_returned.strip()!r})")
 
 # ── the answer: a structured mapping, not two names somewhere in the text ──
 rows = qa_oracle.load_rows(os.environ.get("QA_TRANSCRIPT", ""))
