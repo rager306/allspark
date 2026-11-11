@@ -482,9 +482,14 @@ impl SessionUi {
         // the SAME first-frame budget (review #15). It used to be awaited unbounded: the client's
         // default request bound (30 s) was the only ceiling, measured with a supervisor that
         // answers `attach` and then goes silent on `roster_subscribe` alone — 30.0 s before the
-        // first content frame. A miss leaves the roster empty; the daemon registers the
-        // subscription before it answers, so the next `roster_update` push refills the counts
-        // without a second request.
+        // first content frame.
+        //
+        // A miss costs the SEED, not the subscription in the realistic case: the daemon flips its
+        // `roster_subscribed` flag before it answers (`supervisor/clients.rs`), so a slow or lost
+        // ANSWER still delivers the `roster_update` pushes, and the rows apply into the empty
+        // roster as the family changes. A lost REQUEST is different — no flag, no pushes — and
+        // then the counts stay empty until the next attach asks again; that is the price of a
+        // bounded first frame, and it is paid only by a daemon that never answers.
         let _ = tokio::time::timeout(DOCK_FIRST_FRAME_BUDGET, self.subscribe_roster()).await;
         // The dock's heartbeat rows follow `dock_fold`: a first-content-frame attach folds the
         // fresh fetch BEFORE the attach returns (the operator's 2026-09-26 zero-shift ruling).
@@ -1186,7 +1191,8 @@ mod backfill_tests {
     /// path: it was awaited without a bound, so a supervisor that answers `attach` and then goes
     /// silent on this one command held the first content frame for the client's default request
     /// bound — measured at 30.0 s. The mock here does exactly that; the open must return inside
-    /// `DOCK_FIRST_FRAME_BUDGET` plus a wide margin, with an empty roster (the push refills it).
+    /// `DOCK_FIRST_FRAME_BUDGET` plus a wide margin, with an empty roster, AND must have issued
+    /// the request (a "bounded" open that skipped it would pass the timing half alone).
     #[tokio::test]
     async fn a_wedged_roster_subscribe_does_not_hold_the_first_frame() {
         let dir = tempfile::tempdir().unwrap();
