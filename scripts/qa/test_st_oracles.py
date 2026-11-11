@@ -359,6 +359,23 @@ class SymbolEditOracleTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("RETURNED text does not carry", output)
 
+    def test_a_marker_with_extra_wording_fails(self):
+        """The marker passing through is not the text the task asks for (review #38).
+
+        `describe: retries={} ms timeout={}` contains the marker and orders the arguments
+        correctly, so every earlier check passed while the printed text differed.
+        """
+        with Fixture(self.task) as fx:
+            fx.edit(
+                "src/lib.rs",
+                self.original,
+                '        format!("describe: retries={} ms timeout={}", self.retries, '
+                'self.timeout_ms)',
+            )
+            code, output = fx.run(self.task)
+        self.assertEqual(code, 1)
+        self.assertIn("returns the wrong text", output)
+
     def test_an_unmodified_fixture_fails(self):
         with Fixture(self.task) as fx:
             code, output = fx.run(self.task)

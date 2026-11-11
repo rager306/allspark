@@ -144,17 +144,27 @@ if len(describe) == 1:
         # timeout={}", self.timeout_ms, self.retries)` printed the values in the wrong
         # order. The fixture's two fields differ, so the order is observable.
         literal = next(literal for literal in returned_literals if MARKER in literal)
-        expected_args = ["self.retries", "self.timeout_ms"]
-        after = tail[tail.find(literal) + len(literal):]
-        actual_args = [
-            part.strip()
-            for part in after.split(")")[0].lstrip('",').split(",")
-            if part.strip().startswith("self.")
-        ]
-        if actual_args[:2] != expected_args:
+        # The WHOLE format string, not a prefix (review #38's residual): the marker passing
+        # through `describe: retries=` also accepts `describe: retries={} ms timeout={}`,
+        # which prints different text than the task asks for. The exact literal is the
+        # requirement, and it is compared as one string so no wording can slip in.
+        expected_literal = "describe: retries={} timeout={}"
+        if literal != expected_literal:
             problems.append(
-                "Config::describe passes the fields in the wrong order: the format string "
-                f"is {literal!r}, so the arguments must be {expected_args}, found {actual_args}")
+                "Config::describe returns the wrong text: the format string must be "
+                f"{expected_literal!r}, found {literal!r}")
+        else:
+            expected_args = ["self.retries", "self.timeout_ms"]
+            after = tail[tail.find(literal) + len(literal):]
+            actual_args = [
+                part.strip()
+                for part in after.split(")")[0].lstrip('",').split(",")
+                if part.strip().startswith("self.")
+            ]
+            if actual_args[:2] != expected_args:
+                problems.append(
+                    "Config::describe passes the fields in the wrong order: the format string "
+                    f"is {literal!r}, so the arguments must be {expected_args}, found {actual_args}")
 if len(summary) == 1:
     body = summary[0].strip()
     if body != ORIGINAL_BODY:
