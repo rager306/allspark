@@ -11,8 +11,9 @@ use super::{
     EXIT_DETACH_TIMEOUT_MS, EXIT_STATS_TIMEOUT_MS, UI_REQUEST_TIMEOUT_MS,
 };
 
-/// How long the open's first content frame waits for the three optional dock reads
-/// (`roster_subscribe`, `heartbeats_list`, `list_kernel_bash`).
+/// How long the open's first content frame waits for anything it does NOT need to paint: the
+/// three dock reads (`roster_subscribe`, `heartbeats_list`, `list_kernel_bash`) and the switch's
+/// retirement `detach`, whose reply is discarded.
 ///
 /// The dock's counts are first-frame state — the 2026-09-26 zero-shift ruling, pinned by
 /// `chat_open_first_frame_headless` — so the open does wait for them. It waits for ONE SECOND,
@@ -440,10 +441,18 @@ impl SessionUi {
         self.active_session_id = attach.active_session_id;
         // Retire the superseded id's subscription now, addressed by the captured previous id (the
         // detach must target the OLD address, not the newly adopted one).
+        //
+        // The reply is DISCARDED, so this is a send, not a request: the switch must not hold its
+        // next session's first frame for a retirement notice. It stays awaited (the request has to
+        // leave before `attach_session` returns, which is the wire order the reconnect paths
+        // depend on) but under the same FIRST-FRAME budget as the dock reads (review #15): a
+        // daemon that answers in time is unchanged, and one that never answers costs the switch a
+        // second instead of `UI_REQUEST_TIMEOUT_MS`. Measured before this bound with a mock that
+        // answers `attach` and holds `detach`: the switch took 10.0 s.
         if !previous.is_empty() && previous != self.active_session_id {
             let _ = self
                 .bounded_request(
-                    Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
+                    DOCK_FIRST_FRAME_BUDGET,
                     DaemonCommand::Detach {
                         id: None,
                         active_session_id: Some(previous),
@@ -1193,6 +1202,117 @@ mod backfill_tests {
     /// bound — measured at 30.0 s. The mock here does exactly that; the open must return inside
     /// `DOCK_FIRST_FRAME_BUDGET` plus a wide margin, with an empty roster, AND must have issued
     /// the request (a "bounded" open that skipped it would pass the timing half alone).
+    /// A session SWITCH's retirement `detach` is bounded by the same first-frame budget
+    /// (review #15).
+    ///
+    /// The switch adopts the new session, then retires the old id's subscription. That request's
+    /// reply is discarded, yet it was awaited under `UI_REQUEST_TIMEOUT_MS` — measured at 10.0 s
+    /// against a mock that answers `attach` and never answers `detach`. The detach must still go
+    /// OUT (the wire order is unchanged, and the mock asserts it arrived); only its reply is
+    /// bounded.
+    #[tokio::test]
+    async fn a_wedged_detach_does_not_hold_the_switch() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("switch.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let (seen_tx, mut seen_rx) = mpsc::unbounded_channel::<String>();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            write.write_all(b"{\"type\":\"daemon_hello\",\"protocol\":{\"name\":\"prime-agent.daemon\",\"version\":7},\"serverCapabilities\":[],\"clientId\":\"mock\"}\n").await.unwrap();
+            let mut lines = BufReader::new(read).lines();
+            let mut attaches = 0;
+            while let Some(line) = lines.next_line().await.unwrap() {
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let kind = request["command"]["type"].as_str().unwrap();
+                let _ = seen_tx.send(kind.to_string());
+                if kind == "detach" {
+                    // The wedged retirement: no reply, ever.
+                    continue;
+                }
+                if kind == "attach" {
+                    attaches += 1;
+                }
+                let active = if attaches <= 1 { "s1" } else { "s2" };
+                let data = match kind {
+                    "attach" => json!({
+                        "activeSessionId": active, "snapshot": {
+                            "activeSessionId": active,
+                            "summary": {"id": active, "cwd": "/tmp"},
+                            "state": {"sessionId": active, "cwd": "/tmp", "isStreaming": false},
+                            "messages": [], "lastEventSequence": 0,
+                        }, "replay": {"status": "complete", "toSequence": 0},
+                        "lastEventSequence": 0,
+                    }),
+                    _ => json!({}),
+                };
+                let mut reply = serde_json::to_vec(&json!({
+                    "type": "response", "id": request["id"], "command": kind,
+                    "success": true, "data": data,
+                }))
+                .unwrap();
+                reply.push(b'\n');
+                write.write_all(&reply).await.unwrap();
+            }
+        });
+        let mut options =
+            crate::interactive::tests::options(crate::interactive::ModelSelection::default());
+        options.socket_path = socket.clone();
+        options.session = SessionSelection::Attach("s1".to_string());
+        let (client, _events) = DaemonClient::connect(&socket).await.unwrap();
+        let mut session = SessionUi::open(
+            client,
+            &options,
+            mpsc::unbounded_channel().0,
+            mpsc::unbounded_channel().0,
+            mpsc::unbounded_channel().0,
+            mpsc::unbounded_channel().0,
+            mpsc::unbounded_channel().0,
+            mpsc::unbounded_channel().0,
+            mpsc::unbounded_channel().0,
+            mpsc::unbounded_channel().0,
+            mpsc::unbounded_channel().0,
+            ActivityUpdates {
+                heartbeats: mpsc::unbounded_channel().0,
+                bash: mpsc::unbounded_channel().0,
+                factory: mpsc::unbounded_channel().0,
+                commands: mpsc::unbounded_channel().0,
+                cache_rate: mpsc::unbounded_channel().0,
+            },
+            mpsc::unbounded_channel().0,
+        )
+        .await
+        .expect("the first attach landed");
+        assert_eq!(session.active_session_id, "s1");
+        tokio::time::timeout(
+            Duration::from_secs(4),
+            session.attach_session("s2", DockFold::FirstFrame),
+        )
+        .await
+        .expect("the switch must not wait out UI_REQUEST_TIMEOUT_MS for a wedged detach")
+        .expect("the second attach landed");
+        assert_eq!(
+            session.active_session_id, "s2",
+            "the switch adopted the new session"
+        );
+        // Both halves of the contract: the detach went OUT, and it did not hold the switch.
+        let mut kinds = Vec::new();
+        while let Ok(kind) = seen_rx.try_recv() {
+            kinds.push(kind);
+        }
+        assert!(
+            kinds.iter().any(|kind| kind == "detach"),
+            "the superseded subscription is still retired on the wire: {kinds:?}"
+        );
+        assert_eq!(
+            kinds.iter().filter(|kind| *kind == "attach").count(),
+            2,
+            "one attach per session: {kinds:?}"
+        );
+        drop(session);
+        server.abort();
+    }
+
     #[tokio::test]
     async fn a_wedged_roster_subscribe_does_not_hold_the_first_frame() {
         let dir = tempfile::tempdir().unwrap();
