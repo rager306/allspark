@@ -514,6 +514,17 @@ class TypedDecisionOracleTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("never put to the tool", output)
 
+    def test_a_question_about_a_different_service_fails(self):
+        """`delete the other service?` names a service — just not this one (review #39)."""
+        rows = [tool_call("j1", "jev", {"action": "check",
+                                        "question": "should we delete the other service?"})]
+        rows.append(tool_result(
+            "j1", "jev", "check: 0.90",
+            details={"answers": {"check": {"type": "noul", "noul": 0.9}}}))
+        code, output = self.decide("DELETE", rows)
+        self.assertEqual(code, 1)
+        self.assertIn("never put to the tool", output)
+
     def test_a_question_about_a_fixture_file_is_not_about_the_service(self):
         """`should we delete the README?` carries `delet` too (review #39, residual).
 

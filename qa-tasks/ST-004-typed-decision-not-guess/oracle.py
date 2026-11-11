@@ -87,11 +87,21 @@ def probability(call: dict, answer_id: str) -> float | None:
 #: (review #39, residual): `should we delete the temp cache?` carries `delet` and licensed a
 #: verdict about a service nobody asked about.
 SUBJECT_NOUNS = ("service", "svc", "endpoint", "api", "backend")
+#: Words that make the subject a DIFFERENT one, so the question is about something else even
+#: though it carries a subject noun (review #39's residual: `delete the other service?`).
+OTHER_SUBJECTS = ("other", "another", "different", "second", "third", "unrelated")
 
 
 def asks_about_the_service(question: str) -> bool:
-    """Whether the question is about the SERVICE this fixture is about."""
+    """Whether the question is about the SERVICE this fixture is about.
+
+    A subject noun is not enough. `delete the other service?` names a service and a deletion,
+    and the fixture is about ONE legacy service — a question about a different one decides
+    something the task never asked, so it cannot license the verdict.
+    """
     lowered = question.lower()
+    if any(word in lowered for word in OTHER_SUBJECTS):
+        return False
     return any(noun in lowered for noun in SUBJECT_NOUNS)
 
 
