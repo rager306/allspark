@@ -115,7 +115,7 @@ impl SettingsManager {
             self.errors.push(SettingsError {
                 scope,
                 message: format!(
-                    "{label} settings not saved: settings file failed to parse: {message}"
+                    "{label} settings not saved: settings file failed to load: {message}"
                 ),
             });
             return;

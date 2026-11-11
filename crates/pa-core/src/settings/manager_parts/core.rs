@@ -173,7 +173,7 @@ impl SettingsManager {
             self.errors.push(SettingsError {
                 scope: SettingsScope::Global,
                 message: format!(
-                    "Global settings not saved: settings file failed to parse: {message}"
+                    "Global settings not saved: settings file failed to load: {message}"
                 ),
             });
             return Ok(());

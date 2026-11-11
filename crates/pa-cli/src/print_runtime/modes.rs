@@ -213,7 +213,7 @@ fn rpc_engine_factory(options: &RunOptions) -> pa_daemon::rpc::session::RpcEngin
         options.session.continue_recent = false;
         options.session.fork = None;
         Box::pin(async move {
-            let (manager, opened_lease) = match &request {
+            let (manager, opened_lease, kernel_ready_gate) = match &request {
                 pa_daemon::rpc::session::RpcEngineRequest::New {
                     parent_session,
                     cwd,
@@ -246,11 +246,12 @@ fn rpc_engine_factory(options: &RunOptions) -> pa_daemon::rpc::session::RpcEngin
                         &options.config.agent_dir,
                     )
                     .map_err(|error| format!("{error:#}"))?;
-                    (manager, Some(lease))
+                    (manager, Some(lease), None)
                 }
                 pa_daemon::rpc::session::RpcEngineRequest::Open {
                     session_path,
                     reuse_lease,
+                    ready_gate,
                 } => {
                     let session_dir = replacement_session_dir(&options);
                     let cwd = options.config.cwd.clone();
@@ -267,7 +268,7 @@ fn rpc_engine_factory(options: &RunOptions) -> pa_daemon::rpc::session::RpcEngin
                     // The replacement ADOPTS the opened session's own cwd: tools,
                     // settings, and file work run against the session's repository.
                     options.config.cwd = manager.get_cwd().to_path_buf();
-                    (manager, lease)
+                    (manager, lease, ready_gate.clone())
                 }
             };
             let engine = build_engine(
@@ -275,7 +276,7 @@ fn rpc_engine_factory(options: &RunOptions) -> pa_daemon::rpc::session::RpcEngin
                 faux_script_env()?.as_ref(),
                 Some(manager),
                 "rpc",
-                &HeadlessEmbedding::Rpc,
+                &HeadlessEmbedding::Rpc { kernel_ready_gate },
             )
             .await?;
             let mut handle = pa_daemon::rpc::session::RpcEngineHandle::from(engine);

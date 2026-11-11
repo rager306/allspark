@@ -278,6 +278,11 @@ fn a_real_faux_turn_passes_through_the_router_unharmed() {
         queued_steering_probe: None,
     })
     .unwrap();
+    // The live-auth resolver upgrades the engine's own arc per provider call: an
+    // unregistered engine resolves NO request auth, and the turn fails on a
+    // scripted run that needs none.
+    let engine = std::sync::Arc::new(engine);
+    engine.register_arc();
     // A faux script never fails over (`failover_candidates` returns empty), so
     // the router is asked for a decision over a one-row set and applies
     // nothing; the assertion is that the turn still settles.

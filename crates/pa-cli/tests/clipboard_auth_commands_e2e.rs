@@ -858,16 +858,17 @@ async fn tui_prime_login_renders_the_inline_team_picker() {
         steps: vec![
             pa_tui::interactive::HeadlessStep::Submit("/login".to_string()),
             enter(),
+            // The team rows exist only once the picker loaded its teams.
             pa_tui::interactive::HeadlessStep::WaitRender {
-                needle: "Select a Prime Team:".to_string(),
-                timeout_ms: 30_000,
+                needle: "slug: acme".to_string(),
+                timeout_ms: 10_000,
             },
             // Personal rides first (TS order): down selects Acme Corp.
             key(crossterm::event::KeyCode::Down),
             enter(),
             pa_tui::interactive::HeadlessStep::WaitRender {
-                needle: "Saved API key for Prime Inference. Using team \"Acme Corp\".".to_string(),
-                timeout_ms: 30_000,
+                needle: "Using team \"Acme Corp\".".to_string(),
+                timeout_ms: 10_000,
             },
         ],
         width: 120,
@@ -980,16 +981,15 @@ async fn tui_prime_login_escape_keeps_the_default_team_status() {
         steps: vec![
             pa_tui::interactive::HeadlessStep::Submit("/login".to_string()),
             enter(),
-            // The login screen renders before the escape; the picker mounts
-            // after it (observed, not slept-for).
+            // The team rows exist only once the picker loaded its teams.
             pa_tui::interactive::HeadlessStep::WaitRender {
-                needle: "Select a Prime Team:".to_string(),
-                timeout_ms: 30_000,
+                needle: "slug: acme".to_string(),
+                timeout_ms: 10_000,
             },
             key(crossterm::event::KeyCode::Esc),
             pa_tui::interactive::HeadlessStep::WaitRender {
-                needle: "Saved API key for Prime Inference. Using personal account.".to_string(),
-                timeout_ms: 30_000,
+                needle: "Using personal account.".to_string(),
+                timeout_ms: 10_000,
             },
         ],
         width: 120,

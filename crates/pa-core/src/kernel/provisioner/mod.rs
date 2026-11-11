@@ -43,6 +43,9 @@ mod startup;
 mod tests;
 
 pub use ensure::provisioner_for_path;
+/// Resolves once another kernel sharing the snapshot dir has flushed its final snapshot.
+pub type KernelReadyGate = Arc<dyn Fn() -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
+
 pub use options::IpythonKernelProvisionerOptions;
 pub use startup::{
     KernelBootstrapOutcome, KernelBootstrapResultHandler, KernelBootstrapStats, RestoreCallback,

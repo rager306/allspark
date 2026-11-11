@@ -23,5 +23,5 @@ pub use types::{
     JevAutoThinkingSetting, JevCacheSettings, JevEnabledSetting, JevGraphRerankSetting,
     JevSettings, JevToolArbiterSetting, LspSettings, ModelRoutingLevel, QueueModeSetting,
     RoutingSettings, Settings, SubagentModelChoice, SubagentModelRung, SubagentModelSettings,
-    ThinkingLevelSetting, ToolProfileSettings, TransportSetting, UpdateChannel,
+    ThinkingLevelSetting, ToolProfileSettings, TransportSetting, UpdateChannel, WebSearchProvider,
 };

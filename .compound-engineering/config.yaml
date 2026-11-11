@@ -1,0 +1,11 @@
+# Compound Engineering -- repo config (team defaults)
+# Created by /ce-setup. Ordinary keys may be overridden per-machine in
+# .compound-engineering/config.local.yaml (not created). docs_root is read
+# ONLY from this file. See config.example.yaml for every supported key.
+
+# --- Artifact root ---
+# Every CE-written artifact folder (solutions, plans, ideation, explainers,
+# pulse-reports, dogfood-reports, feedback-sweep, personas) lives under this
+# repo-relative root instead of the default `docs`. Kept inside the repo so
+# results survive /tmp cleanup.
+docs_root: .compound-engineering/artifacts

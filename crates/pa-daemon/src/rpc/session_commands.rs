@@ -121,6 +121,7 @@ async fn switch_session(state: &Arc<RpcState>, payload: &Value) -> Result<Respon
         .replace(RpcEngineRequest::Open {
             session_path: std::path::PathBuf::from(session_path),
             reuse_lease: false,
+            ready_gate: None,
         })
         .await;
     if let Err(error) = outcome {
@@ -284,6 +285,7 @@ async fn fork_at(
         .replace_locked(RpcEngineRequest::Open {
             session_path: forked_path,
             reuse_lease: false,
+            ready_gate: None,
         })
         .await;
     drop(lease);

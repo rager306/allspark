@@ -46,7 +46,9 @@ async fn rpc_engine_prompt_discloses_the_missing_agent_family() {
         Some(&script),
         None,
         "rpc",
-        &HeadlessEmbedding::Rpc,
+        &HeadlessEmbedding::Rpc {
+            kernel_ready_gate: None,
+        },
     )
     .await
     .unwrap();
@@ -89,7 +91,9 @@ async fn rpc_notice_keeps_the_discovered_append_prompt() {
         Some(&script),
         None,
         "rpc",
-        &HeadlessEmbedding::Rpc,
+        &HeadlessEmbedding::Rpc {
+            kernel_ready_gate: None,
+        },
     )
     .await
     .unwrap();

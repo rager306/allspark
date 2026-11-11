@@ -2,12 +2,12 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use crate::kernel::bootstrap::KernelPythonSkill;
 use crate::kernel::shared::HostRequestHandlers;
 
 use super::startup::{KernelBootstrapResultHandler, RestoreCallback, UnavailableSkillsCallback};
+use super::KernelReadyGate;
 
 #[derive(Default, Clone)]
 pub struct IpythonKernelProvisionerOptions {
@@ -38,7 +38,10 @@ pub struct IpythonKernelProvisionerOptions {
     /// the historical behaviour, where the clip is the only record.
     pub evidence_dir: Option<PathBuf>,
     /// Await (e.g. a previous provisioner's dispose) before reading the snapshot.
-    pub ready_gate: Option<Arc<dyn Fn() -> futures::future::BoxFuture<'static, ()> + Send + Sync>>,
+    ///
+    /// [`KernelReadyGate`] is the named alias, so the composition root can carry the same
+    /// fact through its own options without repeating the closure type.
+    pub ready_gate: Option<KernelReadyGate>,
     /// Publishes the restore outcome once the kernel is usable.
     pub on_restore: Option<RestoreCallback>,
     /// Fires when the kernel's last live background `bash()` handle

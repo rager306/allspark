@@ -150,7 +150,7 @@ fn create_config_flags_reach_the_engine_model_resolution() {
     // The registry resolves the models.json apiKey (the provider name has
     // no env-key mapping), so the engine can authenticate without env.
     assert_eq!(
-        engine.resolve_request_api_key(&model).as_deref(),
+        engine.resolve_request_auth(&model).api_key.as_deref(),
         Some("sk-battery")
     );
 }
@@ -459,7 +459,11 @@ fn explicit_native_free_selection_resolves_public_request_auth_through_the_engin
         (model.provider.as_str(), model.id.as_str()),
         ("opencode", "deepseek-v4.1-flash-free")
     );
-    assert_eq!(engine.resolve_request_api_key(&model), Some(expected_key));
+    // The fork's native-free rule lives in the request-auth resolution now: the sync helper
+    // that returned only the key is gone (upstream resolves the whole auth per call).
+    let resolved = engine.resolve_request_auth(&model);
+    assert!(resolved.ok, "{:?}", resolved.error);
+    assert_eq!(resolved.api_key.as_deref(), Some(expected_key.as_str()));
 }
 
 #[test]
@@ -541,9 +545,11 @@ async fn an_api_key_override_keeps_the_merged_team_headers() {
     });
     let model = engine.resolve_registry_model().expect("resolved model");
     assert_eq!(model.provider, "prime-inference");
-    let (api_key, headers) = engine.resolve_request_key_and_headers(&model);
-    assert_eq!(api_key.as_deref(), Some("explicit-override"));
-    let headers = headers.expect("the override keeps the merged headers");
+    let resolved = engine.resolve_request_auth(&model);
+    assert_eq!(resolved.api_key.as_deref(), Some("explicit-override"));
+    let headers = resolved
+        .headers
+        .expect("the override keeps the merged headers");
     assert_eq!(
         headers.get("X-Prime-Team-ID").map(String::as_str),
         Some("team-1"),
@@ -563,9 +569,9 @@ async fn request_auth_carries_the_stored_team_header() {
     let engine = restore_test_engine(dir.path(), Some("prime-inference"), None);
     let model = engine.resolve_registry_model().expect("resolved model");
     assert_eq!(model.provider, "prime-inference");
-    let (api_key, headers) = engine.resolve_request_key_and_headers(&model);
-    assert_eq!(api_key.as_deref(), Some("test-key"));
-    let headers = headers.expect("merged request headers");
+    let resolved = engine.resolve_request_auth(&model);
+    assert_eq!(resolved.api_key.as_deref(), Some("test-key"));
+    let headers = resolved.headers.expect("merged request headers");
     assert_eq!(
         headers.get("X-Prime-Team-ID").map(String::as_str),
         Some("team-1"),
@@ -1098,7 +1104,7 @@ fn configure_model_merges_only_present_fields() {
     let model = engine.resolve_registry_model().expect("resolved model");
     assert_eq!(model.provider, "battery");
     assert_eq!(
-        engine.resolve_request_api_key(&model).as_deref(),
+        engine.resolve_request_auth(&model).api_key.as_deref(),
         Some("flag-key")
     );
 }

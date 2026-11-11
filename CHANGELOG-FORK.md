@@ -13,6 +13,78 @@ branch (`feat/allspark-identity`). `fork.3` points at the SAME commit as `fork.2
 (`375ad95cf`) and is a duplicate tag, not a separate release — it has no entry here
 because nothing shipped between them. `FORK.md` carries the same correction.
 
+## fork.020 — upstream main @ b71a01879 (20 commits past `42a07c13c`)
+
+- Tag: `allspark-v0.10.3-beta.17-fork.020` (cut by the release flow; the version stays
+  `0.10.3-beta.17` because upstream has not tagged past it)
+- Base: upstream `main` at `b71a01879`. No newer TAG exists — `v0.10.3-beta.17` is still the
+  newest — so this merge follows the branch, exactly as `fork.019` did.
+
+### What upstream brought
+
+- **Live request-auth refresh** (#4019): the daemon's stream re-resolves request auth from the
+  credential store on EVERY provider call (`switchable_stream_fn_with_live_auth` +
+  `LiveAuthResolver`). A `/login` from another process, or an OAuth token refreshed at expiry,
+  serves the next request without a restart. This is the biggest behavioural change in the set:
+  it retires the fork's per-`/reload` auth rebind (`rebuild_request_auth_registry`,
+  `restored_primary_target`, `tests/reload.rs`'s rebind pins) — the `live_auth` battery is the
+  replacement, and it is larger than what it replaced.
+- **RPC same-path reopen keeps the final snapshot** (#4007): `RpcEngineRequest::Open` carries a
+  `ready_gate`, so the replacement kernel restores only after the replaced engine's dispose
+  flushed. Needs `KernelReadyGate` in pa-core's provisioner and the gate threaded through
+  pa-cli's headless embedding.
+- **Autonomous-gate snapshot cannot start repo-configured programs** (#4025): fixed argument
+  sets plus `GIT_ALLOW_PROTOCOL`/`GIT_CONFIG_NOSYSTEM`, with a test that plants an fsmonitor
+  hook, textconv drivers, an index-write hook, a submodule hook and a promisor uploadpack, and
+  asserts none of them runs. The fork's "an ignored workspace has no snapshot" rule rides on
+  top of it (both probes still captured, then the `check-ignore` refusal).
+- **Web search provider picker** (#3974): `webSearchProvider` setting (Serper or You.com Eco),
+  five transport choices in the settings picker, and the skill's kernel env resolved from the
+  selected provider (`websearch_env` replaces the fork's `serper_api_key` argument; the fork's
+  `PRIME_AGENT_EXCLUDED_APIS` argument stays beside it).
+- **Project settings bound and link refusal** (#3916): 4 MiB cap and a symlink target outside
+  the project root is refused.
+- **rustix 1.1.6** for RUSTSEC-2026-0486 (#4030), **lock identity before stale reclaim**
+  (#3952), **kernel rebootstrap memo cleared** (#3982), **codex WS released on a failed send**
+  (#4010), **onboarding picker names Prime Inference as the default** (#4031), plus the
+  test-only waits (#3874–#3880) and `SECURITY.md`.
+
+### What the merge had to decide
+
+- **`discovery`: upstream DELETED the never-touch socket-dir list** (#3984) so `status`, `doctor`
+  and `shutdown` see the default daemon. The fork keeps its own guard there — the upstream
+  product's `prime-agent-<uid>` socket is never this root's (known bug #22) — while taking
+  upstream's removal of the machine-specific mission directories. `the_linux_default_socket_dir_
+  belongs_to_its_root` was upstream's assertion that our default dir IS `prime-agent-<uid>`; the
+  fork's default is `allspark-<uid>`, so the test now asserts both directions separately.
+- **`print_runtime.rs` and `kernel/provisioner.rs` stay split.** Upstream still edits both
+  single files; the fork split them (`refactor(pa-cli)`, `refactor(pa-core)`), so their upstream
+  hunks were applied to the modules that own them: `HeadlessEmbedding::Rpc` became a struct
+  variant carrying `kernel_ready_gate`, and `KernelReadyGate` is a named alias in
+  `kernel/provisioner/mod.rs`.
+- **The fork's failover fix survives** (`install_armed_route_target_for`): upstream's #4019
+  reintroduced `install_armed_route_target()` at the failover arm, which sends the retry back to
+  the provider that just failed (upstream #3312, fork review #12). The fork keeps `Some(&next)`.
+- **The fork's image-route auth capture is retired** with the rest of the captured-pair model:
+  the slot's auth half is write-only now, so `install_armed_route_target_for` and the route apply
+  store the model and the tier only.
+- **Routing test needed `register_arc`**: the live-auth resolver upgrades the engine's own weak
+  arc, so an unregistered engine resolves NO auth and a scripted turn fails with "request auth
+  resolution failed". This affects any test that builds an engine and runs a turn.
+- **`[dev-dependencies] tokio` with `test-util`** is a FORK-only need (the OAuth device-code
+  expiry tests); upstream's `Cargo.toml` edit removed it and the crate stopped compiling its
+  tests.
+
+### Fork fixes re-verified after the merge
+
+`cron` day-pair OR, `StreamOutcome::Failed`, `lease_held_by`, `PI_OFFLINE` (59 sites),
+`redact_tokens`, `push_user_turn` in bedrock, `witness`/`frontier`, `call_sites_for_callee`,
+`explain_change`, `AdrCodeRef` — all present; `pa-core --lib` 1820, `pa-daemon --lib` 1346,
+`pa-graph --lib` 586, `pa-ai --lib` 498, `pa-tui --lib` 1614, `pa-types --lib` 166, `pa-cli --lib`
+334.
+
+---
+
 ## fork.019 — upstream main @ 42a07c13c (3 commits past `6abb29e69`)
 
 - Tag: `allspark-v0.10.3-beta.17-fork.019`
