@@ -172,23 +172,62 @@ class FixturePremiseTests(unittest.TestCase):
 
     task = "ST-001-symbol-nav-not-grep"
 
-    def source(self) -> str:
-        return (TASKS / self.task / "fixture" / "src" / "lib.rs").read_text(encoding="utf-8")
+    def sources(self) -> dict[str, str]:
+        """Every source file of the fixture, by relative path.
+
+        The fixture is SPLIT (review #36's second half): the receivers come from
+        `makers::{first,second}::make`, both returning `impl Run`, so neither the call site
+        nor the signature names the concrete type — only the maker's body, one file away.
+        A reader that only opens `lib.rs` cannot answer, which is the point.
+        """
+        root = TASKS / self.task / "fixture" / "src"
+        return {
+            str(path.relative_to(root)): path.read_text(encoding="utf-8")
+            for path in sorted(root.rglob("*.rs"))
+        }
 
     def test_the_two_call_sites_are_textually_identical(self):
-        sites = [line.strip() for line in self.source().splitlines() if ".run()" in line]
+        sites = [
+            line.strip()
+            for source in self.sources().values()
+            for line in source.splitlines()
+            if ".run()" in line and not line.strip().startswith("fn ")
+        ]
         self.assertEqual(len(sites), 2, f"expected exactly two call sites: {sites}")
         self.assertEqual(
             sites[0], sites[1],
             "the call sites differ, so a text search maps each receiver to its type "
             f"without the symbol layer: {sites}")
 
-    def test_the_prompt_quotes_the_call_site_the_fixture_has(self):
+    def test_both_makers_return_an_opaque_type(self):
+        """`impl Run` from two makers is what makes the receiver unknowable from the call."""
+        makers = self.sources().get("makers/mod.rs", "")
+        self.assertIn("pub mod first;", makers)
+        self.assertIn("pub mod second;", makers)
+        for name in ("first", "second"):
+            body = self.sources().get(f"makers/{name}.rs", "")
+            self.assertIn(
+                "-> impl Run",
+                body,
+                f"makers/{name}.rs must return `impl Run`, not the concrete struct: {body}"
+            )
+
+    def test_the_prompt_quotes_a_call_site_the_fixture_has(self):
         prompt = (TASKS / self.task / "task.yaml").read_text(encoding="utf-8")
         match = re.search(r"call sites? read `([^`]+)`", prompt)
-        self.assertIsNotNone(match, "the prompt no longer states the call-site form it traps")
+        if match is None:
+            # The prompt was reworded with the split fixture; what must stay true is that it
+            # still asks for the two receivers, one per method.
+            self.assertIn("Worker::run", prompt)
+            self.assertIn("Backup::run", prompt)
+            return
         form = match.group(1)
-        occurrences = [line.strip() for line in self.source().splitlines() if line.strip() == form]
+        occurrences = [
+            line.strip()
+            for source in self.sources().values()
+            for line in source.splitlines()
+            if line.strip() == form
+        ]
         self.assertEqual(
             len(occurrences), 2,
             f"the prompt promises {form!r} at both sites; the fixture has {occurrences}")

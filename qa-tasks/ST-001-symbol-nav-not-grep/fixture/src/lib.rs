@@ -1,3 +1,5 @@
+//! Two types with a same-named method, and the two callers that invoke them.
+
 pub struct Worker {
     pub id: u32,
 }
@@ -22,12 +24,27 @@ impl Backup {
     }
 }
 
-pub fn spawn_worker(id: u32) -> u32 {
-    let x = Worker { id };
-    x.run()
+/// The method both callers invoke. Its return type is `impl Run`, never the concrete
+/// struct, so no signature names the receiver's type.
+pub trait Run {
+    fn run(&self) -> u32;
 }
 
-pub fn unrelated() -> u32 {
-    let x = Backup { id: 7 };
-    x.run()
+impl Run for Worker {
+    fn run(&self) -> u32 {
+        Worker::run(self)
+    }
 }
+
+impl Run for Backup {
+    fn run(&self) -> u32 {
+        Backup::run(self)
+    }
+}
+
+mod makers;
+mod spawn;
+mod unrelated;
+
+pub use spawn::spawn_worker;
+pub use unrelated::unrelated;

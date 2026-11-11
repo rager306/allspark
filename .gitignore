@@ -1,5 +1,7 @@
 
 /target
+# QA fixture crates build under their own `target/`; it is generated output like the root's.
+qa-tasks/*/fixture/target/
 /bin/
 __pycache__/
 steer-queue-runs/
