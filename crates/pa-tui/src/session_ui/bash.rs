@@ -154,8 +154,8 @@ impl SessionUi {
         Ok(())
     }
 
-    /// The open-time kernel-bash READ (no epoch bump: [`super::SessionUi::read_dock_registries`]
-    /// owns it, so the two dock reads can run concurrently on `&self`).
+    /// The open-time kernel-bash READ (no epoch bump: `attach_session` owns it, so the three dock
+    /// reads can run concurrently on `&self`).
     pub(super) async fn read_bash_activities(&self) -> Option<Value> {
         if !self.kernel_bash_supported() {
             return None;

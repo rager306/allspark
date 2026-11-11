@@ -239,27 +239,6 @@ impl SessionUi {
         Ok(session)
     }
 
-    /// The open's two optional dock registries, read CONCURRENTLY under
-    /// [`DOCK_FIRST_FRAME_BUDGET`] (review #15).
-    ///
-    /// `heartbeats_list` and `list_kernel_bash` are independent reads; awaiting them in
-    /// sequence made a wedged daemon cost two `UI_REQUEST_TIMEOUT_MS` bounds before the first
-    /// content frame, so they are issued together — and each is bounded by the FIRST FRAME's
-    /// budget, not the request bound: a daemon that answers in time is unchanged, and one that
-    /// stalls costs the frame a second instead of ten. A read that misses the budget yields
-    /// `None` and its fold moves to the background refresh, so the dock still fills in.
-    /// Each epoch advances first, so a refresh in flight from before the attach is dropped at
-    /// fold time rather than overwriting the new session's rows.
-    async fn read_dock_registries(&mut self) -> (Option<Value>, Option<Value>) {
-        self.heartbeat_refresh_epoch += 1;
-        self.bash_list_epoch += 1;
-        let (heartbeats, bash_activities) = tokio::join!(
-            tokio::time::timeout(DOCK_FIRST_FRAME_BUDGET, self.read_heartbeat_catalog()),
-            tokio::time::timeout(DOCK_FIRST_FRAME_BUDGET, self.read_bash_activities()),
-        );
-        (heartbeats.ok().flatten(), bash_activities.ok().flatten())
-    }
-
     /// Spec §10.2-§10.5: reattach after a restart — the fresh client replaces the dead one, the
     /// attach goes by DURABLE session id. `kind` names the driver: the update restart paints its
     /// §10.5 banner, a lost or announced-shutdown window reports the restart version-honestly.
@@ -486,50 +465,73 @@ impl SessionUi {
         // returns to the editor.
         self.roster.clear();
         self.subagents_focused = false;
-        // The roster snapshot seeds the dock's subagent counts, so it is first-frame state like
-        // the dock registries below — and, like them, OPTIONAL data on the paint path, bounded by
-        // the SAME first-frame budget (review #15). It used to be awaited unbounded: the client's
-        // default request bound (30 s) was the only ceiling, measured with a supervisor that
-        // answers `attach` and then goes silent on `roster_subscribe` alone — 30.0 s before the
-        // first content frame.
-        //
-        // A miss costs the SEED, not the subscription in the realistic case: the daemon flips its
-        // `roster_subscribed` flag before it answers (`supervisor/clients.rs`), so a slow or lost
-        // ANSWER still delivers the `roster_update` pushes, and the rows apply into the empty
-        // roster as the family changes. A lost REQUEST is different — no flag, no pushes — and
-        // then the counts stay empty until the next attach asks again; that is the price of a
-        // bounded first frame, and it is paid only by a daemon that never answers.
-        let _ = tokio::time::timeout(DOCK_FIRST_FRAME_BUDGET, self.subscribe_roster()).await;
-        // The dock's heartbeat rows follow `dock_fold`: a first-content-frame attach folds the
-        // fresh fetch BEFORE the attach returns (the operator's 2026-09-26 zero-shift ruling).
+        // The dock's rows follow `dock_fold`: a first-content-frame attach folds the fresh fetches
+        // BEFORE the attach returns (the operator's 2026-09-26 zero-shift ruling). The CLEAR comes
+        // first, so a fold that lands below survives: clearing after the read discarded exactly the
+        // registry the first frame had just fetched (found by `the_three_dock_reads_leave_together`
+        // — the dock read 0 shells for a session with a running one until the 2s poll).
         match dock_fold {
-            DockFold::FirstFrame | DockFold::Fresh => self.heartbeat_catalog.clear(),
+            DockFold::FirstFrame | DockFold::Fresh => {
+                self.bash_activities = serde_json::json!({"activities": []});
+                // The factory lane's cache dies with the previous session too: the dock count and
+                // the page mount must never show another session's runs (the 2s poll refills; the
+                // spawn below asks for the first frame).
+                self.factory_graph = serde_json::json!({"runs": []});
+                self.heartbeat_catalog.clear();
+            }
             // The held dock keeps its data: an already-up surface's dock
             // must not flicker away while the background refresh runs.
             DockFold::Held => {}
         }
-        // Review #15: the open's two optional dock registries are read CONCURRENTLY, under one
-        // `UI_REQUEST_TIMEOUT_MS` bound. They used to be awaited one after the other, so a
-        // stalled daemon could hold the first content frame for twice the bound — the paint-path
-        // rule this open is supposed to obey. A held dock keeps its data and refreshes in the
-        // background; `Fresh` owns nothing to show and does the same.
+        // Review #15, the last of the paint-path reads: the THREE optional dock reads —
+        // `roster_subscribe` (the subagent counts' seed), `heartbeats_list`, `list_kernel_bash` —
+        // run CONCURRENTLY under ONE first-frame budget. Each was once awaited on its own: the two
+        // registries serially (two `UI_REQUEST_TIMEOUT_MS` bounds) and then the roster snapshot
+        // unbounded (the client's 30 s default, measured). The worst case was the SUM of their
+        // bounds; it is now `DOCK_FIRST_FRAME_BUDGET` once.
+        //
+        // A miss costs only its own rows: the read is optional paint-path data, and every missed
+        // registry is handed to its background refresh. The roster is the one exception with no
+        // refetch — the daemon flips its `roster_subscribed` flag before it answers
+        // (`supervisor/clients.rs`), so a missed ANSWER still delivers the pushes, and a missed
+        // REQUEST leaves the counts empty until the next attach asks again. That is the price of
+        // a bounded first frame, and only a daemon that answers nothing pays it.
         match dock_fold {
             DockFold::FirstFrame => {
-                let (heartbeats, bash_activities) = self.read_dock_registries().await;
-                if let Some(data) = heartbeats {
+                // Advance both refresh epochs BEFORE either read leaves, so a background refresh
+                // already in flight from before the attach is dropped at fold time instead of
+                // overwriting the new session's rows.
+                self.heartbeat_refresh_epoch += 1;
+                self.bash_list_epoch += 1;
+                let (roster, heartbeats, bash_activities) = tokio::join!(
+                    tokio::time::timeout(DOCK_FIRST_FRAME_BUDGET, self.read_roster_snapshot()),
+                    tokio::time::timeout(DOCK_FIRST_FRAME_BUDGET, self.read_heartbeat_catalog()),
+                    tokio::time::timeout(DOCK_FIRST_FRAME_BUDGET, self.read_bash_activities()),
+                );
+                self.fold_roster_snapshot(roster.ok().flatten());
+                if let Some(data) = heartbeats.ok().flatten() {
                     self.fold_heartbeat_catalog(&data);
                 } else {
                     // Missed the first frame's budget: the background refresh fills the dock in
                     // rather than holding the paint for the request bound.
                     self.spawn_heartbeat_refresh();
                 }
-                if let Some(data) = bash_activities {
+                if let Some(data) = bash_activities.ok().flatten() {
                     self.fold_bash_activities(data);
                 } else {
                     self.spawn_bash_activity_refresh();
                 }
             }
-            DockFold::Fresh | DockFold::Held => self.spawn_heartbeat_refresh(),
+            DockFold::Fresh | DockFold::Held => {
+                // No first frame owns these, so they refresh in the background — but the roster
+                // snapshot used to be awaited here too, unbounded, and it is what a `Held` dock's
+                // counts come from. Same budget, same one round trip.
+                let roster =
+                    tokio::time::timeout(DOCK_FIRST_FRAME_BUDGET, self.read_roster_snapshot())
+                        .await;
+                self.fold_roster_snapshot(roster.ok().flatten());
+                self.spawn_heartbeat_refresh();
+            }
         }
         // FORK-ONLY: the tray's cache-hit rate is a `get_cache_stats` fold (the
         // `/cache` panel's own payload). It is a decoration on a visible row, so the
@@ -543,19 +545,6 @@ impl SessionUi {
         // The slash-command catalog is session-scoped too; the skill commands
         // land in the autocomplete provider when the response arrives.
         self.spawn_command_catalog_refresh();
-        // The dock's bash rows follow the same `dock_fold` contract; a failed fold
-        // fetch leaves the cleared registry (the 2s poll refills).
-        match dock_fold {
-            DockFold::FirstFrame | DockFold::Fresh => {
-                self.bash_activities = serde_json::json!({"activities": []});
-                // The factory lane's cache dies with the previous
-                // session too: the dock count and the page mount must
-                // never show another session's runs (the 2s poll
-                // refills; the spawn below asks for the first frame).
-                self.factory_graph = serde_json::json!({"runs": []});
-            }
-            DockFold::Held => {}
-        }
         self.activity_group = crate::chrome::ActivityGroup::Subagents;
         // The first-frame registry read happened above, with the heartbeat catalog (one bound
         // for both); the other folds hand the dock to the background refresh.
@@ -1308,6 +1297,185 @@ mod backfill_tests {
             kinds.iter().filter(|kind| *kind == "attach").count(),
             2,
             "one attach per session: {kinds:?}"
+        );
+        drop(session);
+        server.abort();
+    }
+
+    /// The cross-barrier mock's `attach` payload.
+    fn attach_payload() -> Value {
+        json!({
+            "activeSessionId": "s1", "snapshot": {
+                "activeSessionId": "s1",
+                "summary": {"id": "s1", "cwd": "/tmp"},
+                "state": {"sessionId": "s1", "cwd": "/tmp", "isStreaming": false},
+                "messages": [], "lastEventSequence": 0,
+            }, "replay": {"status": "complete", "toSequence": 0},
+            "lastEventSequence": 0,
+        })
+    }
+
+    /// One heartbeat scoped to the attached session (the catalog's fold input).
+    fn heartbeat_payload() -> Value {
+        json!({
+            "heartbeats": [{
+                "job": {
+                    "id": "hb-1",
+                    "status": "active",
+                    "source": "heartbeat",
+                    "activeSessionId": "s1",
+                    "sessionId": "s1",
+                    "schedule": {"kind": "interval", "expression": "every 30m"},
+                },
+                "sessionName": "crossed",
+            }],
+        })
+    }
+
+    /// One kernel-bash activity (the registry's fold input).
+    fn bash_payload() -> Value {
+        json!({"activities": [{"id": "run-1", "command": "echo hi", "status": "running"}]})
+    }
+
+    /// One roster entry (the subagent counts' fold input).
+    fn roster_payload() -> Value {
+        json!({"roster": [{"agentId": "child-1", "sessionId": "c1", "status": "running"}]})
+    }
+
+    /// The THREE dock reads are issued together, under ONE budget (review #15).
+    ///
+    /// The mock answers only a read that can prove the others are already in flight: `roster`
+    /// waits for `list_kernel_bash`, `heartbeats` waits for `roster`, and `list_kernel_bash`
+    /// answers at once. A shape that issues them one after another deadlocks on the first (its
+    /// sole request never gets answered), burns the budget, and folds nothing — so the assertions
+    /// are on the FOLDED STATE, not on a timing margin two budgets (1 s + 1 s) could hide in. The
+    /// old worst case was not two budgets either: the roster read had none at all (30 s).
+    #[tokio::test]
+    async fn the_three_dock_reads_leave_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("crossed.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            write.write_all(b"{\"type\":\"daemon_hello\",\"protocol\":{\"name\":\"prime-agent.daemon\",\"version\":7},\"serverCapabilities\":[\"kernel_bash_activity\"],\"clientId\":\"mock\"}\n").await.unwrap();
+            let mut lines = BufReader::new(read).lines();
+            let mut held: Vec<(String, String)> = Vec::new();
+            let mut seen_kernel_bash = false;
+            let mut seen_roster = false;
+            let reply = |write: &mut tokio::net::unix::OwnedWriteHalf,
+                         id: &str,
+                         kind: &str,
+                         data: Value| {
+                let mut line = serde_json::to_vec(&json!({
+                    "type": "response", "id": id, "command": kind,
+                    "success": true, "data": data,
+                }))
+                .unwrap();
+                line.push(b'\n');
+                let _ = write.try_write(&line);
+            };
+            while let Some(line) = lines.next_line().await.unwrap() {
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let id = request["id"].as_str().unwrap_or_default().to_string();
+                let kind = request["command"]["type"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                match kind.as_str() {
+                    "attach" => reply(&mut write, &id, &kind, attach_payload()),
+                    "list_kernel_bash" => {
+                        seen_kernel_bash = true;
+                        reply(&mut write, &id, &kind, bash_payload());
+                    }
+                    "roster_subscribe" => {
+                        seen_roster = true;
+                        if seen_kernel_bash {
+                            reply(&mut write, &id, &kind, roster_payload());
+                        } else {
+                            held.push((id, kind));
+                        }
+                    }
+                    "heartbeats_list" => {
+                        if seen_roster {
+                            reply(&mut write, &id, &kind, heartbeat_payload());
+                        } else {
+                            held.push((id, kind));
+                        }
+                    }
+                    _ => reply(&mut write, &id, &kind, json!({})),
+                }
+                // Release whatever the just-arrived reads unblocked (one pass is enough: the
+                // chain is at most three deep and the loop re-checks on the next request).
+                let mut index = 0;
+                while index < held.len() {
+                    let ready = match held[index].1.as_str() {
+                        "roster_subscribe" => seen_kernel_bash,
+                        _ => seen_roster,
+                    };
+                    if ready {
+                        let (id, kind) = held.remove(index);
+                        let data = if kind == "roster_subscribe" {
+                            roster_payload()
+                        } else {
+                            heartbeat_payload()
+                        };
+                        reply(&mut write, &id, &kind, data);
+                    } else {
+                        index += 1;
+                    }
+                }
+            }
+        });
+        let mut options =
+            crate::interactive::tests::options(crate::interactive::ModelSelection::default());
+        options.socket_path = socket.clone();
+        options.session = SessionSelection::Attach("s1".to_string());
+        let (client, _events) = DaemonClient::connect(&socket).await.unwrap();
+        let session = tokio::time::timeout(Duration::from_secs(4), async {
+            SessionUi::open(
+                client,
+                &options,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                mpsc::unbounded_channel().0,
+                ActivityUpdates {
+                    heartbeats: mpsc::unbounded_channel().0,
+                    bash: mpsc::unbounded_channel().0,
+                    factory: mpsc::unbounded_channel().0,
+                    commands: mpsc::unbounded_channel().0,
+                    cache_rate: mpsc::unbounded_channel().0,
+                },
+                mpsc::unbounded_channel().0,
+            )
+            .await
+        })
+        .await
+        .expect("a crossed dock read must not deadlock the open")
+        .expect("the attach landed");
+        assert_eq!(
+            session.roster.len(),
+            1,
+            "the roster seed landed: {:?}",
+            session.roster
+        );
+        assert_eq!(
+            session.heartbeat_catalog.len(),
+            1,
+            "the heartbeat catalog landed: {:?}",
+            session.heartbeat_catalog
+        );
+        assert_eq!(
+            crate::bash_view::parse_bash_activities(&session.bash_activities).len(),
+            1,
+            "the kernel-bash registry landed: {:?}",
+            session.bash_activities
         );
         drop(session);
         server.abort();

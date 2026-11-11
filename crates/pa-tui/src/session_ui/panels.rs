@@ -18,26 +18,42 @@ pub(crate) struct ActivityUpdates {
 }
 
 impl SessionUi {
-    /// Subscribe this client to the live agent roster: the snapshot seeds the subagent summary
-    /// counts, `roster_update` pushes keep them live. A failed subscription degrades to no counts.
-    pub(super) async fn subscribe_roster(&mut self) {
-        let snapshot = self
+    /// Subscribe this client to the live agent roster and READ the seeding snapshot: the rows
+    /// become the dock's subagent counts, `roster_update` pushes keep them live. A failed
+    /// subscription degrades to no counts.
+    ///
+    /// `&self` and mutation-free, so the open can issue it TOGETHER with the two dock registries
+    /// under one first-frame budget (review #15): the seeding read is optional paint-path data,
+    /// and awaiting it before the others made the worst case two budgets instead of one. The
+    /// fold is [`Self::fold_roster_snapshot`].
+    pub(super) async fn read_roster_snapshot(&self) -> Option<Vec<Value>> {
+        let response = self
             .client
             .request(DaemonCommand::RosterSubscribe {
                 id: None,
                 rest: Map::default(),
             })
-            .await;
-        if let Ok(response) = snapshot {
-            if response.success {
-                self.roster = response
-                    .data
-                    .as_ref()
-                    .and_then(|data| data.get("roster"))
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-            }
+            .await
+            .ok()?;
+        if !response.success {
+            return None;
+        }
+        Some(
+            response
+                .data
+                .as_ref()
+                .and_then(|data| data.get("roster"))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+        )
+    }
+
+    /// Land the read roster; a missed read leaves the cleared roster (the next `roster_update`
+    /// push fills it, because the daemon registers the subscription before it answers).
+    pub(super) fn fold_roster_snapshot(&mut self, roster: Option<Vec<Value>>) {
+        if let Some(roster) = roster {
+            self.roster = roster;
         }
     }
 

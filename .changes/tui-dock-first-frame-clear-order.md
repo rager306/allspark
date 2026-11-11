@@ -1,0 +1,1 @@
+- Fixed the activity dock reading 0 shells (and 0 heartbeats) on a session's first frame even when the daemon had answered: the first-frame clear moved to before the fold, so the fetched registry survives, and the three optional dock reads now run together under one one-second budget.

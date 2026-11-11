@@ -136,8 +136,8 @@ impl SessionUi {
         )
     }
 
-    /// The open-time heartbeat-catalog READ (no epoch bump: [`SessionUi::read_dock_registries`]
-    /// owns that, so the two dock reads can run concurrently on `&self`).
+    /// The open-time heartbeat-catalog READ (no epoch bump: `attach_session` owns it, so the three
+    /// dock reads can run concurrently on `&self`).
     pub(super) async fn read_heartbeat_catalog(&self) -> Option<Value> {
         self.bounded_request(
             Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
