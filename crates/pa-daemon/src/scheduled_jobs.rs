@@ -513,20 +513,15 @@ impl QueueHooks {
         job: &AgentCronJob,
         fire_key: Option<&str>,
     ) -> anyhow::Result<Option<&'static str>> {
-        if Self::withdraw_parked_fire(&self.core, fire_key) {
-            // The withdrawal is a durable fact, not just an in-memory one (review #12,
-            // residual): the parked row is part of the journal's queue snapshot, so a crash
-            // between this verdict and the next checkpoint restored it on respawn and the
-            // "withdrawn" fire executed behind the scheduler's back. One checkpoint makes the
-            // removal part of the recovery evidence, and the all-empty lanes flip the verdict
-            // to idle in the same append.
-            crate::worker::checkpoint_queue_recovery(
-                &self.recovery,
-                &self.core,
-                crate::worker::QueueCheckpoint::Settle {
-                    operation: "cron_fire_withdrawn",
-                },
-            );
+        let _was_parked = Self::withdraw_parked_fire(&self.core, fire_key);
+        crate::worker::checkpoint_queue_recovery(
+            &self.recovery,
+            &self.core,
+            crate::worker::QueueCheckpoint::Settle {
+                operation: "cron_fire_withdrawn",
+            },
+        );
+        if _was_parked {
             // The fire NEVER RAN. For a recurring job that is a skip: the run did not happen
             // and the schedule keeps its cadence. For a ONE-SHOT it is not: a skip COMPLETES
             // the row (`record_dispatch_result`), and completion claims the wake was
