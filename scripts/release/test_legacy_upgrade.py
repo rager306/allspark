@@ -30,6 +30,7 @@ import subprocess
 import tempfile
 import threading
 import tarfile
+from typing import NamedTuple
 
 REPO = Path(__file__).resolve().parents[2]
 ARCHIVE_NAME = re.compile(r"prime-agent-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)-(darwin|linux)-(arm64|x64)([^/]*)\.tar\.gz$")
@@ -163,10 +164,11 @@ def fixture_root(prefix: str):
 # fixture exactly when this process lives inside a prime-agent session, and the
 # shipped installer otherwise. The question is asked of the same two arms the guard
 # uses — the session markers, then the process-tree walk that a scrubbed environment
-# cannot remove ([`daemon_ancestor_socket`]) — so the default cannot be steered by the
+# cannot remove ([`daemon_ancestor`]) — so the default cannot be steered by the
 # environment the caller happens to pass. A `real`/`fixture` request is obeyed as
 # written, which is how the release gate names its subject and how a test names the
-# refusal; `auto` is just the safe answer for a caller that did not think about it.
+# refusal; `auto` is just the safe answer for a caller that did not think about it,
+# and a tree it cannot read answers `fixture`: doubt picks the safe side.
 REAL_INSTALLER = "real"
 FIXTURE_INSTALLER = "fixture"
 AUTO_INSTALLER = "auto"
@@ -210,40 +212,63 @@ printf 'fixture-installer\n' > "$record/ran.txt"
 SHELL_INTERPRETERS = ("sh", "bash", "dash", "zsh")
 
 
-def _argv_of(pid: int, platform: str) -> list[str]:
-    """A live process's argv, best effort: /proc where it exists, else `ps`."""
+def _argv_of(pid: int, platform: str) -> tuple[list[str], bool]:
+    """A live process's argv, best effort: /proc where it exists, else `ps`.
+
+    Returns `(argv, readable)`. `readable` is the distinction the walk must not
+    lose: a pid that is simply GONE answers `([], True)` — the walk has reached
+    the top of a tree it could read — while a read that fails for any other
+    reason answers `([], False)`, because then nothing is known about the
+    ancestor at all.
+    """
     if platform == "Linux":
         try:
             return [
                 part.decode("utf-8", "replace")
                 for part in Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
                 if part
-            ]
+            ], True
+        except FileNotFoundError:
+            return [], True
         except OSError:
-            return []
+            return [], False
     try:
         out = subprocess.check_output(
             ["ps", "-o", "args=", "-p", str(pid)],
             stderr=subprocess.DEVNULL, universal_newlines=True, timeout=5)
+    except FileNotFoundError:
+        return [], False
+    except subprocess.CalledProcessError:
+        return [], True
     except (OSError, subprocess.SubprocessError):
-        return []
-    return out.split()
+        return [], False
+    return out.split(), True
 
 
-def _parent_of(pid: int, platform: str) -> int | None:
+def _parent_of(pid: int, platform: str) -> tuple[int | None, bool]:
+    """A process's parent pid: `(ppid, readable)`, `(None, True)` when it is gone."""
     if platform == "Linux":
         try:
             stat = Path(f"/proc/{pid}/stat").read_text(errors="replace")
-            return int(stat.rsplit(")", 1)[-1].split()[1])
-        except (OSError, ValueError, IndexError):
-            return None
+        except FileNotFoundError:
+            return None, True
+        except OSError:
+            return None, False
+        try:
+            return int(stat.rsplit(")", 1)[-1].split()[1]), True
+        except (ValueError, IndexError):
+            return None, False
     try:
         out = subprocess.check_output(
             ["ps", "-o", "ppid=", "-p", str(pid)],
             stderr=subprocess.DEVNULL, universal_newlines=True, timeout=5).strip()
+    except FileNotFoundError:
+        return None, False
+    except subprocess.CalledProcessError:
+        return None, True
     except (OSError, subprocess.SubprocessError):
-        return None
-    return int(out) if out.isdigit() else None
+        return None, False
+    return (int(out), True) if out.isdigit() else (None, True)
 
 
 def _daemon_socket_of(args: list[str]) -> str | None:
@@ -276,21 +301,40 @@ def _daemon_socket_of(args: list[str]) -> str | None:
     return socket if socket and socket.startswith("/") else None
 
 
-def daemon_ancestor_socket(
+class Ancestry(NamedTuple):
+    """What the process tree says about this run: a supervisor socket, or nothing.
+
+    `determined` is the THIRD answer the walk has to be able to give, and the one
+    that used to be missing: "readable tree, no daemon ancestor" and "the tree
+    could not be read at all" both came back as a bare `None`, so a host where
+    `/proc` or `ps` could not answer looked exactly like a release runner — the
+    fail-open that let a scrubbed in-session invocation reach the shipped
+    installer. A run that cannot prove it is outside a session is treated as
+    inside one.
+    """
+    socket: str | None
+    determined: bool
+
+
+def daemon_ancestor(
     platform: str | None = None,
     ppid: int | None = None,
     argv_of=None,
     parent_of=None,
-) -> str | None:
-    """The socket of the daemon this process tree runs under, if any.
+) -> Ancestry:
+    """The daemon this process tree runs under, and whether the tree was readable.
 
     Why this exists beside the environment markers: a scrubbed invocation
     (`env -i`, a service manager, a nested harness) drops the variables a daemon
     exports, and that is exactly how the 2026-10-21 incident reached a live
     supervisor. The process tree still carries the truth, so this walk is the
     marker-independent arm of the refusal — the mechanism `install-rust.sh`'s own
-    probe uses. Best effort by construction: no ancestor, no `ps`, or a walk
-    error answers None, which leaves the marker arms alone.
+    probe uses.
+
+    Two outcomes, never one: `Ancestry(socket, True)` when every step could be
+    read (the walk then names a supervisor or proves there is none), and
+    `Ancestry(None, False)` as soon as a read fails — an ancestor whose command
+    line or parent could not be read is not evidence of a plain tree.
     """
     platform = platform or os.uname().sysname
     read_argv = argv_of or (lambda pid: _argv_of(pid, platform))
@@ -299,11 +343,16 @@ def daemon_ancestor_socket(
     seen: set[int] = set()
     while pid and pid > 1 and pid not in seen and len(seen) < 64:
         seen.add(pid)
-        socket = _daemon_socket_of(read_argv(pid))
+        args, argv_readable = read_argv(pid)
+        if not argv_readable:
+            return Ancestry(None, False)
+        socket = _daemon_socket_of(args)
         if socket:
-            return socket
-        pid = read_parent(pid)
-    return None
+            return Ancestry(socket, True)
+        pid, parent_readable = read_parent(pid)
+        if not parent_readable:
+            return Ancestry(None, False)
+    return Ancestry(None, True)
 
 
 def session_marker() -> str | None:
@@ -328,14 +377,38 @@ def live_session_reason() -> str | None:
     ([`guard_session`], [`guard_live_daemon_ancestor`]) and the mode default
     ([`resolve_installer_mode`]): a harness that refused one way and defaulted the
     other would be deciding twice, and only one of the two answers would be tested.
+
+    FAIL-CLOSED: only a POSITIVE answer that this run is outside a session returns
+    None. A process tree that could not be read is not evidence of a release
+    runner, so it answers a reason like any other doubt — that is what makes a
+    host where `/proc` or `ps` cannot answer pick the stand-in instead of the
+    socket-probing installer. See [`Ancestry`].
+    """
+    return session_evidence()[0]
+
+
+def session_evidence() -> tuple[str | None, bool]:
+    """`(reason, detected)`: WHY this run may not start the installer, and whether a
+    session was actually SEEN.
+
+    `detected` is True only for a positive signal — a marker the daemon exported, or
+    a supervisor in the process tree. A tree that could not be read produces a
+    reason with `detected` False: the run must not start the shipped installer, but
+    it also cannot be described as "inside a session", and a gate that quietly
+    substituted a stand-in install on that basis would report a green result for
+    work it never did. [`test_channel_install`] turns that case into a failure the
+    operator sees.
     """
     marker = session_marker()
     if marker:
-        return f"inside a prime-agent session ({marker})"
-    ancestor = daemon_ancestor_socket()
-    if ancestor:
-        return f"under a live daemon ({ancestor})"
-    return None
+        return f"inside a prime-agent session ({marker})", True
+    ancestry = daemon_ancestor()
+    if ancestry.socket:
+        return f"under a live daemon ({ancestry.socket})", True
+    if not ancestry.determined:
+        return ("its process ancestry could not be read, so it cannot be shown to run "
+                "outside a live daemon"), False
+    return None, False
 
 
 def guard_session() -> None:
@@ -366,13 +439,25 @@ def guard_live_daemon_ancestor() -> None:
     harness is the caller that scrubs hardest. The process tree cannot be scrubbed:
     the walk names the supervisor this very run would be a child of, which is the
     one daemon whose socket probe is guaranteed to reach live work.
+
+    And when the tree cannot be read at all, that is a refusal too, not a pass: the
+    guard's question is "may this run start a socket-probing installer", and only a
+    readable tree with no daemon in it answers yes. Treating an unreadable tree as
+    a plain one is the fail-open this arm used to have — a scrubbed invocation on a
+    host whose ancestry cannot be read looked exactly like a release runner.
     """
-    ancestor = daemon_ancestor_socket()
-    if ancestor:
+    ancestry = daemon_ancestor()
+    if ancestry.socket:
         raise SystemExit(
             "refusing to run the real installer from under a live daemon "
-            f"({ancestor}): it stops daemons by socket path, and that is this "
+            f"({ancestry.socket}): it stops daemons by socket path, and that is this "
             "session's own supervisor. Run this harness outside the session (CI does).")
+    if not ancestry.determined:
+        raise SystemExit(
+            "refusing to run the real installer: this process's ancestry could not be "
+            "read, so the run cannot be shown to be outside a live daemon, and it "
+            "stops daemons by socket path. Run this harness where its process tree is "
+            "readable (CI's release runner is), or pass --installer-mode fixture.")
 
 
 def resolve_installer_mode(requested: str, *, session_reason: str | None) -> str:

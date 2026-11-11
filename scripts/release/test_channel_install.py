@@ -9,6 +9,8 @@ Three installer modes, because the probe has two jobs:
     otherwise. So the safe path is the one nobody has to know about: a bare
     `python3 scripts/release/test_channel_install.py` inside a session runs the
     stand-in, and the same command on a release runner runs the shipped script.
+    A tree it cannot READ takes the same safe answer and then FAILS the run
+    instead of reporting it: see [`resolved_on_doubt`].
   * `real` runs the SHIPPED installer — the release gate's subject, on a release
     runner with no session to protect. It is fail-closed by construction:
     `isolated_environment` refuses when the run is under a live daemon (the
@@ -20,7 +22,10 @@ Three installer modes, because the probe has two jobs:
 
 `release.yml` passes no `--installer-mode`, so it runs `auto` on a runner with no
 daemon ancestor: the release gate still exercises the shipped installer end to end,
-and a test holds that the resolution really answers `real` there.
+and a test holds that the resolution really answers `real` there. A run whose
+ancestry cannot be READ is the one case where the safe answer and the honest report
+disagree: it refuses the shipped installer, and it also refuses to report the
+stand-in as a passing install (`installer_mode_doubt`, exit 1).
 
 No provider requests are made either way.
 """
@@ -44,6 +49,7 @@ from test_legacy_upgrade import (
     fixture_root,
     isolated_environment,
     live_session_reason,
+    session_evidence,
     publish_installer,
     publish_archive,
     release_server,
@@ -71,18 +77,51 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def resolved_on_doubt(mode: str, requested: str, session_detected: bool) -> bool:
+    """Whether `auto` answered with the stand-in because it could not TELL.
+
+    The three inputs are the whole decision, which is why it is a function: `auto`
+    resolving to the fixture is normal and good when a session was actually seen, and
+    it is a doubt with no evidence when one was not. A run in the second state must
+    not report a passing install — a release gate that quietly substitutes a
+    stand-in it chose out of doubt has tested nothing and said everything went well.
+    """
+    return (mode == FIXTURE_INSTALLER and requested == AUTO_INSTALLER
+            and not session_detected)
+
+
 def main() -> int:
     args = build_parser().parse_args()
     # Only `auto` asks the question: an explicit mode is obeyed as written, and
     # the guard for a `real` run is asked again where it matters
     # (`isolated_environment`, from the resolved mode).
-    session_reason = (live_session_reason()
-                      if args.installer_mode == AUTO_INSTALLER else None)
+    session_reason, session_detected = (
+        session_evidence() if args.installer_mode == AUTO_INSTALLER else (None, False))
     mode = resolve_installer_mode(args.installer_mode, session_reason=session_reason)
     version, platform = archive_identity(args.archive)
     report = {"version": version, "platform": platform, "archive_sha256": digest(args.archive),
               "installer_mode": mode, "requested_installer_mode": args.installer_mode,
               "steps": []}
+    if resolved_on_doubt(mode, args.installer_mode, session_detected):
+        # DOUBT IS NOT A PASS WITH A STAND-IN. `auto` picked the fixture because this
+        # run's ancestry could not be read — the fail-closed answer for safety — but
+        # a release gate that quietly reports green for a stand-in install it chose
+        # out of doubt has tested nothing and said everything went well. So the run
+        # stops here and names the doubt: this is the case where the safe default
+        # and the honest result disagree, and the operator has to break the tie.
+        report["installer_mode_reason"] = session_reason
+        report["installer_mode_doubt"] = True
+        report.update(
+            status="failed",
+            error="the installer mode could not be resolved: this run's process ancestry "
+                  "is unreadable, so it cannot be shown to be outside a live daemon (the "
+                  "shipped installer would be refused) and the stand-in must not be "
+                  "reported as a passing install. Run where the process tree is readable "
+                  "(the release runner is), or name --installer-mode explicitly.")
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text(json.dumps(report, indent=2) + "\n")
+        print(json.dumps({key: value for key, value in report.items() if key != "steps"}))
+        return 1
     if mode == REAL_INSTALLER:
         report["installer_sha256"] = digest(args.installer)
     else:

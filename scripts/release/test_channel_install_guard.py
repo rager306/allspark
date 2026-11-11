@@ -14,8 +14,10 @@ So the harness itself fails closed, before an environment is built:
   * the guard reads the SESSION markers from the PARENT process (before the
     allowlist drops them) and refuses — and, because those markers are exactly
     what a scrubbed environment (`env -i`) removes, it ALSO walks the process tree
-    for the daemon the run lives under (`daemon_ancestor_socket`, the same
-    mechanism `install-rust.sh`'s own probe uses);
+    for the daemon the run lives under (`daemon_ancestor`, the same mechanism
+    `install-rust.sh`'s own probe uses) — and a tree it cannot READ is a refusal
+    too, never an empty answer: "could not tell" is not "no", and only a readable
+    tree with no daemon in it lets the shipped installer start;
   * on a non-Linux host an over-long fixture TMPDIR makes the installer fall
     back to `/tmp/<name>-<uid>` — the ambient namespace — so the guard refuses a
     fixture socket that long instead of relying on TMPDIR to contain it;
@@ -79,9 +81,12 @@ class TheSessionGuardTests(unittest.TestCase):
 
         This battery runs under a live daemon (it is an agent session), so without
         this patch the process-tree arm answers for every case here and a marker
-        regression stays green — the discrimination the tests exist for.
+        regression stays green — the discrimination the tests exist for. The tree is
+        READABLE and plain (`determined=True`): an unreadable one is a refusal of its
+        own, and mixing the two would hide which arm fired.
         """
-        return patch.object(harness, "daemon_ancestor_socket", return_value=None)
+        return patch.object(harness, "daemon_ancestor",
+                            return_value=harness.Ancestry(None, True))
 
     def test_a_session_invocation_is_refused_before_an_environment_is_built(self):
         with patch.dict(os.environ, self.session_env()), self.markers_only():
@@ -150,16 +155,110 @@ class TheSessionGuardTests(unittest.TestCase):
         walk naming the supervisor, the harness still refuses.
         """
         with self.outside_a_session(), \
-                patch.object(harness, "daemon_ancestor_socket",
-                             return_value="/fixture/supervisor.sock"):
+                patch.object(harness, "daemon_ancestor",
+                             return_value=harness.Ancestry("/fixture/supervisor.sock", True)):
             with self.assertRaises(SystemExit) as caught:
                 harness.isolated_environment(self.root / "user-b", "http://127.0.0.1:1",
                                              live_installer=True)
         self.assertIn("under a live daemon", str(caught.exception))
 
+    def test_an_unreadable_ancestry_refuses_and_answers_fixture(self):
+        """THE FAIL-CLOSED ARM (review #22, second half): "could not tell" is not "no".
+
+        The walk used to answer a bare `None` for both "readable tree, no daemon" and
+        "the tree could not be read", so a host where `/proc` or `ps` cannot answer
+        looked exactly like a release runner and the in-session default resolved to
+        the SHIPPED installer. The question the guard asks is "may this run start a
+        socket-probing installer", and only a readable tree proves the answer is yes.
+
+        The mutation this exists for is a one-token deactivation — `determined` stuck
+        at True, or the `if not determined` arm switched off — which leaves every
+        call site in place and restores the fail-open.
+        """
+        unreadable = harness.Ancestry(None, False)
+        with self.outside_a_session(), \
+                patch.object(harness, "daemon_ancestor", return_value=unreadable):
+            self.assertIsNotNone(harness.live_session_reason(),
+                                 "an unreadable tree is not a release runner")
+            self.assertEqual(
+                harness.resolve_installer_mode(
+                    harness.AUTO_INSTALLER, session_reason=harness.live_session_reason()),
+                harness.FIXTURE_INSTALLER,
+                "doubt must pick the stand-in, not the socket-probing installer")
+            with self.assertRaises(SystemExit) as caught:
+                harness.isolated_environment(self.root / "user-c", "http://127.0.0.1:1",
+                                             live_installer=True)
+        self.assertIn("ancestry could not be read", str(caught.exception))
+
+    def test_the_real_readers_answer_for_a_live_pid_a_gone_one_and_a_denied_one(self):
+        """The three answers the WALK's readers owe it, through the real code paths.
+
+        Only the injected-reader tests above state the walk's rule; this one states
+        what the readers hand it, so a reader that quietly stopped distinguishing
+        "gone" from "unreadable" is caught where the mistake would be made. The
+        denied branch is a patch of the filesystem call — there is no portable way
+        to make `/proc` unreadable for a test without leaving the fixture root.
+        """
+        argv, readable = harness._argv_of(os.getpid(), os.uname().sysname)
+        self.assertTrue(argv, "a live pid has a command line")
+        self.assertTrue(readable, "and reading it succeeded")
+        self.assertEqual(harness._argv_of(4_000_000_000, os.uname().sysname), ([], True),
+                         "a pid that does not exist is a READABLE answer: nothing there")
+        self.assertEqual(harness._parent_of(4_000_000_000, os.uname().sysname), (None, True))
+        with patch.object(Path, "read_bytes", side_effect=PermissionError("denied")):
+            self.assertEqual(harness._argv_of(1, "Linux"), ([], False),
+                             "a read that failed for any other reason proves nothing")
+
+    def test_a_readable_plain_tree_is_the_release_runner_case(self):
+        """The other side of the fail-closed rule: a tree the walk READ and found no
+        daemon in is the release runner, and the shipped installer stays the subject.
+
+        Without this, "refuse everything" would pass the fail-closed test above while
+        turning every release gate into a stand-in install.
+        """
+        with self.outside_a_session(), \
+                patch.object(harness, "daemon_ancestor",
+                             return_value=harness.Ancestry(None, True)):
+            self.assertIsNone(harness.live_session_reason(),
+                              "a readable tree with no daemon is outside a session")
+            self.assertEqual(
+                harness.resolve_installer_mode(
+                    harness.AUTO_INSTALLER, session_reason=harness.live_session_reason()),
+                harness.REAL_INSTALLER,
+                "a release runner must still exercise the shipped installer")
+
+    def test_a_walk_that_cannot_read_a_step_reports_itself_undetermined(self):
+        """The walk's own three-way answer, with no patch in the way.
+
+        `Ancestry(None, False)` has to come out of the READERS, not only out of a
+        mocked `daemon_ancestor`: a failing command-line read, and a failing parent
+        read, are the two steps that can lose the tree.
+        """
+        dead_argv = harness.daemon_ancestor(
+            platform="Linux", ppid=100,
+            argv_of=lambda _pid: ([], False), parent_of=lambda _pid: (1, True))
+        self.assertEqual(dead_argv, harness.Ancestry(None, False),
+                         "a command line that could not be read proves nothing")
+        dead_parent = harness.daemon_ancestor(
+            platform="Linux", ppid=100,
+            argv_of=lambda _pid: (["/bin/bash"], True), parent_of=lambda _pid: (None, False))
+        self.assertEqual(dead_parent, harness.Ancestry(None, False),
+                         "a parent that could not be read proves nothing")
+        # And the other direction: a readable tree with no daemon IS determined.
+        plain = harness.daemon_ancestor(
+            platform="Linux", ppid=100,
+            argv_of=lambda _pid: (["/bin/bash"], True), parent_of=lambda _pid: (1, True))
+        self.assertEqual(plain, harness.Ancestry(None, True))
+
     def test_the_ancestor_walk_names_the_supervisor_and_stops_at_a_plain_tree(self):
         """The walk reads argv/parents through injectable readers, so the rule is
         pinned without depending on what this host happens to run under."""
+        def argv_of(tree):
+            return lambda pid: (tree[pid], True)
+
+        def parent_of(parents):
+            return lambda pid: (parents[pid], True)
+
         tree = {
             100: ["/usr/bin/python3", "-m", "harness"],
             200: ["/root/.local/share/prime-agent/prime-agent", "worker"],
@@ -168,27 +267,30 @@ class TheSessionGuardTests(unittest.TestCase):
         }
         parents = {100: 200, 200: 300, 300: 1}
         self.assertEqual(
-            harness.daemon_ancestor_socket(
+            harness.daemon_ancestor(
                 platform="Linux", ppid=100,
-                argv_of=lambda pid: tree[pid], parent_of=lambda pid: parents[pid]),
-            "/tmp/prime-agent-rust-0/daemon.sock",
+                argv_of=argv_of(tree), parent_of=parent_of(parents)),
+            harness.Ancestry("/tmp/prime-agent-rust-0/daemon.sock", True),
             "the walk passes the worker and the client to reach the supervisor")
 
         plain = {100: ["/bin/bash"], 200: ["/usr/bin/python3", "-m", "pytest"]}
         plain_parents = {100: 200, 200: 1}
-        self.assertIsNone(
-            harness.daemon_ancestor_socket(
+        self.assertEqual(
+            harness.daemon_ancestor(
                 platform="Linux", ppid=100,
-                argv_of=lambda pid: plain[pid], parent_of=lambda pid: plain_parents[pid]),
-            "a plain shell tree names no daemon, so nothing is refused")
+                argv_of=argv_of(plain), parent_of=parent_of(plain_parents)),
+            harness.Ancestry(None, True),
+            "a plain shell tree names no daemon, so nothing is refused — and the "
+            "tree WAS read, which is what lets the caller tell the two apart")
 
         # An unrelated `--mode daemon` shell is not the product: the executable
         # gate is what keeps a wrong refusal out.
         shell = {100: ["sh", "--mode", "daemon", "--daemon-socket", "/tmp/x.sock"]}
-        self.assertIsNone(
-            harness.daemon_ancestor_socket(
+        self.assertEqual(
+            harness.daemon_ancestor(
                 platform="Linux", ppid=100,
-                argv_of=lambda pid: shell[pid], parent_of=lambda pid: 1))
+                argv_of=argv_of(shell), parent_of=lambda _pid: (1, True)),
+            harness.Ancestry(None, True))
 
         # The supervisor's other spelling, and an interpreted launcher script
         # (the kernel's shebang exec puts the product name at argv[1]).
@@ -198,10 +300,11 @@ class TheSessionGuardTests(unittest.TestCase):
              "--daemon-socket", "/tmp/s.sock"],
         ):
             self.assertEqual(
-                harness.daemon_ancestor_socket(
+                harness.daemon_ancestor(
                     platform="Linux", ppid=100,
-                    argv_of=lambda _pid, argv=argv: argv, parent_of=lambda _pid: 1),
-                "/tmp/s.sock")
+                    argv_of=lambda _pid, argv=argv: (argv, True),
+                    parent_of=lambda _pid: (1, True)),
+                harness.Ancestry("/tmp/s.sock", True))
 
     def test_every_installer_invocation_goes_through_the_guard(self):
         """The guard is only worth having where the installer actually starts.
@@ -453,6 +556,49 @@ class TheFixtureChannelProbeTests(unittest.TestCase):
         self.assertIs(report.get("fixture_installer_ran"), True, report)
         self.assertFalse((self.root / "DECOY-RAN").exists(),
                          "the shipped installer must not start in a session")
+
+    def test_a_doubtful_auto_run_fails_instead_of_reporting_a_stand_in_install(self):
+        """`auto` picking the fixture because the tree could NOT be read is a failure.
+
+        The fail-closed default keeps the socket-probing installer away (good), but a
+        gate that then reports `status: passed` for a stand-in it chose out of doubt
+        has tested nothing and said everything went well. The mode resolution and the
+        report must disagree here, and the report wins: exit 1, `installer_mode_doubt`,
+        and no installer started at all.
+
+        The doubt is injected through the same walk the real guard reads (a launcher
+        that patches `daemon_ancestor`), so `main()`'s own path is what runs.
+        """
+        if self.report.exists():
+            self.report.unlink()
+        launcher = self.root / "doubtful-probe.py"
+        launcher.write_text(
+            "import sys\n"
+            f"sys.path.insert(0, {str(HERE)!r})\n"
+            "import test_legacy_upgrade as harness\n"
+            "harness.daemon_ancestor = lambda *a, **k: harness.Ancestry(None, False)\n"
+            "import test_channel_install as probe\n"
+            "sys.argv = ['test_channel_install.py', '--archive', "
+            f"{str(self.archive)!r}, '--installer', {str(self.decoy)!r}, "
+            f"'--report', {str(self.report)!r}]\n"
+            "raise SystemExit(probe.main())\n")
+        env = {**os.environ, "FIXTURE_INSTALLER_RECORD": str(self.record)}
+        for marker in ("PRIME_AGENT_INTERNAL_DAEMON_WORKER",
+                       "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET"):
+            env.pop(marker, None)
+        process = subprocess.run([sys.executable, str(launcher)], capture_output=True,
+                                 text=True, env=env, timeout=300)
+        self.assertNotEqual(process.returncode, 0,
+                            "a doubt-resolved run must not report success")
+        report = json.loads(self.report.read_text())
+        self.assertEqual(report.get("installer_mode"), "fixture")
+        self.assertIs(report.get("installer_mode_doubt"), True, report)
+        self.assertEqual(report.get("status"), "failed", report)
+        self.assertIn("could not be resolved", report.get("error", ""))
+        self.assertIsNone(report.get("fixture_installer_ran"),
+                          "the stand-in must not have run at all")
+        self.assertFalse((self.root / "DECOY-RAN").exists())
+        self.assertFalse(self.record.exists(), "no installer of any kind was started")
 
     def test_the_ancestor_refusal_names_the_socket_it_found(self):
         """The refusal must tell the operator WHICH daemon it saw: a bare "refused"
