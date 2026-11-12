@@ -3,3 +3,18 @@
 # already set, so a test that needs it can still set its own value.
 [env]
 DO_NOT_TRACK = "1"
+# Every cargo invocation — build, test, bench, run — writes its scratch into the
+# repo's own `.tmp` instead of the machine's shared `/tmp`. Two reasons, both
+# measured on this tree:
+#   * `rm -rf .tmp` is then the whole cleanup story (one path, inside the tree);
+#     a bare `cargo test` used to leave ~36 MB per test in `/tmp` forever, and
+#     331 such directories held 6.9 GB of `graph.db` copies of this repository.
+#   * `/tmp` is a shared namespace: one run's cleanup deletes another run's live
+#     fixtures, and systemd-tmpfiles removes the directory by age mid-gate.
+# `relative = true` resolves against the workspace root, so the path is the same
+# from any crate's directory. NOT `force`: a caller that exports TMPDIR (the
+# gate's own `TMPDIR=$ROOT/.tmp`, or the verus lane's isolation) must win — a
+# forced value would silently re-point the tool that needs to escape the repo.
+TMPDIR = { value = ".tmp", relative = true }
+TEMP = { value = ".tmp", relative = true }
+TMP = { value = ".tmp", relative = true }
