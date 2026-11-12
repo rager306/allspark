@@ -2,6 +2,7 @@
 //! output mode asks for them, and decide the exit code from the headless
 //! terminal result plus the goal and autonomous continuation contracts.
 
+use pa_core::session_engine::goal_continuation::{ContinuationTrigger, GoalContinuationDecision};
 use pa_core::session_engine::provider_adapter::json_round_trip;
 use pa_core::session_engine::session_events::agent_event_json;
 use pa_types::ai::Model;
@@ -253,18 +254,32 @@ pub(super) async fn run_prompts_and_emit(
         {
             continue;
         }
-        if let Some(continuation) = engine.take_owed_goal_continuation().await {
-            goal.publish_goal_update(engine).await;
-            goal.run_queued_turn(
-                engine,
-                &mut boundary,
-                model,
-                api_key.clone(),
-                global_harness_dir.clone(),
-                &continuation,
-            )
-            .await?;
-            continue;
+        // Quiescence settled every descendant: only an owed continuation delivers.
+        match engine
+            .consult_goal_continuation(ContinuationTrigger::OwedRetry, false)
+            .await
+        {
+            GoalContinuationDecision::Minted {
+                message: continuation,
+                ..
+            } => {
+                goal.publish_goal_update(engine).await;
+                goal.run_queued_turn(
+                    engine,
+                    &mut boundary,
+                    model,
+                    api_key.clone(),
+                    global_harness_dir.clone(),
+                    &continuation,
+                )
+                .await?;
+                continue;
+            }
+            // A refused or failed mint can still move the goal (a failed persist fails it).
+            GoalContinuationDecision::NotMinted { .. } => goal.publish_goal_update(engine).await,
+            GoalContinuationDecision::NotOwned
+            | GoalContinuationDecision::NothingOwed
+            | GoalContinuationDecision::Owed => {}
         }
         if autonomous
             .deliver_rlm_continuation(

@@ -21,6 +21,7 @@ pub mod engine;
 pub mod error_classify;
 pub mod factory_host;
 pub mod goal_boundary;
+pub mod goal_continuation;
 pub mod goal_driver;
 /// FORK-ONLY: `graph.auto = "watch"` — the filesystem watcher feeding the
 /// graph's incremental reindex (the value the setting always accepted).
