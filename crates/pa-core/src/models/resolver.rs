@@ -653,11 +653,12 @@ pub fn find_initial_model(options: &InitialModelOptions<'_>) -> Option<Model> {
 
 /// The private-model predicate without a full `Model` value (TS
 /// `isPrivatePrimeInferenceModel({ provider, id })`).
-#[must_use]
-pub(super) fn is_private_prime_inference_reference(provider: &str, model_id: &str) -> bool {
-    provider == "prime-inference"
-        && super::prime_inference::is_private_prime_inference_model_id(model_id)
-}
+///
+/// FORK (review #21): ONE implementation. The pair rule lives in
+/// `prime_inference.rs`; this is a re-export, not a second copy — two copies drifted
+/// once already (`to_lowercase` vs `to_ascii_lowercase`), so a non-ASCII id could get
+/// different answers from the catalog and from the resolver.
+pub(super) use super::prime_inference::is_private_prime_inference_reference;
 
 #[cfg(test)]
 mod tests {

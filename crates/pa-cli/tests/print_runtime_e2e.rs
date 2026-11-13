@@ -25,12 +25,6 @@ fn run(args: &[&str], script: &serde_json::Value) -> (String, String, i32) {
         .env("PRIME_AGENT_AGENT_DIR", home.path().join("agent"))
         .env("PRIME_AGENT_FAUX_SCRIPT", script.to_string())
         .env_remove("RLM_DEPTH")
-        // Context-file discovery walks cwd -> filesystem root, so a fixture under
-        // `TMPDIR=<repo>/.tmp` — what the gate exports — inherits this repository's
-        // AGENTS.md. That inflates the seed context, moves the compaction threshold
-        // this suite calibrates its window against, and the crossing turn then
-        // compacts twice. The suite measures compaction, not context discovery.
-        .arg("--no-context-files")
         .current_dir(home.path())
         .output()
         .expect("binary present");
@@ -47,7 +41,7 @@ fn print_mode_text_output_matches_the_scripted_response() {
     let (stdout, stderr, code) = run(&["-p", "say something"], &script);
     assert_eq!(code, 0, "stderr: {stderr}");
     assert_eq!(stdout, "first answer\n");
-    assert_eq!(stderr, "");
+    assert!(stderr.is_empty(), "expected no output");
 }
 
 #[test]
@@ -101,23 +95,51 @@ fn print_mode_reports_provider_errors_as_exit_one() {
     let script = serde_json::json!({ "responses": [] });
     let (stdout, stderr, code) = run(&["-p", "hi"], &script);
     assert_eq!(code, 1);
-    assert_eq!(stdout, "");
-    assert_ne!(stderr, "");
+    assert!(stdout.is_empty(), "expected no output");
+    assert!(!stderr.is_empty(), "expected output");
+}
+
+/// A `/refine` plans in the background, but its failure still fails the run
+/// once the disposal drain has awaited it — in both output modes. A
+/// successful refinement keeps exit 0.
+#[test]
+fn print_mode_refine_command_failure_exits_one() {
+    for (refiner_reply, expected_code) in [
+        ("not json", 1),
+        (r#"{"summary":"no changes","edits":[]}"#, 0),
+    ] {
+        for json_mode in [false, true] {
+            let home = isolated_home();
+            let script = serde_json::json!({ "responses": ["first answer", refiner_reply] });
+            let mut args = vec!["-p", "hello", "/refine"];
+            if json_mode {
+                args.splice(0..0, ["--mode", "json"]);
+            }
+            let (stdout, stderr, code) = run_in_home(home.path(), &args, &script);
+            assert_eq!(
+                code, expected_code,
+                "reply {refiner_reply:?}, json {json_mode}: stdout {stdout} stderr {stderr}"
+            );
+            let reported = if json_mode {
+                stdout.contains(r#""type":"refine_failed""#)
+            } else {
+                stderr.contains("pa-cli: refinement failed:")
+            };
+            assert_eq!(
+                reported,
+                expected_code == 1,
+                "stdout {stdout} stderr {stderr}"
+            );
+        }
+    }
 }
 
 // Session persistence (headless print sessions must land on disk).
 
-/// The event types in order, for a failure message that says what actually ran.
-fn event_types(events: &[serde_json::Value]) -> String {
-    events
-        .iter()
-        .map(|event| event["type"].as_str().unwrap_or("?").to_string())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
+/// Under the canonical temp root: sessions record the canonical cwd, and
+/// macOS temp dirs sit behind the /var -> /private/var symlink.
 fn isolated_home() -> tempfile::TempDir {
-    tempfile::TempDir::new().unwrap()
+    tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().unwrap()).unwrap()
 }
 
 fn run_in_home(
@@ -182,7 +204,7 @@ fn print_mode_goal_cap_reports_the_reason_and_exits_one() {
     );
     assert_eq!(code, 1);
     assert!(stderr.ends_with("Goal continuation cap reached: consecutive turns made no progress\n"));
-    assert_eq!(stdout, "");
+    assert!(stdout.is_empty(), "expected no output");
 
     let session_id = read_entries(&session_files(home.path())[0])[0]["id"]
         .as_str()
@@ -261,7 +283,7 @@ fn print_mode_no_session_writes_nothing() {
     let (stdout, stderr, code) = run_in_home(home.path(), &["-p", "hi", "--no-session"], &script);
     assert_eq!(code, 0, "stderr: {stderr}");
     assert_eq!(stdout, "gone\n");
-    assert_eq!(session_files(home.path()).len(), 0);
+    assert!(session_files(home.path()).is_empty(), "expected no output");
 }
 
 #[test]
@@ -346,7 +368,7 @@ fn print_mode_resume_unknown_selector_fails_with_browse_hint() {
     let (stdout, stderr, code) =
         run_in_home(home.path(), &["--resume", "deadbeef", "-p", "hi"], &script);
     assert_eq!(code, 1);
-    assert_eq!(stdout, "");
+    assert!(stdout.is_empty(), "expected no output");
     assert!(
         stderr.contains("No session found matching 'deadbeef'"),
         "stderr: {stderr}"
@@ -667,7 +689,7 @@ fn print_mode_stale_overflow_recovers_before_the_next_prompt_after_a_resume() {
     let probe = format!("overflow probe {}", "x".repeat(48_000));
     let (stdout, stderr, code) = run_in_home(home.path(), &["-p", &seed, &probe], &script);
     assert_eq!(code, 1, "stderr: {stderr}");
-    assert_eq!(stdout, "");
+    assert!(stdout.is_empty(), "expected no output");
 
     // Run two: compaction enabled — the pre-turn arm compacts the stale overflow.
     write_compaction_settings(home.path(), &compactable_settings());
@@ -854,42 +876,11 @@ fn print_mode_json_streams_the_threshold_compaction_pair() {
         events[start_at],
         serde_json::json!({ "type": "compaction_start", "reason": "threshold" })
     );
-    // The invariant is that a threshold compaction never runs INSIDE a turn: it
-    // starts after an `agent_end` (the runtime's own rule — compaction is a turn
-    // boundary, not a step within one). The old assertion demanded the FIRST
-    // compaction precede the LAST `agent_end`, which is a different and much
-    // stronger claim: it made any second boundary compaction fail the test. The
-    // fixture's window is calibrated so tightly that one ambient context file
-    // (`TMPDIR=<repo>/.tmp` inherits this repository's AGENTS.md) is enough to
-    // add a second crossing, so the suite was red under the gate and green in
-    // isolation — a property of its calibration, not of the product.
-    let mut inside_a_turn = false;
-    let mut compactions_inside_a_turn = 0usize;
-    let mut starts = 0usize;
-    for event in &events {
-        match event["type"].as_str() {
-            Some("turn_start") => inside_a_turn = true,
-            Some("turn_end") => inside_a_turn = false,
-            Some("compaction_start") => {
-                starts += 1;
-                if inside_a_turn {
-                    compactions_inside_a_turn += 1;
-                }
-            }
-            _ => {}
-        }
-    }
-    assert_eq!(
-        compactions_inside_a_turn,
-        0,
-        "a compaction must never start inside a turn; got: {}",
-        event_types(&events)
-    );
-    assert!(
-        starts >= 1,
-        "the crossing turn must trigger at least one threshold compaction; got: {}",
-        event_types(&events)
-    );
+    let last_agent_end = events
+        .iter()
+        .rposition(|event| event["type"] == "agent_end")
+        .expect("the last agent_end");
+    assert!(last_agent_end < start_at);
     assert_eq!(
         events
             .iter()
@@ -898,18 +889,12 @@ fn print_mode_json_streams_the_threshold_compaction_pair() {
         2,
         "exactly two runs"
     );
-    // The pair that CARRIES the summary, not the first one: a boundary the
-    // runtime finds nothing to compact ends without a summary, and how many such
-    // boundaries occur depends on the seed context — which this fixture cannot own
-    // (context discovery walks to the filesystem root). The contract under test is
-    // the streamed `compaction_start`/`compaction_end` pair with its summary.
     let end_at = events
         .iter()
-        .position(|event| {
-            event["type"] == "compaction_end" && event["result"]["summary"].is_string()
-        })
-        .expect("a compaction_end carrying the summary");
-    assert!(start_at < end_at, "the pair streams start-before-end");
+        .position(|event| event["type"] == "compaction_end")
+        .expect("the compaction_end event");
+    assert!(start_at < end_at);
+    assert_eq!(events[end_at]["reason"], "threshold");
     assert_eq!(
         events[end_at]["result"]["summary"],
         "the compaction summary"
@@ -1034,7 +1019,7 @@ fn print_mode_fork_imports_a_global_session_into_this_cwd() {
         &script,
     );
     assert_eq!(code, 1);
-    assert_eq!(stdout, "");
+    assert!(stdout.is_empty(), "expected no output");
     assert!(
         stderr.contains(&format!(
             "session {selector} belongs to a different project"
@@ -1094,7 +1079,7 @@ fn print_mode_fork_rejects_empty_sources_and_conflicting_flags() {
         &script,
     );
     assert_eq!(code, 1);
-    assert_eq!(stdout, "");
+    assert!(stdout.is_empty(), "expected no output");
     assert!(
         stderr.contains("Cannot fork: source session file is empty or invalid:"),
         "stderr: {stderr}"
@@ -1114,7 +1099,7 @@ fn print_mode_fork_rejects_empty_sources_and_conflicting_flags() {
         &script,
     );
     assert_eq!(code, 1);
-    assert_eq!(stdout, "");
+    assert!(stdout.is_empty(), "expected no output");
     assert!(
         stderr.contains("--fork cannot be combined with --resume"),
         "stderr: {stderr}"

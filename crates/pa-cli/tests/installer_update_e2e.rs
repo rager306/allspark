@@ -87,7 +87,7 @@ fn serve_at(path: &'static str, body: &'static str) -> String {
 /// One sandbox: a HOME with the session store the update must preserve,
 /// and the install prefix the launcher lands under.
 struct Sandbox {
-    root: tempfile::TempDir,
+    root: PathBuf,
     session_file: PathBuf,
     session_bytes: Vec<u8>,
     prefix: PathBuf,
@@ -95,22 +95,23 @@ struct Sandbox {
 
 impl Sandbox {
     fn new() -> Self {
-        // A `TempDir` owns the removal, so a run that fails mid-test (or panics)
-        // still leaves the disk as it found it. The sandbox is ~312 MB, and a bare
-        // `temp_dir()` join left one behind per run: nine had accumulated before
-        // this was noticed, from runs whose processes were long gone.
-        let root = tempfile::Builder::new()
-            .prefix("pa-update-e2e-")
-            .tempdir()
-            .expect("sandbox root");
-        let home = root.path().join("home");
+        let root = std::env::temp_dir().join(format!(
+            "pa-update-e2e-{}-{}",
+            std::process::id(),
+            uuid_probe()
+        ));
+        std::fs::create_dir_all(&root).expect("sandbox root");
+        // The installer reports resolved paths; macOS's temp dir sits behind
+        // the /var -> /private/var symlink.
+        let root = root.canonicalize().expect("canonical sandbox root");
+        let home = root.join("home");
         let session_file = home.join(".prime/agent/sessions/session.jsonl");
         std::fs::create_dir_all(session_file.parent().expect("session dir")).expect("session dir");
         let session_bytes =
             b"{\"type\":\"user_message\",\"content\":\"the session the update must preserve\"}\n"
                 .to_vec();
         std::fs::write(&session_file, &session_bytes).expect("write session file");
-        let prefix = root.path().join("prefix/.local");
+        let prefix = root.join("prefix/.local");
         std::fs::create_dir_all(&prefix).expect("prefix");
         Self {
             root,
@@ -130,6 +131,14 @@ impl Sandbox {
     }
 }
 
+/// A per-test disambiguator for the sandbox root (no uuid dependency in
+/// dev-deps: the pid plus the server port keeps concurrent runs apart).
+fn uuid_probe() -> String {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let next = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    format!("{next}")
+}
+
 fn run_prime_agent(args: &[&str], sandbox: &Sandbox, url: &str) -> std::process::Output {
     let mut command = prime_agent(args, sandbox);
     command.env(ENV_INSTALLER_URL, url);
@@ -140,17 +149,12 @@ fn prime_agent(args: &[&str], sandbox: &Sandbox) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
     command
         .args(args)
-        .env("HOME", sandbox.root.path().join("home"))
+        .env("HOME", sandbox.root.join("home"))
         .env_remove(ENV_INSTALLER_URL)
         .env(ENV_PREFIX, &sandbox.prefix)
-        // The mock installer is served over plain loopback HTTP: the funnel's
-        // https rule (mirrored from install-rust.sh/install.ps1) refuses a
-        // non-https source unless the explicitly-named hatch is open, which is
-        // exactly the local-channel/e2e path these tests exercise.
-        .env("PRIME_AGENT_ALLOW_HTTP", "1")
         .env(
             "PRIME_AGENT_CODING_AGENT_DIR",
-            sandbox.root.path().join("home/.prime/agent"),
+            sandbox.root.join("home/.prime/agent"),
         );
     command
 }
@@ -172,7 +176,7 @@ fn update_runs_the_downloaded_installer_and_preserves_the_session_store() {
         "the success line names the new build:\n{stdout}"
     );
     assert!(
-        stdout.contains("restart allspark to run the new build"),
+        stdout.contains("restart prime-agent to run the new build"),
         "the success line carries the restart hint:\n{stdout}"
     );
     let launcher = sandbox.prefix.join("bin/prime-agent");
@@ -267,7 +271,7 @@ fn a_failing_installer_keeps_the_previous_install() {
 /// never touches the network, the machine's daemons, or a global npm
 /// package.
 fn installer_env(command: &mut Command, sandbox: &Sandbox) {
-    let shims = sandbox.root.path().join("shims");
+    let shims = sandbox.root.join("shims");
     std::fs::create_dir_all(&shims).expect("shims dir");
     let python = [
         "/usr/bin/python3",
@@ -291,31 +295,20 @@ fn installer_env(command: &mut Command, sandbox: &Sandbox) {
     )
     .expect("npm shim");
     make_executable(&npm);
-    let tmp = sandbox.root.path().join("tmp");
+    let tmp = sandbox.root.join("tmp");
     std::fs::create_dir_all(&tmp).expect("tmp dir");
     command
         .env_clear()
         .env("PATH", format!("{}:/usr/bin:/bin", shims.display()))
-        .env("HOME", sandbox.root.path().join("home"))
+        .env("HOME", sandbox.root.join("home"))
         .env("TMPDIR", tmp)
         .env(ENV_PREFIX, &sandbox.prefix)
         .current_dir(&sandbox.root);
 }
 
-/// Keep the executable's writable fd out of the multithreaded test runner:
-/// a sibling fork can inherit that fd until exec and make the image ETXTBSY.
-fn copy_installed_build(destination: &Path) {
-    let status = Command::new("cp")
-        .arg(env!("CARGO_BIN_EXE_prime-agent"))
-        .arg(destination)
-        .status()
-        .expect("copy this build in an isolated process");
-    assert!(status.success(), "copy the installed fixture build");
-}
-
 /// A release archive whose payload is a script answering `version`.
 fn fake_release(sandbox: &Sandbox, version: &str) -> PathBuf {
-    let payload = sandbox.root.path().join(format!("payload-{version}"));
+    let payload = sandbox.root.join(format!("payload-{version}"));
     std::fs::create_dir_all(&payload).expect("payload dir");
     let binary = payload.join("prime-agent");
     std::fs::write(&binary, format!("#!/bin/sh\necho {version}\n")).expect("payload binary");
@@ -323,7 +316,6 @@ fn fake_release(sandbox: &Sandbox, version: &str) -> PathBuf {
     let platform = pa_core::update::install::current_platform_alias();
     let archive = sandbox
         .root
-        .path()
         .join(format!("prime-agent-{version}-{platform}.tar.gz"));
     let status = Command::new("tar")
         .arg("-czf")
@@ -375,7 +367,7 @@ fn update_archive_and_rollback_swap_installer_payloads() {
     let live = sandbox.prefix.join("share/prime-agent");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
-    copy_installed_build(&binary);
+    std::fs::copy(env!("CARGO_BIN_EXE_prime-agent"), &binary).expect("copy this build");
     std::fs::write(
         live.join(".prime-agent-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",
@@ -434,7 +426,7 @@ fn rollback_check_answers_synchronously_without_touching_the_payload() {
     let live = sandbox.prefix.join("share/prime-agent");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
-    copy_installed_build(&binary);
+    std::fs::copy(env!("CARGO_BIN_EXE_prime-agent"), &binary).expect("copy this build");
     std::fs::write(
         live.join(".prime-agent-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",
@@ -480,7 +472,7 @@ fn rollback_check_answers_synchronously_without_touching_the_payload() {
         "the source names the kept generation: {source}"
     );
     assert_eq!(live_version(&sandbox), "1.0.0", "the check touched nothing");
-    let leftovers: Vec<String> = std::fs::read_dir(sandbox.root.path().join("tmp"))
+    let leftovers: Vec<String> = std::fs::read_dir(sandbox.root.join("tmp"))
         .expect("tmp dir")
         .filter_map(std::result::Result::ok)
         .filter_map(|entry| entry.file_name().into_string().ok())
@@ -503,21 +495,20 @@ fn update_archive_refuses_a_misnamed_payload_version() {
     let live = sandbox.prefix.join("share/prime-agent");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
-    copy_installed_build(&binary);
+    std::fs::copy(env!("CARGO_BIN_EXE_prime-agent"), &binary).expect("copy this build");
     std::fs::write(
         live.join(".prime-agent-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",
     )
     .expect("install marker");
     let platform = pa_core::update::install::current_platform_alias();
-    let payload_dir = sandbox.root.path().join("payload-misnamed");
+    let payload_dir = sandbox.root.join("payload-misnamed");
     std::fs::create_dir_all(&payload_dir).expect("payload dir");
     let payload = payload_dir.join("prime-agent");
     std::fs::write(&payload, "#!/bin/sh\necho 0.9.7\n").expect("payload binary");
     make_executable(&payload);
     let archive = sandbox
         .root
-        .path()
         .join(format!("prime-agent-9.9.9-{platform}.tar.gz"));
     let status = Command::new("tar")
         .arg("-czf")
@@ -556,7 +547,7 @@ fn update_rollback_reads_the_unsuffixed_installer_slot() {
     let live = sandbox.prefix.join("share/prime-agent");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
-    copy_installed_build(&binary);
+    std::fs::copy(env!("CARGO_BIN_EXE_prime-agent"), &binary).expect("copy this build");
     std::fs::write(
         live.join(".prime-agent-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",
@@ -606,7 +597,7 @@ fn update_rollback_without_a_kept_version_changes_nothing() {
     let live = sandbox.prefix.join("share/prime-agent");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
-    copy_installed_build(&binary);
+    std::fs::copy(env!("CARGO_BIN_EXE_prime-agent"), &binary).expect("copy this build");
     std::fs::write(
         live.join(".prime-agent-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",
@@ -657,7 +648,7 @@ fn archive_check_answers_synchronously_without_publishing() {
     let live = sandbox.prefix.join("share/prime-agent");
     std::fs::create_dir_all(&live).expect("payload dir");
     let binary = live.join("prime-agent");
-    copy_installed_build(&binary);
+    std::fs::copy(env!("CARGO_BIN_EXE_prime-agent"), &binary).expect("copy this build");
     std::fs::write(
         live.join(".prime-agent-install"),
         "install-rust.sh channel beta\nversion 9.9.9\n",
@@ -710,10 +701,7 @@ fn archive_check_answers_synchronously_without_publishing() {
 /// A release archive whose payload answers `reported` under the archive
 /// name `named` (the mis-naming fixture for the check-mode test).
 fn fake_release_payload(sandbox: &Sandbox, named: &str, reported: &str) -> PathBuf {
-    let payload = sandbox
-        .root
-        .path()
-        .join(format!("payload-mismatch-{named}"));
+    let payload = sandbox.root.join(format!("payload-mismatch-{named}"));
     std::fs::create_dir_all(&payload).expect("payload dir");
     let binary = payload.join("prime-agent");
     std::fs::write(&binary, format!("#!/bin/sh\necho {reported}\n")).expect("payload binary");
@@ -721,7 +709,6 @@ fn fake_release_payload(sandbox: &Sandbox, named: &str, reported: &str) -> PathB
     let platform = pa_core::update::install::current_platform_alias();
     let archive = sandbox
         .root
-        .path()
         .join(format!("prime-agent-{named}-{platform}.tar.gz"));
     let status = Command::new("tar")
         .arg("-czf")

@@ -87,5 +87,4 @@ pub mod skills;
 pub mod slash_command_args;
 pub mod tool_profile;
 pub mod update;
-pub mod workspace_snapshot;
 pub use kernel::ReplKernelManager;

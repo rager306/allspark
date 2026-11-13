@@ -53,9 +53,6 @@ fn reserve_above(seed: u64, headroom: u64) -> u64 {
 /// sits halfway between a baseline turn and the baseline plus the big prompt.
 #[test]
 fn threshold_crossing_auto_compacts_with_the_event_pair() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (probe, _probe_dir) = faux_engine_with_settings(
         &serde_json::json!({ "responses": [{"text": "seed reply"}] }),
         1,
@@ -166,9 +163,6 @@ fn threshold_crossing_auto_compacts_with_the_event_pair() {
 /// but the threshold arm follows `session_model`.
 #[test]
 fn threshold_compaction_stays_on_the_session_provider_after_a_resolution_drift() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).unwrap();
@@ -188,7 +182,7 @@ fn threshold_compaction_stays_on_the_session_provider_after_a_resolution_drift()
         json!({
             "providers": {
                 "faux": {
-                    "api": "faux",
+                    "api": registration.api,
                     "baseUrl": "http://localhost:0",
                     "apiKey": "sk-faux",
                     "models": [{
@@ -358,28 +352,25 @@ fn threshold_compaction_stays_on_the_session_provider_after_a_resolution_drift()
 
 #[test]
 fn retire_clears_the_provider_target_for_the_replacement_build() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).unwrap();
     let script = json!({ "responses": [{"text": "seed reply"}] });
     let parsed = pa_ai::faux::script::parse_faux_script(&script).expect("faux script parses");
-    let _registration = pa_ai::faux::script::register_faux_provider_from_script(&parsed);
+    let registration = pa_ai::faux::script::register_faux_provider_from_script(&parsed);
     std::fs::write(
         agent_dir.join("models.json"),
         json!({
             "providers": {
                 "faux": {
-                    "api": "faux", "baseUrl": "http://localhost:0", "apiKey": "sk-faux",
+                    "api": registration.api, "baseUrl": "http://localhost:0", "apiKey": "sk-faux",
                     "models": [{
                         "id": "faux-1", "name": "Faux Model",
                         "contextWindow": 128_000, "maxTokens": 16384,
                     }],
                 },
                 "drift": {
-                    "api": "faux", "baseUrl": "http://localhost:0", "apiKey": "sk-drift",
+                    "api": registration.api, "baseUrl": "http://localhost:0", "apiKey": "sk-drift",
                     "models": [{
                         "id": "drift-1", "name": "Drift Model",
                         "contextWindow": 128_000, "maxTokens": 16384,
@@ -489,9 +480,6 @@ fn mirror_telemetry_properties(
 )]
 fn threshold_compaction_counts_into_the_run_telemetry() {
     let _telemetry = super::telemetry_opt_in();
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (probe, _probe_dir) = faux_engine_with_settings(
         &serde_json::json!({ "responses": [{"text": "seed reply"}] }),
         1,
@@ -551,9 +539,6 @@ fn threshold_compaction_counts_into_the_run_telemetry() {
 )]
 fn requested_compaction_counts_into_the_run_telemetry() {
     let _telemetry = super::telemetry_opt_in();
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // A tiny reserve keeps the threshold arm silent (TS reserve 1 means
     // the context must nearly fill the window).
     let (engine, dir) = faux_engine_with_settings(
@@ -613,9 +598,6 @@ fn requested_compaction_counts_into_the_run_telemetry() {
 )]
 fn manual_wire_compaction_counts_into_the_run_telemetry() {
     let _telemetry = super::telemetry_opt_in();
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (engine, dir) = faux_engine_with_settings(
         &serde_json::json!({
             "responses": [
@@ -717,9 +699,6 @@ fn outcome_row_and_end_event(
 
 #[test]
 fn threshold_skip_records_the_durable_outcome_row() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (probe, _probe_dir) = faux_engine_with_settings(
         &serde_json::json!({ "responses": [{"text": "seed reply"}] }),
         1,
@@ -788,9 +767,6 @@ fn threshold_skip_records_the_durable_outcome_row() {
 
 #[test]
 fn requested_compaction_skip_records_the_durable_outcome_row() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = tempfile::TempDir::new().unwrap();
     let engine = AgentSessionEngine::new(AgentEngineConfig {
         cwd: dir.path().to_path_buf(),
@@ -846,9 +822,6 @@ fn requested_compaction_skip_records_the_durable_outcome_row() {
 
 #[test]
 fn threshold_compaction_aborted_mid_run_records_the_cancelled_outcome() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (probe, _probe_dir) = faux_engine_with_settings(
         &serde_json::json!({ "responses": [{"text": "seed reply"}] }),
         1,
@@ -924,9 +897,6 @@ fn threshold_compaction_aborted_mid_run_records_the_cancelled_outcome() {
 
 #[test]
 fn requested_compaction_aborted_mid_run_records_the_cancelled_outcome() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // A tiny reserve keeps the threshold check silent while the
     // 10-token keep-recent budget leaves the turns summarizable.
     let (engine, _engine_dir) = faux_engine_with_settings(
@@ -1003,9 +973,6 @@ fn requested_compaction_aborted_mid_run_records_the_cancelled_outcome() {
 
 #[test]
 fn threshold_below_the_headroom_stays_silent() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = tempfile::TempDir::new().unwrap();
     let engine = AgentSessionEngine::new(AgentEngineConfig {
         cwd: dir.path().to_path_buf(),
@@ -1170,9 +1137,6 @@ fn compact_session_command_emits_the_result_on_success() {
 
 #[test]
 fn threshold_crossing_inside_one_run_compacts_before_the_next_model_turn() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (engine, _dir) = faux_engine_with_settings(
         &json!({
             "responses": [
@@ -1224,9 +1188,6 @@ fn threshold_crossing_inside_one_run_compacts_before_the_next_model_turn() {
 
 #[test]
 fn failed_mid_run_compaction_resumes_without_retrying_each_tool_round() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let tool_turn = json!({"content":[{"type":"text","text":"x".repeat(80_000)}, {"type":"toolCall","id":"synthetic-call","name":"synthetic_missing_tool","arguments":{}}]});
     let (engine, _dir) = faux_engine_with_settings(
         &json!({
@@ -1297,9 +1258,6 @@ fn a_not_due_recheck_keeps_threshold_checks_armed() {
 
 #[test]
 fn low_custom_percentage_compacts_real_history_once_and_then_makes_progress() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (engine, dir) = faux_engine_with_settings(
         &serde_json::json!({
             "responses": vec![serde_json::json!({"text": "short response"}); 80],
@@ -1396,7 +1354,7 @@ fn low_custom_percentage_compacts_real_history_once_and_then_makes_progress() {
     let mut settings =
         pa_core::settings::SettingsManager::create(dir.path(), dir.path().join("agent"));
     settings.set_compaction_threshold_percent(75.0).unwrap();
-    let mirror = engine.autonomous_boundary.lock().unwrap().clone().unwrap();
+    let mirror = engine.live_handles().unwrap().autonomous_boundary.clone();
     let session = mirror.session.upgrade().unwrap();
     assert_eq!(
         session.session.compaction_settings(),
