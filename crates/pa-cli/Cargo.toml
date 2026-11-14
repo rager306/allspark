@@ -13,6 +13,8 @@ pa-agent = { path = "../pa-agent" }
 pa-daemon = { path = "../pa-daemon" }
 pa-tui = { path = "../pa-tui" }
 pa-telemetry = { path = "../pa-telemetry" }
+# FORK-ONLY: the jev-verifier step's judgment client.
+pa-jev = { path = "../pa-jev" }
 uuid = { version = "1", features = ["v4", "v7"] }
 tokio = { workspace = true }
 anyhow = { workspace = true }

@@ -62,6 +62,10 @@ pub(crate) mod incident;
 pub(crate) mod initial_message;
 pub(crate) mod installer_update;
 pub(crate) mod interactive_mode;
+// FORK-ONLY: the jev-verifier step (adversarial verifier role; see the
+// tracked issue on rager306/allspark). Gated off unless ALLSPARK_JEV_VERIFIER
+// is set; no call site until the wiring issue lands.
+pub(crate) mod jev_verifier;
 pub(crate) mod list_models;
 pub(crate) mod mcp_command;
 pub(crate) mod mcp_login;

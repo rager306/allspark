@@ -2130,6 +2130,7 @@ dependencies = [
  "pa-ai",
  "pa-core",
  "pa-daemon",
+ "pa-jev",
  "pa-telemetry",
  "pa-tui",
  "pa-types",
