@@ -514,7 +514,7 @@ fn acp_error_shapes_match_the_ts_goldens() {
     assert_eq!(response["error"]["code"], -32603);
     assert_eq!(
         response["error"]["data"]["details"],
-        "prime-agent ACP mode hosts one session per connection; start another prime-agent process for a second session"
+        "allspark ACP mode hosts one session per connection; start another allspark process for a second session"
     );
 
     // Unknown method (ts-errors.jsonl).
@@ -646,7 +646,7 @@ fn acp_mcp_admission_rejects_a_second_session_only_when_open() {
     assert_eq!(second_response["error"]["message"], "Internal error");
     assert_eq!(
         second_response["error"]["data"]["details"],
-        "prime-agent ACP mode hosts one session per connection; start another prime-agent process for a second session"
+        "allspark ACP mode hosts one session per connection; start another allspark process for a second session"
     );
     let close = client.request("session/close", &json!({ "sessionId": session_id }));
     let (close_response, _) = client.wait_response(close, TIMEOUT);
@@ -2689,7 +2689,7 @@ fn acp_daemon_attached_close_stop_failure_fences_the_session() {
     let (refused_response, _) = client.wait_response(refused, TIMEOUT);
     assert_eq!(
         refused_response["error"]["data"]["details"],
-        "prime-agent ACP mode hosts one session per connection; start another prime-agent process for a second session",
+        "allspark ACP mode hosts one session per connection; start another allspark process for a second session",
         "the close-failed session keeps the single-session slot: {refused_response}"
     );
 

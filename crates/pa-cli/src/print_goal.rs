@@ -1496,6 +1496,12 @@ mod tests {
             .await
             .unwrap(),
         );
+        // Keep inherited project context out of this threshold-sensitive fixture.
+        engine
+            .session
+            .agent()
+            .set_system_prompt("threshold fixture")
+            .await;
         assert_eq!(
             engine.goal_state().await.status,
             pa_types::goal::GoalStatus::Active,
