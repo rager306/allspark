@@ -55,6 +55,26 @@ either changes.
 - Flag any change to the stop-candidate set that is not proved on both install layouts (upstream Rust root and fork `bin/`+`libexec/` tarball), and flag a probe that stops a socket it cannot attribute to this install. The pinned rust socket `$TMPDIR/prime-agent-rust-<uid>/daemon.sock` is shared by both products.
 - Flag commands that signal a process they did not start (`pkill -f prime-agent`, `killall`) or that remove a socket the run did not create.
 
+## Orchestration and capability selection
+
+- Flag agent instructions that stop at a partial fix without naming blockers, authorize unrelated
+  or destructive work, or promote an approach solely for its date or novelty. Substantive designs
+  should use applicable current evidence and the simplest solution that meets the contract.
+- Flag changes that omit relevant boundary, ordering, failure, concurrency, or downstream checks,
+  or bug fixes without a discriminating red-first regression test. Report unverified behavior;
+  avoid speculative coverage and machinery unrelated to the risk.
+- Flag agent-facing instructions that assume an optional native tool, MCP connection, skill, or
+  agent family is always available, or that bypass the documented specialized tool when it is
+  present. Select tools from the actual session roster, discover MCP tools through their documented
+  interface, and respect the availability and usage limits of `schedule`, heartbeats, persistent
+  shells, harness memory, `goal`, and `refine` in AGENTS.md.
+- Flag blanket delegation or agent-count targets that send trivial lookups, small edits, tightly
+  coupled decisions, or dependent sequences to workers without a coordination benefit. Parallel
+  work should be independent and substantive, with bounded deliverables and disjoint write ownership.
+- Flag orchestration instructions that treat `rlm.spawn` as the completed result, assume children
+  have isolated worktrees, or skip the orchestrator's integration and validation of child output.
+  Retain handles, request explicit results, and work locally when delegation is unavailable.
+
 ## Parallel agents share one tree
 
 - Flag instructions or scripts that commit with `git commit -a`, `git add -A`, or `git add .`, and flag any `git checkout -- <path>`, `git stash`, `git reset --hard`, `git restore`, or `git rebase` while other work is uncommitted: this checkout is worked by several agents on one branch, one index, one target dir. Commits use `git commit -o -- <path>...`.

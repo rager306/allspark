@@ -179,6 +179,44 @@ Two rules hold throughout:
   options and their costs; a finding that does not gets fixed on its own branch. Nothing lands
   half-done on a shared branch, and nothing is left as a `TODO`.
 
+## Orchestration and capability selection
+
+- Advance the user's outcome proactively: identify the next useful step, plan dependencies and
+  validation, and finish the work within the agreed scope rather than stopping at a partial fix.
+  Surface blockers and decisions honestly; do not make unrelated or destructive changes without
+  authorization.
+- For substantive design choices, research current primary sources and established practice when
+  useful; check publication dates and applicability to this tree. Adapt the underlying mechanism
+  to allspark's boundaries, constraints, and measured needs rather than copying an approach or
+  treating a 2026 date as proof of quality. Prefer the simplest solution that meets the contract.
+- Trace each change across component boundaries and execution order: check logic, semantics,
+  failure and concurrency paths, downstream effects, and regressions. Cover the behavior at the
+  cheapest tier that can observe it, prove bug-fix tests fail without the fix, and report what was
+  not verified. Do not add speculative tests or machinery unrelated to the actual risk.
+- Start from the user's outcome and the current session's actual tool roster, permissions,
+  and project context. Use the specialized native tools when present: `graph` for code
+  relationships, `lsp` for symbol-aware navigation, and native `edit` for targeted changes;
+  use `jev` for judgment only when it is available and useful. The persistent `python_repl`
+  coordinates programmatic tools and background work. Discover MCP capabilities with `mcp.list_tools`
+  or `mcp.search_tools` and inspect skill contracts before use; do not assume an optional tool,
+  connection, or agent family exists. For the full native and REPL surface, including gated
+  `schedule`, see **Surface contract** below.
+- Use persistent shells only for processes that must survive a session restart; ordinary commands
+  use `bash` without persistence. Harness memory and `refine` preserve useful, evidence-backed
+  lessons, not transient noise. Create a `goal` only when the user requests one. Heartbeats require
+  a scheduler-backed session; neither they nor `schedule` are universally available.
+- Decide whether parallel work will reduce the critical path after coordination and review costs.
+  Delegate independent, substantive research or implementation with bounded scope, a clear
+  deliverable, and disjoint write ownership; start independent workers together. Keep a single
+  lookup, small edit, tightly coupled decision, or dependent sequence local. Do not spawn agents
+  merely to increase their count, and do not duplicate work unless independent verification is
+  worth its cost.
+- The orchestrator retains the overall plan, integration, validation, and user-facing result.
+  Keep child handles; `rlm.spawn` admits a child, not its completed answer. Ask for an explicit
+  result, inspect the evidence and changes, and resolve conflicts before claiming completion.
+  Children are not isolation boundaries: inherited `cwd` can point at the same working tree.
+  If delegation is unavailable, proceed locally rather than treating it as a blocker.
+
 ## Parallel agents share one working tree
 
 This checkout is often worked by several agents at once: same branch, same index, same build
