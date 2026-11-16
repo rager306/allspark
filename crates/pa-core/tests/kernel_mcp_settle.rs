@@ -519,3 +519,142 @@ async fn the_first_python_cell_never_waits_behind_the_eager_mcp_status() {
         "the cell never ran: {serialized}"
     );
 }
+
+/// The real host reports an env-bearer server pending until this kernel has
+/// completed its own handshake and discovery. This is not a host-wide proof.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn env_bearer_inventory_tracks_this_kernel_verification() {
+    struct Server(std::process::Child);
+    impl Drop for Server {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let Some(kernel_python) = kernel_python() else {
+        return;
+    };
+    let _lock = LIVE_KERNEL_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempfile::tempdir().expect("temp dir");
+    let agent_dir = dir.path().join("agent");
+    let cwd = dir.path().join("project");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::create_dir_all(&cwd).unwrap();
+    let port_file = dir.path().join("port");
+    let script = dir.path().join("server.py");
+    std::fs::write(
+        &script,
+        r"import socket, sys
+from pathlib import Path
+import uvicorn
+from mcp.server.mcpserver import MCPServer
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
+server = MCPServer('fixture')
+@server.tool()
+def echo(text: str) -> str:
+    return text
+async def auth(request, call_next):
+    if request.headers.get('authorization') != 'Bearer fixture-token':
+        return Response(status_code=401)
+    return await call_next(request)
+app = server.streamable_http_app()
+app.add_middleware(BaseHTTPMiddleware, dispatch=auth)
+sock = socket.socket()
+sock.bind(('127.0.0.1', 0))
+sock.listen()
+class ReadyServer(uvicorn.Server):
+    async def startup(self, sockets=None):
+        await super().startup(sockets=sockets)
+        Path(sys.argv[1]).write_text(str(sock.getsockname()[1]))
+ReadyServer(uvicorn.Config(app, fd=sock.fileno(), log_level='critical')).run()
+",
+    )
+    .unwrap();
+    let mut server = Server(
+        std::process::Command::new(&kernel_python)
+            .arg(&script)
+            .arg(&port_file)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !port_file.exists() {
+        assert!(server.0.try_wait().unwrap().is_none(), "fixture exited");
+        assert!(Instant::now() < deadline, "fixture did not start");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let port = std::fs::read_to_string(port_file).unwrap();
+    std::fs::write(
+        agent_dir.join("settings.json"),
+        json!({
+            "mcpServers": {"env-fixture": {
+                "type": "http", "url": format!("http://127.0.0.1:{port}/mcp"),
+                "bearerTokenEnvVar": "PA_TEST_MCP_ENV_BEARER"
+            }}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let _env = EnvOverride::apply(&[
+        (
+            "PRIME_AGENT_KERNEL_PYTHON",
+            Some(kernel_python.display().to_string()),
+        ),
+        ("PRIME_AGENT_CODING_AGENT_DIR", None),
+        ("PRIME_API_KEY", None),
+        ("PA_TEST_MCP_ENV_BEARER", Some("fixture-token".to_string())),
+    ]);
+    let model = scripted_model();
+    let provider = Arc::new(ScriptedProvider::new(model.clone()));
+    let engine = create_session(SessionEngineConfig {
+        cwd,
+        agent_dir,
+        model: Some(model),
+        stream_fn: Some(provider.stream_fn()),
+        tools: Vec::new(),
+        prewarm_ipython_kernel: Some(true),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let provisioner = engine.kernel_provisioner_weak().upgrade().unwrap();
+    wait_for_kernel_boot(&provisioner).await;
+    let manager = provisioner.manager().unwrap();
+    let cell = r"import os
+import rlm
+await mcp.reload('env-fixture')
+row = lambda rows: next(x for x in rows if x['connectionId'] == 'env-fixture')
+host = row((await rlm.host_request('mcp.list_connections', {}))['connections'])
+assert host['envBearer'] is True, host
+before = row(await mcp.list_connections())
+assert before['status'] == 'pending' and before['envBearer'] is True, before
+await mcp.list_tools('env-fixture')
+after = row(await mcp.list_connections())
+assert after['status'] == 'connected' and after['verificationScope'] == 'session', after
+assert (await mcp.search_tools('echo'))['searched'] == ['env-fixture']
+os.environ['PA_TEST_MCP_ENV_BEARER'] = 'changed-token'
+assert row(await mcp.list_connections())['status'] == 'pending'
+assert (await mcp.search_tools('echo'))['tools'] == []
+await mcp.reload('env-fixture')
+print('ENV_MCP_OK')
+";
+    let result = manager
+        .execute(cell, ExecuteOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        result.status,
+        ExecuteStatus::Ok,
+        "{} {}",
+        result.stdout,
+        result.stderr
+    );
+    assert!(result.stdout.contains("ENV_MCP_OK"));
+}

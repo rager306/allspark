@@ -485,6 +485,14 @@ jobs:
       # wrong-tool regression as success. `make qa-gates` is the local mirror.
       - name: QA runner exit codes
         run: python3 -m unittest discover -s scripts/qa -p 'test_*.py'
+      - name: Install uv for the MCP runtime tests
+        run: |
+          python3 -m pip install --user uv
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: MCP runtime tests
+        run: |
+          uv sync --locked --project prime-agent-runtime
+          prime-agent-runtime/.venv/bin/python -m unittest discover -s prime-agent-runtime/test -p test_mcp.py
 
   # The Windows job set + the supply-chain deny gate:
   #

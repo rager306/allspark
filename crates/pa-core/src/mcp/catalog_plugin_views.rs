@@ -469,6 +469,9 @@ pub struct McpConnectionView {
     pub uses_oauth: bool,
     /// The transport (`http` / `stdio`).
     pub transport: String,
+    /// Whether this user-declared HTTP server uses an environment bearer token.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub env_bearer: bool,
     pub login_pending: Option<bool>,
     pub source: ViewSource,
     pub setup_hint: Option<String>,
@@ -572,6 +575,7 @@ pub fn build_connection_views(
                     },
                     uses_oauth: plugin.uses_oauth,
                     transport: "http".to_string(),
+                    env_bearer: false,
                     login_pending: None,
                     source: ViewSource::Catalog,
                     setup_hint: ownership_setup_hint(&ownership),
@@ -606,6 +610,7 @@ pub fn build_connection_views(
                 login_pending: account.login_pending.then_some(true),
                 uses_oauth: plugin.uses_oauth,
                 transport: "http".to_string(),
+                env_bearer: false,
                 source: ViewSource::Catalog,
                 setup_hint: ownership_setup_hint(&ownership).or_else(|| account.setup_hint.clone()),
             });
@@ -631,6 +636,13 @@ pub fn build_connection_views(
             },
             uses_oauth: plugin.uses_oauth,
             transport: config.server_type().to_string(),
+            env_bearer: matches!(
+                config,
+                McpServerConfig::Http {
+                    bearer_token_env_var: Some(_),
+                    ..
+                }
+            ),
             login_pending: plugin.login_pending,
             source: ViewSource::User,
             setup_hint: plugin.setup_hint.clone(),
@@ -647,6 +659,7 @@ pub fn build_connection_views(
             status: McpConnectionStatus::Connected,
             uses_oauth: false,
             transport: server.transport.clone(),
+            env_bearer: false,
             login_pending: None,
             source: ViewSource::Acp,
             setup_hint: None,

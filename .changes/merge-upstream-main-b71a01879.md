@@ -1,0 +1,1 @@
+- Fixed MCP tool discovery to include connections verified in the current session.

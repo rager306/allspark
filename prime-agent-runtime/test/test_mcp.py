@@ -73,6 +73,33 @@ def echo(value: str) -> dict[str, str]:
 server.run(transport="streamable-http", host="127.0.0.1", port=int(__import__("sys").argv[1]))
 """
 
+_AUTH_HTTP_FIXTURE = """import sys
+import uvicorn
+from mcp.server.mcpserver import MCPServer
+from starlette.responses import Response
+from pathlib import Path
+
+server = MCPServer("fixture")
+@server.tool(name="search_documents")
+def search_documents() -> str:
+    return "fixture"
+
+from starlette.middleware.base import BaseHTTPMiddleware
+
+async def check_bearer(request, call_next):
+    if request.headers.get("Authorization") not in ("Bearer token-one", "Bearer token-two"):
+        return Response(status_code=401)
+    return await call_next(request)
+
+app = server.streamable_http_app()
+app.add_middleware(BaseHTTPMiddleware, dispatch=check_bearer)
+class ReadyServer(uvicorn.Server):
+    async def startup(self, sockets=None):
+        await super().startup(sockets=sockets)
+        Path(sys.argv[2]).touch()
+ReadyServer(uvicorn.Config(app, fd=int(sys.argv[1]), log_level="critical")).run()
+"""
+
 
 def run(coro):
     return asyncio.run(coro)
@@ -1032,6 +1059,38 @@ class McpDiscoveryInventoryTest(unittest.TestCase):
         self.assertEqual(notion["oauth"], {"kind": "oauth"})
         self.assertEqual(connections[1]["setupHint"], "configure API key")
 
+    def test_verified_inventory_clears_pending_hints_on_promotion(self):
+        config = {"type": "http", "bearerTokenEnvVar": "MCP_FIXTURE_TOKEN"}
+        generation = self.generation(config, [])
+        mcp._registry._generations["svc"] = generation
+        hint = "Bearer token present; connection verification pending."
+        entries = [
+            {"connectionId": "svc", "status": "pending", "envBearer": True, "setupHint": hint},
+            {"connectionId": "svc", "status": "pending", "envBearer": True, "setupHint": "network error"},
+            {"connectionId": "svc", "status": "pending", "envBearer": True, "setupHint": hint, "loginPending": True},
+            {"connectionId": "svc", "status": "connected", "envBearer": True, "setupHint": "Useful information"},
+        ]
+        async def scenario():
+            with self._patch_host({"mcp.list_connections": {"connections": entries}}), mock.patch.object(
+                mcp, "_config", mock.AsyncMock(return_value=config)
+            ):
+                generation.verified = False
+                self.assertEqual(await mcp.list_connections(), [
+                    *entries[:3], {**entries[3], "status": "pending"},
+                ])
+                generation.verified = True
+                self.assertEqual(await mcp.list_connections(), [
+                    {"connectionId": "svc", "status": "connected", "envBearer": True,
+                     "setupHint": None, "verificationScope": "session"},
+                    {"connectionId": "svc", "status": "connected", "envBearer": True,
+                     "setupHint": None, "verificationScope": "session"},
+                    entries[2],
+                    {"connectionId": "svc", "status": "connected", "envBearer": True,
+                     "setupHint": "Useful information", "verificationScope": "session"},
+                ])
+
+        run(scenario())
+
     def test_list_connections_rejects_malformed_host_data(self):
         # One table: each malformed host reply must fail the whole call instead
         # of passing a broken inventory shape through to the agent.
@@ -1195,6 +1254,170 @@ class McpDiscoveryInventoryTest(unittest.TestCase):
         self.assertTrue(limited["truncated"])
         # A failing connection surfaces its error instead of hiding it.
         self.assertIsNotNone(error)
+
+    def test_successful_discovery_tracks_current_http_connection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "http_server.py"
+            fixture.write_text(_AUTH_HTTP_FIXTURE)
+            processes = []
+            ports = []
+            try:
+                for index in range(2):
+                    ready = Path(tmp) / f"ready-{index}"
+                    with socket.socket() as sock:
+                        sock.bind(("127.0.0.1", 0))
+                        sock.listen()
+                        port = sock.getsockname()[1]
+                        process = subprocess.Popen(
+                            [sys.executable, str(fixture), str(sock.fileno()), str(ready)],
+                            pass_fds=(sock.fileno(),),
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                    processes.append(process)
+                    ports.append(port)
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline:
+                        if ready.exists():
+                            break
+                        if process.poll() is not None:
+                            self.fail("HTTP MCP fixture exited before readiness")
+                        time.sleep(0.05)
+                    else:
+                        self.fail("HTTP MCP fixture did not start")
+
+                config = {
+                    "type": "http",
+                    "url": f"http://127.0.0.1:{ports[0]}/mcp",
+                    "bearerTokenEnvVar": "MCP_FIXTURE_TOKEN",
+                }
+
+                host_status = "pending"
+
+                async def host_request(request_type, payload):
+                    if request_type == "mcp.config":
+                        self.assertEqual(payload, {"server": "svc"})
+                        return dict(config)
+                    if request_type == "mcp.list_connections":
+                        return {"connections": [{"connectionId": "svc", "status": host_status, "envBearer": True}]}
+                    raise AssertionError(f"unexpected host request: {request_type}")
+
+                async def scenario():
+                    nonlocal host_status
+                    with mock.patch.dict(os.environ, {"MCP_FIXTURE_TOKEN": "token-one"}), mock.patch.object(
+                        mcp, "host_request", host_request
+                    ):
+                        try:
+                            async def check_pending():
+                                self.assertEqual((await mcp.list_connections())[0]["status"], "pending")
+                                self.assertEqual((await mcp.search_tools("documents"))["tools"], [])
+
+                            async def discover():
+                                self.assertEqual([t["name"] for t in await mcp.list_tools("svc")], ["search_documents"])
+                                self.assertEqual((await mcp.list_connections())[0]["status"], "connected")
+                                result = await mcp.search_tools("documents")
+                                self.assertEqual(result["searched"], ["svc"])
+                                self.assertEqual([t["name"] for t in result["tools"]], ["search_documents"])
+
+                            await check_pending()
+                            await discover()
+                            entered_config = asyncio.Event()
+                            release_config = asyncio.Event()
+                            original_config = mcp._config
+
+                            async def delayed_config(*args, **kwargs):
+                                result = await original_config(*args, **kwargs)
+                                entered_config.set()
+                                await release_config.wait()
+                                return result
+
+                            with mock.patch.object(mcp, "_config", delayed_config):
+                                inventory = asyncio.create_task(mcp.list_connections())
+                                try:
+                                    await asyncio.wait_for(entered_config.wait(), 1)
+                                    await mcp.reload("svc")
+                                finally:
+                                    release_config.set()
+                                self.assertEqual((await inventory)[0]["status"], "pending")
+                            await discover()
+                            generation = mcp._registry._generations["svc"]
+                            entered = asyncio.Event()
+                            release = asyncio.Event()
+
+                            async def blocked_call(*_args):
+                                entered.set()
+                                await release.wait()
+
+                            search_started = asyncio.Event()
+                            original_search = mcp._registry.search
+
+                            async def tracked_search(*args):
+                                search_started.set()
+                                return await original_search(*args)
+
+                            with mock.patch.object(generation, "call", blocked_call), mock.patch.object(
+                                mcp._registry, "search", tracked_search
+                            ):
+                                call = asyncio.create_task(mcp.call_tool("svc", "search_documents", {}))
+                                search = None
+                                try:
+                                    await entered.wait()
+                                    self.assertEqual((await mcp.list_connections())[0]["status"], "connected")
+                                    search = asyncio.create_task(mcp.search_tools("documents"))
+                                    await asyncio.wait_for(search_started.wait(), 1)
+                                finally:
+                                    release.set()
+                                    await call
+                                    if search is not None:
+                                        result = await search
+                                self.assertEqual(result["searched"], ["svc"])
+
+                            async def fail_config(*_args, **_kwargs):
+                                raise RuntimeError("injected")
+                            with mock.patch.object(mcp, "_config", fail_config):
+                                host_status = "connected"
+                                await check_pending()
+                            host_status = "pending"
+                            os.environ["MCP_FIXTURE_TOKEN"] = "token-two"
+                            with self.assertRaises(mcp.McpCredentialsUnavailable):
+                                await mcp._headers("svc", generation.config)
+                            os.environ["MCP_FIXTURE_TOKEN"] = "token-one"
+                            host_status = "connected"
+                            await mcp.reload("svc")
+                            await check_pending()
+                            await discover()
+                            os.environ["MCP_FIXTURE_TOKEN"] = "token-two"
+                            await check_pending()
+                            await discover()
+                            config["url"] = f"http://127.0.0.1:{ports[1]}/mcp"
+                            await check_pending()
+                            await discover()
+                            host_status = "error"
+                            self.assertEqual((await mcp.list_connections())[0]["status"], "error")
+                            host_status = "connected"
+                            os.environ["MCP_FIXTURE_TOKEN"] = "wrong-secret"
+                            await check_pending()
+                            with self.assertRaises(Exception):
+                                await mcp.list_tools("svc")
+                            await check_pending()
+                            self.assertNotIn("wrong-secret", str(await mcp.search_tools("documents")))
+                            host_status = "disabled"
+                            config["enabled"] = False
+                            self.assertEqual((await mcp.list_connections())[0]["status"], "disabled")
+                            host_status = "connected"
+                            await check_pending()
+                        finally:
+                            await mcp.reload()
+
+                run(scenario())
+            finally:
+                for process in processes:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=3)
 
     def test_search_tools_without_connection_searches_connected_only(self):
         tools = [SimpleNamespace(name="search-docs", description="Search workspace documents", inputSchema={})]

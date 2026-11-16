@@ -187,6 +187,7 @@ class _Generation:
         self.session: Any = None
         self.tools: dict[str, dict[str, Any]] = {}
         self.closed = False
+        self.verified = False
         self._call_lock = asyncio.Lock()
         self._stderr: _StderrTail | None = None
         self._stderr_secrets: tuple[str, ...] = ()
@@ -452,6 +453,7 @@ class _Generation:
         return _parse_result(result)
 
     async def close(self) -> None:
+        self.verified = False
         lifecycle = self._lifecycle
         if lifecycle is None:
             if not self.closed:
@@ -529,11 +531,37 @@ class _Registry:
         self._generations[server] = generation
         try:
             await generation.open()
+            generation.verified = True
         except BaseException:
             if self._generations.get(server) is generation:
                 self._generations.pop(server, None)
             raise
         return generation
+
+    async def inventory_status(self, entry: dict[str, Any]) -> dict[str, Any]:
+        self._accepting_work()
+        if entry.get("status") not in ("connected", "pending") or entry.get("envBearer") is not True:
+            return entry
+        server = entry["connectionId"]
+        generation = self._generations.get(server)
+        try:
+            async with asyncio.timeout(_INVENTORY_TIMEOUT):
+                config = await _config(server, refresh=False)
+        except Exception:
+            config = None
+        # Published generations are not verified until handshake and discovery finish.
+        if (generation is None or generation.closed or not generation.verified
+                or self._generations.get(server) is not generation or config is None or config != generation.config
+                or not config.get("bearerTokenEnvVar") or config.get("credentialSource") == "acp"):
+            if entry.get("status") == "connected":
+                entry["status"] = "pending"
+            return entry
+        if not entry.get("loginPending"):
+            if entry.get("status") == "pending":
+                entry["setupHint"] = None
+            entry["status"] = "connected"
+            entry["verificationScope"] = "session"
+        return entry
 
     async def tools(self, server: str) -> list[dict[str, Any]]:
         async def operation() -> list[dict[str, Any]]:
@@ -718,7 +746,12 @@ async def list_connections() -> list[dict[str, Any]]:
 
     Each entry carries at least ``connectionId``; other fields are host-defined
     (label, service, status, account). ``connectionId`` is the name
-    ``list_tools``/``call_tool`` accept.
+    ``list_tools``/``call_tool`` accept. A pending connection verified by this
+    kernel is marked connected with ``verificationScope: "session"``; this is
+    not a host-wide verification or a guarantee that the server remains live.
+    ``envBearer`` identifies a user HTTP server whose token comes from the
+    environment. Host-disabled, error and not-connected states are not promoted,
+    even if the kernel's environment differs from the host's.
     """
     result = await _host_inventory("mcp.list_connections", {})
     connections = _inventory_entries(result, "connections")
@@ -726,7 +759,11 @@ async def list_connections() -> list[dict[str, Any]]:
         connection_id = entry.get("connectionId")
         if not isinstance(connection_id, str) or not connection_id:
             raise RuntimeError("MCP connection inventory from the host is malformed")
-    return [_sanitize_inventory_entry(entry) for entry in connections]
+    entries = [_sanitize_inventory_entry(entry) for entry in connections]
+    return list(await asyncio.gather(*(
+        _dispatch(lambda entry=entry: _registry.inventory_status(entry))
+        for entry in entries
+    )))
 
 
 async def list_plugins(
@@ -950,7 +987,7 @@ def _validate_name(value: str, label: str) -> None:
         raise TypeError(f"{label} must be a non-empty string")
 
 
-async def _config(server: str) -> dict[str, Any]:
+async def _config(server: str, *, refresh: bool = True) -> dict[str, Any]:
     try:
         async with asyncio.timeout(_DEFAULT_STARTUP_TIMEOUT):
             config = await host_request("mcp.config", {"server": server})
@@ -963,7 +1000,7 @@ async def _config(server: str) -> dict[str, Any]:
     if config.get("type") == "http":
         config = dict(config)
         if config.get("credentialSource") != "acp":
-            config["_authIdentity"] = await _auth_identity(server, config)
+            config["_authIdentity"] = await _auth_identity(server, config, refresh=refresh)
     return config
 
 
@@ -988,7 +1025,7 @@ def _credentials_unavailable(server: str) -> McpCredentialsUnavailable:
     )
 
 
-async def _auth_identity(server: str, config: dict[str, Any]) -> str:
+async def _auth_identity(server: str, config: dict[str, Any], *, refresh: bool = True) -> str:
     if config.get("credentialSource") == "static-token":
         # A pasted static token has no refresh concept: it either resolves from
         # the bound stored credential or the connection fails closed.
@@ -1003,6 +1040,8 @@ async def _auth_identity(server: str, config: dict[str, Any]) -> str:
         cred = _bound_auth(provider, config)
         expires = (cred or {}).get("expires")
         if isinstance(expires, (int, float)) and expires <= time.time() * 1000 + 30_000:
+            if not refresh:
+                raise _credentials_unavailable(server)
             try:
                 await host_request("mcp.refresh", {"server": server})
             except Exception as exc:
@@ -1049,6 +1088,8 @@ async def _headers(server: str, config: dict[str, Any]) -> dict[str, str]:
         cred = _bound_auth(f"mcp:{server}", config)
         token = _resolve_config_value(str((cred or {}).get("access") or (cred or {}).get("key") or ""))
     if token:
+        if "_authIdentity" in config and hashlib.sha256(token.encode()).hexdigest() != config["_authIdentity"]:
+            raise _credentials_unavailable(server)
         headers["Authorization"] = f"Bearer {token}"
     elif config.get("oauth") is True or env_name:
         raise _credentials_unavailable(server)
