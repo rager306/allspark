@@ -158,11 +158,10 @@ impl RotatingLog {
             let _ = std::fs::create_dir_all(parent);
             let _ = pa_core::platform::perms::restrict_dir(parent);
         }
-        let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-        else {
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).append(true);
+        pa_core::platform::perms::set_private_mode(&mut options);
+        let Ok(mut file) = options.open(&self.path) else {
             return;
         };
         let _ = pa_core::platform::perms::restrict_file(&self.path);
@@ -172,20 +171,8 @@ impl RotatingLog {
                 drop(file);
                 let rotated = self.path.with_extension("log.1");
                 let _ = std::fs::rename(&self.path, &rotated);
-                match std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&self.path)
-                {
-                    Ok(reopened) => {
-                        // The rename moved the RESTRICTED file to `log.1`, and this reopen created
-                        // a fresh one with the default mode — so the live log was world-readable
-                        // from the first post-rotation line while its predecessor stayed 0600.
-                        // That is #40's leak one rename later; restrict the reopened file too, so
-                        // every creation path (first write and rotation) sets the mode.
-                        let _ = pa_core::platform::perms::restrict_file(&self.path);
-                        file = reopened;
-                    }
+                match options.open(&self.path) {
+                    Ok(reopened) => file = reopened,
                     Err(_) => return,
                 }
             }

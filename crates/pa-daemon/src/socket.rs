@@ -17,6 +17,8 @@ pub use crate::platform::{
 };
 
 /// Try to connect to an endpoint within `timeout`; true when a peer accepts.
+/// A peer refused as another user's still counts as live, so stale-socket
+/// cleanup never unlinks it.
 pub async fn can_connect(path: &Path, timeout: Duration) -> bool {
     let connect = pa_types::platform::transport::connect_transport(path);
     match tokio::time::timeout(timeout, connect).await {
@@ -24,7 +26,10 @@ pub async fn can_connect(path: &Path, timeout: Duration) -> bool {
             drop(stream);
             true
         }
-        _ => false,
+        Ok(Err(error)) => error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::PermissionDenied),
+        Err(_) => false,
     }
 }
 
@@ -66,7 +71,8 @@ async fn acquire_cleanup_lock(path: &Path) -> Result<pa_core::platform::LockDir>
 ///
 /// # Errors
 ///
-/// Returns an error when the parent directory cannot be created, a live listener
+/// Returns an error when the parent directory cannot be created or is an
+/// owned socket directory that fails the owner check, a live listener
 /// answers, the cleanup lock cannot be acquired, or the cleanup fails.
 #[cfg(unix)]
 pub async fn prepare_socket_path(path: &Path) -> Result<()> {
@@ -80,19 +86,18 @@ pub async fn prepare_socket_path(path: &Path) -> Result<()> {
         // No `exists()` pre-check either: that is a check-then-act window, and a
         // racing daemon creating the parent between the check and the create turns
         // our `mkdir` into `AlreadyExists` — which `ensure_dir` already treats as
-        // "not ours, leave it alone". `ensure_dir` itself restricts only a leaf it
-        // created, so calling it unconditionally is safe and closes the window.
-        crate::paths::ensure_dir(parent)?;
-        // The socket FILE is owner-only regardless (the bind's umask), and a
-        // private per-user parent keeps that guarantee when the caller passes one.
+        // "not ours, leave it alone".
         //
         // The product's own socket directory is per-uid but lives in the SHARED temp dir, so
         // another user can pre-create `allspark-<uid>` before the daemon starts and then own
         // the directory our socket file lands in — free to replace or unlink it (review #24).
-        // `ensure_dir` deliberately never re-modes a directory it did not create, so the
-        // ownership has to be checked, not assumed.
-        if parent == crate::platform::socket_dir() {
-            ensure_socket_dir_is_ours(parent)?;
+        // That directory (and one the caller names for a custom socket) is created through
+        // `prepare_owned_socket_dir`, which proves the owner after the create; anything else
+        // goes through `ensure_dir`, which never re-modes a directory it did not create.
+        if parent == socket_dir() || !parent.exists() {
+            prepare_owned_socket_dir(parent)?;
+        } else {
+            crate::paths::ensure_dir(parent)?;
         }
     }
     // lstat, not `Path::exists()`: a dangling symlink still blocks `bind`
@@ -111,6 +116,33 @@ pub async fn prepare_socket_path(path: &Path) -> Result<()> {
     prepare_locked_socket_path(path).await
 }
 
+/// Create a socket directory prime-agent owns (the default one, or one it
+/// creates for a custom socket) and refuse it unless it is a real directory
+/// owned by the current user: another user who pre-created or symlinked it
+/// could swap the socket. Then restrict it to the owner.
+#[cfg(unix)]
+fn prepare_owned_socket_dir(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::create_dir_all(dir)?;
+    let metadata = std::fs::symlink_metadata(dir)?;
+    if !metadata.is_dir() {
+        return Err(anyhow!(
+            "Daemon socket directory is a symlink or not a directory: {}",
+            dir.display()
+        ));
+    }
+    let uid = pa_core::platform::process::current_user_id();
+    if metadata.uid() != uid {
+        return Err(anyhow!(
+            "Daemon socket directory {} is owned by uid {}, not the current user (uid {uid}); remove it or set TMPDIR",
+            dir.display(),
+            metadata.uid()
+        ));
+    }
+    pa_core::platform::perms::restrict_dir(dir)?;
+    Ok(())
+}
+
 /// Refuse an existing default socket directory that is not a private directory of this user.
 ///
 /// The decision is a pure function of (owner, mode) so it is testable everywhere; the syscall
@@ -122,7 +154,7 @@ pub async fn prepare_socket_path(path: &Path) -> Result<()> {
 ///
 /// Returns an error when the directory is a symlink, belongs to another user, or lets another
 /// user write into it — each of which lets that user replace the socket file after the bind.
-#[cfg(unix)]
+#[cfg(all(unix, test))]
 fn ensure_socket_dir_is_ours(dir: &Path) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
     let metadata = std::fs::symlink_metadata(dir)?;
@@ -151,7 +183,7 @@ fn ensure_socket_dir_is_ours(dir: &Path) -> Result<()> {
 
 /// The rule [`ensure_socket_dir_is_ours`] applies: our directory, and not writable by anyone
 /// else (a group/other write bit lets another user unlink or replace our socket file).
-#[cfg(unix)]
+#[cfg(all(unix, test))]
 fn private_dir_is_ours(owner_uid: u32, our_uid: u32, mode: u32) -> bool {
     owner_uid == our_uid && mode & 0o022 == 0
 }
@@ -401,12 +433,18 @@ mod tests {
             .map(|at| start + at)
             .expect("the function ends");
         let body = &source[start..end];
+        // Upstream #4037 replaced the one-shot owner check with
+        // `prepare_owned_socket_dir`, which creates, proves the owner, and restricts: the
+        // fork's `ensure_socket_dir_is_ours` remains for the callers that already own a
+        // directory. What must hold either way is that the DEFAULT socket dir is proven
+        // before a socket lands in it.
         assert!(
-            body.contains("ensure_socket_dir_is_ours(parent)"),
-            "prepare_socket_path must verify the default socket directory's owner: {body}"
+            body.contains("prepare_owned_socket_dir(parent)")
+                || body.contains("ensure_socket_dir_is_ours(parent)"),
+            "prepare_socket_path must prove the default socket directory's owner: {body}"
         );
         assert!(
-            body.contains("crate::platform::socket_dir()"),
+            body.contains("socket_dir()"),
             "the check is scoped to the product's own socket directory: {body}"
         );
     }
@@ -454,6 +492,17 @@ mod tests {
         let socket = dir.path().join("daemon.sock");
         prepare_socket_path(&socket).await.unwrap();
         assert!(!socket.exists());
+    }
+
+    #[test]
+    fn a_symlinked_socket_dir_is_refused() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("prime-agent");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let error = prepare_owned_socket_dir(&link).unwrap_err();
+        assert!(error.to_string().contains("symlink"), "{error}");
     }
 
     #[tokio::test]

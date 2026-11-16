@@ -13,6 +13,60 @@ branch (`feat/allspark-identity`). `fork.3` points at the SAME commit as `fork.2
 (`375ad95cf`) and is a duplicate tag, not a separate release — it has no entry here
 because nothing shipped between them. `FORK.md` carries the same correction.
 
+## fork.021 — upstream v0.10.4-beta.12 (15 commits past `v0.10.4-beta.3`)
+
+- Tag: `allspark-v0.10.4-beta.12-fork.021`, version **`0.10.4-beta.12`**
+- Base: upstream `v0.10.4-beta.12` (one tag-only commit past `main`).
+
+### What upstream brought
+
+- **`workspace_snapshot` deleted** (#3841). No consumer outside its own tests here either, so
+  the module, its `pa-core` dependency and its README paragraph are gone.
+- **`refine` no longer freezes the session** (#3406): planning runs in the background and the
+  plan commits between agent runs; `/refine`'s completion is handed off the turn runner.
+- **One `CoreSessionState`** owns build/retire/close (#3994); `agent_engine`'s per-field mutexes
+  are gone, so `set_transport` reads the live agent through `built_handles()`.
+- **`daemon` counts outstanding background bash jobs in terminal quiescence** (#3866),
+  **`413 image limit`** (#4017), **the busy state spans the whole agent run** (#3998),
+  **scripted faux providers get their own api so faux tests run in parallel** (#3846),
+  **macOS build + two daemon bugs** (#3871), **session identity on every model request**
+  (#3970), **emoji shortcode suggestions** (#3825), **line-tables-only dev debuginfo** (#3873),
+  **CI skips `.changes/` in the touched-crate selection** (#4046).
+
+### What the merge had to decide
+
+- **The fork's reason-aware retry ladder stays.** The merge had silently taken upstream's
+  `provider_retry.rs` and dropped `is_faux_provider_queue_exhausted`; restored, and the fork's
+  `reason` argument is threaded through `run_approved_refine` again (which now also takes
+  upstream's `cancel`).
+- **`print_boundary`/`print_runtime` follow upstream's refine shape.** `CompactAutoRefineSurface`
+  gives way to upstream's `RefineSurface` + `consume_compact_auto_refine`; the split
+  `print_runtime/` modules keep `run_prompts_and_emit` under `cfg(test)` because upstream's new
+  refinement test drives it, and the exit code reads `refine_command_failed()`.
+- **`models::resolver` re-exports the private-pair rule.** The fork's
+  `the_private_reference_rule_is_defined_once` pin caught upstream re-introducing the second
+  copy that had already drifted once (`to_lowercase` vs `to_ascii_lowercase`).
+- **`refine`'s three harness-state assertions read the artifact dir.** With the fork's
+  `local_harness_state_dir_for` identity, the bare session dir is the install-wide
+  `sessions/harness` — a directory the write no longer lands in.
+- **`ci_pr_crates` keeps the fork's crate rows** on top of upstream's reworked selector, or a
+  PR touching a FORK-ONLY crate would select nothing (review #20).
+- **`autonomous_last_keep_alive_ms` survives** the `CoreSessionState` rewrite (the valve is
+  what gives `subagent_keep_alive_ms` a consumer).
+
+### Verification
+
+`pa-core --lib` **1778**, `pa-daemon --lib` **1355** (+4 flakes green alone), `pa-graph` **586**,
+`pa-types` **166**. Gate `--fast` GREEN. Fork surface INTACT. Crate table matches
+`cargo metadata`.
+
+Three `agent_engine::tests::model_resolution` tests fail identically on a pristine
+`v0.10.4-beta.12` worktree (upstream debt at this tag). One upstream test
+(`refine_session_command_hands_completion_off_the_turn_runner`) needed the fork's
+`metadata.sources` gate satisfied in its fixture.
+
+---
+
 ## fork.020 — upstream main @ b71a01879 (20 commits past `42a07c13c`)
 
 - Tag: `allspark-v0.10.3-beta.17-fork.020` (cut by the release flow; the version stays

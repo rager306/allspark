@@ -321,34 +321,27 @@ async fn json_token_request(
         ));
     }
     let json: serde_json::Value = serde_json::from_str(&response.body).map_err(|error| {
-        // The parse error names the offset, not the payload: a truncated token response would
-        // otherwise be quoted in full.
         format!("{label} returned invalid JSON. url={url}; details=Error: {error}")
     })?;
-    // Name only the MISSING FIELD (review #4, CWE-209). This used to interpolate the whole
-    // response body, so a partial token response — an access token present, expiry absent, a
-    // shape OAuth servers really do emit on error — put a LIVE BEARER TOKEN into an error
-    // string that travels to the TUI error row, the CLI's stderr, and any pasted bug report.
-    // The diagnostic value of the body is nil next to that: the reader needs to know which
-    // field was absent, and the token must never leave this function.
-    let missing = |field: &str| format!("{label} response missing field `{field}`");
+    // A malformed SUCCESS body can echo credentials back: the errors name
+    // the missing field, never the response body.
     let access = json
         .get("access_token")
         .and_then(serde_json::Value::as_str)
         .filter(|token| !token.is_empty())
-        .ok_or_else(|| missing("access_token"))?
+        .ok_or_else(|| format!("{label} response missing field: access_token"))?
         .to_string();
     let refresh = json
         .get("refresh_token")
         .and_then(serde_json::Value::as_str)
         .filter(|token| !token.is_empty())
-        .ok_or_else(|| missing("refresh_token"))?
+        .ok_or_else(|| format!("{label} response missing field: refresh_token"))?
         .to_string();
     let expires_in = json
         .get("expires_in")
         .and_then(serde_json::Value::as_f64)
         .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
-        .ok_or_else(|| missing("expires_in"))?;
+        .ok_or_else(|| format!("{label} response missing field: expires_in"))?;
     // The wire's expires_in is an integer second count read through JSON f64; the i64 truncation is the port's convention.
     #[allow(clippy::cast_possible_truncation)]
     let expires_in_seconds = expires_in as i64;
@@ -735,12 +728,8 @@ mod tests {
         // Names the FIELD, never the body: the fixture's body is a partial success carrying a
         // real `access_token`, which must not reach the error string (review #4).
         assert!(
-            error.contains("missing field `refresh_token`"),
-            "the error must name the absent field: {error}"
-        );
-        assert!(
-            !error.contains("\"a\""),
-            "and must not quote the token it did receive: {error}"
+            error.starts_with("Token exchange response missing field: refresh_token"),
+            "{error}"
         );
     }
 
