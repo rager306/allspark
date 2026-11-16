@@ -67,6 +67,52 @@ Three `agent_engine::tests::model_resolution` tests fail identically on a pristi
 
 ---
 
+## fork.022 — upstream v0.10.4-beta.14 (53 commits past `b71a01879`)
+
+- Tag: `allspark-v0.10.4-beta.14-fork.022`, version **`0.10.4-beta.14`**
+- Base: live `main` at `b71a01879` -> upstream `v0.10.4-beta.14`.
+
+Live `main` had been rewound past `fork.020`'s two merges (`2134cc2ba`, `331dfad6b` survived
+only in the object store), so this entry carries the entire 53-commit range rather than the
+three tags past `beta.12`. The replay kept those merges' 50 conflict resolutions instead of
+re-deriving them.
+
+### What upstream brought (53 commits, of which 3 are past `beta.12`)
+
+- **Project session-directory settings are ignored** (#4079): a repository can no longer
+  steer session storage through `.prime/agent/settings.json`; the file stays on disk, but
+  `sessionDir` and the executable settings are dropped from an effective read.
+- **README cleaned** (#4080): 57 lines of per-provider setup prose removed, including the
+  automatic-compaction section.
+- Everything in `fork.020`'s range: private-auth owned by the credential-scoped snapshot
+  (#4044), non-blocking `refine` (#3406), one `CoreSessionState` (#3994), ACP
+  `session/list`/`session/load` (#3845), the shared headless test mock (#3850),
+  `workspace_snapshot` deleted (#3841), `RunState` (#3996), the Connection state machine
+  (#4003), macOS build fixes (#3871), line-tables-only dev debuginfo (#3873), session
+  identity on every model request (#3970).
+
+### What the merge had to decide
+
+- **The replay's one conflict**: `_auth_identity`'s expiry check. Live main carries the
+  fork's `refresh=False` guard (an inventory probe must not mint a credential); the replay
+  carries upstream #4019's `_EXPIRY_SKEW_SECONDS`. Both survive, and the guard now sits
+  under upstream's named constant — the 30 s literal and its second copy are gone.
+- **README takes upstream's deletion.** The automatic-compaction section removed by #4080 was
+  upstream's own text, byte-identical to what it deleted, so nothing fork-specific was lost.
+- **All earlier decisions hold**: the fork's reason-aware retry ladder, the keep-alive valve,
+  the split `print_runtime/`, `models::resolver` re-exporting the private-pair rule, and the
+  fork's crate rows in `ci_pr_crates`.
+
+### Verification
+
+`pa-core --lib` **1778**, `pa-daemon --lib` **1359**, `pa-graph` **586**, `pa-types` **167**.
+Gate `--fast` GREEN. Fork surface INTACT. Crate table matches `cargo metadata`.
+
+Three `agent_engine::tests::model_resolution` tests fail identically on a pristine
+`v0.10.4-beta.14` worktree — upstream debt at the tag, not this merge's.
+
+---
+
 ## fork.020 — upstream main @ b71a01879 (20 commits past `42a07c13c`)
 
 - Tag: `allspark-v0.10.3-beta.17-fork.020` (cut by the release flow; the version stays
