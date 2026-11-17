@@ -67,6 +67,41 @@ Three `agent_engine::tests::model_resolution` tests fail identically on a pristi
 
 ---
 
+## fork.023 — upstream v0.10.4-beta.17 (the v0.10.4 release line)
+
+- Tag: `allspark-v0.10.4-beta.17-fork.023`, version **`0.10.4-beta.17`**
+- Base: live `main` at `b71a01879` -> upstream `v0.10.4-beta.17`.
+
+Six commits past `beta.14`: the v0.10.4 release fold, the OSC 7501 program status (#3424), the
+harness-store unification (#4082), a renewed-credential pin (#4083), and a README cleanup.
+`beta.15/16/17` are version-only tags.
+
+### What changed and why it mattered
+
+- **Refinements now write the store the digest reads** (#4082). Daemon, print and RPC
+  refinements used to write the local store to a `<sessions>/harness` file no digest ever
+  opened — 55 refinements sat unread on a live install. Both stores now come from the
+  session's `HarnessDigestContext`, and the per-host `global_harness_dir` parameter is gone
+  end to end.
+- **The fork's parallel path is deleted, not reconciled.** FORK #22 had pinned "the writer and
+  the reader agree on one directory" with its own resolver (`local_harness_state_dir_for`).
+  #4082 reaches the same rule from the digest context, so the resolver and its 102 lines of
+  tests are removed: two addresses for one memory store is the defect both changes exist to
+  prevent.
+- **`AutoRetryEvent::End` and `EngineEvent::AgentEnd` gained `aborted`** — an immutable
+  cancellation outcome that does not depend on reading the error text. Exhaustion and settle
+  arms say `false`; `matches!` patterns still match every `End`.
+- **A memory must still name its evidence** (`0626c5c2a`, fork). Two upstream fixtures wrote
+  a memory create without `metadata.sources`; they now carry it.
+
+### Verification
+
+`pa-core --lib` **1798**, `pa-daemon --lib` **1376** (3 `model_resolution` failures reproduce on
+a pristine `v0.10.4-beta.17` worktree — upstream debt), `pa-graph` **586**, `pa-types` **167**.
+Gate `--fast` GREEN. Fork surface INTACT. Crate table matches `cargo metadata`.
+
+---
+
 ## fork.022 — upstream v0.10.4-beta.14 (53 commits past `b71a01879`)
 
 - Tag: `allspark-v0.10.4-beta.14-fork.022`, version **`0.10.4-beta.14`**
