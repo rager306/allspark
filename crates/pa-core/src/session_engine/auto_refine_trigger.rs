@@ -151,7 +151,6 @@ impl AgentSession {
         &self,
         model: &Model,
         api_key: Option<String>,
-        global_harness_dir: std::path::PathBuf,
         surface: CompactAutoRefineSurface,
     ) -> anyhow::Result<Option<RefinementResult>> {
         let cancel = self.refinement_signal();
@@ -227,7 +226,7 @@ impl AgentSession {
             // The branch fence: a branch move since the retained round's start
             // dropped this review — the refinement never starts.
             if self.compact_auto_refine_branch_version_unchanged(branch_version) {
-                self.run_approved_refine(review, reason, model, api_key, global_harness_dir, cancel)
+                self.run_approved_refine(review, reason, model, api_key, cancel)
                     .await
                     .map(AutoRefineRound::Ran)
             } else {
@@ -240,7 +239,6 @@ impl AgentSession {
                 .review_compact_auto_refine(
                     model,
                     api_key.clone(),
-                    &global_harness_dir,
                     settled_turns,
                     branch_version,
                     reason,
@@ -256,16 +254,9 @@ impl AgentSession {
                         // round resolved against a bumped version never applies.
                         Ok(AutoRefineRound::Declined)
                     } else {
-                        self.run_approved_refine(
-                            &review,
-                            reason,
-                            model,
-                            api_key,
-                            global_harness_dir,
-                            cancel,
-                        )
-                        .await
-                        .map(AutoRefineRound::Ran)
+                        self.run_approved_refine(&review, reason, model, api_key, cancel)
+                            .await
+                            .map(AutoRefineRound::Ran)
                     }
                 }
                 Err(error) => Err(error),
@@ -373,9 +364,28 @@ mod tests {
         if persisted {
             manager.materialize_session_file(Some(tmp.path().join("session")));
         }
-        let mut session = AgentSession::new(Arc::new(agent), manager, Vec::new())
-            .await
-            .unwrap();
+        // The refinement stores the engine always wires: the digest
+        // context's store pair — the local half the session's own
+        // artifact dir implies, `None` for the pathless shape — so the
+        // review and refine paths find their stores exactly as a
+        // production session does.
+        let harness_digest = super::super::harness_digest::HarnessDigestContext {
+            global_dir: tmp.path().join("harness"),
+            local_dir: crate::refinement::get_local_harness_state_dir(
+                manager.get_session_artifact_dir().as_deref(),
+            ),
+            include_ipython: false,
+            include_shell_examples: false,
+            include_refine: false,
+        };
+        let mut session = AgentSession::from_session_arc(
+            Arc::new(agent),
+            Arc::new(tokio::sync::Mutex::new(manager)),
+            Vec::new(),
+            Some(harness_digest),
+        )
+        .await
+        .unwrap();
         session.set_auto_refine(true, AutoRefineGates::default());
         session
     }
@@ -395,7 +405,7 @@ mod tests {
         surface: CompactAutoRefineSurface,
     ) -> anyhow::Result<Option<RefinementResult>> {
         session
-            .consume_compact_auto_refine(model, None, std::path::PathBuf::new(), surface)
+            .consume_compact_auto_refine(model, None, surface)
             .await
     }
 

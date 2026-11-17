@@ -757,7 +757,7 @@ mod tests {
         let ends: Vec<String> = events
             .iter()
             .filter_map(|event| match event {
-                EngineEvent::AgentEnd { messages } => {
+                EngineEvent::AgentEnd { messages, .. } => {
                     Some(serde_json::to_string(messages).expect("messages serialize"))
                 }
                 _ => None,

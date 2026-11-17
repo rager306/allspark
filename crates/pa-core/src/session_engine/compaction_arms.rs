@@ -511,7 +511,6 @@ impl AgentSession {
         source: refine::RefinementSource,
         model: pa_types::ai::Model,
         api_key: Option<String>,
-        global_harness_dir: std::path::PathBuf,
     ) -> tokio::task::JoinHandle<anyhow::Result<refine::CommittedRefinement>> {
         let session = self.session.clone();
         let agent = self.agent.clone();
@@ -521,6 +520,9 @@ impl AgentSession {
         let agent_dir = self.agent_dir.clone();
         let auxiliary = self.auxiliary_model.clone();
         let usage_store = self.usage_store.clone();
+        let Ok(stores) = self.refinement_stores() else {
+            return tokio::spawn(async { Err(refine::refinement_stores_missing_error()) });
+        };
         tokio::spawn(async move {
             let session_id = session.lock().await.get_session_id().to_string();
             let refiner =
@@ -528,24 +530,18 @@ impl AgentSession {
             let refiner =
                 refine::recorded_refiner_call(refiner, "refine", session.clone(), usage_store);
             refine::run_refinement(
-                session,
-                agent,
-                flight,
-                in_flight,
-                cancel,
-                agent_dir,
-                options,
-                source,
-                model,
-                refiner,
-                global_harness_dir,
+                session, agent, flight, in_flight, cancel, agent_dir, options, source, model,
+                refiner, stores,
             )
             .await
         })
     }
 
     /// One awaited refinement run with an injected refiner call: the seam the
-    /// parity tests use to drive the refinement without a provider.
+    /// parity tests use to drive the refinement without a provider. The
+    /// stores derive from the session exactly as the production entry
+    /// points derive them, so the seam cannot drift from the paths the
+    /// kernel and the digest read.
     #[cfg(test)]
     pub(crate) async fn refine_with_refiner(
         &self,
@@ -553,8 +549,8 @@ impl AgentSession {
         source: refine::RefinementSource,
         model: &pa_types::ai::Model,
         refine_call: crate::refinement::executor::RefinerFn,
-        global_harness_dir: std::path::PathBuf,
     ) -> anyhow::Result<crate::refinement::RefinementResult> {
+        let stores = self.refinement_stores()?;
         refine::run_refinement(
             self.session.clone(),
             self.agent.clone(),
@@ -571,7 +567,7 @@ impl AgentSession {
                 self.session.clone(),
                 self.usage_store.clone(),
             ),
-            global_harness_dir,
+            stores,
         )
         .await
         .map(|committed| committed.result)

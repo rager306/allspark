@@ -118,8 +118,6 @@ pub(crate) async fn run_prompts_and_emit(
         &autonomous,
         Some(root_node),
     );
-    let global_harness_dir =
-        pa_core::refinement::get_global_harness_state_dir(&options.config.agent_dir);
     let mut boundary = crate::print_boundary::TurnBoundary::new(json_mode);
     // The autonomous runtime state the session-command executor mutates —
     // `/autonomous` rewrites what the hook, accounting, and exit contract read.
@@ -142,7 +140,6 @@ pub(crate) async fn run_prompts_and_emit(
                 &goal,
                 model,
                 api_key.clone(),
-                global_harness_dir.clone(),
                 &autonomous_state,
                 &mut boundary,
                 &command,
@@ -161,8 +158,7 @@ pub(crate) async fn run_prompts_and_emit(
                     &mut boundary,
                     model,
                     api_key.clone(),
-                    global_harness_dir.clone(),
-                    &continuation,
+                        &continuation,
                 )
                 .await?;
             }
@@ -173,7 +169,6 @@ pub(crate) async fn run_prompts_and_emit(
                 &mut boundary,
                 model,
                 api_key.clone(),
-                global_harness_dir.clone(),
             )
             .await?;
             continue;
@@ -192,14 +187,13 @@ pub(crate) async fn run_prompts_and_emit(
             .map_err(|error| format!("{error:#}"))?;
         engine.session.agent().wait_for_idle().await;
         boundary
-            .run_at_settled_turn(engine, model, api_key.clone(), global_harness_dir.clone())
+            .run_at_settled_turn(engine, model, api_key.clone())
             .await?;
         goal.drive_boundary(
             engine,
             &mut boundary,
             model,
             api_key.clone(),
-            global_harness_dir.clone(),
         )
         .await?;
         // The autonomous arm runs only when the goal does not own the boundary (the goal arm takes
@@ -213,8 +207,7 @@ pub(crate) async fn run_prompts_and_emit(
                     &mut boundary,
                     model,
                     api_key.clone(),
-                    global_harness_dir.clone(),
-                )
+                    )
                 .await
                 .map_err(|error| format!("{error:#}"))?;
         }
@@ -229,7 +222,7 @@ pub(crate) async fn run_prompts_and_emit(
             subscription.unsubscribe().await;
         }
         boundary
-            .drain_compact_auto_refine_at_disposal(engine, model, api_key, global_harness_dir)
+            .drain_compact_auto_refine_at_disposal(engine, model, api_key)
             .await;
         return Ok(1);
     }
@@ -249,7 +242,6 @@ pub(crate) async fn run_prompts_and_emit(
             &mut boundary,
             model,
             api_key.clone(),
-            global_harness_dir.clone(),
         )
         .await?
         {
@@ -270,8 +262,7 @@ pub(crate) async fn run_prompts_and_emit(
                     &mut boundary,
                     model,
                     api_key.clone(),
-                    global_harness_dir.clone(),
-                    &continuation,
+                        &continuation,
                 )
                 .await?;
                 continue;
@@ -288,7 +279,6 @@ pub(crate) async fn run_prompts_and_emit(
                 &mut boundary,
                 model,
                 api_key.clone(),
-                global_harness_dir.clone(),
             )
             .await?
         {
@@ -304,7 +294,6 @@ pub(crate) async fn run_prompts_and_emit(
                 &mut boundary,
                 model,
                 api_key.clone(),
-                global_harness_dir.clone(),
             )
             .await?;
         if !engine.goal_owns_continuation_wakeup().await {
@@ -314,8 +303,7 @@ pub(crate) async fn run_prompts_and_emit(
                     &mut boundary,
                     model,
                     api_key.clone(),
-                    global_harness_dir.clone(),
-                )
+                    )
                 .await?;
         }
         if boundary_ran {
@@ -385,7 +373,7 @@ pub(crate) async fn run_prompts_and_emit(
     // The disposal order: the exit code first, then the teardown drains a
     // compact-trigger auto-refine no later boundary consumed.
     boundary
-        .drain_compact_auto_refine_at_disposal(engine, model, api_key, global_harness_dir)
+        .drain_compact_auto_refine_at_disposal(engine, model, api_key)
         .await;
     // A failed `/refine` command fails the print run (exit 1) even when every prompt
     // succeeded — upstream #3406 moved refinement onto a background task, so the failure

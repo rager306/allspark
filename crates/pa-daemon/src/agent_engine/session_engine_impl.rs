@@ -1261,7 +1261,6 @@ impl SessionEngine for AgentSessionEngine {
         let model = self.resolve_model()?;
         self.ensure_core_session(&model)?;
         let (model, api_key) = self.resolve_request_target(model);
-        let global_harness_dir = self.config.agent_dir.clone();
         // The lock covers the clone only; the model call below must not ride it.
         let core = self
             .session
@@ -1274,7 +1273,6 @@ impl SessionEngine for AgentSessionEngine {
                 pa_core::session_engine::refine::RefinementSource::User,
                 model,
                 api_key,
-                global_harness_dir,
             );
             drop(core);
             pending

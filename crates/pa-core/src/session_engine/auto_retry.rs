@@ -42,6 +42,8 @@ pub enum AutoRetryEvent {
     /// `auto_retry_end`: the loop settled. `final_error` is present exactly
     /// when `success` is false; `restored_model` is the restored primary.
     End {
+        /// Immutable cancellation outcome, independent of the error text.
+        aborted: bool,
         success: bool,
         attempt: u32,
         final_error: Option<String>,
@@ -121,6 +123,7 @@ where
         if message.stop_reason != StopReason::Error {
             if retries_performed > 0 {
                 emit(AutoRetryEvent::End {
+                    aborted: message.stop_reason == StopReason::Aborted,
                     success: true,
                     attempt: retries_performed,
                     final_error: None,
@@ -131,6 +134,14 @@ where
             return Ok(message);
         }
         if signal.is_some_and(AbortSignal::is_aborted) {
+            emit(AutoRetryEvent::End {
+                aborted: true,
+                success: false,
+                attempt: retries_performed,
+                final_error: Some("Retry cancelled".to_string()),
+                restored_model: None,
+            })
+            .await?;
             return Ok(with_stop_reason_aborted(message));
         }
         // Non-retryable failures never enter the retry bookkeeping: a
@@ -155,6 +166,7 @@ where
                     && !is_context_overflow_failure(&message, context_window))
             {
                 emit(AutoRetryEvent::End {
+                    aborted: false,
                     success: false,
                     attempt: retries_performed,
                     final_error: Some(final_error_of(&message)),
@@ -166,6 +178,7 @@ where
         }
         if let Some(message) = end_turn_on_auth_rejection(&message, auth_recovery.as_mut()).await {
             emit(AutoRetryEvent::End {
+                aborted: false,
                 success: false,
                 attempt: retries_performed,
                 final_error: Some(final_error_of(&message)),
@@ -199,6 +212,7 @@ where
                 // exhaustion check: a quota-blocked final retry still parks.
                 if retries_performed > max_attempts {
                     emit(AutoRetryEvent::End {
+                        aborted: false,
                         success: false,
                         attempt: retries_performed - 1,
                         final_error: Some(final_error_of(&message)),
@@ -213,6 +227,7 @@ where
                 // chance; the failover chain re-routes after the settle).
                 if waited_ms.saturating_add(delay_ms) > policy.max_wait_ms {
                     emit(AutoRetryEvent::End {
+                        aborted: false,
                         success: false,
                         attempt: retries_performed - 1,
                         final_error: Some(final_error_of(&message)),
@@ -234,6 +249,7 @@ where
                 // the failover chain re-routes and a reported reset
                 // beyond the cap took the ExceedsCap arm above (park).
                 emit(AutoRetryEvent::End {
+                    aborted: false,
                     success: false,
                     attempt: retries_performed - 1,
                     final_error: Some(final_error_of(&message)),
@@ -270,6 +286,7 @@ where
                     ),
                 };
                 emit(AutoRetryEvent::End {
+                    aborted: false,
                     success: false,
                     attempt: retries_performed - 1,
                     restored_model: None,
@@ -289,6 +306,7 @@ where
         .await?;
         if !wait(std::time::Duration::from_millis(delay_ms)).await {
             emit(AutoRetryEvent::End {
+                aborted: true,
                 success: false,
                 attempt: retries_performed,
                 final_error: Some("Retry cancelled".to_string()),
