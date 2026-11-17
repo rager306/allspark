@@ -492,7 +492,7 @@ async fn daemon_shaped_local_refinement_writes_the_sessions_own_harness_store() 
         )
     };
     session.agent().set_messages(live).await;
-    let plan = r#"{"summary":"bench","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A"}]}"#;
+    let plan = r#"{"summary":"bench","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A","metadata":{"sources":["test fixture"]}}]}"#;
     let planner_prompts = Arc::new(std::sync::Mutex::new(Vec::new()));
     let result = session
         .refine_with_refiner(
@@ -543,7 +543,7 @@ async fn daemon_shaped_local_refinement_writes_the_sessions_own_harness_store() 
     );
     // A global refinement on the same session writes the agent dir's
     // harness store.
-    let global_plan = r#"{"summary":"bench","edits":[{"action":"create","kind":"memory","id":"g1","title":"Global tactic","content":"Prefer the shared seam"}]}"#;
+    let global_plan = r#"{"summary":"bench","edits":[{"action":"create","kind":"memory","id":"g1","title":"Global tactic","content":"Prefer the shared seam","metadata":{"sources":["test fixture"]}}]}"#;
     let global_result = session
         .refine_with_refiner(
             &refine::RefineOptions {

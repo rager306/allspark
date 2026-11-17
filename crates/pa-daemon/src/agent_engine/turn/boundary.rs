@@ -329,7 +329,8 @@ mod tests {
                         "kind": "memory",
                         "id": "l1",
                         "title": "Local tactic",
-                        "content": "Prefer the artifact store"
+                        "content": "Prefer the artifact store",
+                        "metadata": {"sources": ["test fixture"]}
                     }]
                 }).to_string()}),
                 json!({"text": json!({
@@ -340,7 +341,8 @@ mod tests {
                         "kind": "memory",
                         "id": "g1",
                         "title": "Global tactic",
-                        "content": "Prefer the shared seam"
+                        "content": "Prefer the shared seam",
+                        "metadata": {"sources": ["test fixture"]}
                     }]
                 }).to_string()}),
             ],

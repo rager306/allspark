@@ -158,19 +158,14 @@ pub(crate) async fn run_prompts_and_emit(
                     &mut boundary,
                     model,
                     api_key.clone(),
-                        &continuation,
+                    &continuation,
                 )
                 .await?;
             }
             // The same queue drain a settled turn gets: held continuations and armed steers run as
             // this prompt's follow-up turns.
-            goal.drive_boundary(
-                engine,
-                &mut boundary,
-                model,
-                api_key.clone(),
-            )
-            .await?;
+            goal.drive_boundary(engine, &mut boundary, model, api_key.clone())
+                .await?;
             continue;
         }
         boundary
@@ -189,25 +184,15 @@ pub(crate) async fn run_prompts_and_emit(
         boundary
             .run_at_settled_turn(engine, model, api_key.clone())
             .await?;
-        goal.drive_boundary(
-            engine,
-            &mut boundary,
-            model,
-            api_key.clone(),
-        )
-        .await?;
+        goal.drive_boundary(engine, &mut boundary, model, api_key.clone())
+            .await?;
         // The autonomous arm runs only when the goal does not own the boundary (the goal arm takes
         // exclusive priority).
         if !engine.goal_owns_continuation_wakeup().await {
             // The held threshold continuation drains as this invocation's follow-up
             // turn; the stop surfaces only through the exit contract.
             autonomous
-                .drive_boundary(
-                    engine,
-                    &mut boundary,
-                    model,
-                    api_key.clone(),
-                    )
+                .drive_boundary(engine, &mut boundary, model, api_key.clone())
                 .await
                 .map_err(|error| format!("{error:#}"))?;
         }
@@ -257,14 +242,8 @@ pub(crate) async fn run_prompts_and_emit(
                 ..
             } => {
                 goal.publish_goal_update(engine).await;
-                goal.run_queued_turn(
-                    engine,
-                    &mut boundary,
-                    model,
-                    api_key.clone(),
-                        &continuation,
-                )
-                .await?;
+                goal.run_queued_turn(engine, &mut boundary, model, api_key.clone(), &continuation)
+                    .await?;
                 continue;
             }
             // A refused or failed mint can still move the goal (a failed persist fails it).
@@ -274,12 +253,7 @@ pub(crate) async fn run_prompts_and_emit(
             | GoalContinuationDecision::Owed => {}
         }
         if autonomous
-            .deliver_rlm_continuation(
-                engine,
-                &mut boundary,
-                model,
-                api_key.clone(),
-            )
+            .deliver_rlm_continuation(engine, &mut boundary, model, api_key.clone())
             .await?
         {
             continue;
@@ -289,21 +263,11 @@ pub(crate) async fn run_prompts_and_emit(
         // around — the leading quiescence pass then waits for whatever
         // they left behind.
         let mut boundary_ran = goal
-            .drive_boundary(
-                engine,
-                &mut boundary,
-                model,
-                api_key.clone(),
-            )
+            .drive_boundary(engine, &mut boundary, model, api_key.clone())
             .await?;
         if !engine.goal_owns_continuation_wakeup().await {
             boundary_ran |= autonomous
-                .drive_boundary(
-                    engine,
-                    &mut boundary,
-                    model,
-                    api_key.clone(),
-                    )
+                .drive_boundary(engine, &mut boundary, model, api_key.clone())
                 .await?;
         }
         if boundary_ran {
