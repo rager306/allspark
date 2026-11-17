@@ -183,6 +183,7 @@ pub(crate) async fn build_faux_engine_with(
             bash_notice_wake: Some(std::sync::Arc::clone(&bash_wake)),
             on_background_work_settled: Some(bash_wake),
             queued_goal_context_purge: None,
+            goal_completion_guard: None,
             queued_steering_probe: None,
             should_stop_after_turn: None,
             image_model_router: None,

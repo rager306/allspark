@@ -50,7 +50,7 @@ Unstamped builds report `dev`. Two binaries are told apart by this id.
 
 ## 4. Engine integrations (fork tools in every session)
 
-Registered in `create_session`, gated by settings (all default **on**):
+Registered in `create_session`, gated by settings (all default **on**), plus the daemon's explicit-plan tool:
 
 | Tool | Setting | What the model gets |
 |---|---|---|
@@ -58,6 +58,7 @@ Registered in `create_session`, gated by settings (all default **on**):
 | `graph` | `graph.enabled` | index / reindex / search / trace / architecture / coverage / changes over the code graph (`graph.db` next to the agent dir) |
 | `edit` | `editHybrid.enabled` | the pa-edit engine: exact replace by default, hashline/patch/apply_patch/sloppy modes, snapshot-tag + seen-lines + no-op guards, LSP writethrough on save |
 | `jev` | `jev.enabled` (**default off**) | typed decisions: `ask`/`classify`/`route`/`check` actions over the calibrated decision API — `choice` (pick + probabilities), `score` (2-10 scale), `noul` (calibrated yes/no). Routes through the `[jev]` model chain; a prompted model never stands in for a failed native judge |
+| `update_plan` | daemon session (always) | the session's explicit plan: replace the complete `items` list with `id`/`text`/`status` (`pending`, `in_progress`, `completed`, `blocked`). The daemon's continuation consult resumes the next unblocked item after a text-only turn; the same item is reminded at most twice without a plan update |
 
 Extras:
 
@@ -89,8 +90,18 @@ Extras:
   their domains** (lsp = navigation, edit = edits, graph = structure);
   the prompt parity tests stay green because the section only renders when
   the tools are present;
+- `goal.complete()` is refused while the session's `update_plan` still has
+  `pending`/`in_progress` items; the model must finish them or mark them
+  `blocked` first. This keeps the goal loop from closing on a partial plan.
+  The plan is replayed from the branch's latest `update_plan` call when a
+  worker/session rebuilds.
+- A persistent shell (`bash(..., persistent=True)`) is a service: it does
+  not hold a goal, plan, or autonomous continuation open. A finite background
+  job still does. A non-persistent long-running service has no distinct signal
+  yet and still counts as a job.
 - `/session` renders a **Native tools:** row listing the registered fork
-  tools, so the operator sees the blocks are live;
+  tools, so the operator sees the blocks are live; it also shows the explicit
+  plan's settled count and up to three unfinished items;
 - the roster passes through the tool-surface profile before the prompt is
   built (see below).
 

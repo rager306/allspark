@@ -20,6 +20,10 @@ impl Inner {
                     let activity_id = obj.get("id").and_then(Value::as_str).unwrap_or_default();
                     let pid = obj.get("pid").and_then(Value::as_i64).unwrap_or_default();
                     let active = obj.get("active").and_then(Value::as_bool);
+                    let persistent = obj
+                        .get("persistent")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
                     if activity_id.len() == 32
                         && activity_id.chars().all(|c| c.is_ascii_hexdigit())
                         && pid > 0
@@ -32,10 +36,16 @@ impl Inner {
                                 g.background_bash_handles
                                     .entry(activity_id.to_string())
                                     .or_insert(pid as i32);
+                                if persistent {
+                                    g.background_service_handles.insert(activity_id.to_string());
+                                } else {
+                                    g.background_service_handles.remove(activity_id);
+                                }
                             } else if g.background_bash_handles.get(activity_id)
                                 == Some(&(pid as i32))
                             {
                                 g.background_bash_handles.remove(activity_id);
+                                g.background_service_handles.remove(activity_id);
                                 // The last live handle settled: the completion notice for it is
                                 // already admitted, so owed continuations may resume.
                                 settled = g.background_bash_handles.is_empty();
@@ -382,6 +392,37 @@ mod tests {
         );
         manager.inner.cleanup_resources(Signal::Term);
         assert_eq!(fired.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_persistent_shell_is_a_service_not_a_job() {
+        let manager = ReplKernelManager::new(KernelManagerOptions::default());
+        deliver_activity(
+            &manager,
+            json!({
+                "id": "a".repeat(32),
+                "pid": 42,
+                "active": true,
+                "persistent": true
+            }),
+        );
+        assert!(manager.has_background_work(), "a service is still live");
+        assert!(
+            !manager.has_background_jobs(),
+            "a persistent shell must not hold a continuation"
+        );
+
+        deliver_activity(
+            &manager,
+            json!({
+                "id": "a".repeat(32),
+                "pid": 42,
+                "active": false,
+                "persistent": true
+            }),
+        );
+        assert!(!manager.has_background_work());
+        assert!(!manager.has_background_jobs());
     }
 
     #[test]

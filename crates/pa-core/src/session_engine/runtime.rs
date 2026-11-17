@@ -15,8 +15,8 @@ use crate::session::manager::SessionManager;
 
 use super::goal_driver::GoalDriver;
 use super::host_requests::{
-    handle_goal_host_request, handle_rlm_heartbeat_host_request, RlmHeartbeatMutationHook,
-    SessionBinding,
+    handle_goal_host_request_with_guard, handle_rlm_heartbeat_host_request, GoalCompletionGuard,
+    RlmHeartbeatMutationHook, SessionBinding,
 };
 
 /// The host-side purge of queued goal-context turns: the queue lanes live in the daemon
@@ -33,6 +33,9 @@ pub struct SessionRuntime {
     /// Invoked after a kernel `goal.complete` settles the goal; `None`
     /// when the embedding owns no queued goal contexts.
     goal_complete_purge: Option<QueuedGoalContextPurge>,
+    /// Runs before a kernel `goal.complete` changes the goal; `None` accepts
+    /// every completion.
+    goal_completion_guard: Option<GoalCompletionGuard>,
     /// Invoked after a kernel `rlm_heartbeat.*` mutation; `None` when
     /// the embedding owns no scheduler to re-arm.
     cron_mutation_hook: Option<RlmHeartbeatMutationHook>,
@@ -56,6 +59,7 @@ impl SessionRuntime {
             active_session_id,
             binding,
             goal_complete_purge: None,
+            goal_completion_guard: None,
             cron_mutation_hook: None,
         }
     }
@@ -63,6 +67,11 @@ impl SessionRuntime {
     /// Set the post-completion purge seam (the daemon worker's queue purge).
     pub fn set_goal_complete_purge(&mut self, purge: QueuedGoalContextPurge) {
         self.goal_complete_purge = Some(purge);
+    }
+
+    /// Set the pre-completion guard (the embedding's structured work check).
+    pub fn set_goal_completion_guard(&mut self, guard: GoalCompletionGuard) {
+        self.goal_completion_guard = Some(guard);
     }
 
     /// Set the rlm heartbeat mutation hook (queued-fire withdrawal +
@@ -131,11 +140,17 @@ impl SessionRuntime {
         // TS `_completeGoalFromHost` clears the queued goal contexts: a continuation
         // queued behind the completing turn never runs post-completion.
         let goal_complete_purge = self.goal_complete_purge.clone();
+        let goal_completion_guard = self.goal_completion_guard.clone();
         for request_type in ["goal.get", "goal.create", "goal.complete"] {
             let driver = driver.clone();
             let session = goal_session.clone();
             let purge = if request_type == "goal.complete" {
                 goal_complete_purge.clone()
+            } else {
+                None
+            };
+            let guard = if request_type == "goal.complete" {
+                goal_completion_guard.clone()
             } else {
                 None
             };
@@ -145,15 +160,17 @@ impl SessionRuntime {
                     let driver = driver.clone();
                     let session = session.clone();
                     let purge = purge.clone();
+                    let guard = guard.clone();
                     Box::pin(async move {
                         let response = {
                             let mut driver = driver.lock().await;
                             let mut session = session.lock().await;
-                            handle_goal_host_request(
+                            handle_goal_host_request_with_guard(
                                 request_type,
                                 &payload.data,
                                 &mut driver,
                                 &mut session,
+                                guard.as_ref(),
                             )?
                         };
                         if let Some(purge) = purge {
@@ -354,6 +371,57 @@ mod tests {
             .unwrap();
         assert_eq!(response["goal"]["status"], "complete");
         assert!(response["completion_budget_report"].is_string());
+    }
+
+    #[tokio::test]
+    async fn the_goal_completion_guard_blocks_until_it_clears() {
+        let session = Arc::new(Mutex::new(persisted_session()));
+        let mut runtime = SessionRuntime::new(
+            &*session.lock().await,
+            None,
+            "live-1".to_string(),
+            SessionBinding {
+                session_id: "session-1".to_string(),
+                session_file: "/w/s.jsonl".to_string(),
+                cwd: "/w".to_string(),
+            },
+        );
+        let blocked = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let guard_blocked = Arc::clone(&blocked);
+        runtime.set_goal_completion_guard(Arc::new(move || {
+            if guard_blocked.load(std::sync::atomic::Ordering::SeqCst) {
+                Err(anyhow::anyhow!("plan item one is still pending"))
+            } else {
+                Ok(())
+            }
+        }));
+        let mut handlers = HostRequestHandlers::default();
+        runtime.register_host_handlers(session, &mut handlers);
+
+        let create = handlers.get("goal.create").unwrap().clone();
+        create(payload(serde_json::json!({
+            "type": "goal.create",
+            "objective": "finish the guarded goal"
+        })))
+        .await
+        .unwrap();
+        let complete = handlers.get("goal.complete").unwrap().clone();
+        let error = complete(payload(serde_json::json!({ "type": "goal.complete" })))
+            .await
+            .expect_err("the plan guard refuses completion");
+        assert!(error.to_string().contains("plan item one"), "{error}");
+
+        let get = handlers.get("goal.get").unwrap().clone();
+        let response = get(payload(serde_json::json!({ "type": "goal.get" })))
+            .await
+            .unwrap();
+        assert_eq!(response["goal"]["status"], "active");
+
+        blocked.store(false, std::sync::atomic::Ordering::SeqCst);
+        let response = complete(payload(serde_json::json!({ "type": "goal.complete" })))
+            .await
+            .unwrap();
+        assert_eq!(response["goal"]["status"], "complete");
     }
 
     #[tokio::test]

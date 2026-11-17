@@ -244,14 +244,22 @@ impl SessionEngine for AgentSessionEngine {
         self.resolve_model().ok().map(|model| model.context_window)
     }
 
-    /// FORK-ONLY: the fork native tools the built core session registered
-    /// (`create_session`'s gates), in push order. `None` when the session is
-    /// unbuilt; `Some(empty)` when every gate was off.
+    /// FORK-ONLY: the fork native tools the live session carries, in push
+    /// order. The core session contributes its gated tools; the daemon adds
+    /// `update_plan`, which it registers in `build_session`. `None` when the
+    /// session is unbuilt.
     fn native_tool_names(&self) -> Option<Vec<String>> {
         let session = self.session.try_lock().ok()?;
-        session
-            .as_deref()
-            .map(|core| core.native_tool_names().to_vec())
+        let core = session.as_deref()?;
+        let mut names = core.native_tool_names().to_vec();
+        if !names.iter().any(|name| name == "update_plan") {
+            names.push("update_plan".to_string());
+        }
+        Some(names)
+    }
+
+    fn plan_snapshot(&self) -> Option<Value> {
+        serde_json::to_value(self.plan_store.snapshot()).ok()
     }
 
     fn creation_model(&self) -> Option<(String, String)> {

@@ -442,6 +442,17 @@ impl Worker {
         if let Some(names) = self.engine.native_tool_names() {
             stats["nativeTools"] = json!(names);
         }
+        // The session's explicit plan is a live continuation input; expose it
+        // beside the tool roster so `/session` shows the obligation.
+        if let Some(plan) = self.engine.plan_snapshot() {
+            let has_items = plan
+                .get("items")
+                .and_then(Value::as_array)
+                .is_some_and(|items| !items.is_empty());
+            if has_items {
+                stats["plan"] = plan;
+            }
+        }
         response_success(None, "get_session_stats", Some(stats))
     }
 

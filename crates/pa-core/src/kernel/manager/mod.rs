@@ -309,6 +309,9 @@ struct Guarded {
     protocol_repair: Option<Arc<RepairHandle>>,
     kernel_stderr: String,
     background_bash_handles: HashMap<String, i32>,
+    /// Handles that are persistent shells: services to keep, not work to
+    /// wait for. A continuation must not hold on them.
+    background_service_handles: HashSet<String>,
     handled_host_request_ids: (HashSet<String>, VecDeque<String>),
     /// Late agent-message handlers keyed by request id, insertion-ordered with eviction.
     late_handlers: VecDeque<(String, LateSentAgentMessageCallback)>,
@@ -453,6 +456,7 @@ impl ReplKernelManager {
                 protocol_repair: None,
                 kernel_stderr: String::new(),
                 background_bash_handles: HashMap::new(),
+                background_service_handles: HashSet::new(),
                 handled_host_request_ids: (HashSet::new(), VecDeque::new()),
                 late_handlers: VecDeque::new(),
                 pending_done_waiters: HashMap::new(),
@@ -486,6 +490,17 @@ impl ReplKernelManager {
     #[must_use]
     pub fn has_background_work(&self) -> bool {
         !lock(&self.inner.guarded).background_bash_handles.is_empty()
+    }
+
+    /// Whether a finite background job is live: persistent shells are
+    /// services, so they do not hold a continuation.
+    #[must_use]
+    pub fn has_background_jobs(&self) -> bool {
+        let guarded = lock(&self.inner.guarded);
+        guarded
+            .background_bash_handles
+            .keys()
+            .any(|id| !guarded.background_service_handles.contains(id))
     }
 
     /// Process id of the spawned kernel child, when present. Used by tests and

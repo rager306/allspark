@@ -72,6 +72,9 @@ pub struct SessionEngineConfig {
     /// Invoked at the goal pause/clear/start command sites and after a
     /// kernel `goal.complete` settles the goal.
     pub queued_goal_context_purge: Option<super::runtime::QueuedGoalContextPurge>,
+    /// Runs before a kernel `goal.complete` changes the goal. The daemon
+    /// installs the structured-plan gate here; `None` accepts completion.
+    pub goal_completion_guard: Option<super::host_requests::GoalCompletionGuard>,
     /// `true` while a steering-lane action is queued or mid-selection: the
     /// running turn stops at the next boundary and the queued steer delivers.
     pub queued_steering_probe: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
@@ -303,6 +306,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             progress_note_emit: config.progress_note_emit.clone(),
         },
         config.queued_goal_context_purge.clone(),
+        config.goal_completion_guard.clone(),
         config.cron_store.clone(),
     );
 

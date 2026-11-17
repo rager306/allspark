@@ -207,6 +207,12 @@ pub trait SessionEngine: Send + Sync {
         None
     }
 
+    /// The live session plan, serialized for `get_session_stats`; `None`
+    /// when the engine has no session plan.
+    fn plan_snapshot(&self) -> Option<serde_json::Value> {
+        None
+    }
+
     /// The worker's turn loop started: engines hosting RLM children hold
     /// the task prompts of children spawned from here until `on_turn_done`.
     fn on_turn_start(&self) {}

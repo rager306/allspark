@@ -224,8 +224,9 @@ impl AgentSessionEngine {
         children.any_running().await
     }
 
-    /// Whether a live background `bash()` handle holds the boundary: its
-    /// completion notice is the wake-up a held continuation waits for. The
+    /// Whether a live finite background `bash()` job holds the boundary: its
+    /// completion notice is the wake-up a held continuation waits for. A
+    /// persistent shell is a service and deliberately does not hold. The
     /// probe reads the kernel manager without the session mutex (the
     /// consult can run inside a compaction turn, which holds it).
     pub(crate) fn has_live_background_bash_handles(&self) -> bool {

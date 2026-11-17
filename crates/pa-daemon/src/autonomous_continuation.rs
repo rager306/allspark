@@ -111,16 +111,37 @@ impl AgentSessionEngine {
             }
             return Vec::new();
         }
+        let autonomous_enabled = self.autonomous.lock().await.enabled;
         // The threshold arm: the crossing turn mints the continuation BEFORE the loop
         // stops; the settled boundary compacts and hands the held text to the queue lanes.
+        // An ordinary plan uses the same held lane: returning the plan row here would
+        // run the next turn before the compaction.
         if self.autonomous_threshold_due().await {
-            if let Some(text) = self.autonomous_follow_up_text(message).await {
+            let text = if autonomous_enabled {
+                self.autonomous_follow_up_text(message).await
+            } else {
+                self.plan_continuation_text(message)
+            };
+            if let Some(text) = text {
                 *self
                     .held_autonomous_continuation
                     .lock()
                     .expect("held autonomous continuation lock") = Some(text);
             }
             return Vec::new();
+        }
+        // The explicit-plan arm: an unfinished, unblocked item continues the
+        // ordinary (non-goal, non-autonomous) task. Autonomous mode has its own
+        // budget/gate owner, so the plan arm must not bypass its limits. It is
+        // bounded by PlanStore's same-item reminder guard; a tool-call turn is
+        // already continuing on its own.
+        if !autonomous_enabled {
+            if let Some(text) = self.plan_continuation_text(message) {
+                return vec![pa_core::autonomous::autonomous_continuation_loop_row(
+                    &text,
+                    pa_core::autonomous::now_millis(),
+                )];
+            }
         }
         match self.autonomous_follow_up_text(message).await {
             Some(text) => vec![pa_core::autonomous::autonomous_continuation_loop_row(
@@ -153,6 +174,24 @@ impl AgentSessionEngine {
             pa_core::autonomous::AutonomousFollowUp::Inactive
             | pa_core::autonomous::AutonomousFollowUp::Stop { .. } => None,
         }
+    }
+
+    /// The plan continuation text for one settled turn, or `None` when the
+    /// turn already made a tool call, ended in an error/abort, or the plan has
+    /// no actionable item left.
+    fn plan_continuation_text(
+        &self,
+        message: &pa_agent::types::AssistantMessage,
+    ) -> Option<String> {
+        if !message.tool_calls().is_empty()
+            || matches!(
+                message.stop_reason,
+                pa_agent::types::StopReason::Error | pa_agent::types::StopReason::Aborted
+            )
+        {
+            return None;
+        }
+        self.plan_store.continuation_text()
     }
 
     /// Whether an active thread goal owns the continuation wakeup.
@@ -380,6 +419,39 @@ mod tests {
     use crate::agent_engine::tests::{admit, faux_engine_with_settings, FAUX_TEST_LOCK};
     use crate::engine::EngineEvent;
 
+    fn text_turn(text: &str) -> pa_agent::types::AssistantMessage {
+        pa_agent::types::AssistantMessage {
+            content: vec![pa_agent::types::AssistantContent::Text(
+                pa_agent::types::TextContent {
+                    text: text.to_string(),
+                    text_signature: None,
+                },
+            )],
+            api: String::new(),
+            provider: String::new(),
+            model: String::new(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: pa_agent::types::Usage::zero(),
+            stop_reason: pa_agent::types::StopReason::Stop,
+            stop_reason_raw: None,
+            error_message: None,
+            timestamp: 0,
+        }
+    }
+
+    fn plan_item(
+        id: &str,
+        status: pa_core::session_engine::plan::PlanItemStatus,
+    ) -> pa_core::session_engine::plan::PlanItem {
+        pa_core::session_engine::plan::PlanItem {
+            id: id.to_string(),
+            text: format!("finish {id}"),
+            status,
+        }
+    }
+
     /// Inject the engine's background-bash liveness probe (a `true` probe
     /// = a live background `bash()` handle).
     fn set_background_bash_probe(
@@ -557,5 +629,158 @@ mod tests {
         );
         let state = engine.autonomous.blocking_lock();
         assert_eq!(state.continuations_used, 1);
+    }
+
+    #[test]
+    fn an_unfinished_plan_continues_a_text_only_turn_and_stops_after_two_reminders() {
+        let _faux = FAUX_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (engine, _dir) = faux_engine_with_settings(
+            &serde_json::json!({ "responses": [{"text": "ok"}] }),
+            u64::MAX,
+        );
+        engine.plan_store.replace(vec![plan_item(
+            "one",
+            pa_core::session_engine::plan::PlanItemStatus::Pending,
+        )]);
+        let message = text_turn("first stage ready");
+
+        let first = engine
+            .runtime
+            .block_on(async { engine.autonomous_continuation_rows(&message).await });
+        assert_eq!(first.len(), 1);
+        let first = serde_json::to_string(&first[0]).unwrap();
+        assert!(first.contains("[plan: continuation]"), "{first}");
+        assert!(first.contains("finish one"), "{first}");
+
+        let second = engine
+            .runtime
+            .block_on(async { engine.autonomous_continuation_rows(&message).await });
+        assert_eq!(second.len(), 1, "the second reminder is still allowed");
+        let third = engine
+            .runtime
+            .block_on(async { engine.autonomous_continuation_rows(&message).await });
+        assert!(third.is_empty(), "the same item is bounded: {third:?}");
+    }
+
+    #[test]
+    fn a_tool_call_turn_does_not_need_a_plan_reminder() {
+        let _faux = FAUX_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (engine, _dir) = faux_engine_with_settings(
+            &serde_json::json!({ "responses": [{"text": "ok"}] }),
+            u64::MAX,
+        );
+        engine.plan_store.replace(vec![plan_item(
+            "one",
+            pa_core::session_engine::plan::PlanItemStatus::Pending,
+        )]);
+        let mut message = text_turn("");
+        message.content = vec![pa_agent::types::AssistantContent::ToolCall(
+            pa_agent::types::ToolCall {
+                id: "call-1".to_string(),
+                name: "update_plan".to_string(),
+                arguments: serde_json::json!({}),
+                thought_signature: None,
+            },
+        )];
+        message.stop_reason = pa_agent::types::StopReason::ToolUse;
+
+        let rows = engine
+            .runtime
+            .block_on(async { engine.autonomous_continuation_rows(&message).await });
+        assert!(rows.is_empty(), "a tool-call turn continues on its own");
+    }
+
+    #[test]
+    fn blocked_plan_items_do_not_continue() {
+        let _faux = FAUX_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (engine, _dir) = faux_engine_with_settings(
+            &serde_json::json!({ "responses": [{"text": "ok"}] }),
+            u64::MAX,
+        );
+        engine.plan_store.replace(vec![plan_item(
+            "one",
+            pa_core::session_engine::plan::PlanItemStatus::Blocked,
+        )]);
+        let rows = engine.runtime.block_on(async {
+            engine
+                .autonomous_continuation_rows(&text_turn("waiting"))
+                .await
+        });
+        assert!(rows.is_empty(), "blocked work waits for the user");
+    }
+
+    #[test]
+    fn a_planned_task_resumes_and_finishes_inside_one_prompt_wait() {
+        let _faux = FAUX_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (engine, _dir) = faux_engine_with_settings(
+            &serde_json::json!({
+                "responses": [
+                    {
+                        "content": [
+                            { "type": "text", "text": "starting" },
+                            {
+                                "type": "toolCall",
+                                "name": "update_plan",
+                                "id": "plan-1",
+                                "arguments": {
+                                    "items": [
+                                        { "id": "one", "text": "finish one", "status": "pending" }
+                                    ]
+                                }
+                            }
+                        ]
+                    },
+                    { "text": "first stage ready" },
+                    {
+                        "content": [
+                            {
+                                "type": "toolCall",
+                                "name": "update_plan",
+                                "id": "plan-2",
+                                "arguments": {
+                                    "items": [
+                                        { "id": "one", "text": "finish one", "status": "completed" }
+                                    ]
+                                }
+                            }
+                        ]
+                    },
+                    { "text": "done" }
+                ]
+            }),
+            u64::MAX,
+        );
+        let mut events: Vec<EngineEvent> = Vec::new();
+        admit(&engine, "start".to_string(), &mut events);
+
+        assert_eq!(
+            engine.plan_store.snapshot().items[0].status,
+            pa_core::session_engine::plan::PlanItemStatus::Completed
+        );
+        let ends: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                EngineEvent::AgentEnd { messages } => {
+                    Some(serde_json::to_string(messages).expect("messages serialize"))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            ends.iter().any(|end| end.contains("[plan: continuation]")),
+            "the plan reminder was not part of the run: {ends:?}"
+        );
+        assert!(
+            ends.iter().any(|end| end.contains("done")),
+            "the final answer was not part of the run: {ends:?}"
+        );
     }
 }

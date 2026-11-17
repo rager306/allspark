@@ -58,6 +58,7 @@ use turn_types::{
 };
 
 mod model;
+mod plan_tool;
 
 pub(crate) use model::saved_session_context_from_parts;
 
@@ -274,6 +275,9 @@ pub struct AgentSessionEngine {
     /// [`AgentSessionEngine::set_autonomous_driver`].
     pub(crate) autonomous_driver:
         std::sync::RwLock<std::sync::Arc<dyn pa_core::autonomous::AutonomousDriver>>,
+    /// The session-scoped explicit plan shared by the `update_plan` tool and
+    /// the continuation consult.
+    pub(crate) plan_store: pa_core::session_engine::plan::PlanStore,
     /// Whether `autonomous_driver` still holds the product default: a cwd
     /// rebind swaps the default but must keep an injected one.
     autonomous_driver_default: std::sync::atomic::AtomicBool,

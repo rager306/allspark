@@ -1266,3 +1266,55 @@ fn shared_window_goal_seed_matches_persisted_goal_state() {
         );
     }
 }
+
+#[test]
+fn requested_compaction_skip_reconsults_an_active_goal() {
+    let _faux = FAUX_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (engine, _engine_dir) = faux_engine_with_settings(
+        &serde_json::json!({
+            "responses": [
+                {"text": "goal reply"},
+                {"text": "second reply"}
+            ]
+        }),
+        1,
+    );
+    let goal_work = goal_admission_collector(&engine);
+    let mut events: Vec<EngineEvent> = Vec::new();
+    admit(
+        &engine,
+        "/goal ship the compaction skip".to_string(),
+        &mut events,
+    );
+    assert_eq!(
+        goal_work.lock().unwrap().len(),
+        1,
+        "the goal start should mint its first continuation"
+    );
+    {
+        let guard = engine.session.blocking_lock();
+        let core = guard.as_deref().expect("session built");
+        engine
+            .runtime
+            .block_on(async { core.turn_boundary.schedule_compaction(None).await });
+    }
+    admit(&engine, "turn two".to_string(), &mut events);
+    assert_eq!(
+        engine.goal_state_value()["status"],
+        "active",
+        "the requested compaction must not close the goal"
+    );
+    let work = goal_work.lock().unwrap();
+    assert_eq!(
+        work.len(),
+        2,
+        "a skipped requested compaction must re-consult an active goal"
+    );
+    assert!(
+        work.iter()
+            .all(|item| matches!(item, crate::engine::GoalTurnEndWork::Continuation(_))),
+        "the skip minted non-continuation work: {work:?}"
+    );
+}

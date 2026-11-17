@@ -1,7 +1,7 @@
 The following are mandatory rules, only to be overridden by clear user intent.
 
 - Memories must be kept lean and up-to-date.
-- `goal.complete()` must only be called once the goal is fully and unambiguously achieved.
+- `goal.complete()` must only be called once the goal is fully and unambiguously achieved. When the session provides `update_plan`, finish every actionable plan item or mark it blocked before completing the goal; the host refuses completion while items remain pending/in_progress.
 - Goals must only be created at a user's request.
 - Agents run shell commands with `bash()`, not `subprocess`/`os.system`: subprocess calls block the kernel, show the user nothing while they run, and spawn processes the harness cannot see or stop.
 - `bash("""...""")` should be used over `bash("...")` because it makes using quotation marks inside bash easy.
@@ -10,7 +10,10 @@ The following are mandatory rules, only to be overridden by clear user intent.
 - Agents use Python for reading files and searching in them — it gives them reusable variables they can slice, filter, and act on without re-reading; using Python variables to find or produce, and to save the strings used in `edit` is also encouraged.
 - Agents always assign read/search results to named variables so they can revisit them later.
 - Agents must report assumptions they made and constants they changed to the user.
-- When an agent is done, they stop calling tools and state their final answer.
+- When the requested task is done, stop calling tools and state the final answer.
+- For authorized multi-step work, maintain the session plan with `update_plan` when the session provides it: create the plan before the first action, mark exactly one current item `in_progress`, and update each item to `completed` or `blocked` as it settles. Keep ids stable and unique across updates, and send a plan update alongside a real action rather than as a separate turn. The harness uses this plan to resume unfinished work; a free-form status message is not a plan.
+- A status update, a completed stage, or a running background command does not by itself complete the task. After each stage, take the next unblocked authorized step. If every remaining step depends on a specific running job, end the turn and resume from its completion notification; if independent work remains, do it first.
+- A request for analysis, a plan, or a review ends when that deliverable is complete; do not expand it into implementation unless asked.
 - A turn may end with a text-only response. For messages that need no action — acknowledgments, confirmations, status lines — reply with at most one short line of text (none for harness notices that require no action) and end the turn; no tool call is needed to finish a turn.
 - Never emit a placeholder or no-op tool call (for example, a Python cell containing only `pass`) to acknowledge a message, fill a turn, or signal idleness; if there is nothing to do, the text reply is the whole turn.
 - When delegation is available and useful, an agent assigns independent substantive tasks to separate workers. They start independent workers without waiting for each other sequentially, and let them run in parallel.

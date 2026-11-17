@@ -364,7 +364,8 @@ fn native_tools_section(tools: &[&str], options: &BuildSystemPromptOptions<'_>) 
     let has_edit = tools.contains(&"edit");
     let has_jev = tools.contains(&"jev");
     let has_schedule = tools.contains(&"schedule");
-    if !has_lsp && !has_graph && !has_edit && !has_jev && !has_schedule {
+    let has_plan = tools.contains(&"update_plan");
+    if !has_lsp && !has_graph && !has_edit && !has_jev && !has_schedule && !has_plan {
         return String::new();
     }
     // Hybrid of two reference prompts, adapted to this fork's tools: Serena's
@@ -480,6 +481,17 @@ fn native_tools_section(tools: &[&str], options: &BuildSystemPromptOptions<'_>) 
              session is killed. Use it for work the user wants to happen later or repeatedly. \
              NEVER simulate a recurring task with in-session polling (`bash` sleeping, a loop \
              in `python_repl`): it dies with the session and the user never sees the work."
+                .to_string(),
+        );
+    }
+    if has_plan {
+        lines.push(
+            "- `update_plan`: maintain the session's explicit work plan. Pass the complete items \
+             list with unique, stable `id`s, `text`, and `status` (`pending`, `in_progress`, \
+             `completed`, or `blocked`); keep at most one item `in_progress` and update statuses \
+             alongside a real action, not as a separate turn. Use it for authorized multi-step \
+             work so the harness can resume the next unblocked item. Do not use it for plan-only \
+             or one-step requests."
                 .to_string(),
         );
     }
@@ -652,7 +664,7 @@ fn session_role_section(options: &BuildSystemPromptOptions, has_ipython: bool) -
     }
     if has_ipython {
         lines.push(
-            "`await bash(cmd)` waits at most 1 second. If the command is still running, it returns a snapshot: `r.running` is True, `r.exit_code` is None, `r.output` is the output so far, and `r.handle` is the live handle. A completed result has `r.running` False, an integer `r.exit_code`, and `r.handle` is None — a finished result has nothing left to collect. The command keeps running after a snapshot; end the turn and collect the final result on the `[bash-done]` notification. `bash` is a global function of this REPL: `import bash` fails by design."
+            "`await bash(cmd)` waits at most 1 second. If the command is still running, it returns a snapshot: `r.running` is True, `r.exit_code` is None, `r.output` is the output so far, and `r.handle` is the live handle. A completed result has `r.running` False, an integer `r.exit_code`, and `r.handle` is None — a finished result has nothing left to collect. The command keeps running after a snapshot. If independent work remains, do it; otherwise end the turn and collect the final result on the `[bash-done]` notification. `bash` is a global function of this REPL: `import bash` fails by design."
                 .to_string(),
         );
         lines.push(
@@ -1058,6 +1070,18 @@ mod tests {
                 &BuildSystemPromptOptions::default()
             ),
             ""
+        );
+
+        // The plan tool is documented on its own, and its route is not
+        // advertised to a session without it.
+        let plan = native_tools_section(&["update_plan"], &BuildSystemPromptOptions::default());
+        assert!(plan.contains("- `update_plan`:"), "{plan}");
+        assert!(plan.contains("authorized multi-step work"), "{plan}");
+        assert!(plan.contains("unique, stable `id`s"), "{plan}");
+        assert!(plan.contains("at most one item `in_progress`"), "{plan}");
+        assert!(
+            !native_tools_section(&["bash"], &BuildSystemPromptOptions::default())
+                .contains("update_plan")
         );
     }
 

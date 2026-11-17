@@ -82,6 +82,36 @@ fn session_info_matches_ts_shape() {
 }
 
 #[test]
+fn session_info_renders_the_plan() {
+    let stats = json(
+        r#"{
+                "sessionFile": "/tmp/session.jsonl",
+                "sessionId": "abc123def456",
+                "plan": {
+                    "items": [
+                        { "id": "one", "text": "first step", "status": "completed" },
+                        { "id": "two", "text": "second step", "status": "in_progress" },
+                        { "id": "three", "text": "third step", "status": "blocked" }
+                    ]
+                }
+            }"#,
+    );
+    let rows = plain(&session_info_rows(&stats, None));
+    assert!(
+        rows.iter().any(|row| row == "Plan: 2/3 settled"),
+        "{rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row == " - [in-progress] second step"),
+        "{rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.contains("first step")),
+        "settled items stay out of the unfinished list: {rows:?}"
+    );
+}
+
+#[test]
 fn logs_rows_match_ts_shape() {
     let dir = tempfile::tempdir().expect("tempdir");
     let logs = dir.path().join("logs");

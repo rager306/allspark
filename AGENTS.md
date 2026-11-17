@@ -693,16 +693,18 @@ written and no upstream socket is contacted.
 ## Surface contract (must not change)
 
 - Tools exposed to the model: `bash`, `edit`, `python_repl` (internal helpers: `rename`,
-  `stdout`) are the three every session has. The fork also registers five native top-level
-  tools, each behind its own settings gate and each documented in a dynamic prompt section
-  that renders only when the tool is present: `lsp` (`lsp.enabled`, default on), `graph`
-  (`graph.enabled`, default on), `edit` hybrid (`editHybrid.enabled`, `FORK.md` §4), `jev`
-  (`jev.enabled`, default off) and `schedule` (`schedule.enabled`, default off; it also
-  requires a wired cron scheduler, so print/RPC sessions never register it — it creates
-  durable jobs in the same store the `schedule` command reads). They are additive — the
-  three above stay the base surface —
-  and `/session` prints a "Native tools:" row listing the ones actually registered, so the
-  prompt and the roster cannot silently disagree (`readme-fork.md` §4).
+  `stdout`) are the three every session has. The fork also registers six native top-level
+  tools, each documented in a dynamic prompt section that renders only when the tool is
+  present. Five are gated: `lsp` (`lsp.enabled`, default on), `graph` (`graph.enabled`,
+  default on), `edit` hybrid (`editHybrid.enabled`, `FORK.md` §4), `jev` (`jev.enabled`,
+  default off) and `schedule` (`schedule.enabled`, default off; it also requires a wired cron
+  scheduler, so print/RPC sessions never register it — it creates durable jobs in the same
+  store the `schedule` command reads). The sixth, `update_plan`, is registered by daemon
+  sessions without a setting: it stores the explicit multi-step plan and backs the bounded
+  continuation guard. It is absent from print/RPC sessions, like `schedule`'s scheduler
+  condition. They are additive — the three above stay the base surface — and `/session`
+  prints a "Native tools:" row listing the ones actually registered, so the prompt and the
+  roster cannot silently disagree (`readme-fork.md` §4).
 - RLM kernel API in the persistent Python REPL: `rlm.spawn/find_models/collect/list_subagents/delete_subagent/create_session/progress_note/rename`, `rlm.persistent_shells` (the re-attach path for `bash(persistent=True)` handles after a restart), `rlm.harness` CRUD, `rlm_heartbeat.create/list/update/delete`, `agent_message.send`, `agent_observe`, `mcp.*` (the generic MCP client), `compact`, `goal`, `refine`, `attach_image`, skills (markdown + Python) per the skill contract in the base system prompt.
 - System prompt structure: layered — cache-stable static layer files (core harness description with the full API surface, mandatory usage rules, opinionated guidelines, per-model additions from the model-prompts TOML rule map) followed by one dynamic tail (packages, project context, skills inventory, MCP servers, environment, session role); the harness digest stays a separate `[harness-digest]` user message. `prime-agent prompt` dumps the assembled prompt with its layer breakdown.
 - CLI shape: `prime-agent` keeps its existing commands and flags; headless modes (RPC/daemon/session-worker) keep their behavior.

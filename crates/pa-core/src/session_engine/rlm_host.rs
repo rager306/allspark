@@ -1151,6 +1151,7 @@ mod tests {
             },
             None,
             None,
+            None,
         )
     }
 
@@ -1324,6 +1325,7 @@ mod tests {
                     sink.lock().unwrap().push((message.to_string(), timestamp));
                 })),
             },
+            None,
             None,
             None,
         );

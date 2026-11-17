@@ -186,6 +186,7 @@ impl AgentSessionEngine {
             quota_park: std::sync::Arc::new(std::sync::Mutex::new(None)),
             quota_parked_this_run: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             autonomous_driver,
+            plan_store: pa_core::session_engine::plan::PlanStore::default(),
             autonomous_driver_default: std::sync::atomic::AtomicBool::new(true),
             held_autonomous_continuation: std::sync::Mutex::new(None),
             autonomous_admission: std::sync::Mutex::new(None),
@@ -374,8 +375,9 @@ impl AgentSessionEngine {
                 agent: std::sync::Arc::clone(built.session.agent()),
                 session: Arc::downgrade(built),
             });
-        // The background-bash liveness probe: a deadlock-free read over the
-        // build's provisioner.
+        // The background-job probe: a deadlock-free read over the build's
+        // provisioner. Persistent shells are services and deliberately do not
+        // hold a goal/plan/autonomous continuation.
         let provisioner = built.kernel_provisioner_weak();
         *self
             .background_bash_probe
@@ -384,7 +386,7 @@ impl AgentSessionEngine {
             provisioner
                 .upgrade()
                 .and_then(|provisioner| provisioner.manager())
-                .is_some_and(|manager| manager.has_background_work())
+                .is_some_and(|manager| manager.has_background_jobs())
         }));
         // The settled-child kernel release handle: the park arm stops the
         // kernel without taking the session mutex (a dead weak reference
@@ -501,6 +503,12 @@ impl AgentSessionEngine {
                     .map(pa_core::session::window::WindowedSessionStore::entries)
             })
             .or(shared_branch.as_deref());
+        // The transcript is the plan's durable record: a rebuilt worker
+        // replays the latest `update_plan` call before the first prompt, so
+        // the goal-completion guard sees the same obligation.
+        if let Some(entries) = entries {
+            let _ = self.plan_store.restore_from_entries(entries);
+        }
         let mut admitted_user_ids = Vec::new();
         if std::env::var_os("PA_COMPACTION_TRACE").is_some() {
             pa_core::session_engine::compaction_trace::trace(
@@ -1228,8 +1236,12 @@ impl AgentSessionEngine {
             model: Some(agent_model),
             thinking_level: Some(map_thinking_level(self.effective_thinking())),
             stream_fn: Some(stream_fn),
-            // Model tools: `python_repl` only; the engine adds the kernel-backed `python_repl` tool itself.
-            tools: vec![],
+            // Model tools: the session plan plus `python_repl`; the engine adds
+            // the kernel-backed `python_repl` tool itself.
+            tools: vec![
+                Arc::new(super::plan_tool::PlanTool::new(self.plan_store.clone()))
+                    as Arc<dyn pa_agent::types::AgentTool>,
+            ],
             custom_system_prompt: create_resources.system_prompt,
             prompt_guidelines: create_resources.append_system_prompt,
             // FORK-ONLY: pass the configured MCP server names so the system
@@ -1273,6 +1285,12 @@ impl AgentSessionEngine {
             bash_notice_wake: None,
             // The worker-installed purge withdraws queued minted continuations.
             queued_goal_context_purge,
+            // A goal is not complete while the explicit plan still has an
+            // actionable item; the model must finish it or mark it blocked.
+            goal_completion_guard: Some(Arc::new({
+                let plan = self.plan_store.clone();
+                move || plan.snapshot().ensure_completable()
+            })),
             // The steering lane owns the stop hooks (a queued steer cuts the next turn).
             queued_steering_probe: self.config.queued_steering_probe.clone(),
             should_stop_after_turn: Some({

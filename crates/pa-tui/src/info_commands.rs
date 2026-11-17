@@ -127,6 +127,10 @@ pub fn js_to_fixed(value: f64, digits: usize) -> String {
     format!("{integer}.{fraction:0digits$}")
 }
 
+fn plan_item_status(item: &Value) -> &str {
+    item.get("status").and_then(Value::as_str).unwrap_or("")
+}
+
 /// The `/session` info rows over the `get_session_stats` shape. A
 /// missing `sessionFile` renders as `In-memory`; an unset session name
 /// omits the `Name:` row.
@@ -159,6 +163,42 @@ pub fn session_info_rows(stats: &Value, session_name: Option<&str>) -> Vec<Clien
             dim("Native tools:"),
             raw_span(format!(" {}", native_tools.join(", "))),
         ]);
+    }
+    let plan_items = stats
+        .get("plan")
+        .and_then(|plan| plan.get("items"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if !plan_items.is_empty() {
+        let settled = plan_items
+            .iter()
+            .filter(|item| matches!(plan_item_status(item), "completed" | "blocked"))
+            .count();
+        rows.push(vec![
+            dim("Plan:"),
+            raw_span(format!(" {settled}/{} settled", plan_items.len())),
+        ]);
+        let unfinished: Vec<&Value> = plan_items
+            .iter()
+            .filter(|item| matches!(plan_item_status(item), "pending" | "in_progress"))
+            .collect();
+        for item in unfinished.iter().take(3) {
+            rows.push(vec![
+                dim(" - "),
+                raw_span(format!(
+                    "[{}] {}",
+                    plan_item_status(item).replace('_', "-"),
+                    item.get("text").and_then(Value::as_str).unwrap_or("")
+                )),
+            ]);
+        }
+        if unfinished.len() > 3 {
+            rows.push(vec![
+                dim(""),
+                raw_span(format!(" +{} more", unfinished.len() - 3)),
+            ]);
+        }
     }
     rows.push(vec![]);
     rows.push(vec![raw_span("Messages")]);

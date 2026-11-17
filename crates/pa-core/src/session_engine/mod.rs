@@ -33,6 +33,7 @@ pub mod ipython_state;
 pub mod late_sent_messages;
 pub mod messages;
 pub mod model_usage;
+pub mod plan;
 pub mod provider_adapter;
 pub mod provider_failover;
 pub mod provider_park;

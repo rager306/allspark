@@ -208,6 +208,7 @@ async fn an_end_turn_cell_ends_the_turn_without_another_assistant_response() {
         on_background_work_settled: None,
         bash_notice_wake: Some(wake),
         queued_goal_context_purge: None,
+        goal_completion_guard: None,
     })
     .await
     .expect("create_session");

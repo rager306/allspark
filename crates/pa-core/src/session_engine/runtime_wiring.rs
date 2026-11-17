@@ -101,6 +101,7 @@ pub fn wire_session_runtime(
     agent_dir: &std::path::Path,
     rlm: RlmWiring,
     goal_complete_purge: Option<QueuedGoalContextPurge>,
+    goal_completion_guard: Option<super::host_requests::GoalCompletionGuard>,
     cron_store: Option<KernelCronWiring>,
 ) -> SessionKernelWiring {
     // The embedding's durable session identity overrides the in-memory manager's
@@ -145,6 +146,9 @@ pub fn wire_session_runtime(
     let mut runtime = SessionRuntime::new(&session, cron_store, active_session_id, binding);
     if let Some(purge) = goal_complete_purge {
         runtime.set_goal_complete_purge(purge);
+    }
+    if let Some(guard) = goal_completion_guard {
+        runtime.set_goal_completion_guard(guard);
     }
     if let Some(hook) = mutation_hook {
         runtime.set_cron_mutation_hook(hook);
@@ -542,7 +546,8 @@ mod tests {
     fn without_cron_wiring_the_rlm_heartbeat_handlers_stay_unregistered() {
         let dir = tempfile::tempdir().unwrap();
         let session = SessionManager::in_memory(dir.path());
-        let wiring = wire_session_runtime(session, dir.path(), RlmWiring::default(), None, None);
+        let wiring =
+            wire_session_runtime(session, dir.path(), RlmWiring::default(), None, None, None);
         assert!(wiring.handlers.get("rlm_heartbeat.create").is_none());
         assert!(wiring.handlers.get("rlm_heartbeat.list").is_none());
         // The goal surface needs no scheduler and stays registered.
@@ -557,6 +562,7 @@ mod tests {
             session,
             dir.path(),
             RlmWiring::default(),
+            None,
             None,
             Some(cron_wiring(dir.path())),
         );

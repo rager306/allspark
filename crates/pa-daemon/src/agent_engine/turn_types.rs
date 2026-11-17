@@ -49,10 +49,9 @@ pub(crate) enum TurnPrompt {
 pub(crate) enum BoundaryRun {
     /// Nothing pending, or requests consumed without stopping the run.
     Proceed,
-    /// A consumed compaction stops the loop. `compacted` marks the runs
-    /// that actually compacted — the only arm whose post-compaction goal
-    /// consult mints.
-    StoppedForCompaction { compacted: bool },
+    /// A consumed requested compaction stops the loop; the turn-end goal
+    /// consult runs afterward.
+    StoppedForCompaction,
     /// The emitter asked to stop.
     Cancelled,
 }

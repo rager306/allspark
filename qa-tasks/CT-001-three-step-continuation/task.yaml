@@ -1,0 +1,27 @@
+id: CT-001-three-step-continuation
+title: Continue a three-step task instead of stopping after the first stage
+origin: "reported premature stop after partial progress: the agent stops after a first stage although all three steps are authorized"
+difficulty: easy
+lane:
+  - real-model
+network: "off"
+budget:
+  tokens: 40000
+  steps: 8
+  timeout_s: 180
+setup: setup.sh
+prompt: |-
+  Create three files in the current directory: one.txt containing ONE,
+  two.txt containing TWO, and three.txt containing THREE. Do the work in
+  this run; do not ask for confirmation. When all three files exist with
+  the expected contents, reply DONE.
+oracle:
+  type: state
+  spec:
+    - path: one.txt
+      contains: "ONE"
+    - path: two.txt
+      contains: "TWO"
+    - path: three.txt
+      contains: "THREE"
+reference: reference/solution.md

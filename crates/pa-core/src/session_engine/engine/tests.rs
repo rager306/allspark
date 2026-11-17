@@ -141,6 +141,7 @@ async fn engine_runs_tool_loop_and_persists() {
         kernel_ready_gate: None,
         prewarm_ipython_kernel: None,
         queued_goal_context_purge: None,
+        goal_completion_guard: None,
     })
     .await
     .unwrap();
@@ -252,6 +253,7 @@ async fn spawned_child_prompt_stamps_its_depth() {
         kernel_ready_gate: None,
         prewarm_ipython_kernel: None,
         queued_goal_context_purge: None,
+        goal_completion_guard: None,
     })
     .await
     .unwrap();
@@ -326,6 +328,7 @@ async fn oauth_creds_unlock_generic_mcp_gating_in_new_sessions() {
             kernel_ready_gate: None,
             prewarm_ipython_kernel: None,
             queued_goal_context_purge: None,
+            goal_completion_guard: None,
         }
     }
 
@@ -517,6 +520,7 @@ async fn create_session_appends_missing_resume_settings_rows() {
         kernel_ready_gate: None,
         prewarm_ipython_kernel: None,
         queued_goal_context_purge: None,
+        goal_completion_guard: None,
     })
     .await
     .unwrap();
@@ -1168,6 +1172,7 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
         kernel_ready_gate: None,
         prewarm_ipython_kernel: None,
         queued_goal_context_purge: None,
+        goal_completion_guard: None,
     })
     .await
     .unwrap();

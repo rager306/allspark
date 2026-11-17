@@ -15,6 +15,11 @@ use crate::session::manager::SessionManager;
 
 use super::goal_driver::GoalDriver;
 
+/// The embedding's completion refusal: `goal.complete` runs it before the
+/// goal state changes, so an embedding with structured work requirements can
+/// keep the goal active until they are satisfied.
+pub type GoalCompletionGuard = std::sync::Arc<dyn Fn() -> anyhow::Result<()> + Send + Sync>;
+
 /// The `snake_case` heartbeat payload returned to the skill.
 pub fn rlm_heartbeat_host_response(job: &AgentCronJob) -> Value {
     json!({
@@ -69,6 +74,23 @@ pub fn handle_goal_host_request(
     driver: &mut GoalDriver,
     session: &mut SessionManager,
 ) -> anyhow::Result<GoalHostResponse> {
+    handle_goal_host_request_with_guard(request_type, payload, driver, session, None)
+}
+
+/// Handle a `goal.*` host request with the embedding's completion guard.
+///
+/// # Errors
+///
+/// Returns an error when the request payload's fields are invalid, the objective or
+/// budget fails validation, the request type is unknown, the completion guard refuses,
+/// or a goal-state persist fails.
+pub fn handle_goal_host_request_with_guard(
+    request_type: &str,
+    payload: &Value,
+    driver: &mut GoalDriver,
+    session: &mut SessionManager,
+    completion_guard: Option<&GoalCompletionGuard>,
+) -> anyhow::Result<GoalHostResponse> {
     let record = payload.as_object().cloned().unwrap_or_default();
     match request_type {
         // The creation-based timer: the served state reads the goal's age
@@ -94,7 +116,7 @@ pub fn handle_goal_host_request(
             Ok(goal_host_response(&goal, false))
         }
         "goal.complete" => {
-            let goal = complete_goal_from_host(driver, session)?;
+            let goal = complete_goal_from_host(driver, session, completion_guard)?;
             Ok(goal_host_response(&goal, true))
         }
         _ => anyhow::bail!("unknown goal request type \"{request_type}\""),
@@ -127,9 +149,13 @@ fn create_goal_from_host(
 fn complete_goal_from_host(
     driver: &mut GoalDriver,
     session: &mut SessionManager,
+    completion_guard: Option<&GoalCompletionGuard>,
 ) -> anyhow::Result<GoalState> {
     if driver.state().objective.is_none() || driver.state().status == GoalStatus::Idle {
         anyhow::bail!("cannot complete goal because this thread has no goal");
+    }
+    if let Some(guard) = completion_guard {
+        guard()?;
     }
     driver.complete(session)?;
     Ok(driver.state_with_creation_elapsed())

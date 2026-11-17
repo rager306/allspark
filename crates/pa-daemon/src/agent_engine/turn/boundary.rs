@@ -113,7 +113,6 @@ impl AgentSessionEngine {
             consumed
         };
         let mut stopped_for_compaction = false;
-        let mut compacted = false;
         match consumption.compaction {
             Some(Ok(pa_core::session_engine::compact_session::CompactOutcome::Ran(run))) => {
                 // The post-compaction kernel notice goes out before the settled end;
@@ -147,7 +146,6 @@ impl AgentSessionEngine {
                     return BoundaryRun::Cancelled;
                 }
                 stopped_for_compaction = true;
-                compacted = true;
             }
             // A skip consumed the request: the disclosure row goes out
             // with its pair, then the end event carries the TS warning.
@@ -231,7 +229,7 @@ impl AgentSessionEngine {
             None => {}
         }
         if stopped_for_compaction {
-            BoundaryRun::StoppedForCompaction { compacted }
+            BoundaryRun::StoppedForCompaction
         } else {
             BoundaryRun::Proceed
         }

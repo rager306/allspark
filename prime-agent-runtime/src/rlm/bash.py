@@ -852,7 +852,12 @@ class BashHandle:
             return
         from . import repl
 
-        activity = {"id": self._activity_id, "pid": self._pid, "active": True}
+        activity = {
+            "id": self._activity_id,
+            "pid": self._pid,
+            "active": True,
+            "persistent": isinstance(self, PersistentBashHandle),
+        }
         # Publish synchronously before bash() returns and the creating cell can end.
         repl.emit({"application/vnd.prime-agent.bash-activity+json": activity})
         notice = self._notify_background_completion(cell_finished, activity)

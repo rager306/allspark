@@ -357,6 +357,7 @@ mod tests {
                     on_background_work_settled: None,
                     bash_notice_wake: None,
                     queued_goal_context_purge: None,
+                    goal_completion_guard: None,
                     queued_steering_probe: None,
                     should_stop_after_turn: None,
                     image_model_router: None,

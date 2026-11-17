@@ -195,6 +195,7 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
         activity = bridge.emit.call_args_list[0].args[0]
         mime = "application/vnd.prime-agent.bash-activity+json"
         self.assertTrue(activity[mime]["active"])
+        self.assertFalse(activity[mime]["persistent"])
         bridge.emit.assert_called_with({mime: {**activity[mime], "active": False}})
 
     async def test_status_pipe_survives_high_fds_and_strict_posix_shell(self):
@@ -706,13 +707,14 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
     async def test_windows_without_bash_raises_teaching_error(self):
         # Windows must raise without consulting PATH: a which() hit would be
         # the same repo-controlled-PATH hole the host-side resolution closed.
-        with mock.patch.object(bash_module, "_IS_POSIX", False):
-            with mock.patch.object(
-                bash_module.shutil, "which", return_value=r"C:\evil\bash.exe"
-            ) as which:
-                with self.assertRaisesRegex(RuntimeError, "PRIME_AGENT_BASH_SHELL"):
-                    bash_module._shell()
-                which.assert_not_called()
+        with mock.patch.dict(os.environ, {"PRIME_AGENT_BASH_SHELL": ""}):
+            with mock.patch.object(bash_module, "_IS_POSIX", False):
+                with mock.patch.object(
+                    bash_module.shutil, "which", return_value=r"C:\evil\bash.exe"
+                ) as which:
+                    with self.assertRaisesRegex(RuntimeError, "PRIME_AGENT_BASH_SHELL"):
+                        bash_module._shell()
+                    which.assert_not_called()
 
     async def test_pump_delayed_past_old_quiescence_bound_captures_all_output(self):
         # The ordered sentinel must wait through a pump delay beyond the old 500 ms bound.

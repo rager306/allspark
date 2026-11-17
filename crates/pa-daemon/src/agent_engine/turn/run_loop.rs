@@ -5,6 +5,48 @@ use super::{
     OverflowArmRun, TurnAdmission, TurnPrompt, TurnResult,
 };
 
+/// Why the daemon's turn loop returned. Diagnostic only: the loop's
+/// continuation behaviour is unchanged, and the reason is emitted to the
+/// daemon's tracing stream for the run-disposition baseline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunDisposition {
+    Completed,
+    Aborted,
+    ProviderError,
+    QuotaParked,
+    OverflowCompactionCancelled,
+    ThresholdCompactionCancelled,
+    BoundaryCancelled,
+    RequestedCompaction,
+    GoalContinuation,
+    AutonomousContinuation,
+}
+
+impl RunDisposition {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Aborted => "aborted",
+            Self::ProviderError => "provider_error",
+            Self::QuotaParked => "quota_parked",
+            Self::OverflowCompactionCancelled => "overflow_compaction_cancelled",
+            Self::ThresholdCompactionCancelled => "threshold_compaction_cancelled",
+            Self::BoundaryCancelled => "boundary_cancelled",
+            Self::RequestedCompaction => "requested_compaction",
+            Self::GoalContinuation => "goal_continuation",
+            Self::AutonomousContinuation => "autonomous_continuation",
+        }
+    }
+}
+
+fn note_disposition(disposition: RunDisposition) {
+    tracing::info!(
+        target: "pa_daemon::run_disposition",
+        reason = disposition.as_str(),
+        "turn loop ended"
+    );
+}
+
 impl AgentSessionEngine {
     /// Map a wire/settings queue mode ("all"/"one-at-a-time") onto the
     /// agent's `QueueMode`; an unknown value keeps the default.
@@ -46,6 +88,7 @@ impl AgentSessionEngine {
             // newly admitted prompt, then an earlier threshold crossing compacts
             // first.
             if !self.run_pre_turn_overflow_compaction(emit) {
+                note_disposition(RunDisposition::OverflowCompactionCancelled);
                 return;
             }
             if self
@@ -53,6 +96,7 @@ impl AgentSessionEngine {
                 .load(std::sync::atomic::Ordering::SeqCst)
                 && self.run_auto_compaction(emit) == AutoCompactionRun::Cancelled
             {
+                note_disposition(RunDisposition::ThresholdCompactionCancelled);
                 return;
             }
             // The overflow retry re-issues the loop without a new user
@@ -87,6 +131,7 @@ impl AgentSessionEngine {
                 TurnResult::Aborted => {
                     self.reset_overflow_recovery();
                     self.drop_turn_boundary_requests();
+                    note_disposition(RunDisposition::Aborted);
                     emit(EngineEvent::DoneAborted);
                     return;
                 }
@@ -101,7 +146,10 @@ impl AgentSessionEngine {
                             continue;
                         }
                         OverflowArmRun::NotApplicable | OverflowArmRun::Finished => {}
-                        OverflowArmRun::Cancelled => return,
+                        OverflowArmRun::Cancelled => {
+                            note_disposition(RunDisposition::OverflowCompactionCancelled);
+                            return;
+                        }
                     }
                     // A live quota park owns the resume: the parked turn is the park's
                     // pause, not the goal's death, so the goal survives until the wake ends
@@ -115,11 +163,13 @@ impl AgentSessionEngine {
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .clone();
                     if parked_this_run {
+                        note_disposition(RunDisposition::QuotaParked);
                         emit(EngineEvent::Done(Err(error)));
                         return;
                     }
                     if let Some(park) = live_park {
                         if park.resume_at_ms > crate::util::now_ms() {
+                            note_disposition(RunDisposition::QuotaParked);
                             emit(EngineEvent::Done(Err(error)));
                             return;
                         }
@@ -138,26 +188,34 @@ impl AgentSessionEngine {
                     }
                     // An error assistant message fails an active goal.
                     self.finish_goal_for_terminal_error(&error);
+                    note_disposition(RunDisposition::ProviderError);
                     emit(EngineEvent::Done(Err(error)));
                     return;
                 }
             }
             // Turn-boundary consumption: requests scheduled during this turn run now.
             match self.run_turn_boundary(emit) {
-                BoundaryRun::Cancelled => return,
-                BoundaryRun::StoppedForCompaction { compacted } => {
+                BoundaryRun::Cancelled => {
+                    note_disposition(RunDisposition::BoundaryCancelled);
+                    return;
+                }
+                BoundaryRun::StoppedForCompaction => {
                     // The requested compaction armed the trigger; the worker services it
-                    // off the settle. A compaction that ran re-consults the goal; a skip
-                    // stays stopped.
-                    if compacted && !aborted() {
+                    // off the settle. A requested compaction must not silently drop an
+                    // active goal when it ran, skipped, or failed: re-consult the goal
+                    // either way. With no active goal the consult proceeds and the run
+                    // ends as before.
+                    if !aborted() {
                         match self.goal_turn_end_boundary() {
                             GoalBoundary::End => {
+                                note_disposition(RunDisposition::GoalContinuation);
                                 emit(EngineEvent::Done(Ok(())));
                                 return;
                             }
                             GoalBoundary::Proceed => {}
                         }
                     }
+                    note_disposition(RunDisposition::RequestedCompaction);
                     emit(EngineEvent::Done(Ok(())));
                     return;
                 }
@@ -170,6 +228,7 @@ impl AgentSessionEngine {
                 .load(std::sync::atomic::Ordering::SeqCst)
                 && self.run_auto_compaction(emit) == AutoCompactionRun::Cancelled
             {
+                note_disposition(RunDisposition::ThresholdCompactionCancelled);
                 return;
             }
             // The compact-trigger round is NOT consumed here: the review runs
@@ -179,6 +238,7 @@ impl AgentSessionEngine {
             if !aborted() {
                 match self.goal_turn_end_boundary() {
                     GoalBoundary::End => {
+                        note_disposition(RunDisposition::GoalContinuation);
                         emit(EngineEvent::Done(Ok(())));
                         return;
                     }
@@ -202,6 +262,9 @@ impl AgentSessionEngine {
                 if let Some(admit) = admission {
                     admit(text);
                 }
+                note_disposition(RunDisposition::AutonomousContinuation);
+            } else {
+                note_disposition(RunDisposition::Completed);
             }
             emit(EngineEvent::Done(Ok(())));
             return;
