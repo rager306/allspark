@@ -36,6 +36,12 @@ reachability count alone changes four times (`DEADWEIGHT-AUDIT` 20/51 → `ATTAC
 | `STATE.md` | what the `graph` tool implements today, measured | **open** — the baseline every later graph report corrects |
 | `SYNTHESIS.md` | four reports verified: what to accept, catch, refuse | **open** — the shortest honest summary of the graph backlog |
 | `SYNTHESIS-2026-10-21.md` (ru) | what five parallel subagents found about providers, context, graph/lsp | **adopted in part** — 8 findings, 5 shipped as fixes |
+| `research/planning-harness-comparison.md` | what oh-my-pi, Superpowers, GSD Core/Path, Google EGM, and Compound Engineering converge on, and which mechanisms fit Allspark | **open** — P0 plan hardening and a parallel review track proposed |
+| `research/allspark-master-matrix.md` | multi-axis map of Allspark stages, features, patterns, algorithms, evidence and continuation controls | **open** — 49 patterns scored; W0-W6 adoption waves proposed |
+| `ADR-PROJECT-STORE.md` | where plans/evidence/reviews/residuals live; separate vs shared DB and lock risk | **proposed** — per-project `project.db`, derived `graph.db`, session JSONL audit, lazy artifacts |
+| `ADR-METADATA-STORE.md` | metadata-driven schema/relations/projections and cross-database links | **proposed** — YAML `meta/`, JSONL canonical events, SQLite derived read model, explicit link layer |
+| `ADR-LOG-STORE.md` | separate telemetry/tracing DB streams; compression and FTS design | **proposed** — `pa-logdb` sink, hot columns + block codec, one writer per DB; JSONL mirror retained |
+| `GLOBAL-TRAJECTORY.md` | global wave/parallel-lane plan across plan, store, logs, review, delegation, context, UI | **active** — W0-W9; critical path W1-W5; W6/W7 parallel |
 | `ROADMAP-V2-2026-10-21.md` (ru) | what to build next, re-estimated from that synthesis | **planned** — R01..R11 with crate impact |
 | `REVIEW-SQLITE-ROADMAP.md` | is `allspark-sqlite-architecture-roadmap-2026-10-23.md` still true against HEAD | **open** — 56 claims re-checked: 43 correct, 5 obsolete, 5 partial, 3 wrong; the roadmap describes a tree **119 commits back** (`f4fc256bc`, 10-21) and misses the writer lease, the schema-version refusal and the receipt chain. Names R1/R2/R3 as undetected corruption risks; recommends refusing any graph cache before those |
 
