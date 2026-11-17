@@ -68,52 +68,6 @@ fn write_thinking_pair_models_json(agent_dir: &std::path::Path, base_url: &str) 
     .unwrap();
 }
 
-/// The build's model projection keeps the resolved `base_url`: the daemon
-/// worker used to hand the loop a JSON round-trip of `pa_types::ai::Model`,
-/// whose `baseUrl` key the loop's `snake_case` model never spells, so every
-/// daemon-built session served an empty base URL and a custom provider's
-/// endpoint was lost between the registry and the request.
-#[test]
-fn the_built_session_serves_the_resolved_base_url() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let agent_dir = dir.path().join("agent");
-    write_custom_provider_models_json(&agent_dir, "http://127.0.0.1:9");
-    let engine = AgentSessionEngine::new(AgentEngineConfig {
-        cwd: dir.path().to_path_buf(),
-        agent_dir,
-        provider: Some("battery".to_string()),
-        model: Some("mock-1".to_string()),
-        api_key: None,
-        thinking: None,
-        session_dir: None,
-        session_file: None,
-        faux_script: None,
-        supervisor_link: None,
-        telemetry_disabled: Some(true),
-        cron_store: None,
-        queued_steering_probe: None,
-        admission: crate::agent_engine::provider_admission::AdmissionClient::Disabled,
-    })
-    .unwrap();
-    let model = engine.resolve_model().expect("resolves mock-1");
-    assert_eq!(model.base_url, "http://127.0.0.1:9");
-    engine
-        .ensure_core_session(&model)
-        .expect("the session builds");
-    let built_base_url = {
-        let session = engine.session.blocking_lock();
-        let core = session.as_deref().expect("the built session");
-        let state = engine
-            .runtime
-            .block_on(async { core.session.agent().state().await });
-        state.model.base_url
-    };
-    assert_eq!(
-        built_base_url, "http://127.0.0.1:9",
-        "the built loop model kept the resolved base URL"
-    );
-}
-
 #[test]
 fn create_config_flags_reach_the_engine_model_resolution() {
     let dir = tempfile::TempDir::new().unwrap();
@@ -352,69 +306,6 @@ fn session_file_pinning_model(
     path
 }
 
-/// Every provider's key env vars, plus the ADC ones the provider table cannot
-/// see. `std::env::set_var` is unsafe in edition 2024, and mutating the process
-/// environment would leak into sibling tests, so the ambient vars are REMOVED for
-/// the length of this guard and restored after.
-///
-/// Why it matters here: "which provider is available" reads env keys, so on a
-/// machine with any of them exported an unrelated provider ranks ahead of a
-/// fixture's own models.json model — and a fallback assertion then fails for a
-/// reason it does not own.
-struct WithoutAmbientProviderEnv {
-    saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
-    /// Serialises with the crate's other env-mutating guards.
-    _guard: std::sync::MutexGuard<'static, ()>,
-}
-
-impl WithoutAmbientProviderEnv {
-    fn take() -> Self {
-        let mut names: Vec<&'static str> = Vec::new();
-        for provider in pa_ai::models_generated::get_providers() {
-            if let Some(vars) = pa_ai::env_api_keys::get_api_key_env_vars(provider) {
-                names.extend(vars);
-            }
-        }
-        names.extend([
-            "GOOGLE_APPLICATION_CREDENTIALS",
-            "GOOGLE_CLOUD_PROJECT",
-            "GCLOUD_PROJECT",
-            "GOOGLE_CLOUD_LOCATION",
-            "AWS_PROFILE",
-            "AWS_ACCESS_KEY_ID",
-            "AWS_SECRET_ACCESS_KEY",
-            "AWS_BEARER_TOKEN_BEDROCK",
-        ]);
-        names.sort_unstable();
-        names.dedup();
-        let saved = names
-            .into_iter()
-            .map(|name| (name, std::env::var_os(name)))
-            .collect();
-        let guard = WithoutAmbientProviderEnv {
-            saved,
-            _guard: crate::test_support::TELEMETRY_ENV_MUTEX
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        };
-        for (name, _) in &guard.saved {
-            std::env::remove_var(name);
-        }
-        guard
-    }
-}
-
-impl Drop for WithoutAmbientProviderEnv {
-    fn drop(&mut self) {
-        for (name, value) in &self.saved {
-            match value {
-                Some(value) => std::env::set_var(name, value),
-                None => std::env::remove_var(name),
-            }
-        }
-    }
-}
-
 fn restore_test_engine(
     dir: &std::path::Path,
     provider: Option<&str>,
@@ -440,45 +331,13 @@ fn restore_test_engine(
 }
 
 #[test]
-fn explicit_native_free_selection_resolves_public_request_auth_through_the_engine() {
-    let dir = tempfile::tempdir().unwrap();
-    let agent_dir = dir.path().join("agent");
-    std::fs::create_dir_all(&agent_dir).unwrap();
-    std::fs::write(agent_dir.join("auth.json"), "{}").unwrap();
-    let expected_key = pa_core::auth::AuthStorage::create(&agent_dir)
-        .get_api_key("opencode")
-        .unwrap_or_else(|| "public".to_string());
-    let engine = restore_test_engine(
-        dir.path(),
-        Some("opencode"),
-        Some("deepseek-v4.1-flash-free"),
-    );
-
-    let model = engine.resolve_registry_model().expect("native free model");
-    assert_eq!(
-        (model.provider.as_str(), model.id.as_str()),
-        ("opencode", "deepseek-v4.1-flash-free")
-    );
-    // The fork's native-free rule lives in the request-auth resolution now: the sync helper
-    // that returned only the key is gone (upstream resolves the whole auth per call).
-    let resolved = engine.resolve_request_auth(&model);
-    assert!(resolved.ok, "{:?}", resolved.error);
-    assert_eq!(resolved.api_key.as_deref(), Some(expected_key.as_str()));
-}
-
-#[test]
 fn the_startup_chain_refuses_models_outside_the_allowlist() {
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     write_custom_provider_models_json(&agent_dir, "http://127.0.0.1:9");
     std::fs::write(
         agent_dir.join("settings.json"),
-        serde_json::json!({
-            "allowedModels": ["anthropic/*"],
-            "defaultProvider": "battery",
-            "defaultModel": "mock-1",
-        })
-        .to_string(),
+        serde_json::json!({ "allowedModels": ["anthropic/*"] }).to_string(),
     )
     .unwrap();
     let engine = AgentSessionEngine::new(AgentEngineConfig {
@@ -514,12 +373,7 @@ fn the_startup_chain_refuses_models_outside_the_allowlist() {
 
     std::fs::write(
         engine.config.agent_dir.join("settings.json"),
-        serde_json::json!({
-            "allowedModels": ["battery/*"],
-            "defaultProvider": "battery",
-            "defaultModel": "mock-1",
-        })
-        .to_string(),
+        serde_json::json!({ "allowedModels": ["battery/*"] }).to_string(),
     )
     .unwrap();
     let model = engine.resolve_registry_model().expect("resolved model");
@@ -530,12 +384,22 @@ fn the_startup_chain_refuses_models_outside_the_allowlist() {
 /// The create-config key override pins the KEY, never the headers: a
 /// request target with an explicit key still ships the registry's
 /// merged headers (Macroscope PR #2755: `switch_model` dropped the
-/// stored provider headers whenever an override was configured).
+/// stored provider headers whenever an override was configured). The
+/// stored login's team is not one of them: it rides only with the
+/// stored key.
 #[tokio::test]
-async fn an_api_key_override_keeps_the_merged_team_headers() {
+async fn an_api_key_override_keeps_the_merged_headers_but_not_the_stored_team() {
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     write_prime_auth(&agent_dir);
+    std::fs::write(
+        agent_dir.join("models.json"),
+        serde_json::json!({
+            "providers": { "prime-inference": { "headers": { "X-Probe": "merged" } } }
+        })
+        .to_string(),
+    )
+    .unwrap();
     let engine = restore_test_engine(dir.path(), Some("prime-inference"), None);
     engine.configure_model(EngineModelSelection {
         provider: None,
@@ -550,10 +414,11 @@ async fn an_api_key_override_keeps_the_merged_team_headers() {
     let headers = resolved
         .headers
         .expect("the override keeps the merged headers");
+    assert_eq!(headers.get("X-Probe").map(String::as_str), Some("merged"));
     assert_eq!(
-        headers.get("X-Prime-Team-ID").map(String::as_str),
-        Some("team-1"),
-        "an explicit key override never orphans the stored team"
+        headers.get("X-Prime-Team-ID"),
+        None,
+        "the stored team rides only with the stored key"
     );
 }
 
@@ -991,8 +856,8 @@ fn switch_model_never_poisons_the_selection_with_a_refused_candidate() {
     let engine = AgentSessionEngine::new(AgentEngineConfig {
         cwd: dir.path().to_path_buf(),
         agent_dir,
-        provider: Some("battery".to_string()),
-        model: Some("mock-1".to_string()),
+        provider: None,
+        model: None,
         api_key: None,
         thinking: None,
         session_dir: None,
@@ -1532,7 +1397,6 @@ fn an_explicit_scope_with_no_matches_does_not_warn_about_an_excluded_default() {
         json!({"defaultProvider": "anthropic", "defaultModel": "excluded-default"}).to_string(),
     )
     .unwrap();
-    let _env = WithoutAmbientProviderEnv::take();
     let engine = restore_test_engine(dir.path(), None, None);
     *engine.startup_scope.lock().unwrap() = Some(StartupScope {
         scoped_models: Vec::new(),

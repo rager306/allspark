@@ -2,6 +2,7 @@
 //! output mode asks for them, and decide the exit code from the headless
 //! terminal result plus the goal and autonomous continuation contracts.
 
+use pa_core::session_engine::goal_continuation::{ContinuationTrigger, GoalContinuationDecision};
 use pa_core::session_engine::provider_adapter::json_round_trip;
 use pa_core::session_engine::session_events::agent_event_json;
 use pa_types::ai::Model;
@@ -65,7 +66,7 @@ pub(super) async fn session_header_json(
 
 /// Admit prompts, stream json events when requested, and decide the exit code
 /// from the headless terminal result plus the autonomous gate contract.
-pub(super) async fn run_prompts_and_emit(
+pub(crate) async fn run_prompts_and_emit(
     engine: &std::sync::Arc<pa_core::session_engine::engine::SessionEngine>,
     model: &Model,
     api_key: Option<String>,
@@ -143,6 +144,7 @@ pub(super) async fn run_prompts_and_emit(
                 api_key.clone(),
                 global_harness_dir.clone(),
                 &autonomous_state,
+                &mut boundary,
                 &command,
                 &images,
             )
@@ -253,18 +255,32 @@ pub(super) async fn run_prompts_and_emit(
         {
             continue;
         }
-        if let Some(continuation) = engine.take_owed_goal_continuation().await {
-            goal.publish_goal_update(engine).await;
-            goal.run_queued_turn(
-                engine,
-                &mut boundary,
-                model,
-                api_key.clone(),
-                global_harness_dir.clone(),
-                &continuation,
-            )
-            .await?;
-            continue;
+        // Quiescence settled every descendant: only an owed continuation delivers.
+        match engine
+            .consult_goal_continuation(ContinuationTrigger::OwedRetry, false)
+            .await
+        {
+            GoalContinuationDecision::Minted {
+                message: continuation,
+                ..
+            } => {
+                goal.publish_goal_update(engine).await;
+                goal.run_queued_turn(
+                    engine,
+                    &mut boundary,
+                    model,
+                    api_key.clone(),
+                    global_harness_dir.clone(),
+                    &continuation,
+                )
+                .await?;
+                continue;
+            }
+            // A refused or failed mint can still move the goal (a failed persist fails it).
+            GoalContinuationDecision::NotMinted { .. } => goal.publish_goal_update(engine).await,
+            GoalContinuationDecision::NotOwned
+            | GoalContinuationDecision::NothingOwed
+            | GoalContinuationDecision::Owed => {}
         }
         if autonomous
             .deliver_rlm_continuation(
@@ -371,5 +387,12 @@ pub(super) async fn run_prompts_and_emit(
     boundary
         .drain_compact_auto_refine_at_disposal(engine, model, api_key, global_harness_dir)
         .await;
-    Ok(exit_code)
+    // A failed `/refine` command fails the print run (exit 1) even when every prompt
+    // succeeded — upstream #3406 moved refinement onto a background task, so the failure
+    // leaves through the boundary flag rather than the prompt's own result.
+    Ok(if boundary.refine_command_failed() {
+        1
+    } else {
+        exit_code
+    })
 }

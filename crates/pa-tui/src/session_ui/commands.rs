@@ -515,10 +515,8 @@ impl SessionUi {
             // update replaces only the on-disk binary, so the new build
             // takes effect on restart and nothing here blocks or tears
             // down; there is no busy guard to keep). The confirm carries
-            // the preserve invariant: the update uninstalls the
-            // TypeScript version and installs the latest Rust build;
-            // sessions and configuration (~/.prime/agent) are never
-            // touched.
+            // the preserve invariant: sessions and configuration
+            // (~/.prime/agent) are never touched.
             "update" => {
                 if !resolved.args.trim().is_empty() {
                     view.editor.set_text(text);

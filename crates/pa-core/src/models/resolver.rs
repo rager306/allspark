@@ -3,6 +3,8 @@
 use pa_agent::types::ThinkingLevel;
 use pa_types::ai::Model;
 
+use super::prime_inference::{is_private_prime_inference_model, private_prime_inference_models};
+
 pub const PRIME_INFERENCE_DEFAULT_MODEL_ID: &str = "z-ai/glm-5.3";
 
 pub fn default_model_per_provider(provider: &str) -> Option<&'static str> {
@@ -26,9 +28,6 @@ pub fn default_model_per_provider(provider: &str) -> Option<&'static str> {
         "huggingface" => "moonshotai/Kimi-K2.6",
         "fireworks" => "accounts/fireworks/models/kimi-k2p6",
         "kimi-coding" => "kimi-for-coding",
-        "muse" => "muse-spark-1.3",
-        "codebuddy" => "glm-5.2",
-        "genspark" => "claude-opus-5",
         "cloudflare-workers-ai" => "@cf/moonshotai/kimi-k2.6",
         "cloudflare-ai-gateway" => "claude-sonnet-4.5",
         "xiaomi" | "xiaomi-token-plan-cn" | "xiaomi-token-plan-ams" | "xiaomi-token-plan-sgp" => {
@@ -139,12 +138,26 @@ pub fn build_fallback_model(
     if provider_models.is_empty() {
         return None;
     }
-    // Private ids must inherit a private-route template.
-    let template = if is_private_prime_inference_reference(provider, model_id) {
+    // Private ids must inherit a private-route template: a listed private
+    // route, else the bundled one (the catalog lists private routes only
+    // for an entitled account).
+    let mut model = if is_private_prime_inference_model(&Model {
+        id: model_id.to_string(),
+        provider: provider.to_string(),
+        ..wire_skeleton()
+    }) {
         provider_models
             .iter()
             .copied()
-            .find(|model| is_private_prime_inference_reference(&model.provider, &model.id))?
+            .find(|model| {
+                is_private_prime_inference_model(&Model {
+                    id: model.id.clone(),
+                    provider: model.provider.clone(),
+                    ..wire_skeleton()
+                })
+            })
+            .cloned()
+            .or_else(|| private_prime_inference_models().into_iter().next())?
     } else {
         let default_id = default_model_per_provider(provider)?;
         provider_models
@@ -152,11 +165,22 @@ pub fn build_fallback_model(
             .copied()
             .find(|model| model.id == default_id)
             .unwrap_or(provider_models[0])
+            .clone()
     };
-    let mut model = template.clone();
     model.id = model_id.to_string();
     model.name = model_id.to_string();
     Some(model)
+}
+
+fn wire_skeleton() -> Model {
+    serde_json::from_value(serde_json::json!({
+        "id": "", "name": "", "api": "openai-completions", "provider": "",
+        "baseUrl": "", "reasoning": false, "input": [], "cost": {
+            "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0
+        },
+        "contextWindow": 0, "maxTokens": 0
+    }))
+    .expect("skeleton model serializes")
 }
 
 /// Preferred default: prime-inference glm-5.3 first, then per-provider defaults.
@@ -370,41 +394,6 @@ pub struct ResolveCliModelResult {
 
 /// Resolve one model from `--provider`/`--model` flags against the full
 /// catalog (not just auth-configured models).
-/// The canonical provider name for a caller's spelling.
-///
-/// EXACT identity wins over a case fold, and an ambiguous fold is refused
-/// (review 6, #3726): with a custom `Xiaomi` provider beside a built-in
-/// `xiaomi`, `find(|m| m.provider.to_lowercase() == wanted.to_lowercase())`
-/// returned whichever row came first in catalog order — a different baseUrl and
-/// a different auth source, chosen by accident. Folding is a fallback for the
-/// unambiguous spelling, never a way to resolve two identities.
-fn resolve_provider_identity<'a>(
-    wanted: &str,
-    all_models: &'a [Model],
-) -> Result<Option<&'a str>, ()> {
-    let trimmed = wanted.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    if let Some(exact) = all_models
-        .iter()
-        .find(|model| model.provider == trimmed)
-        .map(|model| model.provider.as_str())
-    {
-        return Ok(Some(exact));
-    }
-    let mut folded = all_models
-        .iter()
-        .filter(|model| model.provider.eq_ignore_ascii_case(trimmed))
-        .map(|model| model.provider.as_str());
-    let first = folded.next();
-    // More than one spelling that folds to the same name is ambiguous.
-    if folded.any(|provider| Some(provider) != first) {
-        return Err(());
-    }
-    Ok(first)
-}
-
 #[must_use]
 pub fn resolve_cli_model(
     cli_provider: Option<&str>,
@@ -421,18 +410,17 @@ pub fn resolve_cli_model(
     }
     let mut provider = None;
     if let Some(cli_provider) = cli_provider {
-        match resolve_provider_identity(cli_provider, all_models) {
-            Ok(Some(canonical)) => provider = Some(canonical.to_string()),
-            Ok(None) => {
-                result.error = Some(format!("Unknown provider \"{cli_provider}\". Use \"{}\" model list\" to see available providers/models.", pa_types::brand::INVOCATION));
-                return result;
-            }
-            Err(()) => {
-                result.error = Some(format!(
-                    "Ambiguous provider \"{cli_provider}\": several providers differ only by case. Use the exact name."
-                ));
-                return result;
-            }
+        let canonical = all_models
+            .iter()
+            .find(|model| model.provider.to_lowercase() == cli_provider.to_lowercase())
+            .map(|model| model.provider.clone());
+        if let Some(p) = canonical {
+            provider = Some(p);
+        } else {
+            result.error = Some(format!(
+                "Unknown provider \"{cli_provider}\". Use \"prime-agent model list\" to see available providers/models."
+            ));
+            return result;
         }
     }
 
@@ -441,8 +429,12 @@ pub fn resolve_cli_model(
     if provider.is_none() {
         if let Some(slash) = cli_model.find('/') {
             let maybe_provider = &cli_model[..slash];
-            if let Ok(Some(canonical)) = resolve_provider_identity(maybe_provider, all_models) {
-                provider = Some(canonical.to_string());
+            let canonical = all_models
+                .iter()
+                .find(|model| model.provider.to_lowercase() == maybe_provider.to_lowercase())
+                .map(|model| model.provider.clone());
+            if let Some(p) = canonical {
+                provider = Some(p);
                 pattern = cli_model[slash + 1..].to_string();
                 inferred_provider = true;
             }
@@ -541,8 +533,7 @@ pub fn resolve_cli_model(
         None => cli_model.to_string(),
     };
     result.error = Some(format!(
-        "Model \"{display}\" not found. Use \"{} model list\" to see available models.",
-        pa_types::brand::INVOCATION
+        "Model \"{display}\" not found. Use \"prime-agent model list\" to see available models."
     ));
     result
 }
@@ -660,14 +651,17 @@ pub fn find_initial_model(options: &InitialModelOptions<'_>) -> Option<Model> {
         .or_else(|| options.available_models.first().cloned())
 }
 
-/// The private-model predicate for callers holding only `(provider, id)` — the rule itself
-/// lives in [`super::prime_inference::is_private_prime_inference_reference`], so the string
-/// path and the `Model` path cannot answer differently (review #21).
+/// The private-model predicate without a full `Model` value (TS
+/// `isPrivatePrimeInferenceModel({ provider, id })`).
+///
+/// FORK (review #21): ONE implementation. The pair rule lives in
+/// `prime_inference.rs`; this is a re-export, not a second copy — two copies drifted
+/// once already (`to_lowercase` vs `to_ascii_lowercase`), so a non-ASCII id could get
+/// different answers from the catalog and from the resolver.
 pub(super) use super::prime_inference::is_private_prime_inference_reference;
 
 #[cfg(test)]
 mod tests {
-    use super::super::prime_inference::private_prime_inference_models;
     use super::*;
 
     fn model(provider: &str, id: &str, name: &str) -> Model {
@@ -688,52 +682,6 @@ mod tests {
             model("prime-inference", "z-ai/glm-5.3", "GLM"),
             model("openrouter", "openai/gpt-4o", "GPT-4o"),
         ]
-    }
-
-    /// Review 6 (#3726): an EXACT provider identity outranks a case-folded one.
-    ///
-    /// `resolve_cli_model` used `find(|model| provider.to_lowercase() ==
-    /// cli_provider.to_lowercase())`, so the winner was whichever row happened to
-    /// come first in catalog order. With a custom `Xiaomi` next to a built-in
-    /// `xiaomi`, `--provider xiaomi` could route to the CUSTOM provider (or the
-    /// reverse) — a different baseUrl and a different auth source, chosen by an
-    /// accident of ordering. Exact identity now wins; a case fold is only a
-    /// fallback, and it must be unambiguous.
-    #[test]
-    fn an_exact_provider_identity_outranks_a_case_folded_one() {
-        let mut all = catalog();
-        // The custom entry is FIRST, so a naive `find` picks it for "xiaomi".
-        all.insert(0, model("Xiaomi", "mi-1", "Custom Xiaomi"));
-        all.push(model("xiaomi", "mi-2", "Built-in Xiaomi"));
-
-        let exact_lower = resolve_cli_model(Some("xiaomi"), "mi-2", &all);
-        assert_eq!(
-            exact_lower.model.map(|m| m.provider),
-            Some("xiaomi".to_string()),
-            "--provider xiaomi must select the row whose identity is exactly xiaomi"
-        );
-
-        let exact_upper = resolve_cli_model(Some("Xiaomi"), "mi-1", &all);
-        assert_eq!(
-            exact_upper.model.map(|m| m.provider),
-            Some("Xiaomi".to_string()),
-            "--provider Xiaomi must select the exact custom row, not the built-in"
-        );
-    }
-
-    /// A case fold with TWO candidates is ambiguous and must not pick one by
-    /// ordering.
-    #[test]
-    fn an_ambiguous_case_fold_reports_an_error() {
-        let mut all = catalog();
-        all.push(model("xiaomi", "mi-1", "Built-in"));
-        all.push(model("Xiaomi", "mi-2", "Custom"));
-        let result = resolve_cli_model(Some("XIAOMI"), "mi-1", &all);
-        assert!(
-            result.model.is_none() && result.error.is_some(),
-            "two case-variants and no exact match is ambiguous: {:?}",
-            result.error
-        );
     }
 
     #[test]
@@ -856,7 +804,10 @@ mod tests {
             vec!["zai", "prime-inference"]
         );
         let current = model("anthropic", "claude-sonnet-4-5", "Sonnet");
-        assert_eq!(failover_candidates(&current, &catalog).len(), 0);
+        assert!(
+            failover_candidates(&current, &catalog).is_empty(),
+            "a private model has no failover candidates"
+        );
         // The current provider itself is never a candidate, even when the
         // catalog carries a second entry for it.
         let current = model("zai", "z-ai/glm-5.3", "GLM");
@@ -929,9 +880,10 @@ mod tests {
     }
 
     #[test]
-    fn fallback_model_prefers_private_template_for_private_ids() {
-        let mut catalog = catalog();
-        catalog.extend(private_prime_inference_models());
+    fn fallback_model_uses_the_private_template_for_private_ids() {
+        // No private route listed (an unentitled account): the bundled
+        // private template still serves.
+        let catalog = catalog();
         let fallback = build_fallback_model("prime-inference", "internal/glm-5.9-turbo", &catalog);
         let fallback = fallback.expect("private template exists");
         assert_eq!(fallback.id, "internal/glm-5.9-turbo");
