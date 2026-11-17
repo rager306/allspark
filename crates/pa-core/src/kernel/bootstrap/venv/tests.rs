@@ -1017,6 +1017,12 @@ async fn skill_sync_batches_missing_installs_into_one_uv_call() {
     std::fs::create_dir_all(&venv).unwrap();
     std::fs::create_dir_all(dir.path().join("skills/edit")).unwrap();
     std::fs::create_dir_all(dir.path().join("skills/goal")).unwrap();
+    let python = dir.path().join("python");
+    std::fs::write(&python, "#!/bin/sh\nexit 0\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     write_bootstrap_version(
         &venv,
         "sha256:rt",
@@ -1045,7 +1051,7 @@ async fn skill_sync_batches_missing_installs_into_one_uv_call() {
             project: None,
         },
         &venv,
-        dir.path().join("python").as_path(),
+        python.as_path(),
         dir.path().join("prime-agent-runtime").as_path(),
         "sha256:rt",
         &skills,
@@ -1285,5 +1291,92 @@ async fn unwritable_stale_venv_names_the_venv_and_both_env_overrides() {
     assert!(
         !message.contains("candidate-"),
         "no raw lock-candidate path: {message}"
+    );
+}
+
+/// The live failure this guards: a venv whose marker or required package
+/// directories disappeared under an unchanged `rlm`/`dill` tree. The memo
+/// key must change, otherwise a stale successful probe hides the damage and
+/// the next kernel starts with `ModuleNotFoundError`.
+#[cfg(unix)]
+#[test]
+fn probe_identity_witnesses_venv_marker_and_required_packages() {
+    let dir = tempfile::tempdir().unwrap();
+    let venv = dir.path().join("venv");
+    let site = venv.join("lib/python3.11/site-packages");
+    for package in ["rlm", "dill", "mcp", "requests"] {
+        let package_dir = site.join(package);
+        std::fs::create_dir_all(&package_dir).unwrap();
+        std::fs::write(package_dir.join("__init__.py"), "value = 1\n").unwrap();
+    }
+    std::fs::write(venv.join("pyvenv.cfg"), "home = /python\n").unwrap();
+
+    let python = dir.path().join("python");
+    let identity = installed_runtime_identity(&python, &venv);
+
+    std::fs::remove_file(venv.join("pyvenv.cfg")).unwrap();
+    let without_marker = installed_runtime_identity(&python, &venv);
+    assert_ne!(
+        identity, without_marker,
+        "a missing pyvenv.cfg must invalidate the memo key"
+    );
+    std::fs::write(venv.join("pyvenv.cfg"), "home = /python\n").unwrap();
+
+    std::fs::remove_dir_all(site.join("mcp")).unwrap();
+    let without_mcp = installed_runtime_identity(&python, &venv);
+    assert_ne!(
+        identity, without_mcp,
+        "a missing mcp package must invalidate the memo key"
+    );
+
+    std::fs::remove_dir_all(site.join("requests")).unwrap();
+    let without_requests = installed_runtime_identity(&python, &venv);
+    assert_ne!(
+        identity, without_requests,
+        "a missing default package must invalidate the memo key"
+    );
+}
+
+/// A recorded Python skill whose editable install vanished must not leave the
+/// venv "ready": the next kernel would fail to import the skill.
+#[cfg(unix)]
+#[test]
+fn kernel_ready_rejects_a_recorded_skill_that_no_longer_imports() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _memo_state = MEMO_STATE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempfile::tempdir().unwrap();
+    let venv = dir.path().join("venv");
+    std::fs::create_dir_all(&venv).unwrap();
+    let python = dir.path().join("python");
+    std::fs::write(
+        &python,
+        "#!/bin/sh\ncase \"$*\" in *import\\ goal*) exit 1;; *) exit 0;; esac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let skill = BootstrapPythonSkill {
+        import_name: "goal".into(),
+        package_path: dir.path().join("skills/goal").to_string_lossy().to_string(),
+        pyproject_path: dir
+            .path()
+            .join("skills/goal/pyproject.toml")
+            .to_string_lossy()
+            .to_string(),
+        pyproject_hash: "sha256:goal".into(),
+    };
+    write_bootstrap_version(&venv, "sha256:runtime", std::slice::from_ref(&skill)).unwrap();
+    invalidate_runtime_probe_cache();
+
+    assert!(
+        !kernel_ready(
+            &python.to_string_lossy(),
+            &venv,
+            "sha256:runtime",
+            std::slice::from_ref(&skill)
+        ),
+        "a vanished recorded skill must make the venv not-ready"
     );
 }

@@ -10,6 +10,31 @@ fn python_imports(python: &str, module_name: &str) -> bool {
     run_quiet(python, &["-c", &format!("import {module_name}")])
 }
 
+/// The recorded skills whose import no longer works. One combined probe on
+/// the healthy path; individual probes only when the combined import fails,
+/// so a missing skill is named without paying one interpreter start per skill.
+pub(crate) fn missing_python_skill_imports(
+    python: &str,
+    skills: &[super::BootstrapPythonSkill],
+) -> Vec<String> {
+    if skills.is_empty() {
+        return Vec::new();
+    }
+    let imports = skills
+        .iter()
+        .map(|skill| skill.import_name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if run_quiet(python, &["-c", &format!("import {imports}")]) {
+        return Vec::new();
+    }
+    skills
+        .iter()
+        .filter(|skill| !python_imports(python, &skill.import_name))
+        .map(|skill| skill.import_name.clone())
+        .collect()
+}
+
 fn run_quiet(command: &str, args: &[&str]) -> bool {
     let mut child = std::process::Command::new(command);
     child
@@ -74,7 +99,7 @@ mod safe_path_tests {
 /// The runtime-ready assertion from the TS product: a current
 /// prime-agent-runtime with the callable RLM surface, harness CRUD, bash
 /// handles, and protocol version 3.
-const RUNTIME_READY_CHECK: &str = "import inspect; import rlm; from rlm import McpIntegration; import rlm.mcp as mcp; from rlm.harness import HarnessEntry; _harness_methods = ['create_memory', 'update_memory', 'delete_memory', 'create_skill', 'update_skill', 'delete_skill', 'create_subagent', 'update_subagent', 'delete_subagent', 'create_prompt_note', 'update_prompt_note', 'delete_prompt_note', 'record_refinement']; _mcp_discovery_methods = ['list_plugins', 'search_plugins', 'list_connections', 'search_tools', 'describe_tool']; assert callable(mcp.list_tools); assert callable(mcp.call_tool); assert all(callable(getattr(mcp, _m, None)) for _m in _mcp_discovery_methods), \"rlm.mcp is missing MCP discovery methods (list_plugins, search_plugins, list_connections, search_tools, describe_tool); the kernel venv needs a current prime-agent-runtime\"; assert callable(rlm.spawn); assert hasattr(rlm, 'rlm'); assert callable(rlm.rlm.spawn); assert inspect.signature(rlm.spawn).parameters['name'].default is inspect.Parameter.empty; assert not hasattr(rlm, 'run'); assert not hasattr(rlm.rlm, 'run'); assert callable(rlm.end_turn); assert callable(rlm.rlm.end_turn); assert callable(rlm.host_request); assert callable(rlm.find_models); assert callable(rlm.rlm.find_models); assert callable(rlm.create_session); assert callable(rlm.rlm.create_session); assert callable(rlm.progress_note); assert callable(rlm.rlm.progress_note); assert callable(rlm.rename); assert callable(rlm.rlm.rename); assert hasattr(rlm, 'harness'); assert hasattr(rlm, 'get_harness_state'); assert hasattr(rlm.rlm, 'harness'); assert hasattr(rlm.rlm, 'get_harness_state'); assert all(callable(getattr(_harness, _method, None)) for _harness in (rlm.harness, rlm.rlm.harness) for _method in _harness_methods); assert 'reference' in HarnessEntry.__dataclass_fields__; assert 'scope' in HarnessEntry.__dataclass_fields__; assert 'reference' in inspect.signature(rlm.harness.create_skill).parameters; assert 'reference' in inspect.signature(rlm.harness.update_skill).parameters; assert 'global_' in inspect.signature(rlm.harness.create_memory).parameters; assert 'global_' in inspect.signature(rlm.get_harness_state).parameters; assert not hasattr(rlm, 'background'); assert not hasattr(rlm.rlm, 'background'); from rlm.bash import BashHandle, BashResult; assert callable(rlm.bash); assert list(inspect.signature(rlm.bash).parameters) == ['command', 'persistent']; assert callable(rlm.persistent_shells); assert callable(rlm._set_completion_notices_wired); assert all(callable(getattr(BashHandle, _m, None)) for _m in ('tail', 'output', 'poll', 'kill')); assert {'exit_code', 'output', 'duration', 'pid', 'command'} <= set(BashResult.__dataclass_fields__); import rlm.repl as _repl; assert callable(_repl.main); assert callable(_repl.emit); assert callable(_repl.host_request); assert callable(_repl.is_active); assert _repl.PROTOCOL_VERSION == 3; assert callable(rlm.emit); assert not hasattr(rlm, 'HOST_COMM_TARGET'); assert not hasattr(mcp, 'install_shutdown_hook')";
+const RUNTIME_READY_CHECK: &str = "import inspect; import rlm; import requests; import httpx; import yaml; import tomli; import dotenv; import pandas; import numpy; import scipy; import bs4; import lxml; import pydantic; import tyro; from rlm import McpIntegration; import rlm.mcp as mcp; from rlm.harness import HarnessEntry; _harness_methods = ['create_memory', 'update_memory', 'delete_memory', 'create_skill', 'update_skill', 'delete_skill', 'create_subagent', 'update_subagent', 'delete_subagent', 'create_prompt_note', 'update_prompt_note', 'delete_prompt_note', 'record_refinement']; _mcp_discovery_methods = ['list_plugins', 'search_plugins', 'list_connections', 'search_tools', 'describe_tool']; assert callable(mcp.list_tools); assert callable(mcp.call_tool); assert all(callable(getattr(mcp, _m, None)) for _m in _mcp_discovery_methods), \"rlm.mcp is missing MCP discovery methods (list_plugins, search_plugins, list_connections, search_tools, describe_tool); the kernel venv needs a current prime-agent-runtime\"; assert callable(rlm.spawn); assert hasattr(rlm, 'rlm'); assert callable(rlm.rlm.spawn); assert inspect.signature(rlm.spawn).parameters['name'].default is inspect.Parameter.empty; assert not hasattr(rlm, 'run'); assert not hasattr(rlm.rlm, 'run'); assert callable(rlm.end_turn); assert callable(rlm.rlm.end_turn); assert callable(rlm.host_request); assert callable(rlm.find_models); assert callable(rlm.rlm.find_models); assert callable(rlm.create_session); assert callable(rlm.rlm.create_session); assert callable(rlm.progress_note); assert callable(rlm.rlm.progress_note); assert callable(rlm.rename); assert callable(rlm.rlm.rename); assert hasattr(rlm, 'harness'); assert hasattr(rlm, 'get_harness_state'); assert hasattr(rlm.rlm, 'harness'); assert hasattr(rlm.rlm, 'get_harness_state'); assert all(callable(getattr(_harness, _method, None)) for _harness in (rlm.harness, rlm.rlm.harness) for _method in _harness_methods); assert 'reference' in HarnessEntry.__dataclass_fields__; assert 'scope' in HarnessEntry.__dataclass_fields__; assert 'reference' in inspect.signature(rlm.harness.create_skill).parameters; assert 'reference' in inspect.signature(rlm.harness.update_skill).parameters; assert 'global_' in inspect.signature(rlm.harness.create_memory).parameters; assert 'global_' in inspect.signature(rlm.get_harness_state).parameters; assert not hasattr(rlm, 'background'); assert not hasattr(rlm.rlm, 'background'); from rlm.bash import BashHandle, BashResult; assert callable(rlm.bash); assert list(inspect.signature(rlm.bash).parameters) == ['command', 'persistent']; assert callable(rlm.persistent_shells); assert callable(rlm._set_completion_notices_wired); assert all(callable(getattr(BashHandle, _m, None)) for _m in ('tail', 'output', 'poll', 'kill')); assert {'exit_code', 'output', 'duration', 'pid', 'command'} <= set(BashResult.__dataclass_fields__); import rlm.repl as _repl; assert callable(_repl.main); assert callable(_repl.emit); assert callable(_repl.host_request); assert callable(_repl.is_active); assert _repl.PROTOCOL_VERSION == 3; assert callable(rlm.emit); assert not hasattr(rlm, 'HOST_COMM_TARGET'); assert not hasattr(mcp, 'install_shutdown_hook')";
 
 pub(crate) fn has_prime_agent_runtime(python: &str) -> bool {
     run_quiet(python, &["-c", RUNTIME_READY_CHECK])
@@ -133,6 +158,35 @@ pub(super) fn installed_runtime_identity(python: &Path, venv: &Path) -> String {
                 Err(error) => hasher.update(format!("{package}-error:{error}").as_bytes()),
             },
             None => hasher.update(format!("{package}-missing").as_bytes()),
+        }
+    }
+    hasher.update(b"pyvenv.cfg:");
+    match std::fs::read(venv.join("pyvenv.cfg")) {
+        Ok(contents) => hasher.update(&contents),
+        Err(_) => hasher.update(b"missing"),
+    }
+    for package in std::iter::once("mcp").chain(
+        DEFAULT_RLM_EXTRA_PACKAGES
+            .iter()
+            .map(|(_, import, _)| *import),
+    ) {
+        hasher.update(format!("{package}:").as_bytes());
+        match installed_package_dir(venv, package) {
+            Some(dir) => {
+                let metadata = std::fs::metadata(&dir);
+                match metadata {
+                    Ok(metadata) => {
+                        let modified = metadata
+                            .modified()
+                            .map_or_else(|_| "no-mtime".to_string(), |time| format!("{time:?}"));
+                        hasher.update(
+                            format!("{}:{}:{modified}", dir.display(), metadata.len()).as_bytes(),
+                        );
+                    }
+                    Err(error) => hasher.update(format!("metadata-error:{error}").as_bytes()),
+                }
+            }
+            None => hasher.update(b"missing"),
         }
     }
     format!("sha256:{:x}", hasher.finalize())

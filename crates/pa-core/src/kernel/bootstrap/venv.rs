@@ -35,7 +35,8 @@ use probe::{installed_rlm_dir, lock_probe_memo, runtime_probe_key};
 #[cfg(all(test, unix))]
 use probe::{clear_in_process_probe_memo_for_tests, installed_package_dir};
 pub(crate) use probe::{
-    has_prime_agent_runtime, missing_python_skill_import_labels, missing_rlm_extra_import_labels,
+    has_prime_agent_runtime, missing_python_skill_import_labels, missing_python_skill_imports,
+    missing_rlm_extra_import_labels,
 };
 use probe::{has_prime_agent_runtime_memoized, installed_runtime_identity};
 use runtime_source::collect_python_files;
@@ -208,13 +209,15 @@ pub(crate) async fn sync_python_skills(
         .collect();
     let python_str = python.to_string_lossy().to_string();
     let mut installed: HashMap<String, BootstrapPythonSkill> = current_python_skills;
+    let missing_imports = missing_python_skill_imports(&python_str, python_skills);
     let mut missing: Vec<&BootstrapPythonSkill> = Vec::new();
     for skill in python_skills {
         let key = bootstrap_skill_key(skill);
         if installed.get(&key).is_some_and(|existing| {
             existing.pyproject_path == skill.pyproject_path
                 && existing.pyproject_hash == skill.pyproject_hash
-        }) {
+        }) && !missing_imports.contains(&skill.import_name)
+        {
             continue;
         }
         missing.push(skill);
@@ -308,6 +311,7 @@ pub(crate) fn kernel_ready(
             &installed_runtime_identity(Path::new(python), venv),
             venv,
         )
+        && missing_python_skill_imports(python, python_skills).is_empty()
 }
 
 #[cfg(test)]

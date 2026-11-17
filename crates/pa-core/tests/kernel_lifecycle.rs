@@ -531,3 +531,54 @@ async fn graceful_shutdown_flushes_the_final_snapshot() {
         .await
         .expect("shutdown");
 }
+
+/// The whole REPL environment: the kernel runtime, the MCP client, every
+/// default Python package promised by the prompt, and the shipped Python
+/// skills must import together. A partial venv rebuild can leave any one of
+/// these missing while a cached readiness probe still reports the venv ready.
+#[tokio::test]
+async fn repl_environment_imports_runtime_defaults_and_skills() {
+    let Some(options) = test_options(None) else {
+        return;
+    };
+    let manager = started_manager(options).await;
+    let result = execute(
+        &manager,
+        r#"
+import rlm
+import rlm.repl as repl
+import rlm.mcp
+import mcp
+import requests
+import httpx
+import yaml
+import tomli
+import dotenv
+import pandas
+import numpy
+import scipy
+import bs4
+import lxml
+import pydantic
+import tyro
+import goal
+import graph
+import rlm_heartbeat
+assert repl.PROTOCOL_VERSION == 3
+print("REPL_ENV_OK")
+"#,
+    )
+    .await;
+    assert_eq!(
+        result.status,
+        ExecuteStatus::Ok,
+        "REPL environment import failed: stderr={} error={:?}",
+        result.stderr,
+        result.error
+    );
+    assert_eq!(result.stdout.trim(), "REPL_ENV_OK");
+    manager
+        .shutdown(KernelShutdownOptions::default())
+        .await
+        .expect("shutdown");
+}

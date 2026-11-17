@@ -51,6 +51,16 @@ fn contains(entries: &[Weak<Inner>], inner: &std::sync::Arc<Inner>) -> bool {
         .any(|weak| std::ptr::eq(Weak::as_ptr(weak), std::sync::Arc::as_ptr(inner)))
 }
 
+#[cfg(test)]
+fn tracks(weak: &Weak<Inner>) -> bool {
+    let entries = registry()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    entries.iter().any(|entry| {
+        entry.strong_count() > 0 && std::ptr::eq(Weak::as_ptr(entry), Weak::as_ptr(weak))
+    })
+}
+
 /// Flush and tear down every live kernel, discarding individual failures: the shutdown of one
 /// wedged kernel must not block the others. Mirrors the TS async shutdown handler (`snapshot:
 /// true`).
@@ -94,20 +104,17 @@ mod tests {
 
     #[tokio::test]
     async fn registry_tracks_and_releases_kernels() {
-        assert_eq!(live_kernel_count(), 0);
         let manager = crate::kernel::ReplKernelManager::new(KernelManagerOptions::default());
+        let weak = Arc::downgrade(&manager.inner);
         add(&manager.inner);
-        assert_eq!(live_kernel_count(), 1);
+        assert!(tracks(&weak));
         // Removing the same pointer deregisters it.
         remove(&manager.inner);
-        assert_eq!(live_kernel_count(), 0);
+        assert!(!tracks(&weak));
         add(&manager.inner);
         drop(manager);
-        assert_eq!(
-            live_kernel_count(),
-            0,
-            "weak entry must vanish with the manager"
-        );
+        assert!(weak.upgrade().is_none(), "the manager must be dropped");
+        assert!(!tracks(&weak), "weak entry must vanish with the manager");
     }
 
     #[tokio::test]

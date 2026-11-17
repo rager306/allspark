@@ -1,0 +1,1 @@
+- Fixed kernel startup after a partial venv repair: readiness now witnesses `pyvenv.cfg`, the MCP and default packages, and re-checks recorded Python skill imports before reusing the venv.
