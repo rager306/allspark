@@ -99,6 +99,14 @@ pub fn plan_for_start(current: &PlanState, stored: Option<&[StoredPlanItem]>) ->
         .cloned()
         .map(StoredPlanItem::into_item)
         .collect();
+    // A stored plan can violate the invariants the tool enforces: an older
+    // build recorded it, or the log was edited by hand. Installing it would put
+    // the session under obligations no plan may hold (two `in_progress` items,
+    // duplicate ids), so the invalid plan is not adopted. Restoring nothing is
+    // honest; the session simply starts empty.
+    if PlanState::validate_items(&items).is_err() {
+        return None;
+    }
     Some(PlanState { items })
 }
 
@@ -193,5 +201,16 @@ mod tests {
     fn nothing_stored_adopts_nothing() {
         assert!(plan_for_start(&PlanState::default(), None).is_none());
         assert!(plan_for_start(&PlanState::default(), Some(&[])).is_none());
+    }
+    #[test]
+    fn a_stored_plan_that_breaks_the_invariants_is_not_adopted() {
+        let mut first = stored("P1", 0, PlanItemStatus::InProgress);
+        first.text = "one".to_string();
+        let mut second = stored("P2", 1, PlanItemStatus::InProgress);
+        second.text = "two".to_string();
+
+        // Two `in_progress` items is what `update_plan` refuses; a restored
+        // plan must not smuggle it past the tool.
+        assert!(plan_for_start(&PlanState::default(), Some(&[first, second])).is_none());
     }
 }
