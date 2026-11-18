@@ -336,6 +336,13 @@ struct AgentInner {
     follow_up_queue: Mutex<PendingMessageQueue>,
     /// Active-run bookkeeping. A plain mutex: never held across awaits.
     run: Mutex<Option<ActiveRun>>,
+    /// An abort that arrived while no run was registered.
+    ///
+    /// The same lock guards this and the run slot, so `abort()` and
+    /// `run_with_lifecycle` cannot miss each other: an abort that lands in the
+    /// window between "the caller believes a turn is running" and "the run slot
+    /// is filled" is held here and applied the moment the slot is filled.
+    abort_pending: Mutex<bool>,
     convert_to_llm: ConvertToLlmFn,
     transform_context: Option<TransformContextFn>,
     stream_fn: Option<StreamFn>,
@@ -620,6 +627,14 @@ impl AgentInner {
                 idle_tx,
                 model: run_model,
             });
+            // An abort that arrived before the slot was filled applies now, in
+            // the same critical section that filled it: otherwise the run below
+            // waits out a response the caller already stopped.
+            let mut pending = self.abort_pending.lock().unwrap();
+            if *pending {
+                *pending = false;
+                controller.abort();
+            }
         }
         let run_signal = controller.signal();
 
@@ -801,6 +816,7 @@ impl Agent {
                 options.follow_up_mode.unwrap_or(QueueMode::OneAtATime),
             )),
             run: Mutex::new(None),
+            abort_pending: Mutex::new(false),
             convert_to_llm: options
                 .convert_to_llm
                 .unwrap_or_else(AgentLoopConfig::default_convert_to_llm),
@@ -1130,8 +1146,13 @@ impl Agent {
     ///
     /// Panics if the `run` mutex is poisoned.
     pub fn abort(&self) {
-        if let Some(run) = self.inner.run.lock().unwrap().as_ref() {
-            run.controller.abort();
+        let run = self.inner.run.lock().unwrap();
+        if let Some(active) = run.as_ref() {
+            active.controller.abort();
+        } else {
+            // No run yet: remember it, or the caller's stop is lost and the
+            // next provider fetch runs to completion.
+            *self.inner.abort_pending.lock().unwrap() = true;
         }
     }
 
@@ -1690,6 +1711,69 @@ mod tests {
                 Some(crate::types::Transport::Sse),
                 Some(crate::types::Transport::WebsocketCached),
             ]
+        );
+    }
+
+    /// An abort that lands before the run slot is filled must not be lost.
+    ///
+    /// The worker sets its busy flag before the agent registers its run, and
+    /// `run_with_lifecycle` awaits two locks in between. A stop inside that
+    /// window used to find `run == None` and do nothing, so the turn went on to
+    /// wait out the provider response (measured in the daemon: a kill waited
+    /// 60.31 s for a held reply).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_abort_before_the_run_starts_is_not_lost() {
+        fn model(id: &str) -> Model {
+            Model {
+                id: id.to_string(),
+                name: id.to_string(),
+                api: "anthropic-messages".to_string(),
+                provider: "anthropic".to_string(),
+                base_url: String::new(),
+                reasoning: false,
+                cost: crate::types::UsageCost::default(),
+                context_window: 200_000,
+                max_tokens: 8_192,
+                max_tokens_explicit: false,
+            }
+        }
+
+        // The fetch never resolves on its own: only the abort can end this run.
+        let stream_fn: crate::stream::StreamFn = std::sync::Arc::new(
+            |_requested: Model,
+             _context: crate::stream::LlmContext,
+             _options: crate::stream::StreamRequestOptions| {
+                Box::pin(async {
+                    std::future::pending::<()>().await;
+                    unreachable!()
+                })
+            },
+        );
+
+        let agent = Arc::new(Agent::new(AgentOptions {
+            initial_state: AgentInitialState {
+                model: Some(model("session-model")),
+                system_prompt: Some("s".to_string()),
+                ..Default::default()
+            },
+            stream_fn: Some(stream_fn),
+            ..Default::default()
+        }));
+
+        // The abort arrives while no run exists: the case the fix is about.
+        agent.abort();
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            agent.prompt(AgentPromptInput::text("hi")),
+        )
+        .await
+        .expect("the pre-run abort must end the turn, not leave it fetching");
+
+        let error = outcome.expect_err("an aborted turn reports an abort");
+        assert!(
+            crate::abort::is_abort_error(&error),
+            "expected an abort error, got {error:#}"
         );
     }
 }
