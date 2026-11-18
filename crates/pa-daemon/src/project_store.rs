@@ -131,6 +131,29 @@ impl ProjectRecorder {
         Ok(())
     }
 
+    /// Bring the read model up to date with the log.
+    ///
+    /// The log is canonical and the model derived, so this is safe to call
+    /// after every write and after any gap: the projector skips what already
+    /// landed. A failure is the caller's to log — the log itself is already
+    /// correct, so the model being behind is recoverable, not lost.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the model cannot be opened or written.
+    pub fn sync(&self) -> anyhow::Result<()> {
+        let events = EventLog::at(&self.paths.events).read_all()?;
+        if events.is_empty() {
+            return Ok(());
+        }
+        if let Some(parent) = self.paths.model.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut model = pa_project::model::ReadModel::open(&self.paths.model)?;
+        pa_project::project::project(&mut model, &self.paths.project_id, &events)?;
+        Ok(())
+    }
+
     /// The plan item ids the log already recorded for this project.
     ///
     /// A snapshot replaces the plan, so the writer has to know which ids the
@@ -402,5 +425,51 @@ mod tests {
             ProjectStorePaths::project_id_for(&one),
             ProjectStorePaths::project_id_for(&two)
         );
+    }
+    #[test]
+    fn sync_brings_the_model_up_to_date_and_survives_a_lost_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = recorder(dir.path());
+        recorder
+            .record_plan(&[
+                item("P1", PlanItemStatus::InProgress),
+                item("P2", PlanItemStatus::Pending),
+            ])
+            .unwrap();
+        recorder.sync().unwrap();
+
+        let count = |path: &std::path::Path| {
+            let model = pa_project::model::ReadModel::open(path).unwrap();
+            model.count_entities("proj", "plan_item").unwrap()
+        };
+        assert_eq!(count(&recorder.paths().model), 2);
+
+        // The model is derived, so losing it must lose nothing.
+        std::fs::remove_file(&recorder.paths().model).unwrap();
+        recorder.sync().unwrap();
+        assert_eq!(count(&recorder.paths().model), 2);
+    }
+
+    #[test]
+    fn sync_repeatedly_applies_nothing_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = recorder(dir.path());
+        recorder
+            .record_plan(&[item("P1", PlanItemStatus::Pending)])
+            .unwrap();
+        recorder.sync().unwrap();
+        recorder.sync().unwrap();
+
+        let model = pa_project::model::ReadModel::open(&recorder.paths().model).unwrap();
+        assert_eq!(model.count_entities("proj", "plan_item").unwrap(), 1);
+    }
+
+    #[test]
+    fn sync_on_an_empty_log_creates_no_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = recorder(dir.path());
+        recorder.sync().unwrap();
+
+        assert!(!recorder.paths().model.exists());
     }
 }

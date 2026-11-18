@@ -120,7 +120,10 @@ impl AgentTool for PlanTool {
             // never fails the tool call, so a project store cannot break a
             // session that would otherwise work.
             if let Some(recorder) = &self.recorder {
-                if let Err(error) = recorder.record_plan(&state.items) {
+                if let Err(error) = recorder
+                    .record_plan(&state.items)
+                    .and_then(|()| recorder.sync())
+                {
                     eprintln!("pa-daemon: project plan event write failed: {error:#}");
                 }
             }
