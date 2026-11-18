@@ -18,3 +18,4 @@
 - Two sessions in one project keep separate plans: plan items are keyed per session, so a second session no longer takes over the first one's restored plan, and a restarted session restores the plan it wrote.
 - Stopping a run now cancels a turn that is still starting: an abort that arrived between "the session is busy" and "the run is registered" used to be dropped, so the stop waited for the full model reply.
 - A project read model written by another version of the build is now rebuilt from the event log instead of being refused, so upgrading no longer makes a stored plan stop resuming.
+- A project record whose event log was replaced or truncated now rebuilds itself instead of freezing at the old contents.
