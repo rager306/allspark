@@ -762,3 +762,50 @@ fn an_enabled_project_store_records_the_sessions_plan() {
     assert_eq!(restored.len(), 1);
     assert_eq!(restored[0].id, "P1");
 }
+
+/// `build_session` asks for the recorder three times and each resolution
+/// costs two `git` processes; the answer must also be the SAME recorder, or
+/// the telemetry flag, the restore and the tool would describe different
+/// projects.
+#[test]
+fn the_project_recorder_is_resolved_once_per_engine() {
+    let _faux = FAUX_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempfile::TempDir::new().unwrap();
+    let cwd = dir.path().join("checkout");
+    std::fs::create_dir_all(cwd.join(".prime/agent")).unwrap();
+    std::fs::write(
+        cwd.join(".prime/agent/settings.json"),
+        json!({ "project": { "enabled": true } }).to_string(),
+    )
+    .unwrap();
+    let engine =
+        crate::agent_engine::AgentSessionEngine::new(crate::agent_engine::AgentEngineConfig {
+            admission: crate::agent_engine::provider_admission::AdmissionClient::Disabled,
+            cwd,
+            agent_dir: dir.path().join("agent"),
+            provider: None,
+            model: None,
+            api_key: None,
+            thinking: None,
+            session_dir: None,
+            session_file: None,
+            faux_script: Some(
+                json!({ "engine": "faux", "responses": [{ "text": "ok" }] }).to_string(),
+            ),
+            supervisor_link: None,
+            telemetry_disabled: Some(true),
+            cron_store: None,
+            queued_steering_probe: None,
+        })
+        .unwrap();
+
+    let first = engine.project_recorder().expect("enabled");
+    let second = engine.project_recorder().expect("enabled");
+    assert!(
+        std::sync::Arc::ptr_eq(&first, &second),
+        "the same engine must reuse one recorder, not rebuild its identity"
+    );
+    assert_eq!(first.paths().project_id, second.paths().project_id);
+}

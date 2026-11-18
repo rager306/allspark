@@ -150,6 +150,7 @@ impl AgentSessionEngine {
             queue_modes,
             autonomous_boundary: std::sync::Mutex::new(None),
             background_bash_probe: std::sync::Mutex::new(None),
+            project_recorder: std::sync::Mutex::new(None),
             kernel_release_probe: std::sync::Mutex::new(None),
             registered_jobs_probe: std::sync::Mutex::new(None),
             session_file,
@@ -1084,17 +1085,37 @@ impl AgentSessionEngine {
     /// restore path and the plan tool cannot disagree about which project a
     /// session belongs to.
     pub(crate) fn project_recorder(&self) -> Option<crate::project_store::ProjectRecorderHandle> {
+        // Resolved once per engine: `build_session` asks three times (telemetry
+        // flag, plan restore, tool registration), and the identity costs two
+        // `git` processes. A cwd rebind changes the project, so the cache is
+        // keyed on the cwd it was computed for.
         let cwd = self.cwd();
-        if !project_recorder_enabled(&cwd, &self.config.agent_dir) {
-            return None;
+        {
+            let cached = self
+                .project_recorder
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some((cached_cwd, recorder)) = cached.as_ref() {
+                if *cached_cwd == cwd {
+                    return recorder.clone();
+                }
+            }
         }
-        let paths = crate::project_store::ProjectStorePaths::under(
-            &self.config.agent_dir,
-            &crate::project_store::ProjectStorePaths::project_id_for(&cwd),
-        );
-        Some(std::sync::Arc::new(
-            crate::project_store::ProjectRecorder::new(paths, self.durable_session_id()),
-        ))
+        let recorder = project_recorder_enabled(&cwd, &self.config.agent_dir).then(|| {
+            let paths = crate::project_store::ProjectStorePaths::under(
+                &self.config.agent_dir,
+                &crate::project_store::ProjectStorePaths::project_id_for(&cwd),
+            );
+            std::sync::Arc::new(crate::project_store::ProjectRecorder::new(
+                paths,
+                self.durable_session_id(),
+            ))
+        });
+        *self
+            .project_recorder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((cwd, recorder.clone()));
+        recorder
     }
 
     async fn build_session(&self, model: &Model) -> anyhow::Result<CoreSessionEngine> {

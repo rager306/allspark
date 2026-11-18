@@ -174,6 +174,16 @@ pub struct AgentSessionEngine {
     /// (unwired) answers `false`.
     pub(crate) background_bash_probe:
         std::sync::Mutex<Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>>,
+    /// The project recorder this engine resolved, with the cwd it was resolved
+    /// for. `build_session` asks for it three times and each resolution costs
+    /// two `git` processes; a cwd rebind invalidates it because the project
+    /// identity is derived from the path.
+    pub(crate) project_recorder: std::sync::Mutex<
+        Option<(
+            std::path::PathBuf,
+            Option<crate::project_store::ProjectRecorderHandle>,
+        )>,
+    >,
     /// The current session's stop-with-snapshot handle, adopted as a weak
     /// provisioner reference (the park arm never takes the session mutex).
     /// `None` when no session is built.
