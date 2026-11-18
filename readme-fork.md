@@ -93,6 +93,15 @@ Extras:
 - `goal.complete()` is refused while the session's `update_plan` still has
   `pending`/`in_progress` items; the model must finish them or mark them
   `blocked` first. This keeps the goal loop from closing on a partial plan.
+- `[project] enabled = true` (**default off**) keeps a durable project record
+  outside the session: `update_plan` appends to
+  `<agentDir>/projects/<id>/events.jsonl` and the read model at `project.db` is
+  projected from it after each write. The log is canonical and the model
+  derived, so a lost `project.db` is rebuilt from the log. Project identity is
+  the git remote URL, else the git common dir, else the working directory,
+  hashed — one repository's worktrees share a record and two clones do not.
+  With the setting absent nothing is written, so an existing session is
+  byte-identical.
   Every model plan change is also written as a `session_plan_state` custom
   entry, so the plan survives a compaction that drops the `update_plan` call;
   replay reads the newest durable record and falls back to the tool call for
