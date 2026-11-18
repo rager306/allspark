@@ -19,3 +19,4 @@
 - Stopping a run now cancels a turn that is still starting: an abort that arrived between "the session is busy" and "the run is registered" used to be dropped, so the stop waited for the full model reply.
 - A project read model written by another version of the build is now rebuilt from the event log instead of being refused, so upgrading no longer makes a stored plan stop resuming.
 - A project record whose event log was replaced or truncated now rebuilds itself instead of freezing at the old contents.
+- A project record whose last write was interrupted (a full disk) repairs that partial line before the next write, instead of becoming unreadable.
