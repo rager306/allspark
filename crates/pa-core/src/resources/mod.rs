@@ -25,6 +25,25 @@ const CONTEXT_FILE_CANDIDATES: [&str; 4] = ["AGENTS.md", "AGENTS.MD", "CLAUDE.md
 /// than any real instruction file — and truncation is reported, never silent.
 pub const MAX_CONTEXT_FILE_BYTES: usize = 256 * 1024;
 
+/// Largest total bytes of context files (the whole AGENTS.md ancestor chain)
+/// admitted into one prompt.
+///
+/// The per-file cap bounds one file; this bounds the sum. A directory chain can
+/// contribute a file per ancestor, so ten 200 KiB files are each legal and
+/// together are twice the per-file cap — measured on this tree, a single 51 KiB
+/// AGENTS.md is already 55% of a 93 KiB prompt. The budget is shared in the
+/// order the files are loaded (global first, then root-most to nearest), so the
+/// most specific file is the one that survives a cut, and the cut is marked in
+/// the text the model reads.
+pub const MAX_PROJECT_CONTEXT_BYTES: usize = 512 * 1024;
+
+/// Smallest remaining budget worth spending on a partial file.
+///
+/// Below this the file is named as excluded instead of being cut: a few bytes
+/// of a long instruction file is not a shorter instruction, and a marker that
+/// claims content where there is almost none misleads the reader.
+const MIN_PROJECT_CONTEXT_SLICE: usize = 4 * 1024;
+
 /// Truncate `content` to at most `limit` bytes on a char boundary.
 ///
 /// Returns the kept text and whether anything was dropped. Cutting on a char
@@ -230,7 +249,64 @@ pub fn load_project_context_files(cwd: &Path, agent_dir: &Path) -> Vec<ContextFi
     }
     ancestors.reverse();
     context_files.extend(ancestors);
-    context_files
+    cap_project_context_budget(context_files)
+}
+
+/// Share [`MAX_PROJECT_CONTEXT_BYTES`] across the loaded files, marking any cut.
+///
+/// The budget is spent in load order, and the LAST file is the most specific
+/// (the ones nearest the working directory), so a chain that overflows loses
+/// the general instructions rather than the local ones. Files that do not fit
+/// at all are dropped with a marker naming them: the model must be able to see
+/// that a file exists and was not read, or it would act as if the tree had no
+/// instructions there.
+fn cap_project_context_budget(files: Vec<ContextFile>) -> Vec<ContextFile> {
+    let total: usize = files.iter().map(|file| file.content.len()).sum();
+    if total <= MAX_PROJECT_CONTEXT_BYTES {
+        return files;
+    }
+    // The most specific files are the ones to keep: walk from the end while the
+    // remaining budget allows, then restore load order.
+    let mut kept = Vec::with_capacity(files.len());
+    let mut remaining = MAX_PROJECT_CONTEXT_BYTES;
+    let mut dropped: Vec<String> = Vec::new();
+    for file in files.into_iter().rev() {
+        if file.content.len() <= remaining {
+            remaining -= file.content.len();
+            kept.push(file);
+        } else if remaining >= MIN_PROJECT_CONTEXT_SLICE {
+            // Only a slice worth reading is taken: a two-byte stub of a
+            // 200 KiB file is not a shorter instruction, it is noise that
+            // reports itself as content.
+            let content =
+                truncate_context_content_marked(&file.content, remaining, "PROJECT CONTEXT BUDGET");
+            remaining = 0;
+            kept.push(ContextFile {
+                path: file.path,
+                content,
+            });
+        } else {
+            dropped.push(file.path.display().to_string());
+        }
+    }
+    kept.reverse();
+    dropped.reverse();
+    if !dropped.is_empty() {
+        let marker = dropped
+            .iter()
+            .map(|path| format!("- {path}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        kept.push(ContextFile {
+            path: PathBuf::from("PROJECT CONTEXT BUDGET"),
+            content: format!(
+                "[PROJECT CONTEXT BUDGET: these context files were not included, because \
+                 the ancestor chain exceeds {MAX_PROJECT_CONTEXT_BYTES} bytes in total:\n\
+                 {marker}]"
+            ),
+        });
+    }
+    kept
 }
 
 // Session resource resolution (package-manager `resolve()`) feeds the loader below.
@@ -1013,5 +1089,47 @@ mod tests {
             "the loader fell back to the wrong file: {found:?}"
         );
         assert!(found.content.contains("the real instructions"), "{found:?}");
+    }
+    /// The per-file cap bounds one file; this bounds the sum. Without it a
+    /// directory chain contributes a legal 256 KiB file per ancestor, so a
+    /// deep tree can put megabytes of instructions into every request.
+    #[test]
+    fn the_project_context_budget_bounds_the_whole_chain() {
+        let files: Vec<ContextFile> = (0..4)
+            .map(|index| ContextFile {
+                path: PathBuf::from(format!("/level-{index}/AGENTS.md")),
+                content: "x".repeat(MAX_PROJECT_CONTEXT_BYTES / 3),
+            })
+            .collect();
+
+        let kept = cap_project_context_budget(files);
+
+        let total: usize = kept.iter().map(|file| file.content.len()).sum();
+        assert!(
+            total <= MAX_PROJECT_CONTEXT_BYTES + 1024,
+            "the budget plus one marker: {total}"
+        );
+        // The last file is the most specific one and must survive in full.
+        assert!(
+            kept.iter().any(|file| file.path == *"/level-3/AGENTS.md"
+                && file.content.len() == MAX_PROJECT_CONTEXT_BYTES / 3),
+            "the nearest instructions must not be the ones cut"
+        );
+        // A dropped file is named in the text the model reads, not just dropped.
+        let marker = kept
+            .iter()
+            .find(|file| file.path == *"PROJECT CONTEXT BUDGET");
+        let marker = marker.expect("a budget marker").content.clone();
+        assert!(marker.contains("level-0/AGENTS.md"), "{marker}");
+    }
+
+    #[test]
+    fn a_chain_within_budget_is_untouched() {
+        let files = vec![ContextFile {
+            path: PathBuf::from("/a/AGENTS.md"),
+            content: "small".to_string(),
+        }];
+        let kept = cap_project_context_budget(files.clone());
+        assert_eq!(kept, files);
     }
 }
