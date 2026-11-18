@@ -15,4 +15,4 @@
 - The project store's plan is created once per session and reused, so enabling it no longer runs several `git` processes per session build; the recorder is invalidated when the working directory changes.
 - A stored plan that broke the plan rules is repaired rather than discarded: a duplicate step id keeps its first row, a second `in_progress` step becomes `pending`, and a blank step is dropped. A plan where nothing survives is still not restored, so an empty plan cannot pass for a resumed one.
 - A session's plan update no longer deletes another session's steps from the project record: a snapshot removes only the items that session wrote itself.
-- Two sessions in one project keep separate plans: plan items are keyed per session, so a second session no longer takes over the first one's restored plan.
+- Two sessions in one project keep separate plans: plan items are keyed per session, so a second session no longer takes over the first one's restored plan, and a restarted session restores the plan it wrote.
