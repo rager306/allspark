@@ -1,6 +1,16 @@
 //! Post-abort/post-compact queued-input suspension e2e tests.
 use super::*;
 
+/// How long a session may take to go idle after an abort or a compaction.
+///
+/// The discriminating distance is the script's held reply: a session that never
+/// cancelled the fetch cannot go idle before that reply lands, so any budget
+/// below the hold still separates "cancelled" from "waited it out". 15 s did not
+/// leave room once 1399 tests shared one binary (measured: the whole
+/// `abort_and_send_queued` test takes 26.19 s alone, and it failed only inside
+/// full `--lib` runs), and it was the budget that failed, not the product.
+const IDLE_AFTER_ABORT_BUDGET: std::time::Duration = std::time::Duration::from_secs(45);
+
 #[tokio::test]
 async fn abort_suspends_plain_prompts_until_steer_resumes() {
     let worker = created_dispatch_worker().await;
@@ -160,7 +170,7 @@ async fn abort_and_send_queued_delivers_the_parked_queue_at_the_boundary() {
     assert!(aborted.success, "abort_and_send_queued failed: {aborted:?}");
     assert_eq!(aborted.command, "abort_and_send_queued");
     let idle = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
+        IDLE_AFTER_ABORT_BUDGET,
         worker.dispatch("wait_for_idle", &json!({})),
     )
     .await;
@@ -369,7 +379,7 @@ async fn abort_and_send_queued_with_only_follow_ups_starts_the_oldest() {
         "the second follow-up must stay queued behind the first: {queue:?}"
     );
     let idle = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
+        IDLE_AFTER_ABORT_BUDGET,
         worker.dispatch("wait_for_idle", &json!({})),
     )
     .await;
@@ -869,7 +879,7 @@ async fn abort_and_send_queued_delivers_the_parked_agent_message() {
     assert!(aborted.success, "abort_and_send_queued failed: {aborted:?}");
     assert_eq!(aborted.command, "abort_and_send_queued");
     let idle = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
+        IDLE_AFTER_ABORT_BUDGET,
         worker.dispatch("wait_for_idle", &json!({})),
     )
     .await;
@@ -997,7 +1007,7 @@ async fn abort_and_send_queued_under_a_held_pause_delivers_on_the_release() {
         "release_session_input_pause failed: {released:?}"
     );
     let idle = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
+        IDLE_AFTER_ABORT_BUDGET,
         worker.dispatch("wait_for_idle", &json!({})),
     )
     .await;
