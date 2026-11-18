@@ -61,9 +61,10 @@ pub fn capture_git_context(cwd: &Path) -> Option<GitContext> {
 /// not fork: `/session` redraws on every keypress, and three process spawns per
 /// frame is disk and scheduler work on a paint path.
 ///
-/// Reads `.git/HEAD` and, for a symbolic ref, the ref file it names. A worktree
-/// or submodule has a `.git` FILE holding `gitdir: <path>`, so both layouts
-/// resolve. A ref packed by `git gc` has no loose file: this answers `None`
+/// Reads `.git/HEAD` and, for a symbolic ref, the loose ref file or its line in
+/// `packed-refs` (`git gc` moves refs there, and the default branch is usually
+/// packed). A worktree or submodule has a `.git` FILE holding `gitdir: <path>`,
+/// so both layouts resolve. A ref with no entry in either place answers `None`
 /// rather than a wrong commit, and the caller treats an unknown revision the
 /// same as no repository.
 #[must_use]
@@ -87,9 +88,25 @@ pub fn read_head_commit(cwd: &Path) -> Option<String> {
         // A detached HEAD holds the commit directly.
         return (!head.is_empty()).then(|| head.to_string());
     };
-    let value = std::fs::read_to_string(git_dir.join(reference.trim())).ok()?;
-    let value = value.trim().to_string();
-    (!value.is_empty()).then_some(value)
+    let reference = reference.trim();
+    if let Ok(value) = std::fs::read_to_string(git_dir.join(reference)) {
+        let value = value.trim().to_string();
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+    // `git gc` packs refs; the default branch is usually packed on a real
+    // checkout, so a loose-only reader silently answered `None` there and the
+    // stale-evidence check never fired.
+    let packed = std::fs::read_to_string(git_dir.join("packed-refs")).ok()?;
+    packed.lines().find_map(|line| {
+        // Comments and the `^<peeled>` lines that follow an annotated tag.
+        if line.starts_with('#') || line.starts_with('^') {
+            return None;
+        }
+        let (commit, name) = line.split_once(' ')?;
+        (name.trim() == reference).then(|| commit.trim().to_string())
+    })
 }
 
 #[cfg(test)]
@@ -151,12 +168,53 @@ mod tests {
         );
     }
 
-    /// A packed ref has no loose file; answering with a wrong commit would be
-    /// worse than answering nothing.
+    /// A ref with no loose file and no packed entry answers nothing rather than
+    /// guessing a commit.
     #[test]
     fn an_unresolvable_ref_answers_none_rather_than_a_guess() {
-        let dir = repo_with_head("ref: refs/heads/main\n");
+        let dir = repo_with_head("ref: refs/heads/absent\n");
         assert_eq!(read_head_commit(dir.path()), None);
+    }
+
+    /// `git gc` packs refs, and the default branch is packed on a real
+    /// checkout. A loose-only reader answered `None` there, which silently
+    /// disabled the stale-evidence check on exactly the branches people use.
+    #[test]
+    fn a_packed_ref_resolves_without_a_loose_file() {
+        let dir = repo_with_head("ref: refs/heads/main\n");
+        fs::write(
+            dir.path().join(".git/packed-refs"),
+            "# pack-refs with: peeled fully-peeled sorted \n\
+             17aa6077f5f4c9b3ab74c9fa2c8653a998a591bc refs/heads/main\n\
+             367fabe5b05990446fac1d4b42e2293dfb77d600 refs/remotes/origin/x\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_head_commit(dir.path()).as_deref(),
+            Some("17aa6077f5f4c9b3ab74c9fa2c8653a998a591bc")
+        );
+    }
+
+    /// A loose ref wins over a stale packed entry, which is what `git` does.
+    #[test]
+    fn a_loose_ref_wins_over_the_packed_one() {
+        let dir = repo_with_head("ref: refs/heads/main\n");
+        fs::write(
+            dir.path().join(".git/packed-refs"),
+            "1111111111111111111111111111111111111111 refs/heads/main\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(".git/refs/heads/main"),
+            "2222222222222222222222222222222222222222\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_head_commit(dir.path()).as_deref(),
+            Some("2222222222222222222222222222222222222222")
+        );
     }
 
     #[test]
