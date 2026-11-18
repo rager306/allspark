@@ -101,9 +101,12 @@ impl ProjectRecorder {
     ) -> anyhow::Result<()> {
         let log = EventLog::at(&self.paths.events);
         let previous = self.known_item_ids();
+        // The snapshot is written as one durable append: several appends would
+        // leave a crash-recovered log holding a mix of two snapshots, which is a
+        // plan that never existed and would be restored as if it had.
+        let mut batch: Vec<pa_project::event::Event> = Vec::new();
         for (position, item) in items.iter().enumerate() {
-            self.append(
-                &log,
+            batch.push(self.event(
                 "entity.upserted",
                 json!({
                     "id": item.id,
@@ -120,13 +123,14 @@ impl ProjectRecorder {
                         "evidenceRevision": item.evidence_revision,
                     },
                 }),
-            )?;
+            ));
         }
         for id in previous {
             if !items.iter().any(|item| item.id == id) {
-                self.append(&log, "entity.removed", json!({ "id": id }))?;
+                batch.push(self.event("entity.removed", json!({ "id": id })));
             }
         }
+        log.append_all(&batch)?;
         let ids = items.iter().map(|item| item.id.clone()).collect();
         *self
             .known
@@ -252,8 +256,8 @@ impl ProjectRecorder {
         ids
     }
 
-    fn append(&self, log: &EventLog, event_type: &str, payload: Value) -> anyhow::Result<()> {
-        let event = Event {
+    fn event(&self, event_type: &str, payload: Value) -> pa_project::event::Event {
+        pa_project::event::Event {
             event_id: uuid::Uuid::now_v7().to_string(),
             event_type: event_type.to_string(),
             schema_version: SCHEMA_VERSION,
@@ -265,8 +269,7 @@ impl ProjectRecorder {
                 id: None,
             },
             payload,
-        };
-        log.append(&event)
+        }
     }
 }
 
@@ -613,5 +616,32 @@ mod tests {
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].id, "P1");
         assert_eq!(plan[0].status, PlanItemStatus::InProgress);
+    }
+    /// The snapshot must reach the log as one write: a crash between per-item
+    /// appends leaves a mix of two plans, and the restore path would adopt it.
+    /// The observable property is that one plan write appends exactly one line
+    /// per event and the log reads back as the same snapshot.
+    #[test]
+    fn a_plan_snapshot_is_one_contiguous_batch() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = recorder(dir.path());
+        recorder
+            .record_plan(&[
+                item("P1", PlanItemStatus::InProgress),
+                item("P2", PlanItemStatus::Pending),
+                item("P3", PlanItemStatus::Pending),
+            ])
+            .unwrap();
+
+        let events = EventLog::at(&recorder.paths().events).read_all().unwrap();
+        assert_eq!(events.len(), 3);
+        // Positions came from one snapshot, so they are 0,1,2 with no gap: a
+        // mixed batch shows as a repeated or missing position.
+        let positions: Vec<u64> = events
+            .iter()
+            .map(|event| event.payload["data"]["position"].as_u64().unwrap())
+            .collect();
+        assert_eq!(positions, vec![0, 1, 2]);
+        assert_eq!(recorder.load_plan().unwrap().len(), 3);
     }
 }

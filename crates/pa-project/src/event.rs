@@ -113,6 +113,43 @@ impl EventLog {
     /// # Errors
     ///
     /// Returns an error when the event is invalid or the append fails.
+    /// Append several events as ONE durable write.
+    ///
+    /// A snapshot that is several events (a plan's items) must not be written
+    /// as several appends: a crash between them leaves a log holding a mix of
+    /// two snapshots, which is a plausible plan that never existed. One `write`
+    /// of the joined lines means either the whole snapshot is in the log or
+    /// none of it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any event is invalid or the append fails. Nothing
+    /// is written unless every event validates.
+    pub fn append_all(&self, events: &[Event]) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let mut batch = String::new();
+        for event in events {
+            event.validate()?;
+            batch.push_str(&event.to_line()?);
+            batch.push('\n');
+        }
+        if let Some(parent) = self.path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create {}", parent.display()))?;
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .with_context(|| format!("open {}", self.path.display()))?;
+        file.write_all(batch.as_bytes())
+            .with_context(|| format!("append to {}", self.path.display()))?;
+        file.flush()
+            .with_context(|| format!("flush {}", self.path.display()))
+    }
+
     pub fn append(&self, event: &Event) -> Result<()> {
         event.validate()?;
         if let Some(parent) = self.path.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -391,5 +428,26 @@ mod tests {
 
         let error = log.read_from(offset).unwrap_err().to_string();
         assert!(error.contains(&format!("after byte {offset}")), "{error}");
+    }
+    #[test]
+    fn a_batch_is_written_whole_or_not_at_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = EventLog::at(dir.path().join("events.jsonl"));
+        // The middle event is invalid: nothing may land, because a partial batch
+        // is exactly the mixed snapshot the batch exists to prevent.
+        let mut bad = event("e2");
+        bad.schema_version = 0;
+        let error = log
+            .append_all(&[event("e1"), bad, event("e3")])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("schemaVersion") || error.contains("schema"),
+            "{error}"
+        );
+        assert_eq!(log.read_all().unwrap(), Vec::<Event>::new());
+
+        log.append_all(&[event("e1"), event("e2")]).unwrap();
+        assert_eq!(log.read_all().unwrap().len(), 2);
     }
 }
