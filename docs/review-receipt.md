@@ -15,22 +15,24 @@ process, because it looks like coverage.
 ## The receipt
 
 ```yaml
-# one finding, found at 3e56c9f7a and fixed at a later commit
+# one finding, reviewed at eea54033b, still open
 id: R1
 severity: high            # critical | high | medium | low
-confidence: 0.9           # 0.0-1.0; below 0.5 is a question, not a finding
-claim: "A project plan restored from the store bypasses the plan invariants"
-file: crates/pa-daemon/src/plan_restore.rs
-line: 110
+confidence: 0.95          # 0.0-1.0; below 0.5 is a question, not a finding
+claim: "Two sessions in one project share a plan-item row key"
+file: crates/pa-project/src/model.rs
+line: 22
 quote: |
-  Some(PlanState { items })
+  id         TEXT PRIMARY KEY,
 evidence: |
-  `update_plan` rejects duplicate ids and a second `in_progress` item in
-  `PlanState::validate_items`. The restore path builds `PlanState` directly, so
-  a stored plan an older build wrote — or a hand-edited log — installs a plan
-  the tool would have refused.
+  The plan item id is the table's primary key, so `P1` is one row per project,
+  not per session. Two sessions in one project both build `P1`..., so the second
+  snapshot overwrites the first's row and the restored plan is whichever session
+  wrote last. Measured: with two recorders over one log the model kept a single
+  row after both wrote `P1`.
 verdict: confirmed
-suggested_fix: "Validate in `plan_for_start` and adopt nothing when it fails."
+suggested_fix: "Key the row by (project, session, id), or refuse a second writer.
+  Both change the contract, so this is a decision, not an edit."
 ```
 
 A `rejected` receipt is just as much a result:
@@ -41,7 +43,7 @@ severity: medium
 confidence: 0.6
 claim: "The plan tool records events even when the tool call is refused"
 file: crates/pa-daemon/src/agent_engine/plan_tool.rs
-line: 118
+line: 120
 quote: |
   let state = self.store.replace_from_tool(items);
 evidence: |
