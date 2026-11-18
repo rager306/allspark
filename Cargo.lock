@@ -2361,6 +2361,7 @@ name = "pa-project"
 version = "0.10.3-beta.17"
 dependencies = [
  "anyhow",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

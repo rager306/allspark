@@ -16,6 +16,10 @@ thiserror.workspace = true
 # The `meta/` definitions are human-authored YAML; the workspace already pins
 # `yaml_serde` (the maintained serde_yaml successor) for settings and the CLI.
 serde_yaml = { package = "yaml_serde", version = "0.10.7" }
+# The derived read model. `bundled` vendors SQLite so no system library is
+# linked; the FFI stays inside libsqlite3-sys, so this crate keeps
+# `forbid(unsafe_code)`.
+rusqlite.workspace = true
 
 [lints]
 workspace = true
