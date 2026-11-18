@@ -36,7 +36,7 @@ pub use header::read_session_header;
 use header::{is_valid_rlm_depth, resolve_session_rlm_depth, root_rlm_depth_from_env};
 
 mod git;
-pub use git::capture_git_context;
+pub use git::{capture_git_context, read_head_commit};
 
 mod repair;
 use repair::serialize_entry;

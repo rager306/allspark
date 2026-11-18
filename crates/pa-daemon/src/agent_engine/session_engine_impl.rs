@@ -268,9 +268,9 @@ impl SessionEngine for AgentSessionEngine {
     /// the tree as it is now.
     fn plan_snapshot(&self) -> Option<Value> {
         let state = self.plan_store.snapshot();
-        let cwd = self.cwd();
-        let revision =
-            pa_core::session::manager::capture_git_context(&cwd).and_then(|git| git.commit);
+        // The commit only, read from `.git/HEAD`: `capture_git_context` spawns
+        // three `git` processes, and this runs on the `/session` paint path.
+        let revision = pa_core::session::manager::read_head_commit(&self.cwd());
         let stale_ids = state.stale_evidence_item_ids(revision.as_deref());
         let mut value = serde_json::to_value(&state).ok()?;
         if let Some(items) = value.get_mut("items").and_then(Value::as_array_mut) {

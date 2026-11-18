@@ -53,3 +53,115 @@ pub fn capture_git_context(cwd: &Path) -> Option<GitContext> {
         branch,
     })
 }
+
+/// Read the current commit without spawning `git`.
+///
+/// [`capture_git_context`] runs three probes because the header wants the
+/// branch and the remote too. A render path needs only the commit, and it must
+/// not fork: `/session` redraws on every keypress, and three process spawns per
+/// frame is disk and scheduler work on a paint path.
+///
+/// Reads `.git/HEAD` and, for a symbolic ref, the ref file it names. A worktree
+/// or submodule has a `.git` FILE holding `gitdir: <path>`, so both layouts
+/// resolve. A ref packed by `git gc` has no loose file: this answers `None`
+/// rather than a wrong commit, and the caller treats an unknown revision the
+/// same as no repository.
+#[must_use]
+pub fn read_head_commit(cwd: &Path) -> Option<String> {
+    let dot_git = cwd.join(".git");
+    let git_dir = if dot_git.is_dir() {
+        dot_git
+    } else {
+        let pointer = std::fs::read_to_string(&dot_git).ok()?;
+        let path = pointer.trim().strip_prefix("gitdir:")?.trim();
+        let resolved = Path::new(path);
+        if resolved.is_absolute() {
+            resolved.to_path_buf()
+        } else {
+            cwd.join(resolved)
+        }
+    };
+    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head = head.trim();
+    let Some(reference) = head.strip_prefix("ref: ") else {
+        // A detached HEAD holds the commit directly.
+        return (!head.is_empty()).then(|| head.to_string());
+    };
+    let value = std::fs::read_to_string(git_dir.join(reference.trim())).ok()?;
+    let value = value.trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn repo_with_head(head: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".git").join("refs").join("heads")).unwrap();
+        fs::write(dir.path().join(".git").join("HEAD"), head).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_symbolic_head_resolves_through_its_ref_file() {
+        let dir = repo_with_head("ref: refs/heads/main\n");
+        fs::write(
+            dir.path().join(".git/refs/heads/main"),
+            "0123456789abcdef0123456789abcdef01234567\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_head_commit(dir.path()).as_deref(),
+            Some("0123456789abcdef0123456789abcdef01234567")
+        );
+    }
+
+    #[test]
+    fn a_detached_head_is_the_commit_itself() {
+        let dir = repo_with_head("0123456789abcdef0123456789abcdef01234567\n");
+        assert_eq!(
+            read_head_commit(dir.path()).as_deref(),
+            Some("0123456789abcdef0123456789abcdef01234567")
+        );
+    }
+
+    #[test]
+    fn a_worktree_git_file_points_at_the_real_directory() {
+        let dir = repo_with_head("");
+        let worktree = dir.path().join("wt");
+        fs::create_dir_all(&worktree).unwrap();
+        fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", dir.path().join(".git").display()),
+        )
+        .unwrap();
+        fs::write(dir.path().join(".git/HEAD"), "ref: refs/heads/side\n").unwrap();
+        fs::write(
+            dir.path().join(".git/refs/heads/side"),
+            "fedcba9876543210fedcba9876543210fedcba98\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_head_commit(&worktree).as_deref(),
+            Some("fedcba9876543210fedcba9876543210fedcba98")
+        );
+    }
+
+    /// A packed ref has no loose file; answering with a wrong commit would be
+    /// worse than answering nothing.
+    #[test]
+    fn an_unresolvable_ref_answers_none_rather_than_a_guess() {
+        let dir = repo_with_head("ref: refs/heads/main\n");
+        assert_eq!(read_head_commit(dir.path()), None);
+    }
+
+    #[test]
+    fn a_directory_outside_a_repository_answers_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_head_commit(dir.path()), None);
+    }
+}
