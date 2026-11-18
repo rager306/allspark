@@ -100,14 +100,55 @@ pub fn plan_for_start(current: &PlanState, stored: Option<&[StoredPlanItem]>) ->
         .map(StoredPlanItem::into_item)
         .collect();
     // A stored plan can violate the invariants the tool enforces: an older
-    // build recorded it, or the log was edited by hand. Installing it would put
-    // the session under obligations no plan may hold (two `in_progress` items,
-    // duplicate ids), so the invalid plan is not adopted. Restoring nothing is
-    // honest; the session simply starts empty.
-    if PlanState::validate_items(&items).is_err() {
+    // build recorded it, or the log was edited by hand. Refusing the whole plan
+    // over one bad item throws away work the session still needs, so the
+    // violations are repaired instead — and only the ones the rules can repair
+    // without inventing a decision.
+    let repaired = repair_stored_items(items);
+    // Repair can drop every item (all blank ids or texts). An empty plan is not
+    // a restored plan: the caller installs it and the session then believes its
+    // obligation is gone.
+    if repaired.is_empty() {
         return None;
     }
-    Some(PlanState { items })
+    Some(PlanState { items: repaired })
+}
+
+/// Bring a stored plan back inside the invariants `update_plan` enforces.
+///
+/// Two rules are repairable without a decision:
+/// - a repeated id is a duplicate ROW, so the first occurrence wins and later
+///   ones are dropped (same id, same step: keeping both would fail every lookup);
+/// - only the first `in_progress` item stays in progress; the rest become
+///   `pending`, because two active items is an ordering claim nobody made.
+///
+/// An item with empty text or an empty id is dropped: it names no work, and a
+/// blank obligation in front of the model is worse than a shorter plan. The
+/// result is then valid by construction; a caller that must not proceed on a
+/// repaired plan cannot tell it apart, which is why the repair is documented
+/// here rather than silent.
+fn repair_stored_items(items: Vec<PlanItem>) -> Vec<PlanItem> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut kept_in_progress = false;
+    items
+        .into_iter()
+        .filter_map(|mut item| {
+            if item.id.trim().is_empty() || item.text.trim().is_empty() {
+                return None;
+            }
+            if !seen.insert(item.id.clone()) {
+                return None;
+            }
+            if item.status == PlanItemStatus::InProgress {
+                if kept_in_progress {
+                    item.status = PlanItemStatus::Pending;
+                } else {
+                    kept_in_progress = true;
+                }
+            }
+            Some(item)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -203,14 +244,55 @@ mod tests {
         assert!(plan_for_start(&PlanState::default(), Some(&[])).is_none());
     }
     #[test]
-    fn a_stored_plan_that_breaks_the_invariants_is_not_adopted() {
+    fn a_second_in_progress_item_comes_back_as_pending() {
         let mut first = stored("P1", 0, PlanItemStatus::InProgress);
         first.text = "one".to_string();
         let mut second = stored("P2", 1, PlanItemStatus::InProgress);
         second.text = "two".to_string();
 
-        // Two `in_progress` items is what `update_plan` refuses; a restored
-        // plan must not smuggle it past the tool.
-        assert!(plan_for_start(&PlanState::default(), Some(&[first, second])).is_none());
+        // Two `in_progress` items is what `update_plan` refuses. Refusing the
+        // whole plan over it would throw away work the session needs, so the
+        // later one becomes pending — the ordering claim nobody made.
+        let plan = plan_for_start(&PlanState::default(), Some(&[first, second]))
+            .expect("a repairable plan is still restored");
+        assert_eq!(plan.items.len(), 2);
+        assert_eq!(plan.items[0].status, PlanItemStatus::InProgress);
+        assert_eq!(plan.items[1].status, PlanItemStatus::Pending);
+        PlanState::validate_items(&plan.items).expect("the repair is valid");
+    }
+
+    #[test]
+    fn a_duplicate_id_keeps_the_first_row_and_drops_the_rest() {
+        let mut first = stored("P1", 0, PlanItemStatus::Pending);
+        first.text = "first".to_string();
+        let mut duplicate = stored("P1", 1, PlanItemStatus::Pending);
+        duplicate.text = "second".to_string();
+
+        let plan = plan_for_start(&PlanState::default(), Some(&[first, duplicate]))
+            .expect("a repairable plan is still restored");
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.items[0].text, "first");
+    }
+
+    #[test]
+    fn an_item_with_empty_text_is_dropped_and_the_rest_survives() {
+        let mut blank = stored("P1", 0, PlanItemStatus::Pending);
+        blank.text = "   ".to_string();
+        let mut real = stored("P2", 1, PlanItemStatus::Pending);
+        real.text = "real step".to_string();
+
+        let plan = plan_for_start(&PlanState::default(), Some(&[blank, real]))
+            .expect("the valid item is kept");
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.items[0].text, "real step");
+    }
+
+    /// Repair must not invent an obligation: a stored plan whose every item is
+    /// blank yields nothing rather than an empty plan that looks restored.
+    #[test]
+    fn a_plan_with_nothing_repairable_is_not_adopted() {
+        let mut blank = stored("P1", 0, PlanItemStatus::Pending);
+        blank.text = String::new();
+        assert!(plan_for_start(&PlanState::default(), Some(&[blank])).is_none());
     }
 }
