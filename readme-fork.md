@@ -100,6 +100,9 @@ Extras:
   derived, so a lost `project.db` is rebuilt from the log. Project identity is
   the git remote URL, else the git common dir, else the working directory,
   hashed — one repository's worktrees share a record and two clones do not.
+  A session that starts with no plan of its own adopts the project's stored
+  plan in its recorded order; a session that already has one keeps it, because
+  its own record is the obligation it is under.
   With the setting absent nothing is written, so an existing session is
   byte-identical.
   Every model plan change is also written as a `session_plan_state` custom
