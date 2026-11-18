@@ -14,6 +14,11 @@ use serde_json::Value;
 /// The schema version this crate writes.
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// How far back `EventLog::truncate_torn_tail` reads per step while looking for
+/// the last newline. A torn line is one append batch, so one step normally ends
+/// the scan.
+const TORN_TAIL_SCAN_CHUNK: u64 = 64 * 1024;
+
 /// Who produced an event.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -141,8 +146,6 @@ impl EventLog {
     ///
     /// Returns an error when the file cannot be read or truncated.
     pub fn truncate_torn_tail(&self) -> Result<u64> {
-        use std::io::{Read, Seek};
-
         let length = self.len_bytes()?;
         if length == 0 {
             return Ok(0);
@@ -160,10 +163,9 @@ impl EventLog {
 
         // Scan backwards for the last newline in bounded chunks: the torn line is
         // one batch, so this is normally a single read.
-        const CHUNK: u64 = 64 * 1024;
         let mut end = length;
         let keep = loop {
-            let take = end.min(CHUNK);
+            let take = end.min(TORN_TAIL_SCAN_CHUNK);
             let start = end - take;
             let mut buf = vec![0_u8; usize::try_from(take).unwrap_or(0)];
             file.seek(SeekFrom::Start(start))
