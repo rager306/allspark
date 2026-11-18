@@ -50,7 +50,8 @@ process defect, and the process is what this file exists to fix.
 
 | # | Class | Finding | Status |
 |---|---|---|---|
-| 24 | shared-key collision across owners | `entities.id` is the plan item id, and two sessions in one project both mint `P1`, `P2`…, so the second session's snapshot overwrites the first's rows in `project.db` and in the restored plan | **open** — needs a per-session row key before the store can hold two sessions |
+| 24a | cross-session delete | `known_item_ids` read the WHOLE project log, so session B emitted `entity.removed` for session A's steps. Measured: `[upserted P1, upserted P2, upserted P1, removed P2]` | `05d65012b` (previous now means "mine") |
+| 24b | shared-key collision | `entities.id` is the plan item id, so two sessions in one project overwrite each other's row; the restored plan is whichever wrote last | **open** — needs a per-session row key, a contract change |
 | 25 | test that documents a bug | a first attempt to "prove" #24 asserted the collapsed result and passed, which would have frozen the defect as the expected behaviour | removed (no test is better than a test that pins a bug) |
 
 Notes on #24, so the fix is not guessed at again:
