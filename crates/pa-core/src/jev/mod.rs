@@ -179,20 +179,47 @@ pub fn resolve_judge(
             candidates.push(candidate);
         }
     }
-    // `jev.fallback: "llm"` asks for a prompted re-ask the judge does not implement. Reporting
-    // it is the honest consumer: an operator who set it learns here that the request was seen
-    // and is not honoured, instead of the key parsing into nothing (review #23).
-    if settings.prompted_fallback && !candidates.is_empty() {
-        tracing::warn!(
-            candidates = candidates.len(),
-            "jev.fallback is \"llm\", but prompted fallback is not implemented; \
-             the judge chain answers per candidate only"
-        );
-    }
+    // `jev.fallback: "llm"` asks for a prompted re-ask the judge does not
+    // implement. It used to reach a `tracing::warn!`, which reports to a log
+    // reader rather than to the operator who set the key, and a setting that
+    // parses and does nothing is the defect the key exists to avoid. It is now
+    // refused where the setting is read: see `reject_unsupported_fallback`.
+    debug_assert!(
+        !settings.prompted_fallback,
+        "an unsupported jev.fallback value must be refused before the chain resolves"
+    );
     // The process-shared ledger: a re-resolved chain (next session, next
     // consumer) inherits another chain's cooldowns, like the omp
     // registry-carried rejection map.
     (!candidates.is_empty()).then(|| Arc::new(ChainJudge::new_shared_rejections(candidates)))
+}
+
+/// Refuse `jev.fallback = "llm"` where the setting is read.
+///
+/// The field parses `"off" | "llm"`, and only `"off"` is honoured: the prompted
+/// re-ask is not implemented. Accepting `"llm"` and answering as if it were
+/// `"off"` is a setting that cannot do what it says, which the operator cannot
+/// discover except by reading a warning in a log they may never open. The
+/// error names the key, the value, and what does work.
+///
+/// An absent or unrecognized value is NOT an error: the field's contract is
+/// that anything but `"llm"` reads as off, so a typo degrades safely.
+///
+/// # Errors
+///
+/// Returns an error when the value asks for the unimplemented prompted path.
+pub fn reject_unsupported_fallback(raw: Option<&str>) -> anyhow::Result<()> {
+    let Some(mode) = raw.map(str::trim).filter(|mode| !mode.is_empty()) else {
+        return Ok(());
+    };
+    if mode.eq_ignore_ascii_case("llm") {
+        anyhow::bail!(
+            "jev.fallback = \"llm\" is not supported: the prompted re-ask is not implemented, \
+             so the judge answers per resolved candidate only. Set jev.fallback = \"off\" and \
+             list the models you want tried in jev.fallbackChain."
+        );
+    }
+    Ok(())
 }
 
 /// Whether the chain's first candidate is a native judgment backend - the

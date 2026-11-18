@@ -1301,3 +1301,29 @@ async fn the_tool_arbiter_judgment_layer_needs_a_native_judge() {
     );
     assert_eq!(arbiter.consecutive_failures(), 0);
 }
+
+#[test]
+fn an_unsupported_fallback_mode_is_refused_rather_than_ignored() {
+    // `jev.fallback = "llm"` promises a prompted re-ask the judge does not
+    // implement. It used to reach a `tracing::warn!`, which reports to a log
+    // the operator may never open; the setting now refuses where it is read.
+    let error = crate::jev::reject_unsupported_fallback(Some("llm"))
+        .expect_err("llm is not implemented and must be refused");
+    let message = error.to_string();
+    assert!(message.contains("jev.fallback"), "{message}");
+    assert!(message.contains("not supported"), "{message}");
+    // The message must say what DOES work, or the operator is left guessing.
+    assert!(message.contains("fallbackChain"), "{message}");
+}
+
+/// The field's documented contract: anything but `"llm"` reads as off, so an
+/// absent key or a typo degrades safely rather than failing a session.
+#[test]
+fn every_other_fallback_spelling_is_accepted() {
+    for raw in [None, Some(""), Some("  "), Some("off"), Some("nonsense")] {
+        crate::jev::reject_unsupported_fallback(raw)
+            .unwrap_or_else(|error| panic!("{raw:?} must be accepted: {error}"));
+    }
+    crate::jev::reject_unsupported_fallback(Some(" LLM "))
+        .expect_err("the match is case- and whitespace-insensitive");
+}

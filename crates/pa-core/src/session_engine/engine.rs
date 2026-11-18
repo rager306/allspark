@@ -359,6 +359,11 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // rides the resolved settings, so the operator's intent is at least visible where the judge
     // is built instead of parsing into nothing.
     let jev_prompted_fallback = settings.get_jev_fallback();
+    // A value the product cannot honour is refused where it is read: a
+    // `tracing::warn!` inside the chain reported it to a log the operator may
+    // never open, and every unsupported spelling below is a setting that
+    // silently does nothing.
+    crate::jev::reject_unsupported_fallback(settings.jev_fallback_raw().as_deref())?;
     let jev_timeout = std::time::Duration::from_millis(settings.get_jev_timeout_ms());
     let jev_cache_enabled = settings.get_jev_cache_enabled();
     // FORK-ONLY (jev Phase 2): the consumer gates, captured before `settings`

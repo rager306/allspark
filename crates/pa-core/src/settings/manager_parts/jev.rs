@@ -59,6 +59,21 @@ impl SettingsManager {
     /// by default — an unrecognized or absent value reads as `off`, matching the field's own
     /// contract ("Phase 1 always treats it as off"), so a typo cannot enable an uncalibrated
     /// path.
+    /// The raw `jev.fallback` spelling, for a reader that must REFUSE an
+    /// unsupported value instead of degrading to `off`.
+    ///
+    /// `get_jev_fallback` answers the boolean the chain uses, so by the time a
+    /// caller sees `true` the unsupported case is already indistinguishable
+    /// from the supported one.
+    #[must_use]
+    pub fn jev_fallback_raw(&self) -> Option<String> {
+        self.merged
+            .jev
+            .as_ref()
+            .and_then(|jev| jev.fallback.clone())
+            .map(|mode| mode.trim().to_string())
+    }
+
     #[must_use]
     pub fn get_jev_fallback(&self) -> bool {
         self.merged
