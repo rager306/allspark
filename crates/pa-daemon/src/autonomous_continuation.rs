@@ -191,7 +191,14 @@ impl AgentSessionEngine {
         {
             return None;
         }
-        self.plan_store.continuation_text()
+        // The revision is the harness's, read here rather than stored: a
+        // completed item whose evidence names another commit is reported
+        // stale, which is the only reader `evidenceRevision` has.
+        let revision = {
+            let cwd = self.cwd();
+            pa_core::session::manager::capture_git_context(&cwd).and_then(|git| git.commit)
+        };
+        self.plan_store.continuation_text_at(revision.as_deref())
     }
 
     /// Whether an active thread goal owns the continuation wakeup.
@@ -784,6 +791,86 @@ mod tests {
         assert!(
             ends.iter().any(|end| end.contains("done")),
             "the final answer was not part of the run: {ends:?}"
+        );
+    }
+    /// The `evidenceRevision` stamp had no reader: it was written on every plan
+    /// update and nothing ever surfaced a stale one. This drives the product
+    /// path (`autonomous_continuation_rows`) and checks the warning reaches the
+    /// reminder text the model actually receives.
+    #[test]
+    fn a_plan_reminder_carries_the_current_commit_into_the_stale_evidence_check() {
+        let _faux = FAUX_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A repository whose HEAD is known, so the check has a revision to
+        // compare against: the engine's cwd IS the repo.
+        let repo_dir = tempfile::TempDir::new().unwrap();
+        let repo = repo_dir.path().to_path_buf();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@example.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@example.com")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        git(&["init", "-q"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "one"]);
+        let engine =
+            crate::agent_engine::AgentSessionEngine::new(crate::agent_engine::AgentEngineConfig {
+                cwd: repo,
+                agent_dir: repo_dir.path().join("agent"),
+                provider: None,
+                model: None,
+                api_key: None,
+                thinking: None,
+                session_dir: None,
+                session_file: None,
+                faux_script: Some(
+                    serde_json::json!({ "engine": "faux", "responses": [{ "text": "ok" }] })
+                        .to_string(),
+                ),
+                supervisor_link: None,
+                telemetry_disabled: None,
+                cron_store: None,
+                queued_steering_probe: None,
+                admission: crate::agent_engine::provider_admission::AdmissionClient::Disabled,
+            })
+            .unwrap();
+        let engine = std::sync::Arc::new(engine);
+        engine.register_arc();
+
+        let mut settled = plan_item(
+            "done",
+            pa_core::session_engine::plan::PlanItemStatus::Completed,
+        );
+        settled.verify = Some("cargo test".to_string());
+        settled.evidence = Some("cargo test: 16 passed".to_string());
+        settled.evidence_revision = Some("0000000".to_string());
+        engine.plan_store.replace(vec![
+            settled,
+            plan_item(
+                "next",
+                pa_core::session_engine::plan::PlanItemStatus::Pending,
+            ),
+        ]);
+
+        let rows = engine.runtime.block_on(async {
+            engine
+                .autonomous_continuation_rows(&text_turn("done"))
+                .await
+        });
+        let text = serde_json::to_string(&rows).unwrap();
+        assert!(text.contains("[plan: continuation]"), "{text}");
+        assert!(
+            text.contains("recorded against another commit"),
+            "the reminder must carry the stale-evidence warning: {text}"
         );
     }
 }

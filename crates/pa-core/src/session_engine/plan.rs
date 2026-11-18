@@ -397,6 +397,34 @@ impl PlanStore {
             item.id, item.text
         ))
     }
+
+    /// The continuation text with the settled items whose evidence predates
+    /// `current_revision` named.
+    ///
+    /// Staleness is advisory and rides the same reminder as the next item: a
+    /// completed item whose proof was recorded against another commit is not
+    /// wrong, but the tree it described is gone. Saying so in the reminder is
+    /// what makes the `evidenceRevision` stamp reach a reader — nothing else
+    /// reads it.
+    #[must_use]
+    pub fn continuation_text_at(&self, current_revision: Option<&str>) -> Option<String> {
+        let base = self.continuation_text();
+        let stale = self.snapshot().stale_evidence_item_ids(current_revision);
+        if stale.is_empty() {
+            return base;
+        }
+        let warning = format!(
+            "The evidence on these completed items was recorded against another commit, so re-check them before relying on it: {}.",
+            stale.join(", ")
+        );
+        // A plan whose items are all settled has no next item, but it can still
+        // hold stale proof: the warning is a reason to speak on its own, or a
+        // finished plan's evidence would never be re-checked.
+        Some(match base {
+            Some(base) => format!("{base}\n\n{warning}"),
+            None => format!("[plan: evidence]\n\n{warning}"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -742,5 +770,62 @@ mod tests {
 
         store.replace(vec![item("one", PlanItemStatus::InProgress)]);
         assert!(store.next_item().is_some());
+    }
+    #[test]
+    fn the_reminder_names_evidence_recorded_against_another_commit() {
+        let store = PlanStore::default();
+        let mut settled = item("one", PlanItemStatus::Completed);
+        settled.verify = Some("cargo test".to_string());
+        settled.evidence = Some("cargo test: 14 passed".to_string());
+        settled.evidence_revision = Some("aaaa111".to_string());
+        store.replace(vec![settled, item("two", PlanItemStatus::Pending)]);
+
+        let current = store.continuation_text_at(Some("bbbb222")).unwrap();
+        assert!(
+            current.contains("recorded against another commit"),
+            "{current}"
+        );
+        assert!(
+            current.contains("one"),
+            "the stale item is named: {current}"
+        );
+
+        // Every item settled: there is no next item to continue, and the stale
+        // proof is the only reason the reminder exists at all.
+        let settled_only = PlanStore::default();
+        let mut done = item("all", PlanItemStatus::Completed);
+        done.evidence = Some("cargo test: 14 passed".to_string());
+        done.evidence_revision = Some("aaaa111".to_string());
+        settled_only.replace(vec![done]);
+        let text = settled_only
+            .continuation_text_at(Some("bbbb222"))
+            .expect("stale evidence speaks on its own");
+        assert!(text.contains("[plan: evidence]"), "{text}");
+
+        // The same commit, and no commit at all, both stay silent: the first is
+        // fresh, and a session outside a repository cannot tell. Fresh stores,
+        // because the second consult on one item already spends the reminder
+        // guard's budget and returns nothing at all.
+        for revision in [Some("aaaa111"), None] {
+            let fresh = PlanStore::default();
+            let mut settled = item("one", PlanItemStatus::Completed);
+            settled.evidence = Some("cargo test: 14 passed".to_string());
+            settled.evidence_revision = Some("aaaa111".to_string());
+            fresh.replace(vec![settled, item("two", PlanItemStatus::Pending)]);
+            let text = fresh.continuation_text_at(revision).unwrap();
+            assert!(!text.contains("another commit"), "{revision:?}: {text}");
+        }
+    }
+
+    #[test]
+    fn an_item_without_evidence_is_never_reported_stale() {
+        let store = PlanStore::default();
+        store.replace(vec![
+            item("one", PlanItemStatus::Completed),
+            item("two", PlanItemStatus::Pending),
+        ]);
+
+        let text = store.continuation_text_at(Some("bbbb222")).unwrap();
+        assert!(!text.contains("another commit"), "{text}");
     }
 }
