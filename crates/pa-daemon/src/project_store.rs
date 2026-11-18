@@ -158,20 +158,30 @@ impl ProjectRecorder {
         // A failed sync still leaves the model as a usable (if older) answer.
         let _ = self.sync();
         let model = pa_project::model::ReadModel::open(&self.paths.model).ok()?;
-        // Rows are keyed per session, so a project can hold several plans. The
-        // one to resume is the newest session's: its plan is the work in flight,
-        // and an older session's plan is a record of work already replaced.
-        let newest = self.newest_session_with_plan(&model)?;
+        // Rows are keyed per session, so a project can hold several plans. This
+        // session's own plan wins: a restart must get back the plan it wrote,
+        // not a later session's. Only a session with no plan of its own adopts
+        // the project's, which is the newest one — the work most recently in
+        // flight.
         let rows = model
             .entities_of_type(&self.paths.project_id, "plan_item")
             .ok()?;
+        let own = Self::scope_key(self.session_id.as_deref());
+        let scope = if rows
+            .iter()
+            .any(|(row_id, _)| Self::row_scope(row_id) == own)
+        {
+            own
+        } else {
+            self.newest_session_with_plan()?
+        };
         let mut items: Vec<_> = rows
             .into_iter()
-            .filter(|(row_id, _)| row_id.starts_with(&format!("{newest}:")))
+            .filter(|(row_id, _)| Self::row_scope(row_id) == scope)
             .filter_map(|(row_id, data)| {
-                // The plan's own id lives in the row's data, not in the key.
-                let item_id = row_id.split_once(':').map_or(row_id.as_str(), |(_, id)| id);
-                crate::plan_restore::StoredPlanItem::from_row(item_id, &data)
+                // The plan's own id lives in the key's second half, not in the
+                // row's data.
+                crate::plan_restore::StoredPlanItem::from_row(Self::row_item(&row_id), &data)
             })
             .collect();
         if items.is_empty() {
@@ -181,11 +191,12 @@ impl ProjectRecorder {
         Some(items)
     }
 
-    /// The session that wrote the newest plan event in this project.
+    /// The session that wrote the newest plan event in this project, as a row
+    /// scope.
     ///
     /// Read from the log, not the model: the log is canonical and carries the
     /// order, so the newest writer is knowable even when the model is behind.
-    fn newest_session_with_plan(&self, _model: &pa_project::model::ReadModel) -> Option<String> {
+    fn newest_session_with_plan(&self) -> Option<String> {
         let events = EventLog::at(&self.paths.events).read_all().ok()?;
         events
             .iter()
@@ -203,6 +214,16 @@ impl ProjectRecorder {
     /// a session id still reads back the plan it wrote.
     fn scope_key(session_id: Option<&str>) -> String {
         session_id.unwrap_or("-").to_string()
+    }
+
+    /// The session half of a `session:item` row key.
+    fn row_scope(row_id: &str) -> &str {
+        row_id.split_once(':').map_or(row_id, |(scope, _)| scope)
+    }
+
+    /// The plan item half of a `session:item` row key.
+    fn row_item(row_id: &str) -> &str {
+        row_id.split_once(':').map_or(row_id, |(_, item)| item)
     }
 
     /// Bring the read model up to date with the log.
@@ -287,7 +308,7 @@ impl ProjectRecorder {
                 continue;
             };
             // Rows are keyed `session:item`; the caller compares plan item ids.
-            let id = row_id.split_once(':').map_or(row_id, |(_, item)| item);
+            let id = Self::row_item(row_id);
             match event.event_type.as_str() {
                 "entity.upserted"
                     if event.payload.get("entityType").and_then(Value::as_str)
@@ -834,11 +855,12 @@ mod tests {
             "two sessions, two plans: five rows"
         );
 
-        // Restoring gives the newest session's plan, not a mixture of both.
+        // Restoring gives each session its own plan, not a mixture and not the
+        // other session's: `first` reads back the two steps it wrote.
         let restored = first.load_plan().expect("a plan");
         let ids: Vec<&str> = restored.iter().map(|entry| entry.id.as_str()).collect();
-        assert_eq!(ids, vec!["P1", "P2", "P3"]);
-        assert_eq!(restored[0].status, PlanItemStatus::Completed);
+        assert_eq!(ids, vec!["P1", "P2"]);
+        assert_eq!(restored[0].status, PlanItemStatus::InProgress);
     }
 
     /// The same session writing twice still replaces its own plan, so the key
@@ -860,5 +882,50 @@ mod tests {
         let restored = recorder.load_plan().expect("a plan");
         assert_eq!(restored.len(), 1);
         assert_eq!(restored[0].id, "P1");
+    }
+
+    /// A restarted session must get back its own plan, not the plan a later
+    /// session wrote. "Newest wins" was the first rule and it was wrong for the
+    /// restart case: the session's own rows still exist, so they are the answer.
+    #[test]
+    fn a_restarted_session_restores_its_own_plan_not_a_later_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let first = ProjectRecorder::new(paths.clone(), Some("session-a".to_string()));
+        first
+            .record_plan(&[
+                item("P1", PlanItemStatus::InProgress),
+                item("P2", PlanItemStatus::Pending),
+            ])
+            .unwrap();
+        ProjectRecorder::new(paths.clone(), Some("session-b".to_string()))
+            .record_plan(&[item("P9", PlanItemStatus::Completed)])
+            .unwrap();
+        first.sync().unwrap();
+
+        // `first` stands in for session-a after a restart: same session id, no
+        // in-memory state.
+        let restarted = ProjectRecorder::new(paths, Some("session-a".to_string()));
+        let restored = restarted.load_plan().expect("its own plan");
+        let ids: Vec<&str> = restored.iter().map(|entry| entry.id.as_str()).collect();
+        assert_eq!(ids, vec!["P1", "P2"]);
+    }
+
+    /// A session that never wrote a plan adopts the project's newest one, which
+    /// is what makes the store useful across sessions at all.
+    #[test]
+    fn a_session_with_no_plan_adopts_the_newest_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        ProjectRecorder::new(paths.clone(), Some("session-a".to_string()))
+            .record_plan(&[item("P1", PlanItemStatus::InProgress)])
+            .unwrap();
+        ProjectRecorder::new(paths.clone(), Some("session-b".to_string()))
+            .record_plan(&[item("P9", PlanItemStatus::Completed)])
+            .unwrap();
+
+        let fresh = ProjectRecorder::new(paths, Some("session-c".to_string()));
+        let restored = fresh.load_plan().expect("the project plan");
+        assert_eq!(restored[0].id, "P9");
     }
 }
