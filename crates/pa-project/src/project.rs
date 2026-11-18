@@ -511,6 +511,31 @@ mod tests {
         let error = ReadModel::open(&db).unwrap_err().to_string();
         assert!(error.contains("read-model version 99"), "{error}");
     }
+
+    /// The daemon's fallback replays the whole log when an incremental pass
+    /// fails. That replay must be a no-op for what landed and keep `seq`
+    /// contiguous for what did not, or a resumed pass writes a sequence with a
+    /// hole in it.
+    #[test]
+    fn a_full_replay_after_a_partial_pass_keeps_the_sequence_contiguous() {
+        let (_dir, mut model) = model();
+        let first = vec![
+            upsert("P1", "plan_item", "a"),
+            upsert("P2", "plan_item", "b"),
+        ];
+        assert_eq!(project(&mut model, PROJECT, &first).unwrap().applied, 2);
+
+        // The fallback: everything from the start, plus one new event.
+        let mut all: Vec<Event> = first.clone();
+        all.push(upsert("P3", "plan_item", "c"));
+        let report = project(&mut model, PROJECT, &all).unwrap();
+        assert_eq!(report.applied, 1, "only the new event lands");
+        assert_eq!(report.skipped, 2, "the applied prefix is skipped");
+
+        // The new event's seq follows the last applied one, with no hole.
+        assert_eq!(model.applied_seq("e-P3-c").unwrap(), Some(3));
+        assert_eq!(model.count_entities(PROJECT, "plan_item").unwrap(), 3);
+    }
 }
 
 #[cfg(test)]
