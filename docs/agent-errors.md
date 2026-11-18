@@ -156,3 +156,30 @@ without, over 400 files.
 **Rule:** a repair that runs on every pass is a cost on every pass. Measure the COMMON case
 (nothing changed), not the case the fix was written for. If the measurement does not finish,
 that is the finding.
+
+## 9. A fix that leaks past the operation it was written for
+
+**Seen:** once (2026-11-18), caught by three full suite runs and one A/B.
+
+The daemon's kill test failed with `kill waited out the held provider response (60.31s)`, so the
+abort was not reaching the turn. The window was real: the worker marks the session busy before
+the agent registers its run, and an abort that landed in between found no run and did nothing.
+The first fix made the abort sticky — no run, remember it and apply it to the next one. It
+passed its own test and turned the kill test green.
+
+It was wrong. A flag that survives the turn also cancels the NEXT turn, and
+`abort_and_send_queued` deliberately starts a follow-up after aborting. Three consecutive full
+`pa-daemon --lib` runs reported 1389/1, each time a different test of that queue family. Every
+failed test was green alone, which is exactly how a regression hides behind a "flaky" label.
+The decisive step was not more reasoning: it was disabling the flag's apply and running the whole
+suite, 1390/0.
+
+**Caught by:** the same family failing three times with three different names. One failure is a
+flake; three different names in one family is a cause.
+
+**Rule:** an abort, a cancel or a "skip next" must expire with the operation it belongs to. Ask
+what the signal means after the operation ends — if the answer is "still pending", the state
+outlives its subject and will act on an unrelated one. Prefer a generation counter scoped to the
+operation being started over a boolean that outlives it, and prove the negative case (the next
+operation still runs) in the same change.
+
