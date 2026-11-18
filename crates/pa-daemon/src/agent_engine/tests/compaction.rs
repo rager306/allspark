@@ -1361,7 +1361,7 @@ fn low_custom_percentage_compacts_real_history_once_and_then_makes_progress() {
         pa_core::session_engine::compaction::CompactionSettings {
             threshold_percent: 75.0,
             reserve_tokens: 16_384,
-            keep_recent_tokens: 9_000,
+            keep_recent_tokens: 10_000,
             ..Default::default()
         }
     );

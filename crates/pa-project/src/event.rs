@@ -143,6 +143,7 @@ impl EventLog {
     pub fn truncate_torn_tail(&self) -> Result<u64> {
         use std::io::{Read, Seek};
 
+        const CHUNK: u64 = 64 * 1024;
         let length = self.len_bytes()?;
         if length == 0 {
             return Ok(0);
@@ -160,7 +161,6 @@ impl EventLog {
 
         // Scan backwards for the last newline in bounded chunks: the torn line is
         // one batch, so this is normally a single read.
-        const CHUNK: u64 = 64 * 1024;
         let mut end = length;
         let keep = loop {
             let take = end.min(CHUNK);

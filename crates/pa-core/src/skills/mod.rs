@@ -299,7 +299,8 @@ fn skill_block(skill: &Skill) -> Option<String> {
     // refuses a FIFO before the open, so neither an enormous body nor a pipe named SKILL.md can
     // stall the turn (#4, #29); the marker rides in the body so a cut skill is visible to the
     // model, not just to a discarded flag (review #2).
-    let content = crate::resources::read_prompt_input_marked(&skill.file_path, "SKILL BODY").ok()?;
+    let content =
+        crate::resources::read_prompt_input_marked(&skill.file_path, "SKILL BODY").ok()?;
     let body = frontmatter::strip_frontmatter(&content).trim().to_string();
     Some(format!(
         "<skill name=\"{}\" location=\"{}\">\nReferences are relative to {}.\n\n{}\n</skill>",
@@ -468,7 +469,10 @@ mod tests {
         .expect("write");
         let yaml_error = serde_yaml::from_str::<serde_yaml::Value>(yaml).unwrap_err();
         let result = crate::skills::load_skills_from_dir(dir.path(), "user");
-        assert!(result.skills.is_empty());
+        assert!(
+            result.skills.is_empty(),
+            "an invalid frontmatter loads no skill"
+        );
         assert_eq!(
             result.diagnostics,
             vec![crate::skills::ResourceDiagnostic::Warning {
@@ -605,7 +609,10 @@ mod tests {
         let skills = [skill];
         let (expanded, used) = expand_skill_command("/skill:gone", &skills);
         assert_eq!(expanded, "/skill:gone");
-        assert!(used.is_empty());
+        assert!(
+            used.is_empty(),
+            "an unreadable skill file reports no skill used"
+        );
     }
 
     #[test]

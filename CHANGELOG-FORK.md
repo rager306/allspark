@@ -67,6 +67,51 @@ Three `agent_engine::tests::model_resolution` tests fail identically on a pristi
 
 ---
 
+## fork.024 — upstream v0.10.6-beta.1 (the v0.10.5 release line)
+
+- Tag: `allspark-v0.10.6-beta.1-fork.024`, version **`0.10.6-beta.1`**
+- Base: live `main` at `b71a01879` -> upstream `v0.10.6-beta.1`.
+
+Five commits past `beta.17`: the v0.10.5 release fold, the home-uv-install acceptance fix
+(#4091), the skill-resolution rewrite (#4089), terminal Markdown styling (#4096), and a
+version-only nightly tag.
+
+### What changed and why it mattered
+
+- **`/skill:` works mid-message.** The expansion used to fire only on a leading
+  `/skill:<name>`; it now walks every reference in the message and returns every skill it
+  used, not one.
+- **Bundled skills win a name collision, visibly.** A user skill that loses its name to a
+  bundled one produces a display-only warning row on the first turn that names both paths.
+  Before, it vanished.
+- **The fork's capped skill read survives the rewrite.** `skill_block` takes its body through
+  `read_prompt_input_marked`, so the fork's review #4/#29/#2 findings (bounded read, FIFO
+  refusal, a truncation marker the model can see) apply to whichever path expands the skill.
+- **`mcp_gating_blocking` is deleted, not kept.** #4091 moved the logic into
+  `resources::mcp_gating`; keeping the old helper would have left two copies of one gating
+  decision.
+- **The compaction fixture stays at `thresholdPercent: 60` with `keepRecentTokens: 10_000`.**
+  Upstream lowered the retention to 9_000 for a symptom the fork had already fixed by raising
+  the percentage: the fork's trigger prices the fixed prompt prefix (~18 000 tokens), so a 5%
+  threshold skips as `TooShort` before compacting.
+
+### Verification
+
+`pa-core --lib` **1831**, `pa-daemon --lib` **1414**, `pa-graph` **586**, `pa-types` **167**.
+Gate `--fast` GREEN. Fork surface INTACT.
+
+Red on purpose-of-record: three `model_resolution` tests fail on a pristine `v0.10.6-beta.1`
+worktree (upstream debt), and `skill_statuses_explain_every_discovered_skill` fails there too
+because it discovers this machine's `~/.agents/skills` — an environment leak in the test, not
+in the product.
+
+### Ownership note
+
+`pa-project` is a crate the live branch added; it is absent from the `AGENTS.md` crate table.
+Reported, not fixed here: the table belongs to the change that introduces a crate.
+
+---
+
 ## fork.023 — upstream v0.10.4-beta.17 (the v0.10.4 release line)
 
 - Tag: `allspark-v0.10.4-beta.17-fork.023`, version **`0.10.4-beta.17`**

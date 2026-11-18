@@ -1689,6 +1689,7 @@ async fn the_watch_setting_starts_a_live_watcher() {
     assert_eq!(auto, Some(false), "`auto` must not watch");
     let (_o, off) = session_with("off").await;
     assert_eq!(off, Some(false), "`off` must not watch");
+}
 
 /// A fresh root session whose skill resolution found a problem (here a user
 /// skill that loses its name to the bundled `goal`) shows it as a
@@ -1751,5 +1752,4 @@ async fn a_fresh_session_reports_skill_problems_on_its_first_turn() {
         .map(|row| (row.content.clone(), row.display))
         .collect();
     assert_eq!(rows, vec![(expected.content, true)]);
-}
 }

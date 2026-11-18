@@ -786,7 +786,6 @@ fn the_project_recorder_is_resolved_once_per_engine() {
     assert_eq!(first.paths().project_id, second.paths().project_id);
 }
 
-
 /// An injected custom row without a timestamp admits the turn (the type's
 /// serde default fills the clock at parse) — the regression for the live
 /// `injected custom message parse failed: missing field timestamp`
@@ -863,7 +862,6 @@ fn an_injected_custom_row_without_a_timestamp_admits_the_turn() {
         .any(|event| matches!(event, EngineEvent::Done(Ok(()))));
     assert!(done, "the turn completed: {:?}", events.len());
 }
-
 
 /// The parse-failure diagnostic line: the requesting turn's identity plus
 /// a summary of the row (`customType`, top-level keys, byte length) — never
