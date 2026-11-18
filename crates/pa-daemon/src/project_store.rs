@@ -928,4 +928,44 @@ mod tests {
         let restored = fresh.load_plan().expect("the project plan");
         assert_eq!(restored[0].id, "P9");
     }
+
+    /// The row key is `session:item`, and that is a contract, not an internal
+    /// detail: an item id alone must never be assumed to be the key.
+    ///
+    /// A row written by a build from before this key existed carries a bare item
+    /// id, so its scope reads as the item id and no session matches it. Such rows
+    /// are not restored — the feature is off by default and unreleased, so there
+    /// is no user data to migrate, and this test is where a future reader meets
+    /// that decision instead of discovering it.
+    #[test]
+    fn rows_from_before_the_per_session_key_are_not_read_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let recorder = ProjectRecorder::new(paths.clone(), Some("session-a".to_string()));
+        let legacy = pa_project::event::Event {
+            event_id: "legacy-1".to_string(),
+            event_type: "entity.upserted".to_string(),
+            schema_version: 1,
+            project_id: "proj".to_string(),
+            session_id: Some("session-a".to_string()),
+            occurred_at: "2026-01-01T00:00:00Z".to_string(),
+            actor: pa_project::event::Actor {
+                kind: "agent".to_string(),
+                id: None,
+            },
+            payload: json!({
+                "id": "P1",
+                "entityType": "plan_item",
+                "data": { "position": 0, "text": "old", "status": "pending" },
+            }),
+        };
+        EventLog::at(&recorder.paths().events)
+            .append(&legacy)
+            .unwrap();
+
+        assert!(
+            recorder.load_plan().is_none(),
+            "a bare row belongs to no session scope"
+        );
+    }
 }
