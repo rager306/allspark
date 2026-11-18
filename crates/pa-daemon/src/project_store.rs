@@ -155,8 +155,13 @@ impl ProjectRecorder {
     /// "nothing to resume", not an error the caller must distinguish.
     #[must_use]
     pub fn load_plan(&self) -> Option<Vec<crate::plan_restore::StoredPlanItem>> {
-        // A failed sync still leaves the model as a usable (if older) answer.
-        let _ = self.sync();
+        // A failed sync still leaves the model as a usable (if older) answer,
+        // but it is not silent: an unreported failure here means every restore
+        // from now on serves a stale plan, which is the one thing a reader
+        // cannot see for itself.
+        if let Err(error) = self.sync() {
+            eprintln!("pa-daemon: project model sync on read failed: {error:#}");
+        }
         let model = pa_project::model::ReadModel::open(&self.paths.model).ok()?;
         // Rows are keyed per session, so a project can hold several plans. This
         // session's own plan wins: a restart must get back the plan it wrote,
