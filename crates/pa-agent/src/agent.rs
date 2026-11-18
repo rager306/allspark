@@ -336,13 +336,16 @@ struct AgentInner {
     follow_up_queue: Mutex<PendingMessageQueue>,
     /// Active-run bookkeeping. A plain mutex: never held across awaits.
     run: Mutex<Option<ActiveRun>>,
-    /// An abort that arrived while no run was registered.
+    /// Counts aborts, so a run can tell whether one landed while it was
+    /// starting.
     ///
-    /// The same lock guards this and the run slot, so `abort()` and
-    /// `run_with_lifecycle` cannot miss each other: an abort that lands in the
-    /// window between "the caller believes a turn is running" and "the run slot
-    /// is filled" is held here and applied the moment the slot is filled.
-    abort_pending: Mutex<bool>,
+    /// `run_with_lifecycle` reads this before its first await and compares it
+    /// after filling the run slot. An abort in that window is applied to the
+    /// starting run; an abort that lands later finds the run slot itself. An
+    /// abort that lands when nothing is starting is seen by no run — which is
+    /// what keeps `abort_and_send_queued`'s follow-up from being cancelled by
+    /// the abort of the turn before it.
+    abort_epoch: std::sync::atomic::AtomicU64,
     convert_to_llm: ConvertToLlmFn,
     transform_context: Option<TransformContextFn>,
     stream_fn: Option<StreamFn>,
@@ -605,6 +608,10 @@ impl AgentInner {
         F: FnOnce(AbortSignal, Option<AgentModelOverride>) -> Fut,
         Fut: std::future::Future<Output = anyhow::Result<()>>,
     {
+        // Read before the first await: an abort landing after this point but
+        // before the slot is filled belongs to this run, and the comparison
+        // below applies it.
+        let entry_epoch = self.abort_epoch.load(std::sync::atomic::Ordering::SeqCst);
         let controller = AbortController::new();
         let (idle_tx, _idle_rx) = watch::channel(false);
         // The run's model-override snapshot, read once: a concurrent
@@ -627,12 +634,12 @@ impl AgentInner {
                 idle_tx,
                 model: run_model,
             });
-            // An abort that arrived before the slot was filled applies now, in
-            // the same critical section that filled it: otherwise the run below
-            // waits out a response the caller already stopped.
-            let mut pending = self.abort_pending.lock().unwrap();
-            if *pending {
-                *pending = false;
+            // An abort that arrived after the epoch snapshot above belongs to
+            // this run and is applied now, in the same critical section that
+            // fills the slot: otherwise the run below waits out a response the
+            // caller already stopped. The slot is already visible, so a later
+            // abort cancels through it instead.
+            if self.abort_epoch.load(std::sync::atomic::Ordering::SeqCst) != entry_epoch {
                 controller.abort();
             }
         }
@@ -816,7 +823,7 @@ impl Agent {
                 options.follow_up_mode.unwrap_or(QueueMode::OneAtATime),
             )),
             run: Mutex::new(None),
-            abort_pending: Mutex::new(false),
+            abort_epoch: std::sync::atomic::AtomicU64::new(0),
             convert_to_llm: options
                 .convert_to_llm
                 .unwrap_or_else(AgentLoopConfig::default_convert_to_llm),
@@ -1137,6 +1144,13 @@ impl Agent {
         self.inner.stream_fn.as_ref()
     }
 
+    /// Hold the shared state lock, so a test can keep a run inside
+    /// `run_with_lifecycle`'s pre-slot window.
+    #[cfg(test)]
+    async fn hold_shared_for_test(&self) -> tokio::sync::MutexGuard<'_, Shared> {
+        self.inner.shared.lock().await
+    }
+
     #[must_use]
     pub fn signal(&self) -> Option<AbortSignal> {
         self.inner.current_signal()
@@ -1146,13 +1160,15 @@ impl Agent {
     ///
     /// Panics if the `run` mutex is poisoned.
     pub fn abort(&self) {
+        // The bump comes first: a run that is between its epoch snapshot and its
+        // slot fill must see it, and a run that already filled the slot is
+        // cancelled directly below.
+        self.inner
+            .abort_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let run = self.inner.run.lock().unwrap();
         if let Some(active) = run.as_ref() {
             active.controller.abort();
-        } else {
-            // No run yet: remember it, or the caller's stop is lost and the
-            // next provider fetch runs to completion.
-            *self.inner.abort_pending.lock().unwrap() = true;
         }
     }
 
@@ -1714,15 +1730,16 @@ mod tests {
         );
     }
 
-    /// An abort that lands before the run slot is filled must not be lost.
+    /// An abort that lands while a run is starting must end that run.
     ///
-    /// The worker sets its busy flag before the agent registers its run, and
-    /// `run_with_lifecycle` awaits two locks in between. A stop inside that
-    /// window used to find `run == None` and do nothing, so the turn went on to
-    /// wait out the provider response (measured in the daemon: a kill waited
-    /// 60.31 s for a held reply).
+    /// The window is real: the worker marks the session busy before the agent
+    /// registers its run, and `run_with_lifecycle` awaits the shared lock in
+    /// between. Holding that lock from the test pins a run inside the window, so
+    /// the abort provably arrives where the run slot is still empty — the case
+    /// that used to be dropped, leaving the fetch to run to completion (measured
+    /// in the daemon: a kill waited 60.31 s for a held reply).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn an_abort_before_the_run_starts_is_not_lost() {
+    async fn an_abort_inside_the_start_window_ends_the_run() {
         fn model(id: &str) -> Model {
             Model {
                 id: id.to_string(),
@@ -1738,7 +1755,6 @@ mod tests {
             }
         }
 
-        // The fetch never resolves on its own: only the abort can end this run.
         let stream_fn: crate::stream::StreamFn = std::sync::Arc::new(
             |_requested: Model,
              _context: crate::stream::LlmContext,
@@ -1760,20 +1776,109 @@ mod tests {
             ..Default::default()
         }));
 
-        // The abort arrives while no run exists: the case the fix is about.
+        let held = agent.hold_shared_for_test().await;
+        let running = tokio::spawn({
+            let agent = Arc::clone(&agent);
+            async move { agent.prompt(AgentPromptInput::text("hi")).await }
+        });
+        // Let the run reach its first await, which the guard is holding.
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !running.is_finished(),
+            "the run should be inside the window"
+        );
         agent.abort();
+        drop(held);
 
-        let outcome = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            agent.prompt(AgentPromptInput::text("hi")),
-        )
-        .await
-        .expect("the pre-run abort must end the turn, not leave it fetching");
-
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), running)
+            .await
+            .expect("an abort inside the start window must end the run, not leave it fetching")
+            .expect("the run task joins");
         let error = outcome.expect_err("an aborted turn reports an abort");
         assert!(
             crate::abort::is_abort_error(&error),
             "expected an abort error, got {error:#}"
         );
+    }
+
+    /// An abort that lands when nothing is starting belongs to no run: the next
+    /// turn must still run.
+    ///
+    /// A sticky "abort the next run" flag fixed the kill window but cancelled
+    /// the follow-up that `abort_and_send_queued` deliberately starts: three
+    /// consecutive full daemon runs reported 1389/1 for three different queue
+    /// tests, each green alone, and the suite was 1390/0 with the flag removed.
+    #[tokio::test]
+    async fn an_abort_with_no_run_does_not_cancel_the_next_turn() {
+        fn model(id: &str) -> Model {
+            Model {
+                id: id.to_string(),
+                name: id.to_string(),
+                api: "anthropic-messages".to_string(),
+                provider: "anthropic".to_string(),
+                base_url: String::new(),
+                reasoning: false,
+                cost: crate::types::UsageCost::default(),
+                context_window: 200_000,
+                max_tokens: 8_192,
+                max_tokens_explicit: false,
+            }
+        }
+
+        let stream_fn: crate::stream::StreamFn = std::sync::Arc::new(
+            |_requested: Model,
+             _context: crate::stream::LlmContext,
+             _options: crate::stream::StreamRequestOptions| {
+                Box::pin(async {
+                    let message = crate::types::AssistantMessage {
+                        content: vec![crate::types::AssistantContent::Text(
+                            crate::types::TextContent {
+                                text: "ok".to_string(),
+                                text_signature: None,
+                            },
+                        )],
+                        api: "anthropic-messages".to_string(),
+                        provider: "anthropic".to_string(),
+                        model: "session-model".to_string(),
+                        response_model: None,
+                        response_id: None,
+                        diagnostics: None,
+                        usage: Usage::zero(),
+                        stop_reason: crate::types::StopReason::Stop,
+                        error_message: None,
+                        stop_reason_raw: None,
+                        timestamp: 0,
+                    };
+                    let (handle, consumer) = crate::stream::event_stream();
+                    handle.push(crate::stream::AssistantMessageEvent::Done {
+                        reason: crate::types::StopReason::Stop,
+                        message: message.clone(),
+                    });
+                    handle.end(Some(message));
+                    Ok(Box::new(consumer) as Box<dyn crate::stream::ModelStream>)
+                })
+            },
+        );
+
+        let agent = Agent::new(AgentOptions {
+            initial_state: AgentInitialState {
+                model: Some(model("session-model")),
+                system_prompt: Some("s".to_string()),
+                ..Default::default()
+            },
+            stream_fn: Some(stream_fn),
+            ..Default::default()
+        });
+
+        agent.abort();
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            agent.prompt(AgentPromptInput::text("hi")),
+        )
+        .await
+        .expect("the next turn must run");
+        outcome.expect("an abort with no run must not cancel the next turn");
+        agent.wait_for_idle().await;
     }
 }
