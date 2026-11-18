@@ -113,6 +113,10 @@ impl EventLog {
     /// # Errors
     ///
     /// Returns an error when the event is invalid or the append fails.
+    pub fn append(&self, event: &Event) -> Result<()> {
+        self.append_all(std::slice::from_ref(event))
+    }
+
     /// Append several events as ONE durable write.
     ///
     /// A snapshot that is several events (a plan's items) must not be written
@@ -146,23 +150,6 @@ impl EventLog {
             .with_context(|| format!("open {}", self.path.display()))?;
         file.write_all(batch.as_bytes())
             .with_context(|| format!("append to {}", self.path.display()))?;
-        file.flush()
-            .with_context(|| format!("flush {}", self.path.display()))
-    }
-
-    pub fn append(&self, event: &Event) -> Result<()> {
-        event.validate()?;
-        if let Some(parent) = self.path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("create {}", parent.display()))?;
-        }
-        let line = event.to_line()?;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .with_context(|| format!("open {}", self.path.display()))?;
-        writeln!(file, "{line}").with_context(|| format!("append to {}", self.path.display()))?;
         file.flush()
             .with_context(|| format!("flush {}", self.path.display()))
     }

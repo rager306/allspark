@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use pa_project::event::{Actor, Event, EventLog, SCHEMA_VERSION};
+use pa_project::event::{Actor, EventLog, SCHEMA_VERSION};
 use serde_json::{json, Value};
 
 /// Where a project's durable record lives.
