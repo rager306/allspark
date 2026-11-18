@@ -8,6 +8,7 @@ members = [
     "crates/pa-agent",
     "crates/pa-lsp",
     "crates/pa-diff",
+    "crates/pa-project",
     "crates/pa-jev",
     "crates/pa-ast",
     "crates/pa-edit",
