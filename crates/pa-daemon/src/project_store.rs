@@ -101,6 +101,12 @@ impl ProjectRecorder {
     ) -> anyhow::Result<()> {
         let log = EventLog::at(&self.paths.events);
         let previous = self.known_item_ids();
+        // An interrupted append leaves a line no reader can parse, and appending
+        // after it would join two records into one invalid line for good, so the
+        // tail is repaired before this snapshot is written.
+        if let Err(error) = log.truncate_torn_tail() {
+            eprintln!("pa-daemon: torn project log tail not repaired: {error:#}");
+        }
         // The snapshot is written as one durable append: several appends would
         // leave a crash-recovered log holding a mix of two snapshots, which is a
         // plan that never existed and would be restored as if it had.
@@ -1032,5 +1038,44 @@ mod tests {
         let restored = recorder.load_plan().expect("the new history's plan");
         let ids: Vec<&str> = restored.iter().map(|entry| entry.id.as_str()).collect();
         assert_eq!(ids, vec!["P9"], "the old history must be gone");
+    }
+
+    /// A partial append must not corrupt the log for good.
+    ///
+    /// `write_all` can stop midway when the disk fills, leaving a prefix of a
+    /// line. No reader can parse it and every later append would concatenate
+    /// onto it, so the project record would carry one permanently invalid line —
+    /// the canonical record, unreadable, from a single full disk. The writer
+    /// repairs the tail it is about to append after; a complete line is never
+    /// removed, because the cut stops at the last newline.
+    #[test]
+    fn a_torn_tail_is_repaired_before_the_next_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = recorder(dir.path());
+        recorder
+            .record_plan(&[item("P1", PlanItemStatus::InProgress)])
+            .unwrap();
+
+        // Simulate the interrupted append: a prefix of a second line, no newline.
+        let log = EventLog::at(&recorder.paths().events);
+        let complete = std::fs::read_to_string(log.path()).unwrap();
+        std::fs::write(
+            log.path(),
+            format!("{complete}{{\"eventId\":\"torn\",\"type\""),
+        )
+        .unwrap();
+        assert!(EventLog::at(&recorder.paths().events).read_all().is_err());
+
+        recorder
+            .record_plan(&[item("P2", PlanItemStatus::Pending)])
+            .expect("the writer repairs the tail it appends after");
+
+        let events = EventLog::at(&recorder.paths().events).read_all().unwrap();
+        assert_eq!(
+            events.len(),
+            3,
+            "one snapshot plus the repair's own snapshot"
+        );
+        assert!(events.iter().all(|event| event.event_id != "torn"));
     }
 }
