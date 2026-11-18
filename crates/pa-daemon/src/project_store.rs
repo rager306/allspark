@@ -109,8 +109,13 @@ impl ProjectRecorder {
             batch.push(self.event(
                 "entity.upserted",
                 json!({
-                    "id": item.id,
+                    // The row key carries the session: two sessions in one
+                    // project both mint `P1`…, and a bare id made them one row,
+                    // so whichever wrote last owned the restored plan (ledger
+                    // #24b). The `data.id` keeps the plan's own id for restore.
+                    "id": self.row_id(&item.id),
                     "entityType": "plan_item",
+                    "sessionId": self.session_id.clone(),
                     // The plan is an ordered list, so the order is part of the
                     // record: a projection that kept only the items would come
                     // back in whatever order the database returned.
@@ -127,7 +132,7 @@ impl ProjectRecorder {
         }
         for id in previous {
             if !items.iter().any(|item| item.id == id) {
-                batch.push(self.event("entity.removed", json!({ "id": id })));
+                batch.push(self.event("entity.removed", json!({ "id": self.row_id(&id) })));
             }
         }
         log.append_all(&batch)?;
@@ -153,18 +158,51 @@ impl ProjectRecorder {
         // A failed sync still leaves the model as a usable (if older) answer.
         let _ = self.sync();
         let model = pa_project::model::ReadModel::open(&self.paths.model).ok()?;
+        // Rows are keyed per session, so a project can hold several plans. The
+        // one to resume is the newest session's: its plan is the work in flight,
+        // and an older session's plan is a record of work already replaced.
+        let newest = self.newest_session_with_plan(&model)?;
         let rows = model
             .entities_of_type(&self.paths.project_id, "plan_item")
             .ok()?;
         let mut items: Vec<_> = rows
             .into_iter()
-            .filter_map(|(id, data)| crate::plan_restore::StoredPlanItem::from_row(&id, &data))
+            .filter(|(row_id, _)| row_id.starts_with(&format!("{newest}:")))
+            .filter_map(|(row_id, data)| {
+                // The plan's own id lives in the row's data, not in the key.
+                let item_id = row_id.split_once(':').map_or(row_id.as_str(), |(_, id)| id);
+                crate::plan_restore::StoredPlanItem::from_row(item_id, &data)
+            })
             .collect();
         if items.is_empty() {
             return None;
         }
         items.sort_by_key(|item| item.position);
         Some(items)
+    }
+
+    /// The session that wrote the newest plan event in this project.
+    ///
+    /// Read from the log, not the model: the log is canonical and carries the
+    /// order, so the newest writer is knowable even when the model is behind.
+    fn newest_session_with_plan(&self, _model: &pa_project::model::ReadModel) -> Option<String> {
+        let events = EventLog::at(&self.paths.events).read_all().ok()?;
+        events
+            .iter()
+            .rev()
+            .filter(|event| {
+                event.payload.get("entityType").and_then(Value::as_str) == Some("plan_item")
+            })
+            .map(|event| Self::scope_key(event.session_id.as_deref()))
+            .next()
+    }
+
+    /// The row-key scope for a session: its id, or `-` when it has none.
+    ///
+    /// One definition shared by the writer and the reader, so a recorder without
+    /// a session id still reads back the plan it wrote.
+    fn scope_key(session_id: Option<&str>) -> String {
+        session_id.unwrap_or("-").to_string()
     }
 
     /// Bring the read model up to date with the log.
@@ -245,9 +283,11 @@ impl ProjectRecorder {
             if event.session_id != self.session_id {
                 continue;
             }
-            let Some(id) = event.payload.get("id").and_then(Value::as_str) else {
+            let Some(row_id) = event.payload.get("id").and_then(Value::as_str) else {
                 continue;
             };
+            // Rows are keyed `session:item`; the caller compares plan item ids.
+            let id = row_id.split_once(':').map_or(row_id, |(_, item)| item);
             match event.event_type.as_str() {
                 "entity.upserted"
                     if event.payload.get("entityType").and_then(Value::as_str)
@@ -262,6 +302,15 @@ impl ProjectRecorder {
             }
         }
         ids
+    }
+
+    /// The row key for one of this session's plan items.
+    ///
+    /// `session:item`, so two sessions in one project keep separate rows instead
+    /// of overwriting one another. A session without an id falls back to `-`,
+    /// which keeps the single-session case exactly as it was.
+    fn row_id(&self, item_id: &str) -> String {
+        format!("{}:{item_id}", Self::scope_key(self.session_id.as_deref()))
     }
 
     fn event(&self, event_type: &str, payload: Value) -> pa_project::event::Event {
@@ -354,7 +403,8 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert!(events.iter().all(|event| event.project_id == "proj"));
         assert_eq!(events[0].session_id.as_deref(), Some("session-1"));
-        assert_eq!(events[0].payload["id"], "P1");
+        // The row key carries the session; the plan's own id is in `data`.
+        assert_eq!(events[0].payload["id"], "session-1:P1");
         assert_eq!(events[0].payload["data"]["status"], "in_progress");
 
         let mut model = pa_project::model::ReadModel::open(&recorder.paths().model).unwrap();
@@ -384,7 +434,7 @@ mod tests {
             .filter(|event| event.event_type == "entity.removed")
             .collect();
         assert_eq!(removals.len(), 1);
-        assert_eq!(removals[0].payload["id"], "P2");
+        assert_eq!(removals[0].payload["id"], "session-1:P2");
 
         let mut model = pa_project::model::ReadModel::open(&recorder.paths().model).unwrap();
         pa_project::project::project(&mut model, "proj", &events).unwrap();
@@ -403,7 +453,10 @@ mod tests {
         let mut fresh = pa_project::model::ReadModel::open(dir.path().join("second.db")).unwrap();
         pa_project::project::project(&mut fresh, "proj", &events).unwrap();
 
-        let restored = fresh.entity_json("P1").unwrap().unwrap();
+        // The recorder keys rows per session; a rebuild from the log must
+        // produce the same key, which is what makes this comparison a check of
+        // the log rather than of the first model.
+        let restored = fresh.entity_json("session-1:P1").unwrap().unwrap();
         assert_eq!(restored["status"], serde_json::json!("completed"));
     }
 
@@ -568,8 +621,25 @@ mod tests {
 
         let model =
             pa_project::model::ReadModel::open(&recorder(dir.path()).paths().model).unwrap();
+        // Both recorders carry the same session id, so the second snapshot
+        // replaces the first rather than adding to it: one row, and the
+        // checkpoint still advanced across the second sync.
         assert_eq!(model.count_entities("proj", "plan_item").unwrap(), 1);
         assert!(model.log_offset().unwrap().unwrap() > offset);
+        let events = EventLog::at(&recorder(dir.path()).paths().events)
+            .read_all()
+            .unwrap();
+        eprintln!(
+            "EV: {:?}",
+            events
+                .iter()
+                .map(|e| (
+                    e.event_type.as_str(),
+                    e.payload["id"].as_str().unwrap_or(""),
+                    e.session_id.as_deref().unwrap_or("")
+                ))
+                .collect::<Vec<_>>()
+        );
     }
     #[test]
     fn the_stored_plan_round_trips_through_the_model_in_order() {
@@ -698,6 +768,7 @@ mod tests {
             .iter()
             .filter(|event| event.event_type == "entity.removed")
             .filter_map(|event| event.payload["id"].as_str())
+            .map(|id| id.split_once(':').map_or(id, |(_, item)| item))
             .collect();
         assert!(
             removals.is_empty(),
@@ -726,7 +797,68 @@ mod tests {
             .iter()
             .filter(|event| event.event_type == "entity.removed")
             .filter_map(|event| event.payload["id"].as_str())
+            .map(|id| id.split_once(':').map_or(id, |(_, item)| item))
             .collect();
         assert_eq!(removals, vec!["P2"]);
+    }
+
+    /// Two sessions in one project both mint `P1`, `P2`, so a bare item id made
+    /// them one row: whichever session wrote last owned the restored plan
+    /// (ledger #24b). The row key carries the session, so each plan survives.
+    #[test]
+    fn two_sessions_in_one_project_keep_separate_plans() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let first = ProjectRecorder::new(paths.clone(), Some("session-a".to_string()));
+        let second = ProjectRecorder::new(paths, Some("session-b".to_string()));
+
+        first
+            .record_plan(&[
+                item("P1", PlanItemStatus::InProgress),
+                item("P2", PlanItemStatus::Pending),
+            ])
+            .unwrap();
+        second
+            .record_plan(&[
+                item("P1", PlanItemStatus::Completed),
+                item("P2", PlanItemStatus::Pending),
+                item("P3", PlanItemStatus::Pending),
+            ])
+            .unwrap();
+        first.sync().unwrap();
+
+        let model = pa_project::model::ReadModel::open(&first.paths().model).unwrap();
+        assert_eq!(
+            model.count_entities("proj", "plan_item").unwrap(),
+            5,
+            "two sessions, two plans: five rows"
+        );
+
+        // Restoring gives the newest session's plan, not a mixture of both.
+        let restored = first.load_plan().expect("a plan");
+        let ids: Vec<&str> = restored.iter().map(|entry| entry.id.as_str()).collect();
+        assert_eq!(ids, vec!["P1", "P2", "P3"]);
+        assert_eq!(restored[0].status, PlanItemStatus::Completed);
+    }
+
+    /// The same session writing twice still replaces its own plan, so the key
+    /// did not turn every update into an append-only plan.
+    #[test]
+    fn one_session_still_replaces_its_own_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = recorder(dir.path());
+        recorder
+            .record_plan(&[
+                item("P1", PlanItemStatus::InProgress),
+                item("P2", PlanItemStatus::Pending),
+            ])
+            .unwrap();
+        recorder
+            .record_plan(&[item("P1", PlanItemStatus::Completed)])
+            .unwrap();
+
+        let restored = recorder.load_plan().expect("a plan");
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].id, "P1");
     }
 }
