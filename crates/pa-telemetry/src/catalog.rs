@@ -713,6 +713,8 @@ const AGENT_SESSION_ENDED: EventRule = EventRule {
         ("kernel_bootstrap_cold_count", optional(count())),
         ("kernel_bootstrap_failed_count", optional(count())),
         ("kernel_bootstrap_max_ms", optional(duration())),
+        // Adoption of the opt-in project store (`[project] enabled`).
+        ("project_store_enabled", optional(boolean())),
         ("rlm_child_usage_count", optional(count())),
         ("rlm_child_input_tokens", optional(tokens())),
         ("rlm_child_output_tokens", optional(tokens())),

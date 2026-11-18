@@ -1527,3 +1527,33 @@ async fn a_run_active_when_telemetry_turns_off_is_severed_not_merged() {
         "the off-period tool end never counts"
     );
 }
+
+/// The project store is opt-in, so its adoption is the question worth asking:
+/// a session that never enabled it must not report the flag, and one that did
+/// reports exactly `true`. No project id, path, or plan text rides along.
+#[tokio::test]
+async fn the_project_store_flag_reports_adoption_and_nothing_else() {
+    let plain = fixture();
+    let plain_telemetry = SessionTelemetry::detached(
+        plain.client.clone(),
+        plain.state.clone(),
+        "interactive".to_string(),
+    );
+    plain_telemetry.end().await.unwrap();
+    let ended = &event_properties(&plain.mock, "agent session ended").await[0];
+    assert!(
+        ended.get("project_store_enabled").is_none(),
+        "a session without the store must not report it: {ended:?}"
+    );
+
+    let enabled = fixture();
+    let telemetry = SessionTelemetry::detached(
+        enabled.client.clone(),
+        enabled.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.note_project_store_enabled();
+    telemetry.end().await.unwrap();
+    let ended = &event_properties(&enabled.mock, "agent session ended").await[0];
+    assert_eq!(ended["project_store_enabled"], serde_json::json!(true));
+}

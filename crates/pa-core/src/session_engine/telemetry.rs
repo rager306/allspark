@@ -331,6 +331,11 @@ struct CounterValues {
     rlm_child_cost: f64,
     /// `feature_<name>_<outcome>_count` over the fixed feature vocabulary.
     feature_outcomes: std::collections::BTreeMap<String, u64>,
+    /// Whether the opt-in project store was enabled for this session. A flag,
+    /// not a count: the store is a setting an operator turns on, so the
+    /// question is adoption, and a count of writes would measure the agent's
+    /// plan activity instead.
+    project_store_enabled: bool,
 }
 
 impl SessionCounters {
@@ -406,6 +411,11 @@ impl SessionCounters {
             }
             if values.rlm_child_usage_count > 0 {
                 properties.set("rlm_child_cost", Value::from(values.rlm_child_cost));
+            }
+            // Boolean, not a count: the catalog rule is `boolean()`, and
+            // omitted unless the store was on, so an absent key means off.
+            if values.project_store_enabled {
+                properties.set("project_store_enabled", Value::Bool(true));
             }
             for (key, count) in &values.feature_outcomes {
                 properties.set(key, Value::from(*count));
@@ -673,6 +683,14 @@ impl SessionTelemetry {
             );
         }
         self.client.track("session archived", properties);
+    }
+
+    /// The opt-in project store is on for this session, reported as
+    /// `project_store_enabled` on `agent session ended`. The flag is a
+    /// primitive; no project id, path, or plan text uploads.
+    pub fn note_project_store_enabled(&self) {
+        self.counters
+            .with(|values| values.project_store_enabled = true);
     }
 
     /// A `/skill:<name>` submission expanded into its skill block (the

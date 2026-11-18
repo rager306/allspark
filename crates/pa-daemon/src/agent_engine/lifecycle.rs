@@ -550,19 +550,19 @@ impl AgentSessionEngine {
         // its own resume the project's unfinished work. Read after the
         // session's own record, which always wins: a session that has a plan in
         // its transcript is resuming that session, not adopting the project's.
-        if project_recorder_enabled(&self.cwd(), &self.config.agent_dir) {
-            let paths = crate::project_store::ProjectStorePaths::under(
-                &self.config.agent_dir,
-                &crate::project_store::ProjectStorePaths::project_id_for(&self.cwd()),
-            );
-            let recorder =
-                crate::project_store::ProjectRecorder::new(paths, self.durable_session_id());
-            if let Some(plan) = crate::plan_restore::plan_for_start(
+        if let Some(telemetry) = built.telemetry.as_ref() {
+            if self.project_recorder().is_some() {
+                telemetry.note_project_store_enabled();
+            }
+        }
+        let restored_plan = self.project_recorder().and_then(|recorder| {
+            crate::plan_restore::plan_for_start(
                 &self.plan_store.snapshot(),
                 recorder.load_plan().as_deref(),
-            ) {
-                self.plan_store.replace(plan.items);
-            }
+            )
+        });
+        if let Some(plan) = restored_plan {
+            self.plan_store.replace(plan.items);
         }
         self.install_plan_persist_hook(built);
 
@@ -1070,6 +1070,25 @@ impl AgentSessionEngine {
         pa_core::session::manager::read_session_header(&file).map(|header| header.id)
     }
 
+    /// This session's project recorder, when the project store is enabled.
+    ///
+    /// One place computes the store paths and the project identity, so the
+    /// restore path and the plan tool cannot disagree about which project a
+    /// session belongs to.
+    fn project_recorder(&self) -> Option<crate::project_store::ProjectRecorderHandle> {
+        let cwd = self.cwd();
+        if !project_recorder_enabled(&cwd, &self.config.agent_dir) {
+            return None;
+        }
+        let paths = crate::project_store::ProjectStorePaths::under(
+            &self.config.agent_dir,
+            &crate::project_store::ProjectStorePaths::project_id_for(&cwd),
+        );
+        Some(std::sync::Arc::new(
+            crate::project_store::ProjectRecorder::new(paths, self.durable_session_id()),
+        ))
+    }
+
     async fn build_session(&self, model: &Model) -> anyhow::Result<CoreSessionEngine> {
         // The loop's own projection, never a JSON round-trip: the wire shape
         // spells `baseUrl` and the loop's descriptor spells `base_url`, so a
@@ -1311,17 +1330,9 @@ impl AgentSessionEngine {
                 // FORK-ONLY: an opted-in project store keeps a durable record
                 // of the plan outside the session. Absent the setting the tool
                 // records nothing and this branch is one `if`.
-                if project_recorder_enabled(&cwd_for_mcp, &self.config.agent_dir) {
-                    let paths = crate::project_store::ProjectStorePaths::under(
-                        &self.config.agent_dir,
-                        &crate::project_store::ProjectStorePaths::project_id_for(&cwd_for_mcp),
-                    );
-                    tool.with_recorder(Arc::new(crate::project_store::ProjectRecorder::new(
-                        paths,
-                        self.durable_session_id(),
-                    )))
-                } else {
-                    tool
+                match self.project_recorder() {
+                    Some(recorder) => tool.with_recorder(recorder),
+                    None => tool,
                 }
             }) as Arc<dyn pa_agent::types::AgentTool>],
             custom_system_prompt: create_resources.system_prompt,
