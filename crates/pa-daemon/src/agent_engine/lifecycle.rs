@@ -555,12 +555,20 @@ impl AgentSessionEngine {
                 telemetry.note_project_store_enabled();
             }
         }
-        let restored_plan = self.project_recorder().and_then(|recorder| {
-            crate::plan_restore::plan_for_start(
-                &self.plan_store.snapshot(),
-                recorder.load_plan().as_deref(),
-            )
-        });
+        // `load_plan` projects the log and opens SQLite — blocking work, and
+        // `build_session` is async. Off the worker, the same way the plan write
+        // is; the session is not built until this returns, so the ordering the
+        // restore depends on is unchanged.
+        let restored_plan = match self.project_recorder() {
+            Some(recorder) => {
+                let loaded = tokio::task::spawn_blocking(move || recorder.load_plan())
+                    .await
+                    .ok()
+                    .flatten();
+                crate::plan_restore::plan_for_start(&self.plan_store.snapshot(), loaded.as_deref())
+            }
+            None => None,
+        };
         if let Some(plan) = restored_plan {
             self.plan_store.replace(plan.items);
         }
