@@ -135,15 +135,19 @@ impl ProjectRecorder {
         Ok(())
     }
 
-    /// The project's plan as the read model holds it, in list order.
+    /// The project's plan, in list order.
     ///
-    /// This is what makes the store a record rather than a log: a session that
-    /// starts in a project with a stored plan can resume it instead of
-    /// starting blank. `None` when the model is absent, unreadable, or holds no
-    /// items — each of which means "nothing to resume", not an error the
-    /// caller must distinguish.
+    /// Read through the log, not from the read model alone: the log is
+    /// canonical, and a session that crashed between its last append and
+    /// `sync` leaves the model behind that write. Projecting first costs one
+    /// incremental pass and makes the answer the log's, not the model's.
+    ///
+    /// `None` when nothing was ever recorded, or when the log cannot be read —
+    /// "nothing to resume", not an error the caller must distinguish.
     #[must_use]
     pub fn load_plan(&self) -> Option<Vec<crate::plan_restore::StoredPlanItem>> {
+        // A failed sync still leaves the model as a usable (if older) answer.
+        let _ = self.sync();
         let model = pa_project::model::ReadModel::open(&self.paths.model).ok()?;
         let rows = model
             .entities_of_type(&self.paths.project_id, "plan_item")
@@ -577,10 +581,10 @@ mod tests {
     }
 
     #[test]
-    fn a_dropped_model_still_yields_no_plan_rather_than_a_guess() {
+    fn a_dropped_model_is_rebuilt_from_the_log_by_the_read() {
         let dir = tempfile::tempdir().unwrap();
         let recorder = recorder(dir.path());
-        assert!(recorder.load_plan().is_none());
+        assert!(recorder.load_plan().is_none(), "nothing recorded yet");
 
         recorder
             .record_plan(&[item("P1", PlanItemStatus::Pending)])
@@ -588,10 +592,26 @@ mod tests {
         recorder.sync().unwrap();
         std::fs::remove_file(&recorder.paths().model).unwrap();
 
-        // The log still holds it, but nothing projected it: "no plan" is the
-        // honest answer, and the next sync restores it.
-        assert!(recorder.load_plan().is_none());
-        recorder.sync().unwrap();
-        assert!(recorder.load_plan().is_some());
+        // The model is derived, so losing it must lose nothing: the read
+        // projects the log rather than reporting an empty project.
+        let plan = recorder.load_plan().expect("rebuilt from the log");
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].id, "P1");
+    }
+    #[test]
+    fn a_plan_written_but_never_synced_is_still_restored() {
+        let dir = tempfile::tempdir().unwrap();
+        // The previous session appended and died before its sync: the model
+        // does not exist, and the log is the only record.
+        recorder(dir.path())
+            .record_plan(&[item("P1", PlanItemStatus::InProgress)])
+            .unwrap();
+        assert!(!recorder(dir.path()).paths().model.exists());
+
+        let plan = recorder(dir.path()).load_plan().expect("the log holds it");
+
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].id, "P1");
+        assert_eq!(plan[0].status, PlanItemStatus::InProgress);
     }
 }
