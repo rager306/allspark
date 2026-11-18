@@ -1195,6 +1195,27 @@ mod tests {
         );
     }
 
+    /// A subagent's return is not completion: the parent must read the actual
+    /// change and rerun the check, and a child that died is not a success with
+    /// an empty answer. The rule lived only in the review reports before this
+    /// line, so a parent could accept a dispatch as the outcome.
+    #[test]
+    fn the_usage_layer_says_a_subagent_return_is_not_completion() {
+        let layer = layers::USAGE_LAYER;
+        let rule = layer
+            .lines()
+            .find(|line| line.contains("A subagent's return is not completion"))
+            .expect("the subagent reconciliation rule is in the usage layer");
+        assert!(
+            rule.contains("run the check yourself"),
+            "the rule must require the parent's own check: {rule}"
+        );
+        assert!(
+            rule.contains("exited without an answer"),
+            "a child that produced no answer must not read as success: {rule}"
+        );
+    }
+
     /// Review #30: an `lsp` rename is a PREVIEW unless `apply=true`, so the prompt
     /// must not tell the model every successful rename already touched the tree — an
     /// agent that believed it reported a refactor that never happened.
