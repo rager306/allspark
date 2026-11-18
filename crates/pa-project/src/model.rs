@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 /// The schema version this build writes and reads.
 pub const READ_MODEL_VERSION: i64 = 1;
@@ -268,6 +268,42 @@ impl ReadModel {
             refs.push(row?);
         }
         Ok(refs)
+    }
+
+    /// The log byte this model is projected through, when a producer recorded
+    /// one.
+    ///
+    /// Kept in the model rather than in the writer's memory so it cannot
+    /// outlive the data it describes: a deleted or replaced model has no
+    /// checkpoint, and the next pass reads the whole log.
+    ///
+    /// # Errors
+    ///
+    /// Propagates a query failure.
+    pub fn log_offset(&self) -> Result<Option<u64>> {
+        let stored: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT v FROM read_model_meta WHERE k = 'log_offset'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(stored.and_then(|value| value.parse().ok()))
+    }
+
+    /// Record the log byte this model is projected through.
+    ///
+    /// # Errors
+    ///
+    /// Propagates a write failure.
+    pub fn set_log_offset(&self, offset: u64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO read_model_meta(k, v) VALUES ('log_offset', ?1)
+             ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+            rusqlite::params![offset.to_string()],
+        )?;
+        Ok(())
     }
 
     /// Set a reference's resolution status.

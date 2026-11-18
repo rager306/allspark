@@ -512,3 +512,72 @@ mod tests {
         assert!(error.contains("read-model version 99"), "{error}");
     }
 }
+
+#[cfg(test)]
+mod sync_cost {
+    use std::time::Instant;
+
+    use serde_json::json;
+
+    use crate::event::{Actor, Event, EventLog, SCHEMA_VERSION};
+    use crate::model::ReadModel;
+    use crate::project::project;
+
+    fn event(index: usize) -> Event {
+        Event {
+            event_id: format!("e-{index}"),
+            event_type: "entity.upserted".to_string(),
+            schema_version: SCHEMA_VERSION,
+            project_id: "proj".to_string(),
+            session_id: None,
+            occurred_at: "2026-11-18T12:00:00Z".to_string(),
+            actor: Actor {
+                kind: "agent".to_string(),
+                id: None,
+            },
+            payload: json!({
+                "id": format!("P{}", index % 5),
+                "entityType": "plan_item",
+                "data": { "status": "in_progress", "text": format!("step {index}") }
+            }),
+        }
+    }
+
+    /// One session writing `updates` plan snapshots of five items, syncing after
+    /// each the way `ProjectRecorder::sync` does.
+    ///
+    /// Measured 2026-11-18, this tree. Reading the whole log per sync: 16.1 ms
+    /// at 100 events, 20.3 ms at 250, 31.9 ms at 500, 41.7 ms at 1 000 —
+    /// quadratic, 8.34 s of replay over 200 updates. From the checkpoint:
+    /// 13.6 / 13.3 / 13.4 / 14.3 ms, 2.85 s total. The residue is opening the
+    /// model (WAL plus the idempotent schema batch), not replay.
+    #[test]
+    #[ignore = "measurement, not a gate"]
+    fn the_cost_of_syncing_after_every_plan_update() {
+        for updates in [20usize, 50, 100, 200] {
+            let dir = tempfile::tempdir().unwrap();
+            let log = EventLog::at(dir.path().join("events.jsonl"));
+            let db = dir.path().join("project.db");
+            let start = Instant::now();
+            let mut total = 0usize;
+            for update in 0..updates {
+                for item in 0..5 {
+                    log.append(&event(update * 5 + item)).unwrap();
+                    total += 1;
+                }
+                // What `sync` does: read the log from the checkpoint, project,
+                // record the new checkpoint.
+                let mut model = ReadModel::open(&db).unwrap();
+                let offset = model.log_offset().unwrap().unwrap_or(0);
+                let (events, end) = log.read_from(offset).unwrap();
+                project(&mut model, "proj", &events).unwrap();
+                model.set_log_offset(end).unwrap();
+            }
+            let elapsed = start.elapsed();
+            eprintln!(
+                "updates={updates:3} events={total:4} syncs={updates:3} total={elapsed:?} per-sync={:?}",
+                elapsed.checked_div(u32::try_from(updates).unwrap_or(1))
+            );
+        }
+    }
+}
