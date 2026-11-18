@@ -475,3 +475,18 @@ fn routing_level_vocabulary_is_one_list() {
     assert!(ModelRoutingLevel::Auto.applies());
     assert!(ModelRoutingLevel::On.applies());
 }
+
+#[test]
+fn the_project_store_gate_defaults_off_and_reads_the_setting() {
+    let (storage, manager) = fixture(r#"{"theme":"dark"}"#);
+    assert!(!manager.get_project_enabled(), "unset must stay off");
+    drop(storage);
+
+    let (storage, manager) = fixture(r#"{"project":{"enabled":true}}"#);
+    assert!(manager.get_project_enabled());
+    drop(storage);
+
+    let (storage, manager) = fixture(r#"{"project":{"enabled":false}}"#);
+    assert!(!manager.get_project_enabled());
+    drop(storage);
+}
