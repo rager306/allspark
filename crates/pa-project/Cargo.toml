@@ -6,16 +6,13 @@ license.workspace = true
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "FORK-ONLY project store: metadata-driven entities, relations, and the append-only event log."
+description = "FORK-ONLY project store: the append-only event log and its derived read model."
 
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-# The `meta/` definitions are human-authored YAML; the workspace already pins
-# `yaml_serde` (the maintained serde_yaml successor) for settings and the CLI.
-serde_yaml = { package = "yaml_serde", version = "0.10.7" }
 # The derived read model. `bundled` vendors SQLite so no system library is
 # linked; the FFI stays inside libsqlite3-sys, so this crate keeps
 # `forbid(unsafe_code)`.

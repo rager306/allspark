@@ -82,23 +82,6 @@ const SCHEMA: &[&str] = &[
     )",
 ];
 
-/// One stored cross-database reference.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingRef {
-    /// The reference id.
-    pub id: String,
-    /// The entity that holds the claim.
-    pub from_id: String,
-    /// The stable key in the target database.
-    pub target_key: String,
-    /// `pending`, `resolved`, or `dangling`.
-    pub status: String,
-    /// The target's type name, meaningful to its resolver.
-    pub target_type: String,
-    /// The target database name (`graph`, `knowledge`, ...).
-    pub target_db: String,
-}
-
 /// An open project read model.
 ///
 /// `Debug` is derived so a failed open can be inspected in a test; the
@@ -220,49 +203,12 @@ impl ReadModel {
     ///
     /// Propagates a query failure.
     pub fn refs_from(&self, from_id: &str) -> Result<Vec<(String, String)>> {
-        Ok(self
-            .pending_refs(None)?
-            .into_iter()
-            .filter(|reference| reference.from_id == from_id)
-            .map(|reference| (reference.target_key, reference.status))
-            .collect())
-    }
-
-    /// Every reference whose status is `status`, or all of them when `None`.
-    ///
-    /// The checker walks this: a reference is a claim about another database
-    /// that nothing verifies at write time, so the set that needs resolving is
-    /// discovered from the model, not tracked in memory.
-    ///
-    /// # Errors
-    ///
-    /// Propagates a query failure.
-    pub fn pending_refs(&self, status: Option<&str>) -> Result<Vec<PendingRef>> {
-        let sql = match status {
-            Some(_) => {
-                "SELECT id, from_id, target_key, status, target_type, target_db \
-                 FROM entity_refs WHERE status = ?1 ORDER BY id"
-            }
-            None => {
-                "SELECT id, from_id, target_key, status, target_type, target_db \
-                     FROM entity_refs ORDER BY id"
-            }
-        };
-        let mut statement = self.conn.prepare(sql)?;
-        let map = |row: &rusqlite::Row<'_>| {
-            Ok(PendingRef {
-                id: row.get(0)?,
-                from_id: row.get(1)?,
-                target_key: row.get(2)?,
-                status: row.get(3)?,
-                target_type: row.get(4)?,
-                target_db: row.get(5)?,
-            })
-        };
-        let rows = match status {
-            Some(status) => statement.query_map(rusqlite::params![status], map)?,
-            None => statement.query_map([], map)?,
-        };
+        let mut statement = self
+            .conn
+            .prepare("SELECT target_key, status FROM entity_refs WHERE from_id = ?1 ORDER BY id")?;
+        let rows = statement.query_map(rusqlite::params![from_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
         let mut refs = Vec::new();
         for row in rows {
             refs.push(row?);
@@ -338,19 +284,6 @@ impl ReadModel {
             "INSERT INTO read_model_meta(k, v) VALUES ('log_offset', ?1)
              ON CONFLICT(k) DO UPDATE SET v = excluded.v",
             rusqlite::params![offset.to_string()],
-        )?;
-        Ok(())
-    }
-
-    /// Set a reference's resolution status.
-    ///
-    /// # Errors
-    ///
-    /// Propagates a query failure.
-    pub fn set_ref_status(&self, id: &str, status: &str) -> Result<()> {
-        self.conn.execute(
-            "UPDATE entity_refs SET status = ?1 WHERE id = ?2",
-            rusqlite::params![status, id],
         )?;
         Ok(())
     }

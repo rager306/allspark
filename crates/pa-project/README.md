@@ -2,22 +2,19 @@
 
 `FORK-ONLY` — never pushed upstream.
 
-Metadata-driven project store: the `meta/` definitions, the canonical
-append-only event log, and the derived SQLite read model.
+The project store: the canonical append-only event log and the derived SQLite
+read model.
 
 **FORK-ONLY.**
 
 ## Scope
 
-- Load and validate the human-authored `meta/` YAML: entities, relations,
-  dictionaries, projections, policies.
 - The event envelope: schema version, idempotent ids, actor, payload.
-- Compose and parse the event log.
+- The append-only log: append, read all, read from a byte checkpoint.
+- The derived read model and the projector that applies the log to it.
 
 ## Non-goals
 
-- No SQLite in this crate yet: the read model is a later layer, so the
-  metadata and the canonical log stay testable without a database.
 - No session or plan ownership. The plan store owns live plan state; this
   crate records what a project wrote, not what a session is doing now.
 - No path resolution policy: project identity is derived by the caller.
