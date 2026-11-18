@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode};
-use pa_core::session::manager::capture_git_context;
 use pa_core::session_engine::plan::{PlanItem, PlanState, PlanStore};
 
 pub(crate) const PLAN_TOOL_NAME: &str = "update_plan";
@@ -106,8 +105,11 @@ impl AgentTool for PlanTool {
             // The revision is the harness's, never the model's: a plan update
             // that set its own revision could launder stale evidence.
             let cwd = self.cwd.clone();
+            // The commit only: `capture_git_context` spawns three `git`
+            // processes (7.7 ms measured) to answer a question one file read
+            // answers in 25 µs, and every tool call pays it.
             let revision = tokio::task::spawn_blocking(move || {
-                capture_git_context(&cwd).and_then(|git| git.commit)
+                pa_core::session::manager::read_head_commit(&cwd)
             })
             .await
             .ok()
