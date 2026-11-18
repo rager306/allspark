@@ -220,3 +220,23 @@ confirm it exists and is in scope at the patch site — one `rg` costs a second,
 E0425 costs a rebuild. The 18 occurrences are all the same shape: writing code
 against an assumed API surface.
 
+## 11. `cargo check` is not clippy, and a green test is not a green lint
+
+**Seen:** twice in one session (2026-11-18/19), both times on code that had
+already passed `cargo check` and its own tests.
+
+- A new test in `pa-daemon` cloned a `PathBuf` it then dropped unused. `cargo
+  clippy -p pa-project` was green; the gate's workspace clippy was not.
+- A `const` declared inside a function after statements, and a `use` redundant
+  with the file's imports. `cargo check` accepted both; clippy at `-D warnings`
+  refused both.
+
+**Caught by:** the pre-push gate, twice, after the commit existed — which is the
+expensive way to learn it.
+
+**Rule:** for every crate a slice touches, run
+`cargo clippy -p <crate> --all-targets -- -D warnings` **before** the commit,
+including crates where only tests changed. `cargo check` answers "does it
+compile"; it does not answer "will the gate pass", and the difference here was
+`items_after_statements` and a redundant clone.
+
