@@ -14,3 +14,4 @@
 - The stale-proof check now resolves the commit in the cases it used to miss: a branch whose ref `git` has packed, and a session started in a subdirectory of the repository. Both previously answered "unknown revision" and the check silently did nothing.
 - The project store's plan is created once per session and reused, so enabling it no longer runs several `git` processes per session build; the recorder is invalidated when the working directory changes.
 - A stored plan that broke the plan rules is repaired rather than discarded: a duplicate step id keeps its first row, a second `in_progress` step becomes `pending`, and a blank step is dropped. A plan where nothing survives is still not restored, so an empty plan cannot pass for a resumed one.
+- A session's plan update no longer deletes another session's steps from the project record: a snapshot removes only the items that session wrote itself.
