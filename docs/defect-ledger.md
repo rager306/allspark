@@ -45,6 +45,26 @@ process defect, and the process is what this file exists to fix.
 | 22 | setting that cannot act | `jev.fallback = "llm"` parsed, changed nothing, and reported itself only in a log line | `33489a173` (refused at read) |
 | 23 | async worker blocked, read side | `load_plan` opened SQLite and projected inside `build_session` | `d2cd7d260` |
 
+
+## 2026-11-18 — session 4: two sessions, one project
+
+| # | Class | Finding | Status |
+|---|---|---|---|
+| 24 | shared-key collision across owners | `entities.id` is the plan item id, and two sessions in one project both mint `P1`, `P2`…, so the second session's snapshot overwrites the first's rows in `project.db` and in the restored plan | **open** — needs a per-session row key before the store can hold two sessions |
+| 25 | test that documents a bug | a first attempt to "prove" #24 asserted the collapsed result and passed, which would have frozen the defect as the expected behaviour | removed (no test is better than a test that pins a bug) |
+
+Notes on #24, so the fix is not guessed at again:
+
+- The log is fine: `O_APPEND` is atomic per `write()` call, measured with two
+  processes appending 1 MB writes (60 lines, 0 torn).
+- The collision is at the row key, not the write. A project is meant to hold one
+  plan, and its identity (`project_id`) is deliberately shared across a
+  repository's worktrees — which is exactly why two concurrent sessions can
+  disagree about who owns the plan.
+- The honest options are (a) key rows by session and derive the plan from the
+  newest session's events, or (b) keep one plan per project and refuse a second
+  writer. Both change the contract, so neither belongs in a "small fix" slice.
+
 ## What the classes say
 
 | Class | Count | The process fix |
