@@ -179,6 +179,39 @@ pub fn session_info_rows(stats: &Value, session_name: Option<&str>) -> Vec<Clien
             dim("Plan:"),
             raw_span(format!(" {settled}/{} settled", plan_items.len())),
         ]);
+        // Evidence is why an item counts as settled, and a proof recorded
+        // against another commit is not proof of the current tree. Both were
+        // collected by the tool and shown nowhere.
+        let mut stale = 0usize;
+        for item in plan_items
+            .iter()
+            .filter(|item| plan_item_status(item) == "completed")
+        {
+            let Some(evidence) = item.get("evidence").and_then(Value::as_str) else {
+                continue;
+            };
+            let is_stale = item
+                .get("evidenceStale")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if is_stale {
+                stale += 1;
+            }
+            rows.push(vec![
+                dim("  proof:"),
+                raw_span(format!(
+                    " {}{}",
+                    evidence.lines().next().unwrap_or_default(),
+                    if is_stale { " (stale)" } else { "" }
+                )),
+            ]);
+        }
+        if stale > 0 {
+            rows.push(vec![
+                dim(""),
+                raw_span(format!(" {stale} proof(s) recorded against another commit")),
+            ]);
+        }
         let unfinished: Vec<&Value> = plan_items
             .iter()
             .filter(|item| matches!(plan_item_status(item), "pending" | "in_progress"))

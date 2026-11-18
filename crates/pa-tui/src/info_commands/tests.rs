@@ -1292,3 +1292,68 @@ fn cache_rows_empty_state_without_activity() {
         ]
     );
 }
+
+#[test]
+fn session_info_shows_the_proof_and_marks_a_stale_one() {
+    let stats = json(
+        r#"{
+            "sessionFile": "/tmp/session.jsonl",
+            "sessionId": "abc123def456",
+            "plan": {
+                "items": [
+                    {
+                        "id": "one",
+                        "text": "first step",
+                        "status": "completed",
+                        "evidence": "cargo test: 16 passed",
+                        "evidenceStale": true
+                    },
+                    {
+                        "id": "two",
+                        "text": "second step",
+                        "status": "completed",
+                        "evidence": "cargo test: 3 passed"
+                    },
+                    { "id": "three", "text": "third step", "status": "pending" }
+                ]
+            }
+        }"#,
+    );
+    let rows = plain(&session_info_rows(&stats, None));
+    assert!(
+        rows.iter()
+            .any(|row| row == "  proof: cargo test: 16 passed (stale)"),
+        "{rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row == "  proof: cargo test: 3 passed"),
+        "{rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row == " 1 proof(s) recorded against another commit"),
+        "{rows:?}"
+    );
+}
+
+/// A plan whose items settled without evidence renders no proof rows: the
+/// field is optional, and an empty row for every old plan would be noise.
+#[test]
+fn session_info_omits_proof_rows_when_no_evidence_was_recorded() {
+    let stats = json(
+        r#"{
+            "sessionFile": "/tmp/session.jsonl",
+            "sessionId": "abc123def456",
+            "plan": { "items": [
+                { "id": "one", "text": "first", "status": "completed" }
+            ] }
+        }"#,
+    );
+    let rows = plain(&session_info_rows(&stats, None));
+    assert!(!rows.iter().any(|row| row.contains("proof")), "{rows:?}");
+    assert!(
+        !rows.iter().any(|row| row.contains("another commit")),
+        "{rows:?}"
+    );
+}

@@ -258,8 +258,30 @@ impl SessionEngine for AgentSessionEngine {
         Some(names)
     }
 
+    /// The plan, with each item marked stale when its evidence was recorded
+    /// against another commit.
+    ///
+    /// `/session` renders this snapshot, and `evidenceRevision` is otherwise a
+    /// write-only field: the stamp exists so a later tree can say the proof is
+    /// out of date, and the operator's view is where that has to appear. The
+    /// revision is read here rather than stored, so the flag always describes
+    /// the tree as it is now.
     fn plan_snapshot(&self) -> Option<Value> {
-        serde_json::to_value(self.plan_store.snapshot()).ok()
+        let state = self.plan_store.snapshot();
+        let cwd = self.cwd();
+        let revision =
+            pa_core::session::manager::capture_git_context(&cwd).and_then(|git| git.commit);
+        let stale_ids = state.stale_evidence_item_ids(revision.as_deref());
+        let mut value = serde_json::to_value(&state).ok()?;
+        if let Some(items) = value.get_mut("items").and_then(Value::as_array_mut) {
+            for item in items {
+                let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+                if stale_ids.iter().any(|stale_id| stale_id == id) {
+                    item["evidenceStale"] = Value::Bool(true);
+                }
+            }
+        }
+        Some(value)
     }
 
     fn creation_model(&self) -> Option<(String, String)> {
