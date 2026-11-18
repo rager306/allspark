@@ -251,7 +251,16 @@ impl ProjectRecorder {
         // 8.3 s of pure replay over 200 plan updates. The offset lives in the
         // model, so a dropped model resumes from the start rather than from a
         // checkpoint that outlived its data.
-        let offset = model.log_offset()?.unwrap_or(0);
+        let mut offset = model.log_offset()?.unwrap_or(0);
+        if offset > log.len_bytes()? {
+            // The checkpoint names a byte this file does not have, so the log was
+            // replaced or truncated. The applied-event ledger describes the old
+            // history as well, and a replay would skip every id it already
+            // recorded — the model would keep the old rows and gain none of the
+            // new. Only a full reset makes the model describe this file.
+            model.reset()?;
+            offset = 0;
+        }
         let (events, end) = log.read_from(offset)?;
         if events.is_empty() {
             return Ok(());
@@ -967,5 +976,56 @@ mod tests {
             recorder.load_plan().is_none(),
             "a bare row belongs to no session scope"
         );
+    }
+
+    /// A replaced log must not wedge the model forever.
+    ///
+    /// The checkpoint names a byte of the old file. `read_from` refuses a
+    /// checkpoint past the end (correctly: the byte means nothing here), so a
+    /// replaced log used to make every later `sync` fail — and `load_plan`
+    /// swallows that error, so the model kept the old plan forever. The ledger
+    /// is part of the model, so the reset has to drop it as well; resetting the
+    /// offset alone would skip every event id the old ledger already recorded.
+    #[test]
+    fn a_replaced_log_resets_the_model_instead_of_wedging_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = recorder(dir.path());
+        recorder
+            .record_plan(&[
+                item("P1", PlanItemStatus::InProgress),
+                item("P2", PlanItemStatus::Pending),
+            ])
+            .unwrap();
+        recorder.sync().unwrap();
+        let before = EventLog::at(&recorder.paths().events).len_bytes().unwrap();
+        assert!(
+            recorder.sync().is_ok(),
+            "the checkpoint is inside the file here"
+        );
+
+        // Replace the log with a different, shorter history.
+        let replacement = recorder.event(
+            "entity.upserted",
+            json!({
+                "id": "session-1:P9",
+                "entityType": "plan_item",
+                "data": { "position": 0, "text": "different history", "status": "pending" },
+            }),
+        );
+        let log = EventLog::at(&recorder.paths().events);
+        std::fs::write(log.path(), String::new()).unwrap();
+        log.append(&replacement).unwrap();
+        let after = log.len_bytes().unwrap();
+        assert!(
+            after < before,
+            "the replacement must be shorter: {after} < {before}"
+        );
+
+        recorder
+            .sync()
+            .expect("a replaced log must be recoverable, not fatal");
+        let restored = recorder.load_plan().expect("the new history's plan");
+        let ids: Vec<&str> = restored.iter().map(|entry| entry.id.as_str()).collect();
+        assert_eq!(ids, vec!["P9"], "the old history must be gone");
     }
 }

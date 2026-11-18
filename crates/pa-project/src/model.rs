@@ -316,6 +316,22 @@ impl ReadModel {
         }
     }
 
+    /// Drop every table and re-create this build's schema.
+    ///
+    /// For a model whose contents no longer describe the log it was derived
+    /// from: the applied-event ledger is part of the contents, so it must go
+    /// too. Resetting only a checkpoint would leave the ledger claiming events
+    /// of the old history and the replay would skip them.
+    ///
+    /// # Errors
+    ///
+    /// Propagates a failure to drop or create the schema.
+    pub fn reset(&mut self) -> Result<()> {
+        self.drop_tables()?;
+        self.conn.execute_batch(&SCHEMA.join(";\n"))?;
+        self.write_version()
+    }
+
     fn write_version(&self) -> Result<()> {
         self.conn.execute(
             "INSERT INTO read_model_meta(k, v) VALUES ('version', ?1)",
