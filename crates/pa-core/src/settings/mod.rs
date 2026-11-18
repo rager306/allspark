@@ -21,7 +21,8 @@ pub use storage::{
 pub use types::{
     AgentsSettings, AutoRefineSettings, AutonomousSettings, CompactionSettings, GraphSettings,
     JevAutoThinkingSetting, JevCacheSettings, JevEnabledSetting, JevGraphRerankSetting,
-    JevSettings, JevToolArbiterSetting, LspSettings, ModelRoutingLevel, QueueModeSetting,
-    RoutingSettings, Settings, SubagentModelChoice, SubagentModelRung, SubagentModelSettings,
-    ThinkingLevelSetting, ToolProfileSettings, TransportSetting, UpdateChannel, WebSearchProvider,
+    JevSettings, JevToolArbiterSetting, LspSettings, ModelRoutingLevel, ProjectSettings,
+    QueueModeSetting, RoutingSettings, Settings, SubagentModelChoice, SubagentModelRung,
+    SubagentModelSettings, ThinkingLevelSetting, ToolProfileSettings, TransportSetting,
+    UpdateChannel, WebSearchProvider,
 };

@@ -18,6 +18,9 @@ pub(crate) struct PlanTool {
     /// The session working directory: the plan tool stamps the commit the
     /// evidence was recorded against, so a later tree reports it as stale.
     cwd: PathBuf,
+    /// The project store, when the session has one. `None` keeps every
+    /// existing session byte-identical: no store, no event.
+    recorder: Option<crate::project_store::ProjectRecorderHandle>,
     schema: OnceLock<serde_json::Value>,
 }
 
@@ -26,8 +29,19 @@ impl PlanTool {
         Self {
             store,
             cwd,
+            recorder: None,
             schema: OnceLock::new(),
         }
+    }
+
+    /// Record every plan change to the project store as well.
+    #[must_use]
+    pub(crate) fn with_recorder(
+        mut self,
+        recorder: crate::project_store::ProjectRecorderHandle,
+    ) -> Self {
+        self.recorder = Some(recorder);
+        self
     }
 
     fn parameters_schema(&self) -> &serde_json::Value {
@@ -102,6 +116,14 @@ impl AgentTool for PlanTool {
             probe.stamp_evidence_revision(revision.as_deref());
             items = probe.items;
             let state = self.store.replace_from_tool(items);
+            // The session record already landed; a store failure is logged and
+            // never fails the tool call, so a project store cannot break a
+            // session that would otherwise work.
+            if let Some(recorder) = &self.recorder {
+                if let Err(error) = recorder.record_plan(&state.items) {
+                    eprintln!("pa-daemon: project plan event write failed: {error:#}");
+                }
+            }
             Ok(AgentToolResult {
                 content: vec![pa_agent::types::ToolResultContent::text(
                     serde_json::to_string_pretty(&state)
@@ -258,5 +280,63 @@ mod tests {
 
         assert!(error.to_string().contains("non-empty"), "{error}");
         assert_eq!(store.snapshot().items, Vec::<PlanItem>::new());
+    }
+    #[tokio::test]
+    async fn a_plan_update_reaches_the_project_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PlanStore::default();
+        let recorder = Arc::new(crate::project_store::ProjectRecorder::new(
+            crate::project_store::ProjectStorePaths::under(dir.path(), "proj"),
+            None,
+        ));
+        let paths = recorder.paths().clone();
+        let tool =
+            Arc::new(PlanTool::new(store.clone(), PathBuf::from(".")).with_recorder(recorder));
+
+        tool.execute(
+            "call-store".to_string(),
+            serde_json::json!({
+                "items": [{
+                    "id": "one",
+                    "text": "first step",
+                    "status": "completed",
+                    "evidence": "cargo test -p pa-daemon: 6 passed"
+                }]
+            }),
+            AbortSignal::never(),
+            no_updates(),
+        )
+        .await
+        .expect("the plan is valid");
+
+        let events = pa_project::event::EventLog::at(&paths.events)
+            .read_all()
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "entity.upserted");
+        assert_eq!(
+            events[0].payload["data"]["evidence"],
+            "cargo test -p pa-daemon: 6 passed"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_recorder_the_tool_writes_no_store_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PlanStore::default();
+        let tool = Arc::new(PlanTool::new(store, PathBuf::from(".")));
+
+        tool.execute(
+            "call-none".to_string(),
+            serde_json::json!({
+                "items": [{ "id": "one", "text": "first step", "status": "pending" }]
+            }),
+            AbortSignal::never(),
+            no_updates(),
+        )
+        .await
+        .expect("the plan is valid");
+
+        assert!(!dir.path().join("projects").exists());
     }
 }

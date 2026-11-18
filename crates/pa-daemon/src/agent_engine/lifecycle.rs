@@ -1042,6 +1042,16 @@ impl AgentSessionEngine {
         })
     }
 
+    /// The durable session id from the header, when the session has a file.
+    fn durable_session_id(&self) -> Option<String> {
+        let file = self
+            .session_file
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()?;
+        pa_core::session::manager::read_session_header(&file).map(|header| header.id)
+    }
+
     async fn build_session(&self, model: &Model) -> anyhow::Result<CoreSessionEngine> {
         // The loop's own projection, never a JSON round-trip: the wire shape
         // spells `baseUrl` and the loop's descriptor spells `base_url`, so a
@@ -1277,10 +1287,25 @@ impl AgentSessionEngine {
             stream_fn: Some(stream_fn),
             // Model tools: the session plan plus `python_repl`; the engine adds
             // the kernel-backed `python_repl` tool itself.
-            tools: vec![Arc::new(super::plan_tool::PlanTool::new(
-                self.plan_store.clone(),
-                cwd_for_mcp.clone(),
-            )) as Arc<dyn pa_agent::types::AgentTool>],
+            tools: vec![Arc::new({
+                let tool =
+                    super::plan_tool::PlanTool::new(self.plan_store.clone(), cwd_for_mcp.clone());
+                // FORK-ONLY: an opted-in project store keeps a durable record
+                // of the plan outside the session. Absent the setting the tool
+                // records nothing and this branch is one `if`.
+                if project_recorder_enabled(&cwd_for_mcp, &self.config.agent_dir) {
+                    let paths = crate::project_store::ProjectStorePaths::under(
+                        &self.config.agent_dir,
+                        &crate::project_store::ProjectStorePaths::project_id_for(&cwd_for_mcp),
+                    );
+                    tool.with_recorder(Arc::new(crate::project_store::ProjectRecorder::new(
+                        paths,
+                        self.durable_session_id(),
+                    )))
+                } else {
+                    tool
+                }
+            }) as Arc<dyn pa_agent::types::AgentTool>],
             custom_system_prompt: create_resources.system_prompt,
             prompt_guidelines: create_resources.append_system_prompt,
             // FORK-ONLY: pass the configured MCP server names so the system
@@ -1420,4 +1445,9 @@ impl AgentSessionEngine {
             }
         })
     }
+}
+
+/// Whether this session writes to a project store (`project.enabled`).
+fn project_recorder_enabled(cwd: &std::path::Path, agent_dir: &std::path::Path) -> bool {
+    pa_core::settings::SettingsManager::create(cwd, agent_dir).get_project_enabled()
 }

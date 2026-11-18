@@ -119,6 +119,20 @@ impl SettingsManager {
         Some(std::path::PathBuf::from(raw))
     }
 
+    /// The project store's gate (`project.enabled`): unset means OFF.
+    ///
+    /// The store writes a durable record outside the session, so it is opt-in
+    /// like `schedule`: an operator chooses to keep a project's plan, evidence,
+    /// and review history, and a session without it records nothing.
+    #[must_use]
+    pub fn get_project_enabled(&self) -> bool {
+        self.merged
+            .project
+            .as_ref()
+            .and_then(|project| project.enabled)
+            .unwrap_or(false)
+    }
+
     /// The agent-facing `schedule` tool's gate: unset means OFF.
     ///
     /// The other fork tools default ON because they only read or edit the

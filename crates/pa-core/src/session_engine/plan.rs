@@ -53,6 +53,19 @@ pub struct PlanItem {
     pub evidence_revision: Option<String>,
 }
 
+impl PlanItemStatus {
+    /// The wire spelling (`pending`, `in_progress`, `completed`, `blocked`).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::InProgress => "in_progress",
+            Self::Completed => "completed",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
 impl PlanItem {
     /// Whether the item still asks for work: `pending` or `in_progress`.
     #[must_use]

@@ -11,6 +11,9 @@ pa-core = { path = "../pa-core" }
 pa-agent = { path = "../pa-agent" }
 pa-ai = { path = "../pa-ai" }
 pa-telemetry = { path = "../pa-telemetry" }
+# FORK-ONLY: the project store (metadata + event log + read model) the plan
+# tool records into. `None` unless a project store is configured.
+pa-project = { path = "../pa-project" }
 anyhow = { workspace = true }
 tracing.workspace = true
 tracing-subscriber.workspace = true

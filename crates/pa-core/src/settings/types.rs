@@ -635,6 +635,15 @@ pub struct TelemetrySettings {
 
 /// Phase-7 tool-surface profile (fork-only): the active context, the modes
 /// layered on top of it, and a project-local delta. Resolved into a
+/// `[project]`: the project store (fork-only). `enabled` unset reads as OFF:
+/// the store writes a durable record outside the session, so an operator opts
+/// in rather than discovering it after the fact.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSettings {
+    pub enabled: Option<bool>,
+}
+
 /// [`crate::tool_profile::ToolsetLayer`] pipeline at session creation
 /// (`config -> context -> base modes -> dynamic modes -> single-project ->
 /// project`). Unset reads as the full default surface.
@@ -712,6 +721,8 @@ pub struct Settings {
     /// Legacy `default` rung of `subagentModel`; the ladder supersedes it,
     /// and it stays the last fallback (see [`SubagentModelSettings`]).
     pub subagent_default_model: Option<String>,
+    /// FORK-ONLY: the project store (metadata + event log + read model).
+    pub project: Option<ProjectSettings>,
     /// FORK-ONLY: the per-effort model ladder for unpinned `rlm.spawn`
     /// children (see [`SubagentModelSettings`]).
     pub subagent_model: Option<SubagentModelSettings>,
