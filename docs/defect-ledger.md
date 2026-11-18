@@ -53,6 +53,10 @@ process defect, and the process is what this file exists to fix.
 | 24a | cross-session delete | `known_item_ids` read the WHOLE project log, so session B emitted `entity.removed` for session A's steps. Measured: `[upserted P1, upserted P2, upserted P1, removed P2]` | `05d65012b` (previous now means "mine") |
 | 24b | shared-key collision | `entities.id` is the plan item id alone, so two sessions in one project share one row and the restored plan is whichever wrote last | `869790bdb` (rows keyed `session:item`; red-first 3 rows where 5 were written) |
 | 25 | test that documents a bug | a first attempt to "prove" #24 asserted the collapsed result and passed, which would have frozen the defect as the expected behaviour | removed (no test is better than a test that pins a bug) |
+| 26 | newest-writer restore | after the per-session key, `load_plan` returned the newest session's plan even for a session that had its own rows, so a restart lost the plan it wrote | `daf061e42` (own scope first; red-first restores `P9` instead of `P1,P2`) |
+| 27 | lost wakeup (abort) | `Agent::abort()` with no registered run did nothing, so a stop arriving between the worker's busy flag and the run slot was dropped and the turn waited out the provider response (measured: 60.31 s on a 60 s held reply) | `1cfaf952e` (abort epoch read before the first await; deterministic window test red-first with `Elapsed`). The first attempt, a sticky `abort_pending` flag (`7804fc3a7`), was wrong and is reverted — see #29 |
+| 28 | flake bookkeeping | `docs/flaky.md` recorded the kill timing failure as a flake; the measurement says otherwise (passes alone and under CPU load, and the elapsed equals the held reply) | `fa771986f` (reclassified as a fixed defect) |
+| 29 | fix that leaks into the next operation | the sticky `abort_pending` flag fixed #27 but cancelled the turn after the abort, so `abort_and_send_queued`'s deliberate follow-up never started. Three full daemon runs, 1389/1 each, a different queue test every time, all green alone; 1390/0 with the flag's apply disabled | `1cfaf952e` (epoch scoped to a run that is starting, so nothing survives the turn) |
 
 Notes on #24, so the fix is not guessed at again:
 
@@ -62,9 +66,14 @@ Notes on #24, so the fix is not guessed at again:
   plan, and its identity (`project_id`) is deliberately shared across a
   repository's worktrees — which is exactly why two concurrent sessions can
   disagree about who owns the plan.
-- The honest options are (a) key rows by session and derive the plan from the
-  newest session's events, or (b) keep one plan per project and refuse a second
-  writer. Both change the contract, so neither belongs in a "small fix" slice.
+- The options were (a) key rows by session and derive the plan from the session
+  that owns it, or (b) keep one plan per project and refuse a second writer. (a)
+  was chosen: rows are keyed `session:item`, this session's own rows win, and a
+  session with none adopts the newest plan (#24b, #26).
+- The restore rule took two tries and the second one was found by the full suite,
+  not by reasoning: "newest wins" loses a restarted session's own plan (#26), and
+  a sticky "abort the next run" flag fixed a real window while cancelling the
+  follow-up another command deliberately starts (#29).
 
 ## What the classes say
 
@@ -77,6 +86,9 @@ Notes on #24, so the fix is not guessed at again:
 | over-strict repair | 1 | every repair needs a degenerate-case test ("what if nothing survives") |
 | unexercised invariant | 1 | a claim of "red-first" requires actually inverting the fix |
 | dead surface | 1 | `pub` with no external caller is a maintenance bill; delete or wire it |
+| lost signal (abort/cancel dropped) | 1 | a cancel that can arrive before its subject exists must be remembered *by the subject*, and the remembering must expire with it (#27, #29) |
+| fix that changes the next operation | 1 | prove the negative case in the same change: the operation after the one you fixed still runs (#29) |
+| flake label hiding a cause | 1 | one failure is a flake; three different names in one family is a cause — classify by `elapsed` against the held operation, never retry to green (#28) |
 
 ## Still open, with the reason
 
@@ -86,8 +98,3 @@ Notes on #24, so the fix is not guessed at again:
 | W7.2 graph-first guidance | needs a measured tool-call count per task; not started |
 | W3.3 `code_ref` resolver | no producer writes `ref.added`; a resolver would check an empty set |
 | `real-model` QA tasks (CT-001/CT-002) | no access to a paid provider; validated by schema only |
-| abort/queue timing units | classified as load-correlated, not fixed; fixing needs a deadline measurement |
-| 26 | newest-writer restore | after the per-session key, `load_plan` returned the newest session's plan even for a session that had its own rows, so a restart lost the plan it wrote | `daf061e42` (own scope first; red-first restores `P9` instead of `P1,P2`) |
-| 27 | lost wakeup (abort) | `Agent::abort()` with no registered run did nothing, so a stop arriving between the worker's busy flag and the run slot was dropped and the turn waited out the provider response (measured: 60.31 s on a 60 s held reply) | `1cfaf952e` (abort epoch read before the first await; deterministic window test red-first with `Elapsed`). The first attempt, a sticky `abort_pending` flag (`7804fc3a7`), was wrong and is reverted — see #29 |
-| 28 | flake bookkeeping | `docs/flaky.md` recorded the kill timing failure as a flake; the measurement says otherwise (passes alone and under CPU load, and the elapsed equals the held reply) | `fa771986f` (reclassified as a fixed defect) |
-| 29 | fix that leaks into the next operation | the sticky `abort_pending` flag fixed #27 but cancelled the turn after the abort, so `abort_and_send_queued`'s deliberate follow-up never started. Three full daemon runs, 1389/1 each, a different queue test every time, all green alone; 1390/0 with the flag's apply disabled | `1cfaf952e` (epoch scoped to a run that is starting, so nothing survives the turn) |
