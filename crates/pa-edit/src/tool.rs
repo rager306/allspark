@@ -471,6 +471,27 @@ impl EditWriter for FsWriter {
         };
         match request.op {
             FileOp::Delete => {
+                // The same last-moment check as `Update`: a delete planned against
+                // one version of a file must not remove a version someone else
+                // wrote. `None` is still "no claim" — a delete planned without a
+                // read was never asserted against any bytes.
+                if let Some(expected) = &request.expected_hash {
+                    match std::fs::read(&request.absolute) {
+                        Ok(bytes) => {
+                            let actual = crate::file_hash(&String::from_utf8_lossy(&bytes));
+                            if &actual != expected {
+                                return Err(crate::EditError::Writer(format!(
+                                    "{} changed since it was read (hash {expected} -> {actual}); \
+                                     re-read it and plan the delete again",
+                                    request.display
+                                )));
+                            }
+                        }
+                        // A file already gone is the outcome the delete wanted.
+                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(err) => return Err(write_err(&request.absolute, err)),
+                    }
+                }
                 std::fs::remove_file(&request.absolute)
                     .map_err(|err| write_err(&request.absolute, err))?;
             }
@@ -1045,5 +1066,55 @@ mod tests {
             "a retry built from the current tag in the message must succeed: {}",
             text_of(&retried)
         );
+    }
+    /// The `Update` check's sibling: a delete planned against one version must
+    /// not remove a version someone else wrote. Without this the guard covered
+    /// writes and left the destructive operation unguarded.
+    #[tokio::test]
+    async fn the_writer_refuses_to_delete_a_file_that_changed_since_the_plan() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("a.rs");
+        std::fs::write(&path, "pub fn one() {}\n").expect("seed");
+        let planned = crate::file_hash("pub fn one() {}\n");
+        let writer = FsWriter { lsp: None };
+        std::fs::write(&path, "pub fn changed() {}\n").expect("edit");
+
+        let refused = writer
+            .write(WriteRequest {
+                expected_hash: Some(planned.clone()),
+                absolute: path.clone(),
+                display: "a.rs".to_string(),
+                op: FileOp::Delete,
+                move_to: None,
+                content: None,
+                flush_lsp: false,
+                lsp_batch_id: None,
+            })
+            .await;
+        assert!(
+            refused.is_err(),
+            "a stale delete must be refused: {refused:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("the file must survive a refused delete"),
+            "pub fn changed() {}\n"
+        );
+
+        // Against the bytes the plan saw, the delete proceeds.
+        std::fs::write(&path, "pub fn one() {}\n").expect("restore");
+        writer
+            .write(WriteRequest {
+                expected_hash: Some(planned),
+                absolute: path.clone(),
+                display: "a.rs".to_string(),
+                op: FileOp::Delete,
+                move_to: None,
+                content: None,
+                flush_lsp: false,
+                lsp_batch_id: None,
+            })
+            .await
+            .expect("a matching precondition deletes");
+        assert!(!path.exists(), "the delete landed");
     }
 }
