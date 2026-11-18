@@ -493,12 +493,21 @@ mod tests {
         assert_eq!(model.count_entities(PROJECT, "plan_item").unwrap(), 0);
     }
 
+    /// A model written by another build is rebuilt, not refused.
+    ///
+    /// Nothing in the file is canonical — the event log is — so refusing only
+    /// made an upgraded build treat a present model as absent: every caller
+    /// reads a failed `open` as "no model", and the project plan silently
+    /// stopped restoring. The rebuild drops every table, so the stale one
+    /// cannot survive a schema that no longer declares it.
     #[test]
-    fn a_model_from_a_future_version_refuses_to_open() {
+    fn a_model_from_another_version_is_rebuilt_from_the_log() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("project.db");
         {
-            let model = ReadModel::open(&db).unwrap();
+            let mut model = ReadModel::open(&db).unwrap();
+            project(&mut model, PROJECT, &[upsert("P1", "plan_item", "a")]).unwrap();
+            assert_eq!(model.count_entities(PROJECT, "plan_item").unwrap(), 1);
             model
                 .conn()
                 .execute(
@@ -508,8 +517,20 @@ mod tests {
                 .unwrap();
         }
 
-        let error = ReadModel::open(&db).unwrap_err().to_string();
-        assert!(error.contains("read-model version 99"), "{error}");
+        let rebuilt = ReadModel::open(&db).unwrap();
+        assert_eq!(rebuilt.count_entities(PROJECT, "plan_item").unwrap(), 0);
+        // No checkpoint survives, which is what makes the next sync replay the
+        // log from zero instead of skipping what the old model already had.
+        assert_eq!(rebuilt.log_offset().unwrap(), None);
+        let version: String = rebuilt
+            .conn()
+            .query_row(
+                "SELECT v FROM read_model_meta WHERE k = 'version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, crate::READ_MODEL_VERSION.to_string());
     }
 
     /// The daemon's fallback replays the whole log when an incremental pass

@@ -97,8 +97,9 @@ impl ReadModel {
     ///
     /// # Errors
     ///
-    /// Returns an error when the database cannot be opened, when its schema
-    /// version is not this build's, or when the DDL fails.
+    /// Returns an error when the database cannot be opened or the DDL fails. A
+    /// schema version that is not this build's is *not* an error: the file is
+    /// derived, so it is dropped and rebuilt, exactly as a deleted model is.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -300,19 +301,46 @@ impl ReadModel {
             )
             .ok();
         match stored {
-            None => {
-                self.conn.execute(
-                    "INSERT INTO read_model_meta(k, v) VALUES ('version', ?1)",
-                    [READ_MODEL_VERSION.to_string()],
-                )?;
-                Ok(())
-            }
+            None => self.write_version(),
             Some(version) if version == READ_MODEL_VERSION.to_string() => Ok(()),
-            Some(version) => anyhow::bail!(
-                "{} holds read-model version {version}, but this build writes \
-                 {READ_MODEL_VERSION}; rebuild the model from the event log",
-                self.path.display()
-            ),
+            Some(_) => {
+                // Nothing in this file is canonical: the event log is. A format
+                // change therefore rebuilds rather than refusing, which is the
+                // same rule a deleted model already follows. Refusing here made
+                // an upgraded build silently stop restoring a project plan,
+                // because every caller treats a failed `open` as "no model".
+                self.drop_tables()?;
+                self.conn.execute_batch(&batch)?;
+                self.write_version()
+            }
         }
+    }
+
+    fn write_version(&self) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO read_model_meta(k, v) VALUES ('version', ?1)",
+            [READ_MODEL_VERSION.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Drop every table this file holds, leaving the SQLite internals alone.
+    ///
+    /// Read from `sqlite_master` instead of a list of names: a table added to
+    /// the schema must not need a second place updated, or the rebuild on a
+    /// format change quietly keeps the stale one.
+    fn drop_tables(&self) -> Result<()> {
+        let names: Vec<String> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+            )?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<String>>>()?
+        };
+        for name in names {
+            self.conn
+                .execute_batch(&format!("DROP TABLE IF EXISTS \"{name}\""))?;
+        }
+        Ok(())
     }
 }
