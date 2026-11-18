@@ -46,6 +46,11 @@ pub struct PlanItem {
     /// result, a review receipt id, or the observed state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
+    /// The commit the evidence was recorded against. The harness stamps it
+    /// from the session's git context; the model never sets it. A later tree
+    /// therefore reports the evidence as stale instead of silently passing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_revision: Option<String>,
 }
 
 impl PlanItem {
@@ -68,6 +73,17 @@ impl PlanItem {
                 .evidence
                 .as_deref()
                 .is_none_or(|evidence| evidence.trim().is_empty())
+    }
+
+    /// Whether the item's evidence was recorded against a different commit
+    /// than `current`. Evidence without a recorded revision is not stale: the
+    /// harness stamps it, and a session outside a repository has none.
+    #[must_use]
+    pub fn is_evidence_stale(&self, current: Option<&str>) -> bool {
+        let (Some(current), Some(recorded)) = (current, self.evidence_revision.as_deref()) else {
+            return false;
+        };
+        self.status == PlanItemStatus::Completed && self.evidence.is_some() && current != recorded
     }
 }
 
@@ -106,6 +122,34 @@ impl PlanState {
             );
         }
         Ok(())
+    }
+
+    /// The ids of completed items whose evidence was recorded against another
+    /// commit, in plan order. Advisory: the TUI and the continuation prompt
+    /// surface it; it never refuses completion on its own.
+    #[must_use]
+    pub fn stale_evidence_item_ids(&self, current: Option<&str>) -> Vec<String> {
+        self.items
+            .iter()
+            .filter(|item| item.is_evidence_stale(current))
+            .map(|item| item.id.clone())
+            .collect()
+    }
+
+    /// Stamp `revision` on every completed item that carries evidence but no
+    /// recorded revision. The harness calls this with the session's commit.
+    pub fn stamp_evidence_revision(&mut self, revision: Option<&str>) {
+        let Some(revision) = revision else {
+            return;
+        };
+        for item in &mut self.items {
+            if item.status == PlanItemStatus::Completed
+                && item.evidence.is_some()
+                && item.evidence_revision.is_none()
+            {
+                item.evidence_revision = Some(revision.to_string());
+            }
+        }
     }
 
     /// The ids of items that still ask for work, in plan order.
@@ -353,6 +397,7 @@ mod tests {
             status,
             verify: None,
             evidence: None,
+            evidence_revision: None,
         }
     }
 
@@ -568,6 +613,7 @@ mod tests {
             status: PlanItemStatus::Completed,
             verify: Some("cargo test -p pa-core".to_string()),
             evidence: None,
+            evidence_revision: None,
         }]);
         let error = store.snapshot().ensure_completable().unwrap_err();
         assert!(error.to_string().contains("one"), "{error}");
@@ -578,8 +624,63 @@ mod tests {
             status: PlanItemStatus::Completed,
             verify: Some("cargo test -p pa-core".to_string()),
             evidence: Some("cargo test -p pa-core: 1831 passed".to_string()),
+            evidence_revision: None,
         }]);
         store.snapshot().ensure_completable().unwrap();
+    }
+
+    #[test]
+    fn evidence_recorded_against_another_commit_is_reported_stale() {
+        let state = PlanState {
+            items: vec![PlanItem {
+                id: "one".to_string(),
+                text: "finish one".to_string(),
+                status: PlanItemStatus::Completed,
+                verify: Some("cargo test -p pa-core".to_string()),
+                evidence: Some("cargo test -p pa-core: 12 passed".to_string()),
+                evidence_revision: Some("aaaa".to_string()),
+            }],
+        };
+
+        assert_eq!(state.stale_evidence_item_ids(Some("bbbb")), vec!["one"]);
+        assert_eq!(
+            state.stale_evidence_item_ids(Some("aaaa")),
+            Vec::<String>::new()
+        );
+        // Outside a repository there is no revision to compare against.
+        assert_eq!(state.stale_evidence_item_ids(None), Vec::<String>::new());
+
+        // Staleness is advisory: the item still counts as settled.
+        state.ensure_completable().unwrap();
+    }
+
+    #[test]
+    fn the_first_revision_sticks_and_a_later_one_does_not_rewrite_it() {
+        let mut state = PlanState {
+            items: vec![PlanItem {
+                id: "one".to_string(),
+                text: "finish one".to_string(),
+                status: PlanItemStatus::Completed,
+                verify: None,
+                evidence: Some("observed on screen".to_string()),
+                evidence_revision: None,
+            }],
+        };
+
+        state.stamp_evidence_revision(Some("aaaa"));
+        assert_eq!(state.items[0].evidence_revision.as_deref(), Some("aaaa"));
+        state.stamp_evidence_revision(Some("bbbb"));
+        assert_eq!(
+            state.items[0].evidence_revision.as_deref(),
+            Some("aaaa"),
+            "re-stamping would launder stale evidence"
+        );
+
+        // An item with no evidence is never stamped.
+        state.items[0].evidence = None;
+        state.items[0].evidence_revision = None;
+        state.stamp_evidence_revision(Some("cccc"));
+        assert_eq!(state.items[0].evidence_revision, None);
     }
 
     #[test]

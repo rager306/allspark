@@ -451,6 +451,7 @@ mod tests {
             status,
             verify: None,
             evidence: None,
+            evidence_revision: None,
         }
     }
 

@@ -1277,10 +1277,10 @@ impl AgentSessionEngine {
             stream_fn: Some(stream_fn),
             // Model tools: the session plan plus `python_repl`; the engine adds
             // the kernel-backed `python_repl` tool itself.
-            tools: vec![
-                Arc::new(super::plan_tool::PlanTool::new(self.plan_store.clone()))
-                    as Arc<dyn pa_agent::types::AgentTool>,
-            ],
+            tools: vec![Arc::new(super::plan_tool::PlanTool::new(
+                self.plan_store.clone(),
+                cwd_for_mcp.clone(),
+            )) as Arc<dyn pa_agent::types::AgentTool>],
             custom_system_prompt: create_resources.system_prompt,
             prompt_guidelines: create_resources.append_system_prompt,
             // FORK-ONLY: pass the configured MCP server names so the system

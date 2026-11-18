@@ -1,9 +1,11 @@
 //! The session plan tool: the model writes the explicit multi-step plan; the
 //! daemon continuation consult reads it.
 
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode};
+use pa_core::session::manager::capture_git_context;
 use pa_core::session_engine::plan::{PlanItem, PlanState, PlanStore};
 
 pub(crate) const PLAN_TOOL_NAME: &str = "update_plan";
@@ -13,13 +15,17 @@ const DESCRIPTION: &str = "Replace the session plan for authorized multi-step wo
 /// The plan tool backed by one session-scoped store.
 pub(crate) struct PlanTool {
     store: PlanStore,
+    /// The session working directory: the plan tool stamps the commit the
+    /// evidence was recorded against, so a later tree reports it as stale.
+    cwd: PathBuf,
     schema: OnceLock<serde_json::Value>,
 }
 
 impl PlanTool {
-    pub(crate) fn new(store: PlanStore) -> Self {
+    pub(crate) fn new(store: PlanStore, cwd: PathBuf) -> Self {
         Self {
             store,
+            cwd,
             schema: OnceLock::new(),
         }
     }
@@ -80,9 +86,21 @@ impl AgentTool for PlanTool {
                 .get("items")
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("update_plan requires an items array"))?;
-            let items: Vec<PlanItem> = serde_json::from_value(items_value)
+            let mut items: Vec<PlanItem> = serde_json::from_value(items_value)
                 .map_err(|error| anyhow::anyhow!("invalid plan items: {error}"))?;
             PlanState::validate_items(&items)?;
+            // The revision is the harness's, never the model's: a plan update
+            // that set its own revision could launder stale evidence.
+            let cwd = self.cwd.clone();
+            let revision = tokio::task::spawn_blocking(move || {
+                capture_git_context(&cwd).and_then(|git| git.commit)
+            })
+            .await
+            .ok()
+            .flatten();
+            let mut probe = PlanState { items };
+            probe.stamp_evidence_revision(revision.as_deref());
+            items = probe.items;
             let state = self.store.replace_from_tool(items);
             Ok(AgentToolResult {
                 content: vec![pa_agent::types::ToolResultContent::text(
@@ -105,6 +123,8 @@ impl AgentTool for PlanTool {
 mod tests {
     use std::sync::Arc;
 
+    use std::path::PathBuf;
+
     use pa_agent::abort::AbortSignal;
     use pa_agent::types::{AgentTool, AgentToolUpdateCallback};
     use pa_core::session_engine::plan::{PlanItem, PlanItemStatus, PlanStore};
@@ -118,7 +138,7 @@ mod tests {
     #[tokio::test]
     async fn the_tool_replaces_the_plan_and_returns_the_normalized_state() {
         let store = PlanStore::default();
-        let tool = Arc::new(PlanTool::new(store.clone()));
+        let tool = Arc::new(PlanTool::new(store.clone(), PathBuf::from(".")));
         let result = tool
             .execute(
                 "call-1".to_string(),
@@ -144,7 +164,7 @@ mod tests {
     #[tokio::test]
     async fn the_tool_keeps_verify_and_evidence_on_an_item() {
         let store = PlanStore::default();
-        let tool = Arc::new(PlanTool::new(store.clone()));
+        let tool = Arc::new(PlanTool::new(store.clone(), PathBuf::from(".")));
         tool.execute(
             "call-evidence".to_string(),
             serde_json::json!({
@@ -177,7 +197,7 @@ mod tests {
     #[tokio::test]
     async fn duplicate_ids_are_rejected_before_the_plan_is_replaced() {
         let store = PlanStore::default();
-        let tool = Arc::new(PlanTool::new(store.clone()));
+        let tool = Arc::new(PlanTool::new(store.clone(), PathBuf::from(".")));
         let error = tool
             .execute(
                 "call-dup".to_string(),
@@ -200,7 +220,7 @@ mod tests {
     #[tokio::test]
     async fn more_than_one_in_progress_item_is_rejected() {
         let store = PlanStore::default();
-        let tool = Arc::new(PlanTool::new(store.clone()));
+        let tool = Arc::new(PlanTool::new(store.clone(), PathBuf::from(".")));
         let error = tool
             .execute(
                 "call-two-active".to_string(),
@@ -223,7 +243,7 @@ mod tests {
     #[tokio::test]
     async fn empty_ids_are_rejected_before_the_plan_is_replaced() {
         let store = PlanStore::default();
-        let tool = Arc::new(PlanTool::new(store.clone()));
+        let tool = Arc::new(PlanTool::new(store.clone(), PathBuf::from(".")));
         let error = tool
             .execute(
                 "call-2".to_string(),
