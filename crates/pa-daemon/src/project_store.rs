@@ -101,14 +101,18 @@ impl ProjectRecorder {
     ) -> anyhow::Result<()> {
         let log = EventLog::at(&self.paths.events);
         let previous = self.known_item_ids();
-        for item in items {
+        for (position, item) in items.iter().enumerate() {
             self.append(
                 &log,
                 "entity.upserted",
                 json!({
                     "id": item.id,
                     "entityType": "plan_item",
+                    // The plan is an ordered list, so the order is part of the
+                    // record: a projection that kept only the items would come
+                    // back in whatever order the database returned.
                     "data": {
+                        "position": position,
                         "text": item.text,
                         "status": item.status.as_str(),
                         "verify": item.verify,
@@ -129,6 +133,30 @@ impl ProjectRecorder {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ids);
         Ok(())
+    }
+
+    /// The project's plan as the read model holds it, in list order.
+    ///
+    /// This is what makes the store a record rather than a log: a session that
+    /// starts in a project with a stored plan can resume it instead of
+    /// starting blank. `None` when the model is absent, unreadable, or holds no
+    /// items — each of which means "nothing to resume", not an error the
+    /// caller must distinguish.
+    #[must_use]
+    pub fn load_plan(&self) -> Option<Vec<crate::plan_restore::StoredPlanItem>> {
+        let model = pa_project::model::ReadModel::open(&self.paths.model).ok()?;
+        let rows = model
+            .entities_of_type(&self.paths.project_id, "plan_item")
+            .ok()?;
+        let mut items: Vec<_> = rows
+            .into_iter()
+            .filter_map(|(id, data)| crate::plan_restore::StoredPlanItem::from_row(&id, &data))
+            .collect();
+        if items.is_empty() {
+            return None;
+        }
+        items.sort_by_key(|item| item.position);
+        Some(items)
     }
 
     /// Bring the read model up to date with the log.
@@ -527,5 +555,43 @@ mod tests {
             pa_project::model::ReadModel::open(&recorder(dir.path()).paths().model).unwrap();
         assert_eq!(model.count_entities("proj", "plan_item").unwrap(), 1);
         assert!(model.log_offset().unwrap().unwrap() > offset);
+    }
+    #[test]
+    fn the_stored_plan_round_trips_through_the_model_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = recorder(dir.path());
+        recorder
+            .record_plan(&[
+                item("P1", PlanItemStatus::InProgress),
+                item("P2", PlanItemStatus::Completed),
+            ])
+            .unwrap();
+        recorder.sync().unwrap();
+
+        let plan = recorder.load_plan().expect("a stored plan");
+        assert_eq!(
+            plan.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            vec!["P1", "P2"]
+        );
+        assert_eq!(plan[1].status, PlanItemStatus::Completed);
+    }
+
+    #[test]
+    fn a_dropped_model_still_yields_no_plan_rather_than_a_guess() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = recorder(dir.path());
+        assert!(recorder.load_plan().is_none());
+
+        recorder
+            .record_plan(&[item("P1", PlanItemStatus::Pending)])
+            .unwrap();
+        recorder.sync().unwrap();
+        std::fs::remove_file(&recorder.paths().model).unwrap();
+
+        // The log still holds it, but nothing projected it: "no plan" is the
+        // honest answer, and the next sync restores it.
+        assert!(recorder.load_plan().is_none());
+        recorder.sync().unwrap();
+        assert!(recorder.load_plan().is_some());
     }
 }

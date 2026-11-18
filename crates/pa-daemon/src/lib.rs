@@ -69,6 +69,7 @@ pub(crate) mod peer;
 pub(crate) mod peer_client;
 pub(crate) mod peer_tickets;
 pub(crate) mod persistent_shells;
+pub mod plan_restore;
 pub mod platform;
 pub mod project_store;
 pub mod prompt_admission;

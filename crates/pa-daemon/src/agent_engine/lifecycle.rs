@@ -546,6 +546,24 @@ impl AgentSessionEngine {
         if let Some(entries) = entries {
             let _ = self.plan_store.restore_from_entries(entries);
         }
+        // FORK-ONLY: an opted-in project store lets a session with no plan of
+        // its own resume the project's unfinished work. Read after the
+        // session's own record, which always wins: a session that has a plan in
+        // its transcript is resuming that session, not adopting the project's.
+        if project_recorder_enabled(&self.cwd(), &self.config.agent_dir) {
+            let paths = crate::project_store::ProjectStorePaths::under(
+                &self.config.agent_dir,
+                &crate::project_store::ProjectStorePaths::project_id_for(&self.cwd()),
+            );
+            let recorder =
+                crate::project_store::ProjectRecorder::new(paths, self.durable_session_id());
+            if let Some(plan) = crate::plan_restore::plan_for_start(
+                &self.plan_store.snapshot(),
+                recorder.load_plan().as_deref(),
+            ) {
+                self.plan_store.replace(plan.items);
+            }
+        }
         self.install_plan_persist_hook(built);
 
         let mut admitted_user_ids = Vec::new();

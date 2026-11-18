@@ -270,6 +270,42 @@ impl ReadModel {
         Ok(refs)
     }
 
+    /// Every live entity of `type_name` for `project_id`, as `(id, data)`.
+    ///
+    /// The id is a column, not part of `data_json`, so it is returned beside
+    /// the data rather than injected into it: one row, one place its id lives.
+    ///
+    /// Ordered by row id, which follows first-insertion order. A caller that
+    /// needs a different order sorts the result; the read model does not
+    /// impose one, because the order of a plan is a property of the plan, not
+    /// of the table.
+    ///
+    /// # Errors
+    ///
+    /// Propagates a query failure.
+    pub fn entities_of_type(
+        &self,
+        project_id: &str,
+        type_name: &str,
+    ) -> Result<Vec<(String, serde_json::Value)>> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, data_json FROM entities
+             WHERE project_id = ?1 AND type = ?2 AND deleted = 0 ORDER BY id",
+        )?;
+        let rows = statement.query_map(rusqlite::params![project_id, type_name], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut values = Vec::new();
+        for row in rows {
+            let (id, text) = row?;
+            values.push((
+                id,
+                serde_json::from_str(&text).context("parse entity data_json")?,
+            ));
+        }
+        Ok(values)
+    }
+
     /// The log byte this model is projected through, when a producer recorded
     /// one.
     ///
