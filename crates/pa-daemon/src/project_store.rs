@@ -941,7 +941,7 @@ mod tests {
     fn rows_from_before_the_per_session_key_are_not_read_back() {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(dir.path());
-        let recorder = ProjectRecorder::new(paths.clone(), Some("session-a".to_string()));
+        let recorder = ProjectRecorder::new(paths, Some("session-a".to_string()));
         let legacy = pa_project::event::Event {
             event_id: "legacy-1".to_string(),
             event_type: "entity.upserted".to_string(),
