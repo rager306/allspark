@@ -183,3 +183,40 @@ outlives its subject and will act on an unrelated one. Prefer a generation count
 operation being started over a boolean that outlives it, and prove the negative case (the next
 operation still runs) in the same change.
 
+## 10. Measured: what I actually get wrong (one long session, 2026-11-12..18)
+
+Instead of guessing at my own failure modes, I counted them in the session log
+(`01a1d0d1…jsonl`): 11 228 tool calls, 217 of them `edit`, 92 Rust compile
+errors, 342 panic lines forming 148 distinct signatures.
+
+**Compile errors by code** — the top of the distribution is the useful part:
+
+| code | count | what it means |
+|---|---|---|
+| E0425 | 18 | cannot find value in scope: I used a name I assumed existed (`scope_key`, `entry_epoch`, a helper I had just invented) |
+| E0308 | 12 | wrong type: `&str` where `String` was needed |
+| E0061 / E0599 / E0382 | 8 each | wrong arity, no such method, use-after-move |
+| E0560 / E0063 / E0433 / E0277 / E0609 | 6 / 6 / 6 / 6 / 4 | struct field misuse, missing field, unresolved import, trait bound, field on the wrong type |
+
+**Edit-tool failures: 4 "No match found" and 4 "Found multiple matches" in 217
+edits (3.7%).** Both are the tool doing its job; the cost is the retry.
+
+**Productive awkwardness:** 170 log lines of `Blocking waiting for file lock on
+build directory` — cargo runs overlapping, which the repository's own rule
+already forbids. Each one is wall clock spent waiting on my own other build.
+
+**Two mistakes worth naming, because they were not compile errors:**
+
+- A variable named `p` was reused for a file path in an edit cell, clobbering the
+  session-log path variable from an earlier cell. The next analysis silently read
+  the wrong file and returned zeros. **Rule:** keep one name per resource across
+  cells; a scratch Path is `p_<what>`, never `p`.
+- Reading a file immediately after a command that writes it, when the command ran
+  in a background handle. **Rule:** a file produced by a background handle is read
+  only after its completion notification.
+
+**Rule from the top row.** Before using a helper, constant, or field in a patch,
+confirm it exists and is in scope at the patch site — one `rg` costs a second, one
+E0425 costs a rebuild. The 18 occurrences are all the same shape: writing code
+against an assumed API surface.
+
