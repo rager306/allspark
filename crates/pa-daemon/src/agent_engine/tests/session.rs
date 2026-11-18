@@ -698,3 +698,67 @@ fn an_unbuilt_engine_branch_summary_carries_the_request_session_id() {
     );
     assert_eq!(*seen.lock().unwrap(), [Some("durable-session".to_string())]);
 }
+
+/// `[project] enabled = true` is the only thing that makes a session record its
+/// plan, and every other test builds a recorder by hand — so nothing proved the
+/// setting reaches the product path. This drives the real `build_session` and
+/// checks that a plan written through the tool lands in the project's log.
+#[test]
+fn an_enabled_project_store_records_the_sessions_plan() {
+    let _faux = FAUX_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempfile::TempDir::new().unwrap();
+    let cwd = dir.path().join("checkout");
+    std::fs::create_dir_all(cwd.join(".prime/agent")).unwrap();
+    std::fs::write(
+        cwd.join(".prime/agent/settings.json"),
+        json!({ "project": { "enabled": true } }).to_string(),
+    )
+    .unwrap();
+    let agent_dir = dir.path().join("agent");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    let engine = AgentSessionEngine::new(AgentEngineConfig {
+        admission: crate::agent_engine::provider_admission::AdmissionClient::Disabled,
+        cwd,
+        agent_dir: agent_dir.clone(),
+        provider: None,
+        model: None,
+        api_key: None,
+        thinking: None,
+        session_dir: None,
+        session_file: None,
+        faux_script: Some(json!({ "engine": "faux", "responses": [{ "text": "ok" }] }).to_string()),
+        supervisor_link: None,
+        telemetry_disabled: Some(true),
+        cron_store: None,
+        queued_steering_probe: None,
+    })
+    .unwrap();
+
+    let recorder = engine.project_recorder().expect("the setting enables it");
+    recorder
+        .record_plan(&[pa_core::session_engine::plan::PlanItem {
+            id: "P1".to_string(),
+            text: "the only step".to_string(),
+            status: pa_core::session_engine::plan::PlanItemStatus::InProgress,
+            verify: None,
+            evidence: None,
+            evidence_revision: None,
+        }])
+        .unwrap();
+
+    // The store is under the agent dir, keyed by the project identity, and the
+    // log is the durable record.
+    assert!(recorder.paths().events.starts_with(&agent_dir));
+    let events = pa_project::event::EventLog::at(&recorder.paths().events)
+        .read_all()
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].payload["data"]["text"], "the only step");
+
+    // And a fresh session in the same checkout resumes it.
+    let restored = recorder.load_plan().expect("the plan is readable");
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].id, "P1");
+}

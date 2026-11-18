@@ -1075,7 +1075,7 @@ impl AgentSessionEngine {
     /// One place computes the store paths and the project identity, so the
     /// restore path and the plan tool cannot disagree about which project a
     /// session belongs to.
-    fn project_recorder(&self) -> Option<crate::project_store::ProjectRecorderHandle> {
+    pub(crate) fn project_recorder(&self) -> Option<crate::project_store::ProjectRecorderHandle> {
         let cwd = self.cwd();
         if !project_recorder_enabled(&cwd, &self.config.agent_dir) {
             return None;
