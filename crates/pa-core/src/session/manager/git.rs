@@ -54,6 +54,33 @@ pub fn capture_git_context(cwd: &Path) -> Option<GitContext> {
     })
 }
 
+/// The repository's `.git` directory for `cwd`, walking up like `git` does.
+///
+/// A session frequently starts in a subdirectory of a repository; `git rev-parse`
+/// answers from any depth, so a reader that only looked at `cwd/.git` returned
+/// `None` there and silently disabled every caller's revision check. Stops at the
+/// filesystem root, and refuses a `.git` that is neither a directory nor a
+/// `gitdir:` pointer.
+fn find_git_dir(cwd: &Path) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    for root in cwd.ancestors() {
+        let dot_git = root.join(".git");
+        if dot_git.is_dir() {
+            return Some((dot_git, root.to_path_buf()));
+        }
+        if let Ok(pointer) = std::fs::read_to_string(&dot_git) {
+            let path = pointer.trim().strip_prefix("gitdir:")?.trim().to_string();
+            let resolved = Path::new(&path);
+            let git_dir = if resolved.is_absolute() {
+                resolved.to_path_buf()
+            } else {
+                root.join(resolved)
+            };
+            return Some((git_dir, root.to_path_buf()));
+        }
+    }
+    None
+}
+
 /// Read the current commit without spawning `git`.
 ///
 /// [`capture_git_context`] runs three probes because the header wants the
@@ -69,19 +96,7 @@ pub fn capture_git_context(cwd: &Path) -> Option<GitContext> {
 /// same as no repository.
 #[must_use]
 pub fn read_head_commit(cwd: &Path) -> Option<String> {
-    let dot_git = cwd.join(".git");
-    let git_dir = if dot_git.is_dir() {
-        dot_git
-    } else {
-        let pointer = std::fs::read_to_string(&dot_git).ok()?;
-        let path = pointer.trim().strip_prefix("gitdir:")?.trim();
-        let resolved = Path::new(path);
-        if resolved.is_absolute() {
-            resolved.to_path_buf()
-        } else {
-            cwd.join(resolved)
-        }
-    };
+    let (git_dir, _repo_root) = find_git_dir(cwd)?;
     let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
     let head = head.trim();
     let Some(reference) = head.strip_prefix("ref: ") else {
@@ -221,5 +236,24 @@ mod tests {
     fn a_directory_outside_a_repository_answers_none() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(read_head_commit(dir.path()), None);
+    }
+    /// A session often starts in a subdirectory; `git` answers from any depth,
+    /// so a reader that only looked at `cwd/.git` answered `None` there and
+    /// silently disabled the stale-evidence check.
+    #[test]
+    fn a_subdirectory_of_a_repository_resolves_its_commit() {
+        let dir = repo_with_head("ref: refs/heads/main\n");
+        fs::write(
+            dir.path().join(".git/refs/heads/main"),
+            "abcdefabcdefabcdefabcdefabcdefabcdefabcd\n",
+        )
+        .unwrap();
+        let deep = dir.path().join("crates").join("nested").join("src");
+        fs::create_dir_all(&deep).unwrap();
+
+        assert_eq!(
+            read_head_commit(&deep).as_deref(),
+            Some("abcdefabcdefabcdefabcdefabcdefabcdefabcd")
+        );
     }
 }
