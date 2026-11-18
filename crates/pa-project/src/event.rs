@@ -117,6 +117,77 @@ impl EventLog {
         self.append_all(std::slice::from_ref(event))
     }
 
+    /// Remove an unterminated final line, returning the bytes removed.
+    ///
+    /// A partial append (the disk filled, or the process died mid-write) leaves
+    /// a prefix of a line with no trailing newline. It is not a record: no reader
+    /// can parse it, and every later append would concatenate onto it, so the
+    /// log would hold one permanently invalid line in the middle. The writer
+    /// repairs it because the writer is the one about to append.
+    ///
+    /// A complete line is never touched: the cut stops at the last newline, so a
+    /// readable record cannot be dropped by this call. The cost is one byte in
+    /// the common case (the file ends with a newline) and a backwards scan over
+    /// the torn line otherwise — never a full read, because this runs on every
+    /// plan write.
+    ///
+    /// The session log has its own, larger repair (`pa-core`'s
+    /// `repair_jsonl_damage`) that also handles zero-filled appends and rewrites
+    /// through a temp file. It is not shared here: `pa-core` depends on this
+    /// crate, so the leaf cannot reach it, and this log has no header line for
+    /// that routine to validate. Two mechanisms, two scopes, deliberately.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file cannot be read or truncated.
+    pub fn truncate_torn_tail(&self) -> Result<u64> {
+        use std::io::{Read, Seek};
+
+        let length = self.len_bytes()?;
+        if length == 0 {
+            return Ok(0);
+        }
+        let mut file = std::fs::File::open(&self.path)
+            .with_context(|| format!("open {}", self.path.display()))?;
+        let mut last = [0_u8; 1];
+        file.seek(SeekFrom::Start(length - 1))
+            .with_context(|| format!("seek {}", self.path.display()))?;
+        file.read_exact(&mut last)
+            .with_context(|| format!("read {}", self.path.display()))?;
+        if last[0] == b'\n' {
+            return Ok(0);
+        }
+
+        // Scan backwards for the last newline in bounded chunks: the torn line is
+        // one batch, so this is normally a single read.
+        const CHUNK: u64 = 64 * 1024;
+        let mut end = length;
+        let keep = loop {
+            let take = end.min(CHUNK);
+            let start = end - take;
+            let mut buf = vec![0_u8; usize::try_from(take).unwrap_or(0)];
+            file.seek(SeekFrom::Start(start))
+                .with_context(|| format!("seek {}", self.path.display()))?;
+            file.read_exact(&mut buf)
+                .with_context(|| format!("read {}", self.path.display()))?;
+            if let Some(index) = buf.iter().rposition(|byte| *byte == b'\n') {
+                break start + u64::try_from(index).unwrap_or(0) + 1;
+            }
+            if start == 0 {
+                break 0;
+            }
+            end = start;
+        };
+        let removed = length - keep;
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&self.path)
+            .with_context(|| format!("open {} for truncation", self.path.display()))?;
+        file.set_len(keep)
+            .with_context(|| format!("truncate {}", self.path.display()))?;
+        Ok(removed)
+    }
+
     /// Append several events as ONE durable write.
     ///
     /// A snapshot that is several events (a plan's items) must not be written
