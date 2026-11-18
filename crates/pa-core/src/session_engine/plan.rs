@@ -12,6 +12,14 @@ use pa_types::ai::AssistantContentBlock;
 use pa_types::session::{AgentMessage, FileEntry};
 use serde::{Deserialize, Serialize};
 
+/// The `custom` entry tag that carries the plan across a compaction.
+///
+/// A compacted window can drop the assistant `update_plan` call that created
+/// the plan, so the transcript replay alone loses the obligation. The entry is
+/// the durable copy; [`PlanState::from_entries`] accepts whichever of the two
+/// it meets first in the branch.
+pub const PLAN_STATE_CUSTOM_TYPE: &str = "session_plan_state";
+
 /// The state of one plan item.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -109,34 +117,58 @@ impl PlanState {
         }
     }
 
-    /// Rebuild the plan from the latest `update_plan` tool call in a session
-    /// branch. The transcript is the durable record, so a rebuilt worker
-    /// restores the same obligation without a second store.
+    /// Rebuild the plan from a session branch.
+    ///
+    /// The newest of two durable records wins: the `session_plan_state` custom
+    /// entry (written with every update, and retained through compaction) or an
+    /// assistant `update_plan` tool call still present in the branch. The
+    /// tool-call arm keeps sessions written before the entry existed readable.
     #[must_use]
     pub fn from_entries(entries: &[FileEntry]) -> Self {
         for entry in entries.iter().rev() {
-            let FileEntry::Message {
-                message: AgentMessage::Assistant(message),
-                ..
-            } = entry
-            else {
-                continue;
-            };
-            for block in message.content.iter().rev() {
-                let AssistantContentBlock::ToolCall(call) = block else {
-                    continue;
-                };
-                if call.name != "update_plan" {
-                    continue;
+            match entry {
+                FileEntry::Custom { payload, .. }
+                    if payload.custom_type == PLAN_STATE_CUSTOM_TYPE =>
+                {
+                    if let Some(state) = payload.data.as_ref().and_then(Self::from_persisted_value)
+                    {
+                        return state;
+                    }
                 }
-                if let Some(state) = Self::from_update_plan_arguments(&serde_json::Value::Object(
-                    call.arguments.clone(),
-                )) {
-                    return state;
+                FileEntry::Message {
+                    message: AgentMessage::Assistant(message),
+                    ..
+                } => {
+                    for block in message.content.iter().rev() {
+                        let AssistantContentBlock::ToolCall(call) = block else {
+                            continue;
+                        };
+                        if call.name != "update_plan" {
+                            continue;
+                        }
+                        if let Some(state) = Self::from_update_plan_arguments(
+                            &serde_json::Value::Object(call.arguments.clone()),
+                        ) {
+                            return state;
+                        }
+                    }
                 }
+                _ => {}
             }
         }
         Self::default()
+    }
+
+    /// The value written to the `session_plan_state` custom entry.
+    #[must_use]
+    pub fn to_persisted_value(&self) -> serde_json::Value {
+        serde_json::json!({ "items": self.items })
+    }
+
+    fn from_persisted_value(data: &serde_json::Value) -> Option<Self> {
+        let items: Vec<PlanItem> = serde_json::from_value(data.get("items")?.clone()).ok()?;
+        Self::validate_items(&items).ok()?;
+        Some(Self { items })
     }
 
     fn from_update_plan_arguments(arguments: &serde_json::Value) -> Option<Self> {
@@ -146,10 +178,16 @@ impl PlanState {
     }
 }
 
+/// Writes one plan change to the session's durable record. The embedding
+/// installs it after the session exists; [`PlanStore::replace`] never takes a
+/// session lock itself, and the hook is expected to hand the write to a task.
+pub type PlanPersistHook = Arc<dyn Fn(&PlanState) + Send + Sync>;
+
 struct PlanInner {
     state: PlanState,
     last_offered: Option<String>,
     repeat_count: u32,
+    persist: Option<PlanPersistHook>,
 }
 
 /// The session's plan cell: one cheap lock shared by the tool and the
@@ -163,21 +201,51 @@ impl Default for PlanStore {
             state: PlanState::default(),
             last_offered: None,
             repeat_count: 0,
+            persist: None,
         })))
     }
 }
 
 impl PlanStore {
-    /// Replace the complete plan. Any item change resets the reminder guard.
-    pub fn replace(&self, items: Vec<PlanItem>) -> PlanState {
-        let mut inner = self
-            .0
+    /// Install the durable-record hook. Called once by the embedding after the
+    /// session exists; a later call replaces it.
+    pub fn set_persist_hook(&self, hook: PlanPersistHook) {
+        self.0
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        inner.state = PlanState { items };
-        inner.last_offered = None;
-        inner.repeat_count = 0;
-        inner.state.clone()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .persist = Some(hook);
+    }
+
+    /// Replace the complete plan without writing a durable record. Any item
+    /// change resets the reminder guard.
+    pub fn replace(&self, items: Vec<PlanItem>) {
+        self.replace_inner(items, false);
+    }
+
+    /// Replace the plan from a model tool call and write the durable record,
+    /// so a compacted window still restores the obligation.
+    #[must_use]
+    pub fn replace_from_tool(&self, items: Vec<PlanItem>) -> PlanState {
+        self.replace_inner(items, true)
+    }
+
+    fn replace_inner(&self, items: Vec<PlanItem>, persist: bool) -> PlanState {
+        let (state, hook) = {
+            let mut inner = self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            inner.state = PlanState { items };
+            inner.last_offered = None;
+            inner.repeat_count = 0;
+            (inner.state.clone(), inner.persist.clone())
+        };
+        if persist {
+            if let Some(hook) = hook {
+                hook(&state);
+            }
+        }
+        state
     }
 
     /// Read the current plan.
@@ -194,7 +262,8 @@ impl PlanStore {
     #[must_use]
     pub fn restore_from_entries(&self, entries: &[FileEntry]) -> PlanState {
         let state = PlanState::from_entries(entries);
-        self.replace(state.items)
+        self.replace(state.items);
+        self.snapshot()
     }
 
     /// The next unblocked item, with a bounded reminder guard.
@@ -243,7 +312,7 @@ impl PlanStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{PlanItem, PlanItemStatus, PlanState, PlanStore};
+    use super::{PlanItem, PlanItemStatus, PlanState, PlanStore, PLAN_STATE_CUSTOM_TYPE};
 
     fn item(id: &str, status: PlanItemStatus) -> PlanItem {
         PlanItem {
@@ -367,6 +436,93 @@ mod tests {
             "the latest call must win"
         );
         assert_eq!(state.items[1].status, PlanItemStatus::InProgress);
+    }
+
+    #[test]
+    fn the_persisted_entry_restores_a_plan_a_compaction_dropped() {
+        // The compacted branch holds only the summary: the `update_plan` call
+        // that created the plan is gone. The custom entry is the record that
+        // survives, so the obligation (and the goal guard) still holds.
+        let entry: pa_types::session::FileEntry = serde_json::from_value(serde_json::json!({
+            "type": "custom",
+            "customType": PLAN_STATE_CUSTOM_TYPE,
+            "data": { "items": [
+                { "id": "one", "text": "step one", "status": "completed" },
+                { "id": "two", "text": "step two", "status": "in_progress" }
+            ] },
+            "id": "entry",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z"
+        }))
+        .expect("the custom entry parses");
+
+        let state = PlanState::from_entries(&[entry]);
+        assert_eq!(state.unfinished_item_ids(), vec!["two".to_string()]);
+        assert!(state.ensure_completable().is_err());
+    }
+
+    #[test]
+    fn a_newer_update_plan_call_still_wins_over_an_older_entry() {
+        let entry: pa_types::session::FileEntry = serde_json::from_value(serde_json::json!({
+            "type": "custom",
+            "customType": PLAN_STATE_CUSTOM_TYPE,
+            "data": { "items": [
+                { "id": "stale", "text": "stale step", "status": "pending" }
+            ] },
+            "id": "older",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z"
+        }))
+        .expect("the custom entry parses");
+        let call: pa_types::session::FileEntry = serde_json::from_value(serde_json::json!({
+            "type": "message",
+            "id": "newer",
+            "parentId": "older",
+            "timestamp": "2026-01-01T00:00:01.000Z",
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "type": "toolCall",
+                    "id": "call",
+                    "name": "update_plan",
+                    "arguments": { "items": [
+                        { "id": "fresh", "text": "fresh step", "status": "pending" }
+                    ] }
+                }],
+                "api": "faux",
+                "provider": "faux",
+                "model": "faux-1",
+                "usage": {
+                    "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0,
+                    "totalTokens": 0,
+                    "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0 }
+                },
+                "stopReason": "toolUse",
+                "timestamp": 0
+            }
+        }))
+        .expect("the tool-call entry parses");
+
+        let state = PlanState::from_entries(&[entry, call]);
+        assert_eq!(state.unfinished_item_ids(), vec!["fresh".to_string()]);
+    }
+
+    #[test]
+    fn an_invalid_persisted_entry_is_ignored_rather_than_trusted() {
+        let entry: pa_types::session::FileEntry = serde_json::from_value(serde_json::json!({
+            "type": "custom",
+            "customType": PLAN_STATE_CUSTOM_TYPE,
+            "data": { "items": [
+                { "id": "dup", "text": "one", "status": "pending" },
+                { "id": "dup", "text": "two", "status": "pending" }
+            ] },
+            "id": "entry",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z"
+        }))
+        .expect("the custom entry parses");
+
+        assert_eq!(PlanState::from_entries(&[entry]).items, Vec::new());
     }
 
     #[test]

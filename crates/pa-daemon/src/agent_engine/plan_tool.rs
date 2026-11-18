@@ -81,7 +81,7 @@ impl AgentTool for PlanTool {
             let items: Vec<PlanItem> = serde_json::from_value(items_value)
                 .map_err(|error| anyhow::anyhow!("invalid plan items: {error}"))?;
             PlanState::validate_items(&items)?;
-            let state = self.store.replace(items);
+            let state = self.store.replace_from_tool(items);
             Ok(AgentToolResult {
                 content: vec![pa_agent::types::ToolResultContent::text(
                     serde_json::to_string_pretty(&state)

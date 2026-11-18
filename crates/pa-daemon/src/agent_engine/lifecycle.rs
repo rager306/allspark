@@ -349,6 +349,42 @@ impl AgentSessionEngine {
         }
     }
 
+    /// Record every model plan change as a `session_plan_state` custom entry,
+    /// so the plan survives a compaction that drops the `update_plan` call.
+    ///
+    /// One writer task drains a FIFO: a spawned task per update could append
+    /// out of order, and the branch replay takes the newest entry as the plan.
+    /// The write is best-effort: a failed append never fails the tool call, and
+    /// the next update rewrites the whole plan anyway.
+    fn install_plan_persist_hook(&self, built: &Arc<CoreSessionEngine>) {
+        let persistence = built.session.shared_persistence();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+        tokio::spawn(async move {
+            while let Some(value) = rx.recv().await {
+                let written = {
+                    let mut session = persistence.lock().await;
+                    session
+                        .append_custom_entry(
+                            pa_core::session_engine::plan::PLAN_STATE_CUSTOM_TYPE,
+                            Some(value),
+                        )
+                        .and_then(|_| session.flush_now())
+                };
+                if let Err(error) = written {
+                    eprintln!("pa-daemon: plan state persist failed: {error:#}");
+                }
+            }
+        });
+        self.plan_store.set_persist_hook(std::sync::Arc::new(
+            move |state: &pa_core::session_engine::plan::PlanState| {
+                // A closed writer means the session is retiring: the in-memory
+                // plan still serves this build, and the next build replays the
+                // last durable entry.
+                let _ = tx.send(state.to_persisted_value());
+            },
+        ));
+    }
+
     async fn adopt_built_session(&self, built: &Arc<CoreSessionEngine>) -> anyhow::Result<()> {
         self.mirror_goal_runtime(built).await;
         *self
@@ -504,11 +540,14 @@ impl AgentSessionEngine {
             })
             .or(shared_branch.as_deref());
         // The transcript is the plan's durable record: a rebuilt worker
-        // replays the latest `update_plan` call before the first prompt, so
-        // the goal-completion guard sees the same obligation.
+        // replays the latest `session_plan_state` entry (or a still-present
+        // `update_plan` call) before the first prompt, so the goal-completion
+        // guard sees the same obligation.
         if let Some(entries) = entries {
             let _ = self.plan_store.restore_from_entries(entries);
         }
+        self.install_plan_persist_hook(built);
+
         let mut admitted_user_ids = Vec::new();
         if std::env::var_os("PA_COMPACTION_TRACE").is_some() {
             pa_core::session_engine::compaction_trace::trace(

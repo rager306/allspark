@@ -93,8 +93,10 @@ Extras:
 - `goal.complete()` is refused while the session's `update_plan` still has
   `pending`/`in_progress` items; the model must finish them or mark them
   `blocked` first. This keeps the goal loop from closing on a partial plan.
-  The plan is replayed from the branch's latest `update_plan` call when a
-  worker/session rebuilds.
+  Every model plan change is also written as a `session_plan_state` custom
+  entry, so the plan survives a compaction that drops the `update_plan` call;
+  replay reads the newest durable record and falls back to the tool call for
+  sessions written before the entry existed.
 - A persistent shell (`bash(..., persistent=True)`) is a service: it does
   not hold a goal, plan, or autonomous continuation open. A finite background
   job still does. A non-persistent long-running service has no distinct signal
@@ -102,6 +104,9 @@ Extras:
 - `/session` renders a **Native tools:** row listing the registered fork
   tools, so the operator sees the blocks are live; it also shows the explicit
   plan's settled count and up to three unfinished items;
+- `update_plan` keeps plan ids unique and stable and allows at most one
+  `in_progress` item; an update that breaks either rule is rejected before the
+  plan is replaced;
 - the roster passes through the tool-surface profile before the prompt is
   built (see below).
 
