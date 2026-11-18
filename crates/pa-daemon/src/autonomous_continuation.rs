@@ -194,10 +194,10 @@ impl AgentSessionEngine {
         // The revision is the harness's, read here rather than stored: a
         // completed item whose evidence names another commit is reported
         // stale, which is the only reader `evidenceRevision` has.
-        let revision = {
-            let cwd = self.cwd();
-            pa_core::session::manager::capture_git_context(&cwd).and_then(|git| git.commit)
-        };
+        // The commit only, from `.git/HEAD`: this runs at every text-only turn
+        // boundary, and three `git` spawns (7.7 ms measured) to read one 40-char
+        // file is work the boundary does not need.
+        let revision = pa_core::session::manager::read_head_commit(&self.cwd());
         self.plan_store.continuation_text_at(revision.as_deref())
     }
 
