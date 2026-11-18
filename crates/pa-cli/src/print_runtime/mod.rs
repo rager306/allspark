@@ -22,6 +22,8 @@ mod tests;
 
 use modes::{run_acp_mode, run_print_mode, run_rpc_mode};
 
+#[cfg(test)]
+pub(crate) use driver::run_prompts_and_emit;
 pub use engine::ProviderTargetSlot;
 pub(crate) use engine::{
     build_engine, ChildEngineOverrides, ChildLane, HeadlessEmbedding, HeadlessEmbeddingFields,

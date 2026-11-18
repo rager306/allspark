@@ -206,7 +206,7 @@ pub const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(
         &["update"],
         "update [--check] [--nightly|--stable]",
-        "Update to the latest Rust build (uninstalls the TypeScript version)",
+        "Update to the latest version (sessions preserved)",
     )
     .options(&[
         "--check  Print the update channel's latest release vs the running version, without installing",

@@ -211,6 +211,7 @@ async fn run_quick(model: &Model, policy: &ProviderRetryPolicy) -> (AssistantMes
         |_next: &Model| async { Ok(()) },
         || async { Ok(None) },
         None,
+        None,
     )
     .await
     .expect("retry driver settles");
@@ -472,6 +473,7 @@ async fn drill_d_all_candidates_failing_surfaces_the_last_error() {
         },
         |_next: &Model| async { Ok(()) },
         || async { Ok(None) },
+        None,
         None,
     )
     .await

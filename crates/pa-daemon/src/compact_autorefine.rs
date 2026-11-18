@@ -9,6 +9,28 @@ use pa_core::session_engine::auto_refine_trigger::CompactAutoRefineSurface;
 use crate::agent_engine::AgentSessionEngine;
 
 impl AgentSessionEngine {
+    pub(crate) fn report_background_refinement(
+        &self,
+        pending: tokio::task::JoinHandle<
+            anyhow::Result<pa_core::session_engine::refine::CommittedRefinement>,
+        >,
+    ) {
+        let sink = self.refinement_completion_sink.lock().unwrap().clone();
+        if let Some(sink) = sink {
+            sink(pending);
+        } else {
+            // Non-worker hosts can omit the stream sink; durable core rows still
+            // persist. Observe errors instead of silently discarding the task.
+            self.runtime.spawn(async move {
+                match pending.await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => eprintln!("pa-daemon: refinement failed: {error:#}"),
+                    Err(error) => eprintln!("pa-daemon: refinement task failed: {error}"),
+                }
+            });
+        }
+    }
+
     /// Whether a compaction armed the compact-trigger review on the built
     /// session (TS `_compactAutoRefinePending`).
     pub(crate) fn compact_auto_refine_pending(&self) -> bool {
@@ -72,7 +94,6 @@ impl AgentSessionEngine {
             return Ok(None);
         };
         let (model, api_key) = self.resolve_request_target(model);
-        let global_harness_dir = self.config.agent_dir.clone();
         // The lock covers the clone only (see `run_compaction`): holding the
         // session mutex across the review serialized every client read seam
         // behind it. The cloned engine keeps the round alive across a rebuild.
@@ -86,12 +107,7 @@ impl AgentSessionEngine {
         self.runtime.block_on(async {
             engine
                 .session
-                .consume_compact_auto_refine(
-                    &model,
-                    api_key,
-                    global_harness_dir,
-                    CompactAutoRefineSurface::Checkpoint,
-                )
+                .consume_compact_auto_refine(&model, api_key, CompactAutoRefineSurface::Checkpoint)
                 .await
         })
     }
@@ -100,8 +116,7 @@ impl AgentSessionEngine {
 #[cfg(test)]
 mod tests {
     use crate::agent_engine::tests::{admit, faux_engine_with_settings};
-    use crate::agent_engine::AgentSessionEngine;
-    use crate::agent_engine::FAUX_TEST_LOCK;
+    use crate::agent_engine::{AgentSessionEngine, FAUX_TEST_LOCK};
     use crate::engine::SessionEngine;
     use crate::engine::{CompactionOutcome, CompactionRequest, EngineEvent};
     use serde_json::json;
@@ -182,9 +197,6 @@ mod tests {
     /// after the settle); the worker's servicing body consumes the decline.
     #[test]
     fn threshold_compaction_arms_the_review_off_the_turn_path() {
-        let _faux = FAUX_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let headroom = crossing_headroom();
         let (engine, _dir) = trigger_engine(
             &json!({
@@ -237,9 +249,6 @@ mod tests {
 
     #[test]
     fn the_declining_review_stamps_the_cooldown() {
-        let _faux = FAUX_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // reserve 1: the headroom never crosses, so only the manual
         // compaction runs.
         let (engine, _dir) = trigger_engine(
@@ -336,9 +345,6 @@ mod tests {
 
     #[test]
     fn sessions_without_the_refine_surface_never_run_a_review() {
-        let _faux = FAUX_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let headroom = crossing_headroom();
         let (engine, _dir) = trigger_engine(
             &json!({
@@ -381,9 +387,6 @@ mod tests {
 
     #[test]
     fn manual_compaction_arms_and_consumes_the_round() {
-        let _faux = FAUX_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (engine, _dir) = trigger_engine(
             &json!({
                 "responses": [
@@ -442,86 +445,54 @@ mod tests {
     }
 
     #[test]
-    fn refine_session_command_emits_the_refine_events() {
+    fn refine_session_command_hands_completion_off_the_turn_runner() {
         let _faux = FAUX_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // A memory MUST name its evidence (`metadata.sources`), enforced since the
-        // durable-fact validation landed: a fact nothing can check later is the thing that
-        // rule exists to refuse. Without `sources` this plan is correctly rejected and the
-        // `applied: true` assertion below fails for a reason unrelated to the refine events.
-        let plan = r#"{"summary":"one edit","edits":[{"action":"create","kind":"memory","id":"m1","title":"t","content":"c","metadata":{"sources":["crates/pa-daemon/src/compact_autorefine.rs:423"]}}]}"#;
-        let (engine, _dir) = trigger_engine(&json!({ "responses": [ {"text": plan} ] }), 1, true);
-        let mut events: Vec<EngineEvent> = Vec::new();
-        let execution = crate::session_commands::run_session_command(
-            &engine,
-            &refine_command(),
-            &[],
-            &mut |event| {
-                events.push(event);
-                true
-            },
-        );
-        assert!(execution.is_some(), "the /refine command ran");
-        let results: Vec<&serde_json::Value> = events
-            .iter()
-            .filter_map(|event| match event {
-                EngineEvent::RefineComplete { result } => Some(result),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(results.len(), 1, "events: {events:?}");
-        assert_eq!(results[0]["summary"], "one edit");
-        assert_eq!(results[0]["appliedEdits"][0]["applied"], json!(true));
-        let complete_index = events
-            .iter()
-            .position(|event| matches!(event, EngineEvent::RefineComplete { .. }))
-            .expect("the complete event");
-        let result_row_index = events
-            .iter()
-            .rposition(|event| matches!(
-                event,
-                EngineEvent::CustomMessage(row) if row["customType"] == "session_slash_command_result"
-            ))
-            .expect("the result row");
-        assert!(
-            complete_index < result_row_index,
-            "the event precedes the result row: {events:?}"
-        );
-        assert!(
-            events
-                .iter()
-                .all(|event| !matches!(event, EngineEvent::RefineFailed { .. })),
-            "a successful run emits no failure: {events:?}"
-        );
-
-        let (engine, _dir) =
-            trigger_engine(&json!({ "responses": [ {"text": "not json"} ] }), 1, true);
-        let mut events: Vec<EngineEvent> = Vec::new();
-        crate::session_commands::run_session_command(
-            &engine,
-            &refine_command(),
-            &[],
-            &mut |event| {
-                events.push(event);
-                true
-            },
-        );
-        let errors: Vec<String> = events
-            .iter()
-            .filter_map(|event| match event {
-                EngineEvent::RefineFailed { error } => Some(error.clone()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(errors.len(), 1, "events: {events:?}");
-        assert_eq!(errors[0], "Refiner did not return a JSON object");
-        assert!(
-            events
-                .iter()
-                .all(|event| !matches!(event, EngineEvent::RefineComplete { .. })),
-            "a failed run emits no completion: {events:?}"
-        );
+        for (reply, succeeds) in [
+            (
+                // FORK: a durable memory must name its evidence (`planner.rs` gate), so the
+                // fixture carries `metadata.sources` — this test is about handing the completion
+                // off the turn runner, not about the gate.
+                r#"{"summary":"one edit","edits":[{"action":"create","kind":"memory","id":"m1","title":"t","content":"c","metadata":{"sources":["test fixture"]}}]}"#,
+                true,
+            ),
+            ("not json", false),
+        ] {
+            let (engine, _dir) =
+                trigger_engine(&json!({ "responses": [{"text": reply}] }), 1, true);
+            let (send, receive) = std::sync::mpsc::channel();
+            *engine.refinement_completion_sink.lock().unwrap() =
+                Some(std::sync::Arc::new(move |pending| {
+                    send.send(pending).unwrap();
+                }));
+            let mut events = Vec::new();
+            let execution = crate::session_commands::run_session_command(
+                &engine,
+                &refine_command(),
+                &[],
+                &mut |event| {
+                    events.push(event);
+                    true
+                },
+            )
+            .expect("slash command returns after scheduling");
+            assert!(execution.error.is_none());
+            let pending = receive
+                .try_recv()
+                .expect("completion handed to background sink");
+            let committed = engine.runtime.block_on(pending).unwrap();
+            if succeeds {
+                let result = committed.unwrap();
+                assert_eq!(result.result.summary, "one edit");
+                assert!(result.result.applied_edits[0].applied);
+            } else {
+                assert_eq!(
+                    committed.unwrap_err().to_string(),
+                    "Refiner did not return a JSON object"
+                );
+            }
+        }
     }
 
     fn refine_command() -> pa_core::session_engine::slash_commands::SessionSlashCommand {

@@ -15,13 +15,14 @@
 //! stack is empty and a synthetic up arrow echoes back clean.
 #![cfg(unix)]
 
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use nix::fcntl::{fcntl, FcntlArg::F_SETFL, OFlag};
 use nix::pty::{openpty, Winsize};
 use serde_json::{json, Value};
 
@@ -273,7 +274,11 @@ fn run_route(route: Route, known_terminal: bool) {
                     harness.write(b"\x03");
                     std::thread::sleep(Duration::from_millis(400));
                     harness.write(b"\x03");
-                } else if !last {
+                } else if !last
+                    && !matches!(stages[index + 1], Stage::Write(payload) if payload == KITTY_ANSWER)
+                {
+                    // The probe answer goes out at once: a quiet drain can
+                    // outlast the 250ms answer window.
                     harness.drain_until_quiet(6);
                 }
             }
@@ -453,6 +458,13 @@ fn run_route(route: Route, known_terminal: bool) {
         ),
     }
 
+    // macOS revokes the pty once the child (its session leader) exits, so
+    // the shell-side checks below cannot write to the master there.
+    if cfg!(not(target_os = "linux")) {
+        harness.finish();
+        return;
+    }
+
     // (2) The synthetic up arrow at the shell: the shadow emulator sends the
     // legacy form (write the armed form too, so the echo assertion has teeth).
     let echo_mark = harness.mark();
@@ -533,7 +545,15 @@ impl RouteHarness {
     }
 
     fn write(&mut self, payload: &[u8]) {
-        self.master.write(payload);
+        if let Err(error) = self.master.file.write_all(payload) {
+            // A write racing the child's own exit (the selector's auto-exit):
+            // Linux buffers it, macOS fails EIO once the session leader is gone.
+            let exited = self.child.try_wait().ok().flatten().is_some();
+            assert!(
+                exited && error.raw_os_error() == Some(libc::EIO),
+                "write to the pty: {error}"
+            );
+        }
     }
 
     fn wait_from_start(&mut self, needle: &[u8], what: &str) {
@@ -667,11 +687,76 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     find_subsequence_from(haystack, 0, needle).is_some()
 }
 
+/// Non-blocking reader over the pty master, collecting the child's whole byte stream.
+struct PtyReader {
+    file: std::fs::File,
+    output: Vec<u8>,
+}
+
+impl PtyReader {
+    fn new(master: OwnedFd) -> PtyReader {
+        let fd = master.as_raw_fd();
+        fcntl(fd, F_SETFL(OFlag::O_NONBLOCK)).expect("pty master non-blocking");
+        PtyReader {
+            file: master.into(),
+            output: Vec::new(),
+        }
+    }
+
+    fn mark(&self) -> usize {
+        self.output.len()
+    }
+
+    /// One non-blocking read; `Ok(0)` when nothing was pending (the caller waits).
+    fn try_read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.file.read(buffer)
+    }
+
+    fn drain_until_quiet(&mut self, quiet_polls: usize) {
+        let mut quiet = 0;
+        while quiet < quiet_polls {
+            let mut buffer = [0u8; 8192];
+            match self.file.read(&mut buffer) {
+                Ok(0) | Err(_) => quiet += 1,
+                Ok(n) => {
+                    self.output.extend_from_slice(&buffer[..n]);
+                    quiet = 0;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    fn wait_from(&mut self, mark: usize, needle: &[u8], what: &str) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if find_subsequence_from(&self.output, mark, needle).is_some() {
+                return;
+            }
+            let mut buffer = [0u8; 8192];
+            let result = self.file.read(&mut buffer);
+            match result {
+                Ok(0) | Err(_) => {}
+                Ok(n) => self.output.extend_from_slice(&buffer[..n]),
+            }
+            if Instant::now() > deadline {
+                let text = String::from_utf8_lossy(&self.output[mark..]);
+                panic!(
+                    "timeout waiting for {what} (needle {needle:?}); pty tail since mark:\n{text}"
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
 /// A child of this very binary, re-executed in child mode with the pty slave
 /// as its CONTROLLING terminal (setsid + TIOCSCTTY).
 fn spawn_child(route: Route, socket: &Path, slave: &OwnedFd, known_terminal: bool) -> Child {
     fn claim_controlling_tty(fd: i32) -> std::io::Result<()> {
         nix::unistd::setsid()?;
+        // TIOCSCTTY is already the request type on Linux and a `u32` on macOS.
+        #[allow(clippy::cast_lossless)]
         let rc = unsafe { libc::ioctl(fd, libc::TIOCSCTTY as libc::c_ulong, 0) };
         if rc < 0 {
             return Err(std::io::Error::last_os_error());
@@ -717,7 +802,3 @@ fn slave_as_stdio(slave: &OwnedFd) -> Stdio {
 }
 mod child;
 use child::{child_run, MockSupervisor};
-
-#[path = "../support/mod.rs"]
-mod support;
-use support::PtyReader;

@@ -31,11 +31,7 @@ fn model(id: &str, provider: &str) -> Model {
 fn in_memory_loads_built_in_catalog() {
     let registry = ModelRegistry::in_memory(auth_with(&serde_json::json!({})));
     assert!(registry.get_error().is_none());
-    assert_ne!(registry.get_all().len(), 0);
-    assert!(registry
-        .get_all()
-        .iter()
-        .any(|m| m.id == "internal/glm-5.2-fast"));
+    assert!(!registry.get_all().is_empty(), "the catalog is never empty");
 }
 
 /// TS `755-configured-max-tokens.test.ts`: built-in catalog models stay
@@ -45,7 +41,7 @@ fn in_memory_loads_built_in_catalog() {
 #[test]
 fn built_in_catalog_models_stay_unmarked() {
     let registry = ModelRegistry::in_memory(auth_with(&serde_json::json!({})));
-    assert_ne!(registry.get_all().len(), 0);
+    assert!(!registry.get_all().is_empty(), "the catalog is never empty");
     assert!(registry
         .get_all()
         .iter()
@@ -69,122 +65,6 @@ fn available_filters_by_configured_auth() {
             model.id == available_model.id && model.provider == available_model.provider
         })
     }));
-}
-
-#[test]
-fn native_free_models_do_not_configure_a_provider_or_enter_default_candidates() {
-    let registry = ModelRegistry::in_memory(auth_without_env(&serde_json::json!({})));
-    let free = registry
-        .get_all()
-        .iter()
-        .find(|model| model.provider == "opencode" && model.id == "deepseek-v4.1-flash-free")
-        .expect("native free model");
-    assert!(!registry.auth.has_auth("opencode"));
-    assert_eq!(
-        registry.get_provider_auth_status("opencode"),
-        crate::auth::types::AuthStatus::default()
-    );
-    assert!(!registry.has_configured_auth(free));
-    assert_eq!(registry.get_available().len(), 0);
-    // Discovery is the other question (issue #9): the model sends its own public
-    // credential, so a picker should offer it even though it is not a failover
-    // candidate. Keeping these two apart is what lets the free tier be visible
-    // without becoming a default.
-    assert!(
-        registry
-            .get_discoverable_models()
-            .iter()
-            .any(|model| model.provider == "opencode" && model.id == "deepseek-v4.1-flash-free"),
-        "the native free model must be discoverable: {:?}",
-        registry
-            .get_discoverable_models()
-            .iter()
-            .map(|m| (m.provider.as_str(), m.id.as_str()))
-            .collect::<Vec<_>>()
-    );
-}
-
-#[test]
-fn explicit_native_free_selection_resolves_public_request_auth_only_on_its_endpoint() {
-    let mut registry = ModelRegistry::in_memory(auth_without_env(&serde_json::json!({})));
-    let free = registry
-        .resolve_set_model_selection("opencode", "deepseek-v4.1-flash-free")
-        .expect("explicit native free selection")
-        .clone();
-    assert_eq!(
-        registry.get_api_key_and_headers(&free, None),
-        ResolvedRequestAuth {
-            ok: true,
-            api_key: Some("public".into()),
-            headers: None,
-            request_model: None,
-            error: None,
-        }
-    );
-}
-
-/// The deprecate half of the discovery contract: a retirement list is
-/// reported only for ids the table actually carries, and the tuple shape
-/// (id, date) is what the picker and `model list` render.
-#[test]
-fn deprecated_opencode_ids_reports_only_table_rows() {
-    let registry = ModelRegistry::in_memory(auth_without_env(&serde_json::json!({})));
-    // No snapshot in an in-memory registry: empty, never a panic.
-    assert_eq!(
-        registry.deprecated_opencode_ids(),
-        Vec::<(String, String)>::new()
-    );
-}
-
-#[test]
-fn a_native_free_row_never_learns_other_endpoints_request_auth() {
-    let mut registry = ModelRegistry::in_memory(auth_without_env(&serde_json::json!({})));
-    let free = registry
-        .resolve_set_model_selection("opencode", "deepseek-v4.1-flash-free")
-        .expect("explicit native free selection")
-        .clone();
-    assert!(registry.has_request_auth(&free));
-    for base_url in [
-        "https://example.com/v1",
-        "https://opencode.ai.example.com/inference/v1",
-        "https://opencode.ai@evil.example/inference/v1",
-        "https://opencode.ai:444/inference/v1",
-        "https://opencode.ai/zen/v1",
-        "http://opencode.ai/inference/v1",
-    ] {
-        let mut custom_endpoint = free.clone();
-        custom_endpoint.base_url = base_url.into();
-        assert!(!registry.has_request_auth(&custom_endpoint));
-        assert_eq!(
-            registry
-                .get_api_key_and_headers(&custom_endpoint, None)
-                .api_key,
-            None
-        );
-    }
-    assert!(matches!(
-        registry.resolve_set_model_selection("opencode", "gpt-5"),
-        Err(SetModelSelectionError::ProviderUnauthenticated { .. })
-    ));
-}
-
-#[test]
-fn native_free_request_auth_preserves_configured_credentials() {
-    let auth = auth_without_env(&serde_json::json!({
-        "opencode": {"type": "api_key", "key": "explicit-test-key"}
-    }));
-    let mut registry = ModelRegistry::in_memory(auth);
-    let free = registry
-        .resolve_set_model_selection("opencode", "deepseek-v4.1-flash-free")
-        .unwrap()
-        .clone();
-    assert_eq!(
-        registry
-            .get_api_key_and_headers(&free, None)
-            .api_key
-            .as_deref(),
-        Some("explicit-test-key")
-    );
 }
 
 #[test]
@@ -269,9 +149,9 @@ fn get_api_key_and_headers_attempts_one_refresh_per_call() {
             &self,
             _provider: &str,
             _credentials: &crate::auth::types::AuthStorageData,
-        ) -> Option<crate::auth::types::AuthCredential> {
+        ) -> Result<crate::auth::types::AuthCredential, String> {
             *self.0.lock().unwrap() += 1;
-            None
+            Err("the token call failed".to_string())
         }
     }
     let dir = tempfile::tempdir().unwrap();
@@ -336,36 +216,54 @@ fn get_api_key_and_headers_attempts_one_refresh_per_call() {
     assert_eq!(*refreshes.0.lock().unwrap(), 0, "no refresh fires");
 }
 
+/// An expired OAuth credential whose refresh fails, with no other key to
+/// serve, fails the resolution with the re-login sentence (not a keyless
+/// request that surfaces as "No API key").
 #[test]
-fn fork_providers_join_the_built_in_catalog() {
-    let registry = ModelRegistry::in_memory(auth_with(&serde_json::json!({})));
-    let all = registry.get_all();
-    assert!(all
-        .iter()
-        .any(|m| m.provider == "muse" && m.id == "muse-spark-1.3"));
-    assert!(all
-        .iter()
-        .any(|m| m.provider == "codebuddy" && m.id == "glm-5.2"));
-}
+fn a_failed_refresh_with_nothing_else_to_serve_fails_with_the_re_login_sentence() {
+    struct RevokedGrant;
+    impl crate::auth::manager::OAuthIntegration for RevokedGrant {
+        fn api_key_for(
+            &self,
+            _provider: &str,
+            _credential: &crate::auth::types::AuthCredential,
+        ) -> Option<String> {
+            None
+        }
 
-#[test]
-fn models_json_provider_overrides_reach_fork_providers() {
-    let dir = tempfile::tempdir().unwrap();
-    let models_path = dir.path().join("models.json");
-    std::fs::write(
-        &models_path,
-        r#"{ "providers": { "codebuddy": { "baseUrl": "http://127.0.0.1:20128/v1" } } }"#,
-    )
-    .unwrap();
-    let registry = ModelRegistry::create(auth_with(&serde_json::json!({})), &models_path);
-    assert!(registry.get_error().is_none());
-    let glm = registry
-        .get_all()
-        .iter()
-        .find(|m| m.provider == "codebuddy" && m.id == "glm-5.2")
-        .expect("fork codebuddy model present")
-        .clone();
-    assert_eq!(glm.base_url, "http://127.0.0.1:20128/v1");
+        fn refresh(
+            &self,
+            _provider: &str,
+            _credentials: &AuthStorageData,
+        ) -> Result<crate::auth::types::AuthCredential, String> {
+            Err("invalid_grant".to_string())
+        }
+    }
+    let data = AuthStorageData(
+        serde_json::json!({
+            "anthropic": {
+                "type": "oauth", "access": "expired-access", "refresh": "stored-refresh", "expires": 1
+            }
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default(),
+    );
+    let mut registry = ModelRegistry::in_memory(AuthStorage::in_memory_without_env(
+        &data,
+        Arc::new(RevokedGrant),
+    ));
+    assert_eq!(
+        registry.get_api_key_and_headers(&model("m", "anthropic"), None),
+        ResolvedRequestAuth {
+            ok: false,
+            error: Some(
+                "Authentication failed for \"anthropic\": the stored credential could not be refreshed (invalid_grant).\n\nRun /login to update credentials."
+                    .to_string()
+            ),
+            ..Default::default()
+        }
+    );
 }
 
 #[test]
@@ -375,7 +273,7 @@ fn models_json_error_keeps_built_ins() {
     std::fs::write(&models_path, "{ not json").unwrap();
     let registry = ModelRegistry::create(auth_with(&serde_json::json!({})), &models_path);
     assert!(registry.get_error().is_some());
-    assert_ne!(registry.get_all().len(), 0);
+    assert!(!registry.get_all().is_empty(), "the catalog is never empty");
 }
 
 #[test]
@@ -526,13 +424,6 @@ fn a_missing_or_corrupt_cache_falls_back_to_the_bundled_catalog() {
         .iter()
         .any(|model| model.provider == "prime-inference"));
     assert!(registry.get_error().is_some());
-}
-
-#[test]
-fn explicit_private_ids_are_authorized() {
-    let registry = ModelRegistry::in_memory(auth_with(&serde_json::json!({})));
-    let private_model = model("internal/custom-private", "prime-inference");
-    assert!(!registry.is_authorized_private_model(&private_model));
 }
 
 #[test]
@@ -722,11 +613,7 @@ async fn scope_readiness_timeout_keeps_models_available_before_refresh() {
     let mut registry = ModelRegistry::in_memory(auth);
     registry.catalog = Arc::new(pa_models::ModelCatalog::with_urls(None, None, &url, &url));
     let existing = model("internal/existing", "prime-inference");
-    let missing = model("internal/missing", "prime-inference");
-    registry.models = vec![existing.clone(), missing];
-    registry.authorized_private_ids.insert(existing.id.clone());
-    registry.authorized_private_models = vec![existing.clone()];
-    registry.authorized_team_id = Some("team-1".to_string());
+    registry.models = vec![existing.clone()];
     let patterns = vec![
         "prime-inference/internal/existing".to_string(),
         "prime-inference/internal/missing".to_string(),
@@ -740,7 +627,7 @@ async fn scope_readiness_timeout_keeps_models_available_before_refresh() {
     )
     .await;
     assert!(
-        registry.authorized_private_ids.is_empty(),
+        !registry.get_all().contains(&existing),
         "refresh started before timing out"
     );
     assert_eq!(
@@ -749,205 +636,6 @@ async fn scope_readiness_timeout_keeps_models_available_before_refresh() {
             .map(|entry| entry.model)
             .collect::<Vec<_>>(),
         vec![existing]
-    );
-}
-
-// ── FORK MODELS SURVIVE EVERY CATALOG SOURCE ────────────────────────────────
-//
-// The registry chains `fork_provider_models()` after the catalog chain
-// (`registry.rs:600`), so the fork's providers exist in every mode. A release
-// install ships `models.bundled.json` (step 2 of the no-cold-start chain), and
-// a stale or upstream-shaped asset would silently replace the compiled catalog:
-// the user then sees fewer models than the build carries, which reads as
-// "провайдеры есть, а моделей нет" and is indistinguishable from a broken build.
-//
-// These pin the invariant on the SOURCE the registry reads, so a packaging
-// mistake (a fixture catalog, an upstream snapshot) fails here instead of in a
-// user's picker.
-#[test]
-fn the_fork_model_table_carries_every_fork_provider() {
-    let fork = pa_ai::models_fork::fork_provider_models();
-    for provider in pa_ai::models_fork::fork_providers() {
-        assert!(
-            fork.iter().any(|model| model.provider == *provider),
-            "provider {provider} is registered but has no model in the fork table: \
-             the picker would show the provider with an empty list"
-        );
-    }
-}
-
-/// Every fork model must survive the registry's own load path (which chains the
-/// fork table after the catalog chain and then merges a caller's models.json).
-#[test]
-fn a_fresh_registry_lists_the_fork_models() {
-    let registry = ModelRegistry::in_memory(auth_without_env(&serde_json::json!({})));
-    let listed: std::collections::HashSet<(String, String)> = registry
-        .get_all()
-        .iter()
-        .map(|model| (model.provider.clone(), model.id.clone()))
-        .collect();
-    let mut missing = Vec::new();
-    for model in pa_ai::models_fork::fork_provider_models() {
-        if !listed.contains(&(model.provider.clone(), model.id.clone())) {
-            missing.push(format!("{}/{}", model.provider, model.id));
-        }
-    }
-    assert!(
-        missing.is_empty(),
-        "the registry dropped fork models from its catalog: {missing:?}"
-    );
-}
-
-/// A caller's `models.json` OVERRIDES a fork entry by (provider, id); it must
-/// never delete the rest of the table. This is the shape the release install
-/// hits when a user customises one model.
-#[test]
-fn a_custom_model_override_keeps_the_other_fork_models() {
-    let auth = auth_without_env(&serde_json::json!({}));
-    let registry = ModelRegistry::in_memory(auth);
-    let before = registry
-        .get_all()
-        .iter()
-        .filter(|model| model.provider == "muse")
-        .count();
-    assert!(
-        before > 0,
-        "the fixture needs at least one muse model to test the merge"
-    );
-    // The merge itself is what this pins: `merge_custom_models` replaces by
-    // (provider, id) and appends the rest (registry.rs:627).
-    let custom = vec![model("muse-spark-1.3", "muse")];
-    let built_in = registry.get_all().to_vec();
-    let merged = ModelRegistry::merge_custom_models(built_in, custom);
-    let after = merged
-        .iter()
-        .filter(|model| model.provider == "muse")
-        .count();
-    assert_eq!(
-        after, before,
-        "a single override must replace one entry, not drop the provider's others"
-    );
-}
-
-/// An upstream-shaped bundled asset (the live catalog, which by definition
-/// carries NO fork provider) must still leave the fork's own models in the
-/// built-in set: the registry chains the compiled fork table after whatever
-/// the asset holds (`registry.rs` `.chain(fork_provider_models())`).
-///
-/// This is the guard the packaging gate proxies for. The gate must NOT require
-/// fork providers inside the asset: the upstream catalog cannot carry them, so
-/// such a requirement makes the release path impossible (it did — the fork.011
-/// release job died on it while every fork model was present in the binary).
-#[test]
-fn an_upstream_shaped_asset_keeps_the_fork_providers() {
-    let auth = AuthStorage::in_memory_without_env(&AuthStorageData::default(), Arc::new(NoOAuth));
-    let registry = ModelRegistry::in_memory(auth);
-    let models = registry.load_built_in_models(&CustomModelsResult::default(), None);
-    let providers: std::collections::HashSet<&str> =
-        models.iter().map(|model| model.provider.as_str()).collect();
-    // The fork table's providers ride the built-in set whatever the asset holds.
-    for provider in ["codebuddy", "genspark", "muse", "subquadratic"] {
-        assert!(
-            providers.contains(provider),
-            "the fork provider {provider} must survive an upstream-shaped asset; got {}",
-            {
-                let mut known: Vec<&str> = providers.iter().copied().collect();
-                known.sort_unstable();
-                known.join(", ")
-            }
-        );
-    }
-}
-
-/// §3.2 (audit): an offline restart must still offer the ids discovery found
-/// last time. The saved snapshot used to be read only on a forced refresh, so
-/// a fresh process with no network lost every discovered-only model.
-#[test]
-fn a_saved_snapshot_survives_an_offline_restart() {
-    let dir = tempfile::tempdir().unwrap();
-    let models_json = dir.path().join("models.json");
-    std::fs::write(&models_json, r#"{"providers":{}}"#).unwrap();
-    // A snapshot naming an id the hand table does not describe.
-    let mut snapshot = pa_models::discovery::DiscoverySnapshot::default();
-    snapshot.providers.insert(
-        "subquadratic".to_string(),
-        pa_models::discovery::DiscoveredProvider {
-            provider: "subquadratic".to_string(),
-            synced_at: "t1".to_string(),
-            ids: vec!["subq-snap-fresh-id".to_string()],
-            deprecated: Vec::new(),
-        },
-    );
-    // The snapshot lives beside models.json (models_json.parent()), the same
-    // directory `refresh_discovery` writes it to.
-    pa_models::discovery::write_snapshot(dir.path(), &snapshot).unwrap();
-
-    // A fresh registry (the restart) sees it without any refresh.
-    let auth = AuthStorage::in_memory_without_env(&AuthStorageData::default(), Arc::new(NoOAuth));
-    let registry = ModelRegistry::create(auth, models_json);
-    let ids: Vec<(&str, &str)> = registry
-        .get_all()
-        .iter()
-        .map(|model| (model.provider.as_str(), model.id.as_str()))
-        .collect();
-    assert!(
-        ids.contains(&("subquadratic", "subq-snap-fresh-id")),
-        "the saved snapshot's id must survive an offline restart: {} total models",
-        ids.len()
-    );
-}
-
-/// Review 4.1: discovery must survive every REBUILD, not just construction.
-///
-/// `load_models` is called after a credential change (`clear_private_authorization`
-/// — the path a user with no Prime key takes on the refresh), after a settings
-/// reload, and after a custom-model edit. Each rebuild used to replace
-/// `self.models` with the curated set, dropping every discovered-only id that
-/// had been appended after construction: the picker loses models mid-session,
-/// with no error and no way to see it.
-#[test]
-fn a_rebuild_keeps_the_discovered_ids() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let models_json = dir.path().join("models.json");
-    std::fs::write(&models_json, "{\"providers\":{}}").expect("models.json");
-    let mut providers = std::collections::BTreeMap::new();
-    providers.insert(
-        "subquadratic".to_string(),
-        pa_models::discovery::DiscoveredProvider {
-            provider: "subquadratic".to_string(),
-            synced_at: "2026-10-27T00:00:00Z".to_string(),
-            ids: vec!["survives-the-rebuild".to_string()],
-            deprecated: Vec::new(),
-        },
-    );
-    let snapshot = pa_models::discovery::DiscoverySnapshot {
-        synced_at: "2026-10-27T00:00:00Z".to_string(),
-        providers,
-    };
-    pa_models::discovery::write_snapshot(dir.path(), &snapshot).expect("write snapshot");
-
-    let auth = crate::auth::AuthStorage::in_memory_without_env(
-        &crate::auth::AuthStorageData::default(),
-        std::sync::Arc::new(crate::auth::NoOAuth),
-    );
-    let mut registry = ModelRegistry::create(auth, models_json);
-    assert!(
-        registry
-            .get_all()
-            .iter()
-            .any(|model| model.id == "survives-the-rebuild"),
-        "the constructor must see the snapshot"
-    );
-
-    // The rebuild a credential change triggers.
-    registry.clear_private_authorization_for_test();
-    assert!(
-        registry
-            .get_all()
-            .iter()
-            .any(|model| model.id == "survives-the-rebuild"),
-        "a rebuild must not drop the discovered overlay: {:?}",
-        registry.get_all().len()
     );
 }
 

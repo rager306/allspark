@@ -234,7 +234,7 @@ async fn spawn_fake_supervisor(
                         "get_state" => response_success(
                             Some(&id),
                             command_type,
-                            Some(child_subagents.live_state.lock().unwrap().clone().unwrap_or_else(|| {
+                            Some(child_subagents.scripted_states.lock().unwrap().pop_front().or_else(|| child_subagents.live_state.lock().unwrap().clone()).unwrap_or_else(|| {
                                 json!({
                                     "isStreaming": false,
                                     "hasRunningSubagents": child_subagents.running.load(Ordering::SeqCst),
@@ -395,6 +395,8 @@ struct FakeChildSubagents {
     /// failed-abort lane).
     abort_fails: AtomicBool,
     live_state: std::sync::Mutex<Option<Value>>,
+    /// One-shot `get_state` answers served in order before `live_state`.
+    scripted_states: std::sync::Mutex<std::collections::VecDeque<Value>>,
     peer_gate: Option<Arc<FakePeerGate>>,
     /// Holds the task `prompt` in flight: the worker has not accepted it yet.
     prompt_gate: Option<Arc<FakePeerGate>>,
@@ -979,9 +981,63 @@ async fn a_collect_while_the_task_prompt_is_in_flight_does_not_settle_the_child(
     );
 }
 
-/// The settle grace re-marks only a BUSY child as running: a worker that
-/// leaves inside the grace (the idle passivation's stop, a crash) keeps
-/// the settled verdict, and the settle tail (notice, funnel) still runs.
+/// A `collect` that reads the one idle snapshot between the task prompt's
+/// admission and the turn pop (the worker reads idle once, then busy) keeps
+/// the child running: no `done` verdict lands before the settle grace.
+#[tokio::test]
+async fn a_collect_reading_the_admission_idle_window_keeps_the_child_running() {
+    let (follow_up_tx, _follow_up_rx) = mpsc::unbounded_channel();
+    let child_subagents = Arc::new(FakeChildSubagents::default());
+    child_subagents.live_state.lock().unwrap().replace(json!({
+        "isStreaming": true,
+        "hasRunningSubagents": false,
+        "sessionActions": { "queuedCount": 0 },
+    }));
+    child_subagents
+        .scripted_states
+        .lock()
+        .unwrap()
+        .push_back(json!({
+            "isStreaming": false,
+            "hasRunningSubagents": false,
+            "sessionActions": { "queuedCount": 0 },
+        }));
+    // A slow idle wait parks the watcher, so the collect makes the first
+    // state read after the admission.
+    let (sessions, _kill_rx) = sessions_with_fake_child_subagents(
+        follow_up_tx,
+        10_000,
+        FakeKill::Success,
+        FakeChild::Healthy,
+        Arc::clone(&child_subagents),
+    )
+    .await;
+    let handle = spawn_child(&sessions).await;
+    let record = Arc::clone(&sessions.inner.children.lock().await[0]);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !record.lock().await.prompt_admitted {
+        assert!(Instant::now() < deadline, "the task prompt never admitted");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let results = sessions
+        .collect(vec![handle.rlm_child_id.clone()], 0)
+        .await
+        .expect("collect the admitted child");
+    assert!(
+        child_subagents.scripted_states.lock().unwrap().is_empty(),
+        "the collect must read the admission idle snapshot"
+    );
+    assert_eq!(
+        (results[0].status, results[0].settled),
+        ("running", false),
+        "a child that went busy after one idle read is still running"
+    );
+}
+
+/// The settle grace holds back the verdict only for a BUSY child: a worker
+/// that leaves inside the grace (the idle passivation's stop, a crash) still
+/// settles, and the settle tail (notice, funnel) still runs.
 #[tokio::test]
 async fn a_worker_leaving_inside_the_settle_grace_keeps_the_verdict() {
     let (follow_up_tx, mut follow_up_rx) = mpsc::unbounded_channel();
@@ -1314,7 +1370,9 @@ async fn a_verdict_landing_inside_the_unreachable_give_up_still_runs_the_settle_
         // answers idle.
         let record = Arc::clone(&sessions.inner.children.lock().await[0]);
         let mut record = record.lock().await;
-        record.settled_status = Some("done");
+        record.run.apply(RunEvent::IdleRead {
+            final_turn_error: None,
+        });
     }
     VERDICT_LANDED.notify_one();
 
@@ -2342,10 +2400,9 @@ async fn a_refused_abort_leaves_the_child_running_and_a_later_cancel_records_the
 /// settles the row with its abort in flight; a busy child at the grace
 /// re-check used to wipe the registry's settle, refresh the still-live run
 /// back to `done`, and record a clean `child_returned` beside the cancel
-/// line. The re-check now wipes only a watcher-set `done` (the admission
-/// race it exists for), so the registry's cancelled stands: the cut-short
-/// run never records a return, and the roster keeps reporting it
-/// cancelled.
+/// line. The grace re-check now runs before a verdict is written and never
+/// wipes one, so the registry's cancelled stands: the cut-short run never
+/// records a return, and the roster keeps reporting it cancelled.
 #[tokio::test]
 async fn a_cancelled_rows_settle_survives_the_watcher_grace_recheck() {
     let (follow_up_tx, _follow_up_rx) = mpsc::unbounded_channel();
@@ -2440,6 +2497,70 @@ async fn a_cancelled_rows_settle_survives_the_watcher_grace_recheck() {
     assert_eq!(
         entries[0].status, "cancelled",
         "the cancelled row stays cancelled after the watcher's pass: {entries:?}"
+    );
+}
+
+/// A confirmed cancel does not always stop the run (an abort that reached the
+/// idle worker before its task turn started): a cancelled row whose child
+/// reads idle once and then busy keeps its watcher, so the settle tail waits
+/// for the run to stop.
+#[tokio::test]
+async fn a_cancelled_child_reading_idle_once_keeps_its_watcher() {
+    let (follow_up_tx, _follow_up_rx) = mpsc::unbounded_channel();
+    let child_subagents = Arc::new(FakeChildSubagents::default());
+    child_subagents.live_state.lock().unwrap().replace(json!({
+        "isStreaming": true,
+        "hasRunningSubagents": false,
+        "sessionActions": { "queuedCount": 0 },
+    }));
+    let (sessions, _kill_rx) = sessions_with_fake_child_subagents(
+        follow_up_tx,
+        100,
+        FakeKill::Success,
+        FakeChild::Healthy,
+        Arc::clone(&child_subagents),
+    )
+    .await;
+    let (hook_tx, mut hook_rx) = mpsc::unbounded_channel();
+    sessions.set_settle_hook(Arc::new(move || {
+        let _ = hook_tx.send(());
+    }));
+    let handle = spawn_child(&sessions).await;
+    assert!(sessions.cancel_child_run(&handle.rlm_child_id).await);
+    tokio::time::timeout(Duration::from_secs(5), hook_rx.recv())
+        .await
+        .expect("the confirmed cancel fires the settle hook")
+        .expect("hook channel open");
+
+    child_subagents
+        .scripted_states
+        .lock()
+        .unwrap()
+        .push_back(json!({
+            "isStreaming": false,
+            "hasRunningSubagents": false,
+            "sessionActions": { "queuedCount": 0 },
+        }));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !child_subagents.scripted_states.lock().unwrap().is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "the watcher never read the idle blip"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // The watcher's next idle-wait slice proves it kept watching.
+    let slices = child_subagents.quiescent_waits.load(Ordering::SeqCst);
+    while child_subagents.quiescent_waits.load(Ordering::SeqCst) == slices {
+        assert!(
+            Instant::now() < deadline,
+            "the watcher stopped watching the still-running cancelled child"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        hook_rx.try_recv().is_err(),
+        "the settle tail must wait for the cancelled run to stop"
     );
 }
 
@@ -2846,8 +2967,7 @@ fn an_already_settled_child_never_re_scores_as_an_unreachable_error() {
         model: String::new(),
         label: "task".to_string(),
         started_at_ms: 0,
-        settled_status: None,
-        settled: false,
+        run: RunState::running(),
         answer_preview: None,
         answer_text: None,
         answer_captured: false,
@@ -2859,12 +2979,7 @@ fn an_already_settled_child_never_re_scores_as_an_unreachable_error() {
         notice_delivered: false,
         factory: false,
         prompt_admitted: true,
-        error: None,
-        closed_by_parent: false,
-        retiring: false,
-        retirement_finished: false,
-        retirement_notified: false,
-        retirement_roster_emitted: false,
+        retirement: Retirement::live(),
         usage_registration_forgotten: false,
         session_file: None,
         attributed_rows: Some(0),
@@ -2879,14 +2994,18 @@ fn an_already_settled_child_never_re_scores_as_an_unreachable_error() {
     assert!(super::lifecycle::should_mark_error(&base()));
     // A settled child keeps its positive verdict.
     let mut settled = base();
-    settled.settled_status = Some("done");
+    settled.run.apply(RunEvent::IdleRead {
+        final_turn_error: None,
+    });
     assert!(
         !super::lifecycle::should_mark_error(&settled),
         "an idle-passivated (or post-settle crashed) child keeps its settled verdict"
     );
     // A parent-closed child and a noticed child never re-score.
     let mut closed = base();
-    closed.closed_by_parent = true;
+    closed
+        .retirement
+        .apply(super::retirement::RetirementEvent::BeginClose);
     assert!(!super::lifecycle::should_mark_error(&closed));
     let mut noticed = base();
     noticed.notice_delivered = true;
@@ -2920,8 +3039,7 @@ async fn the_unreachable_give_up_skips_the_exit_capture_when_a_capture_stands() 
         model: String::new(),
         label: "task".to_string(),
         started_at_ms: 0,
-        settled_status: None,
-        settled: false,
+        run: RunState::running(),
         answer_preview: Some("the captured say".to_string()),
         answer_text: Some("the captured say".to_string()),
         answer_captured: true,
@@ -2933,12 +3051,7 @@ async fn the_unreachable_give_up_skips_the_exit_capture_when_a_capture_stands() 
         notice_delivered: false,
         factory: false,
         prompt_admitted: true,
-        error: None,
-        closed_by_parent: false,
-        retiring: false,
-        retirement_finished: false,
-        retirement_notified: false,
-        retirement_roster_emitted: false,
+        retirement: Retirement::live(),
         usage_registration_forgotten: false,
         session_file: Some(
             std::env::temp_dir()
@@ -2968,142 +3081,19 @@ async fn the_unreachable_give_up_skips_the_exit_capture_when_a_capture_stands() 
         "no exit-capture round trip may run while a captured answer stands"
     );
     let record = record.lock().await;
-    assert_eq!(record.settled_status, Some("error"));
+    assert_eq!(record.run.status(), "error");
     assert_eq!(record.answer_preview.as_deref(), Some("the captured say"));
     assert_eq!(record.answer_text.as_deref(), Some("the captured say"));
     assert!(record.answer_captured);
 }
 
-/// The isolated-agent-dir variant of the watcher fixture: the spawn path
-/// reads `subagentModel` from `agent_dir/settings.json`, so the ladder test
-/// points the host at a per-test directory instead of the machine temp dir.
-async fn sessions_with_agent_dir(
-    follow_up_tx: mpsc::UnboundedSender<Value>,
-    agent_dir: std::path::PathBuf,
-) -> (
-    SupervisorChildSessions,
-    mpsc::UnboundedReceiver<Value>,
-    Arc<std::sync::Mutex<Vec<Value>>>,
-) {
-    let socket = std::env::temp_dir().join(format!(
-        "pa-rlm-ladder-{}.sock",
-        uuid::Uuid::new_v4().simple()
-    ));
-    let (kill_tx, kill_rx) = mpsc::unbounded_channel();
-    let creates = Arc::new(std::sync::Mutex::new(Vec::new()));
-    spawn_fake_supervisor(
-        socket.clone(),
-        follow_up_tx,
-        0,
-        kill_tx,
-        FakeSupervisorScript {
-            kill: FakeKill::Success,
-            child: FakeChild::Healthy,
-            child_subagents: Arc::new(FakeChildSubagents::default()),
-            peers: Arc::new(std::sync::Mutex::new(Vec::new())),
-            creates: Arc::clone(&creates),
-        },
-    )
-    .await;
-    let link = Arc::new(crate::supervisor_link::SupervisorLink::new(socket));
-    let sessions = SupervisorChildSessions::new(
-        link,
-        agent_dir,
-        "parent-live".to_string(),
-        Arc::new(crate::model_allowlist::ModelRefusalTelemetry::new(
-            std::env::temp_dir(),
-            /*telemetry_disabled*/ true,
-        )),
-        String::new(),
-    );
-    sessions.set_identity(ParentIdentity {
-        model: Some("mock/mock-1".to_string()),
-        cwd: Some(std::env::temp_dir().to_string_lossy().to_string()),
-        ..ParentIdentity::with_default_depth()
-    });
-    (sessions, kill_rx, creates)
-}
-
-/// The `subagentModel` ladder feeds unpinned spawn resolution: the ladder's
-/// reference is absent from the (empty) catalog, so the spawn refuses naming
-/// it. Without the ladder wiring the spawn inherits the parent's model and
-/// succeeds, so this test goes red on unwired code.
-#[tokio::test]
-async fn spawn_without_model_resolves_the_subagent_model_ladder() {
-    let dir = tempfile::tempdir().expect("ladder fixture dir");
-    let agent_dir = dir.path().join("agent");
-    std::fs::create_dir_all(&agent_dir).expect("agent dir");
-    std::fs::write(
-        agent_dir.join("settings.json"),
-        r#"{"subagentModel":{"default":"mock/mock-ladder"}}"#,
-    )
-    .expect("ladder settings");
-    let (follow_up_tx, _follow_up_rx) = mpsc::unbounded_channel();
-    let (sessions, _kill_rx, _creates) = sessions_with_agent_dir(follow_up_tx, agent_dir).await;
-    let error = sessions
-        .spawn(RlmSpawnRequest {
-            prompt: "ladder child task".to_string(),
-            name: Some("ladder-worker".to_string()),
-            model: None,
-            thinking: None,
-            cwd: None,
-            spawned_by_request_id: None,
-            factory: None,
-        })
-        .await
-        .expect_err("the ladder reference must feed resolution");
-    let rendered = format!("{error:#}");
-    assert!(
-        rendered.contains("mock/mock-ladder"),
-        "the refusal must name the ladder reference, got: {rendered}"
-    );
-}
-
-/// The pinned rung thinking reaches the child config when the spawn gives no
-/// level: the ladder's model resolves by parent equality (no catalog needed)
-/// and the child's create config carries the rung's level.
-#[tokio::test]
-async fn spawn_ladder_rung_pins_the_child_thinking() {
-    let dir = tempfile::tempdir().expect("ladder fixture dir");
-    let agent_dir = dir.path().join("agent");
-    std::fs::create_dir_all(&agent_dir).expect("agent dir");
-    std::fs::write(
-        agent_dir.join("settings.json"),
-        r#"{"subagentModel":{"default":{"model":"mock/mock-1","thinking":"high"}}}"#,
-    )
-    .expect("ladder settings");
-    let (follow_up_tx, _follow_up_rx) = mpsc::unbounded_channel();
-    let (sessions, _kill_rx, creates) = sessions_with_agent_dir(follow_up_tx, agent_dir).await;
-    let handle = sessions
-        .spawn(RlmSpawnRequest {
-            prompt: "ladder thinking task".to_string(),
-            name: Some("ladder-thinker".to_string()),
-            model: None,
-            thinking: None,
-            cwd: None,
-            spawned_by_request_id: None,
-            factory: None,
-        })
-        .await
-        .expect("the parent-equality ladder model resolves");
-    assert_eq!(handle.model, "mock/mock-1");
-    // The create config the fake supervisor received carries the pinned level.
-    let create = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            let snapshot = creates.lock().unwrap().len();
-            if snapshot > 0 {
-                return creates.lock().unwrap()[0].clone();
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the create arrives");
-    let rendered = create.to_string();
-    assert!(
-        rendered.contains("\"thinking\":\"high\""),
-        "the child config must carry the rung's pinned thinking, got: {rendered}"
-    );
+#[test]
+fn a_close_takes_over_a_delete_interrupted_before_its_kill_outcome() {
+    use super::retirement::RetirementEvent;
+    let mut retirement = Retirement::live();
+    retirement.apply(RetirementEvent::BeginDelete);
+    assert!(retirement.apply(RetirementEvent::BeginClose));
+    assert!(retirement.closed_by_parent());
 }
 
 /// §6 (audit): a TRANSPORT failure while observing the child's answer is not
@@ -3129,11 +3119,13 @@ async fn a_failed_answer_observation_leaves_the_outcome_unknown() {
         {
             let row = Arc::clone(&sessions.inner.children.lock().await[0]);
             let record = row.lock().await;
-            if record.settled_status.is_some() {
-                assert!(
-                    record.settled_status != Some("done"),
-                    "a transport failure must not settle the run as done: {:?}",
-                    record.settled_status
+            // Upstream #4000 replaced the `settled_status` string with the
+            // `RunState` machine; `status()` is the same question.
+            let status = record.run.status();
+            if status != "running" {
+                assert_ne!(
+                    status, "done",
+                    "a transport failure must not settle the run as done: {status}"
                 );
                 break;
             }

@@ -5,149 +5,43 @@
 #![cfg(unix)]
 #![warn(clippy::allow_attributes_without_reason)]
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+mod support;
 
 use pa_tui::interactive::{
-    run_interactive, HeadlessPlan, HeadlessStep, InteractiveOptions, ModelSelection,
-    SessionSelection, UiMode,
+    run_interactive, HeadlessPlan, HeadlessStep, InteractiveOptions, SessionSelection, UiMode,
 };
 use serde_json::{json, Value};
+
+use support::{
+    attach_response, options, serve_connection, session_stats_response, write_json, MockSupervisor,
+    Request,
+};
 
 /// The loaded-daemon stand-in: the dock's data requests answer this late, far past the first
 /// frame's render — late enough that a fire-and-forget open-time fetch (the layout-shift bug)
 /// always paints a first frame without the dock, short enough to sit inside the attach's waits.
 const DOCK_DATA_DELAY_MS: u64 = 300;
 
-struct MockSupervisor {
-    listener: UnixListener,
-    /// Answer `heartbeats_list` only AFTER `list_kernel_bash` has arrived: the
-    /// barrier an open that reads the two dock registries concurrently passes and a
-    /// sequential one cannot (review #15).
-    dock_barrier: bool,
-}
-
 impl MockSupervisor {
-    fn bind(socket: &std::path::Path) -> Self {
-        MockSupervisor {
-            listener: UnixListener::bind(socket).expect("bind mock socket"),
-            dock_barrier: false,
-        }
-    }
-
-    /// A mock whose two dock reads cross: neither is answered until both arrived.
-    fn bind_with_dock_barrier(socket: &std::path::Path) -> Self {
-        MockSupervisor {
-            listener: UnixListener::bind(socket).expect("bind mock socket"),
-            dock_barrier: true,
-        }
-    }
-
     /// Serve one connection: attach, subscribe the roster, and answer the dock data requests after
     /// the delay.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "mock daemon request loop: one match arm per scripted request method"
-    )]
     fn serve(self, with_content: bool) {
-        let dock_barrier = self.dock_barrier;
-        // The held heartbeat request (barrier mode): answered when the bash read lands.
-        let mut held_heartbeat: Option<String> = None;
         let (stream, _) = self.listener.accept().expect("accept");
-        let write_stream = stream.try_clone().expect("clone mock socket");
-        let mut writer = write_stream;
-        let mut reader = BufReader::new(stream);
-
-        let hello = json!({
-            "type": "daemon_hello",
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
-            "serverCapabilities": ["kernel_bash_activity"],
-            "clientId": "mock",
-        });
-        write_json(&mut writer, &hello);
-
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
-            }
-            let Ok(envelope) = serde_json::from_str::<Value>(line.trim()) else {
-                continue;
-            };
-            let id = envelope.get("id").and_then(Value::as_str).unwrap_or("");
-            let command = envelope.get("command").cloned().unwrap_or(Value::Null);
-            let command_type = command
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            match command_type.as_str() {
-                "attach" => {
-                    write_json(&mut writer, &attach_data(id, with_content));
-                }
-                "heartbeats_list" => {
-                    if dock_barrier && held_heartbeat.is_none() {
-                        // Hold it: a sequential open cannot send the other read while it
-                        // waits for this answer.
-                        held_heartbeat = Some(id.to_string());
-                        continue;
+        serve_connection(
+            stream,
+            &["kernel_bash_activity"],
+            |writer, Request { id, kind, .. }| {
+                match kind {
+                    "attach" => {
+                        write_json(writer, &attach_data(id, with_content));
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(DOCK_DATA_DELAY_MS));
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": "heartbeats_list",
-                            "success": true,
-                            "data": {
-                                "heartbeats": [
-                                    {
-                                        "job": {
-                                            "id": "hb-1",
-                                            "status": "active",
-                                            "source": "heartbeat",
-                                            "activeSessionId": "s1",
-                                            "sessionId": "sess-1",
-                                            "schedule": {"kind": "interval", "expression": "every 30m"},
-                                        },
-                                        "sessionName": "layout probe",
-                                    },
-                                ],
-                            },
-                        }),
-                    );
-                }
-                "list_kernel_bash" => {
-                    std::thread::sleep(std::time::Duration::from_millis(DOCK_DATA_DELAY_MS));
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": "list_kernel_bash",
-                            "success": true,
-                            "data": {
-                                "activities": [
-                                    {
-                                        "id": "run-1",
-                                        "command": "echo settled",
-                                        "status": "finished",
-                                        "exitCode": 0,
-                                    },
-                                ],
-                            },
-                        }),
-                    );
-                    if let Some(held) = held_heartbeat.take() {
+                    "heartbeats_list" => {
+                        std::thread::sleep(std::time::Duration::from_millis(DOCK_DATA_DELAY_MS));
                         write_json(
-                            &mut writer,
+                            writer,
                             &json!({
                                 "type": "response",
-                                "id": held,
+                                "id": id,
                                 "command": "heartbeats_list",
                                 "success": true,
                                 "data": {
@@ -168,44 +62,37 @@ impl MockSupervisor {
                             }),
                         );
                     }
+                    "list_kernel_bash" => {
+                        std::thread::sleep(std::time::Duration::from_millis(DOCK_DATA_DELAY_MS));
+                        write_json(
+                            writer,
+                            &json!({
+                                "type": "response",
+                                "id": id,
+                                "command": "list_kernel_bash",
+                                "success": true,
+                                "data": {
+                                    "activities": [
+                                        {
+                                            "id": "run-1",
+                                            "command": "echo settled",
+                                            "status": "finished",
+                                            "exitCode": 0,
+                                        },
+                                    ],
+                                },
+                            }),
+                        );
+                    }
+                    "get_session_stats" => {
+                        write_json(writer, &session_stats_response(id));
+                    }
+                    _ => return false,
                 }
-                "get_session_stats" => {
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": "get_session_stats",
-                            "success": true,
-                            "data": {
-                                "contextUsage": { "tokens": 1200, "contextWindow": 200_000 },
-                                "cost": 0.01,
-                            },
-                        }),
-                    );
-                }
-                _ => {
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": command_type,
-                            "success": true,
-                            "data": {},
-                        }),
-                    );
-                }
-            }
-        }
+                true
+            },
+        );
     }
-}
-
-fn write_json(writer: &mut UnixStream, value: &Value) {
-    let mut line = serde_json::to_string(value).expect("serialize mock frame");
-    line.push('\n');
-    writer.write_all(line.as_bytes()).expect("write mock frame");
-    writer.flush().expect("flush mock frame");
 }
 
 /// The attach result: one live session whose transcript either carries a settled exchange or is
@@ -219,74 +106,10 @@ fn attach_data(id: &str, with_content: bool) -> Value {
     } else {
         json!([])
     };
-    json!({
-        "type": "response",
-        "id": id,
-        "command": "attach",
-        "success": true,
-        "data": {
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
-            "activeSessionId": "s1",
-            "snapshot": {
-                "activeSessionId": "s1",
-                "summary": { "id": "s1", "cwd": "/tmp" },
-                "state": {
-                    "activeSessionId": "s1",
-                    "cwd": "/tmp",
-                    "sessionId": "sess-1",
-                    "sessionName": "layout probe",
-                    "model": "faux-1",
-                    "isStreaming": false,
-                    "isCompacting": false,
-                    "sessionActions": { "queuedCount": 0, "steering": [], "followUps": [] },
-                },
-                "messages": messages,
-                "lastEventSequence": 0,
-                "lastEventCursor": null,
-            },
-            "client": { "id": "mock", "capabilities": [] },
-            "lastEventSequence": 0,
-            "lastEventCursor": null,
-        },
-    })
-}
-
-fn options(socket: PathBuf) -> InteractiveOptions {
-    InteractiveOptions {
-        models: None,
-        socket_path: socket,
-        cwd: PathBuf::from("/tmp"),
-        session_dir: None,
-        script_path: None,
-        model_selection: ModelSelection::default(),
-        model_catalog: Vec::new(),
-        model_configured_providers: std::collections::HashSet::default(),
-        model_recent_models: Vec::new(),
-        default_thinking_level: None,
-        no_session: false,
-        session: SessionSelection::Attach("s1".to_string()),
-        initial_message: None,
-        show_images: true,
-        fullscreen_mouse: true,
-        theme: "prime".to_string(),
-        code_block_indent: "  ".to_string(),
-        tree_filter_mode: String::new(),
-        branch_summary_skip_prompt: false,
-        version: "0.0.0".to_string(),
-        onboarding: None,
-        telemetry_disabled: None,
-        client_auth: None,
-        traces: None,
-        provider_auth: None,
-        update_commands: None,
-        telemetry: None,
-        keybindings: pa_tui::keybindings::KeybindingsManager::new(),
-        session_rlm_depth: None,
-        prompt_stash: std::sync::Arc::default(),
-        session_has_children: false,
-        restore_dock_focus: false,
-        client_settings: None,
-    }
+    let mut response = attach_response(id, "layout probe");
+    response["data"]["snapshot"]["state"]["model"] = json!("faux-1");
+    response["data"]["snapshot"]["messages"] = messages;
+    response
 }
 
 /// The attach snapshot's transcript shape the open drives.
@@ -319,32 +142,13 @@ fn run_open(transcript: &OpeningTranscript) -> Vec<String> {
         height: 30,
     };
     let outcome = runtime
-        .block_on(run_interactive(options(socket), UiMode::Headless(plan)))
-        .expect("interactive run");
-    handle.join().expect("mock supervisor finished");
-    outcome.frames
-}
-
-/// An open whose two dock reads cross: neither is answered until both have arrived,
-/// so only an open that issues them CONCURRENTLY can complete the fold (review #15).
-fn run_open_with_dock_barrier() -> Vec<String> {
-    std::env::remove_var("TMUX");
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let socket = dir.path().join("tui.sock");
-    let supervisor = MockSupervisor::bind_with_dock_barrier(&socket);
-    let handle = std::thread::spawn(move || supervisor.serve(false));
-
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime");
-    let plan = HeadlessPlan {
-        steps: vec![HeadlessStep::WaitMs(400)],
-        width: 100,
-        height: 30,
-    };
-    let outcome = runtime
-        .block_on(run_interactive(options(socket), UiMode::Headless(plan)))
+        .block_on(run_interactive(
+            InteractiveOptions {
+                session: SessionSelection::Attach("s1".to_string()),
+                ..options(socket)
+            },
+            UiMode::Headless(plan),
+        ))
         .expect("interactive run");
     handle.join().expect("mock supervisor finished");
     outcome.frames
@@ -376,21 +180,6 @@ fn the_activity_dock_is_in_every_frame_from_the_first() {
          heartbeat panel row (frames {offenders:?} lack it) — the dock \
          data must fold with the attach, never land as a late repaint:\n{}",
         frames.join("\n---frame---\n")
-    );
-}
-
-/// Review #15: the open's two dock reads are concurrent. A daemon that answers
-/// `heartbeats_list` only after seeing `list_kernel_bash` (a cross-barrier) can be
-/// served only by an open that issues both before awaiting either; the sequential
-/// shape timed out and painted an empty dock.
-#[test]
-fn the_two_dock_reads_are_concurrent() {
-    let frames = run_open_with_dock_barrier();
-    assert!(!frames.is_empty(), "frames were captured");
-    let last = frames.last().cloned().unwrap_or_default();
-    assert!(
-        last.contains("\u{25f7} 1 heartbeat"),
-        "the crossing dock reads must both land (they are issued together):\n{last}"
     );
 }
 
@@ -428,4 +217,136 @@ fn an_empty_open_keeps_the_brand_splash() {
         "the empty chat renders its header splash:\n{}",
         frames.join("\n---frame---\n")
     );
+}
+
+/// Review #15: the open's two dock reads are concurrent. A daemon that answers
+/// `heartbeats_list` only after seeing `list_kernel_bash` (a cross-barrier) can be
+/// served only by an open that issues both before awaiting either; the sequential
+/// shape timed out and painted an empty dock.
+///
+/// The barrier lives in a LOCAL mock: `support::MockSupervisor` is deliberately one
+/// plain listener, so a test that needs a crossing script owns it here.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the crossing mock is one scripted request loop; splitting it would hide the barrier"
+)]
+fn the_two_dock_reads_are_concurrent() {
+    use std::io::{BufRead, BufReader, Write};
+    let _ = std::io::stdout();
+    std::env::remove_var("TMUX");
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("tui.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+    let handle = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept");
+        let mut writer = stream.try_clone().expect("clone");
+        let mut reader = BufReader::new(stream);
+        write_json(
+            &mut writer,
+            &json!({
+                "type": "daemon_hello",
+                "protocol": { "name": "prime-agent.daemon", "version": 7 },
+                "serverCapabilities": ["kernel_bash_activity"],
+                "clientId": "mock",
+            }),
+        );
+        let mut held: Option<String> = None;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            let Ok(envelope) = serde_json::from_str::<Value>(line.trim()) else {
+                continue;
+            };
+            let id = envelope
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let kind = envelope
+                .get("command")
+                .and_then(|command| command.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let answer =
+                |writer: &mut std::os::unix::net::UnixStream, id: &str, kind: &str, data: Value| {
+                    let mut bytes = serde_json::to_vec(&json!({
+                    "type": "response", "id": id, "command": kind, "success": true, "data": data,
+                }))
+                .expect("serialize");
+                    bytes.push(b'\n');
+                    writer.write_all(&bytes).expect("write reply");
+                    writer.flush().expect("flush");
+                };
+            match kind.as_str() {
+                "attach" => answer(
+                    &mut writer,
+                    &id,
+                    "attach",
+                    attach_response("s1", "layout probe")["data"].clone(),
+                ),
+                "heartbeats_list" => {
+                    if held.is_none() {
+                        // Hold it: a sequential open cannot send the other read while it
+                        // waits for this answer.
+                        held = Some(id);
+                        continue;
+                    }
+                    answer(&mut writer, &id, "heartbeats_list", heartbeats_data());
+                }
+                "list_kernel_bash" => {
+                    answer(
+                        &mut writer,
+                        &id,
+                        "list_kernel_bash",
+                        json!({"activities": [
+                            {"id": "run-1", "command": "echo settled", "status": "finished", "exitCode": 0},
+                        ]}),
+                    );
+                    if let Some(held_id) = held.take() {
+                        answer(&mut writer, &held_id, "heartbeats_list", heartbeats_data());
+                    }
+                }
+                _ => answer(&mut writer, &id, &kind, json!({})),
+            }
+        }
+    });
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let plan = HeadlessPlan {
+        steps: vec![HeadlessStep::WaitMs(400)],
+        width: 100,
+        height: 30,
+    };
+    let outcome = runtime
+        .block_on(run_interactive(options(socket), UiMode::Headless(plan)))
+        .expect("interactive run");
+    handle.join().expect("mock supervisor finished");
+    let frames = outcome.frames;
+    assert!(!frames.is_empty(), "frames were captured");
+    let last = frames.last().cloned().unwrap_or_default();
+    assert!(
+        last.contains("\u{25f7} 1 heartbeat"),
+        "the crossing dock reads must both land (they are issued together):\n{last}"
+    );
+}
+
+/// The dock's heartbeat payload both mocks serve.
+fn heartbeats_data() -> Value {
+    json!({ "heartbeats": [{
+        "job": {
+            "id": "hb-1", "status": "active", "source": "heartbeat",
+            "activeSessionId": "s1", "sessionId": "sess-1",
+            "schedule": {"kind": "interval", "expression": "every 30m"},
+        },
+        "sessionName": "layout probe",
+    }]})
 }
