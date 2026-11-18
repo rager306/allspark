@@ -24,10 +24,15 @@ pub enum RlmChildTerminalNotice {
         reason: Option<String>,
     },
     /// The child finished its task without sending an agent message back.
+    ///
+    /// `tool_use_count` is the child's observed tool-call count: zero means it
+    /// settled without touching anything, which the notice states outright so
+    /// a parent does not read an empty answer as a completed task.
     CompletedWithoutReply {
         child_id: String,
         session_name: String,
         last_assistant_text_preview: Option<String>,
+        tool_use_count: Option<u64>,
     },
 }
 
@@ -62,9 +67,18 @@ pub fn create_rlm_child_terminal_notice(
             child_id,
             session_name,
             last_assistant_text_preview,
+            tool_use_count,
         } => {
             let name = sanitize_message_header_value(session_name);
             let mut content = format!("[child-exited: no-reply child:{name}]");
+            // An observed zero is a fact, not an inference: the child settled
+            // without calling any tool, so it cannot have changed the tree.
+            // Saying so stops a parent from reading the empty answer as done.
+            if *tool_use_count == Some(0) {
+                content.push_str(
+                    "\n\nThe child called no tool, so it changed nothing; its answer is not a result.",
+                );
+            }
             if let Some(preview) = last_assistant_text_preview
                 .as_deref()
                 .filter(|preview| !preview.is_empty())
@@ -77,6 +91,7 @@ pub fn create_rlm_child_terminal_notice(
                 "childId": child_id,
                 "sessionName": session_name,
                 "lastAssistantTextPreview": last_assistant_text_preview,
+                "toolUseCount": tool_use_count,
             });
             (content, details)
         }
@@ -125,6 +140,7 @@ mod tests {
             child_id: "sub-8fb5284a".to_string(),
             session_name: "f20-worker".to_string(),
             last_assistant_text_preview: Some("done with the task".to_string()),
+            tool_use_count: Some(4),
         };
         let message = create_rlm_child_terminal_notice(&notice, 1_000);
         assert_eq!(message.custom_type, "rlm_child_terminal_notice");
@@ -141,6 +157,55 @@ mod tests {
         assert_eq!(details["childId"], "sub-8fb5284a");
         assert_eq!(details["sessionName"], "f20-worker");
         assert_eq!(details["lastAssistantTextPreview"], "done with the task");
+    }
+
+    /// A child that settled without calling a tool changed nothing. The notice
+    /// says so, because an observed zero is the one signal that separates "it
+    /// finished the task" from "it produced text and touched no file".
+    #[test]
+    fn a_child_that_called_no_tool_says_it_changed_nothing() {
+        let notice = RlmChildTerminalNotice::CompletedWithoutReply {
+            child_id: "sub-2".to_string(),
+            session_name: "lane".to_string(),
+            last_assistant_text_preview: Some("I would start by reading...".to_string()),
+            tool_use_count: Some(0),
+        };
+        let message = create_rlm_child_terminal_notice(&notice, 5_000);
+        let UserContent::Text(text) = &message.content else {
+            panic!("the notice is text");
+        };
+        assert!(
+            text.contains("called no tool, so it changed nothing"),
+            "the zero count must be stated: {text}"
+        );
+        assert!(text.contains("its answer is not a result"), "{text}");
+        let details = message.details.unwrap();
+        assert_eq!(details["toolUseCount"], serde_json::json!(0));
+    }
+
+    /// An unobserved count must not be reported as zero: the inline host does
+    /// not count tool uses, and reading a missing count as "changed nothing"
+    /// would be a fabricated fact.
+    #[test]
+    fn an_unobserved_tool_count_makes_no_claim() {
+        let notice = RlmChildTerminalNotice::CompletedWithoutReply {
+            child_id: "sub-3".to_string(),
+            session_name: "lane".to_string(),
+            last_assistant_text_preview: None,
+            tool_use_count: None,
+        };
+        let message = create_rlm_child_terminal_notice(&notice, 6_000);
+        let UserContent::Text(text) = &message.content else {
+            panic!("the notice is text");
+        };
+        assert!(
+            !text.contains("changed nothing"),
+            "an unknown count is not evidence of inaction: {text}"
+        );
+        assert_eq!(
+            message.details.unwrap()["toolUseCount"],
+            serde_json::Value::Null
+        );
     }
 
     #[test]

@@ -828,6 +828,7 @@ impl SupervisorChildSessionsInner {
                     child_id: record.rlm_child_id.clone(),
                     session_name: record.session_name.clone(),
                     last_assistant_text_preview: record.answer_preview.clone(),
+                    tool_use_count: record.tool_use_count,
                 };
                 create_rlm_child_terminal_notice(&notice, now_ms())
             }

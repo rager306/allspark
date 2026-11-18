@@ -139,6 +139,7 @@ fn child_status_notice_wire(kind: &str) -> Value {
                 child_id: "sub-1".to_string(),
                 session_name: "lane".to_string(),
                 last_assistant_text_preview: Some("done".to_string()),
+                tool_use_count: Some(3),
             },
             1_000,
         )

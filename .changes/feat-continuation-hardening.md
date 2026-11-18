@@ -6,3 +6,4 @@
 - The plan is rebuilt from the session branch's newest durable record when a worker/session rebuilds. Every model plan change is also written as a `session_plan_state` custom entry, so the plan survives a compaction that drops the `update_plan` call; sessions written before the entry keep restoring from the tool call.
 - `/session` now shows the plan's settled count and up to three unfinished items, so the operator can see what still holds the task open.
 - A persistent shell (`bash(..., persistent=True)`) is classified as a service: it no longer holds a goal, plan, or autonomous continuation open. Finite background jobs still do.
+- A subagent's return is treated as evidence, not completion. The prompt says to read what the child changed and run the check, and the no-reply notice now carries the child's observed tool-call count: when it is zero, the notice states that the child called no tool and changed nothing, so an empty answer is not read as a finished task.

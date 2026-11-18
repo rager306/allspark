@@ -542,6 +542,9 @@ async fn settle_child(child: &Arc<InlineChild>, run_error: Option<String>) {
                             .answer_text
                             .as_deref()
                             .map(compact_rlm_text),
+                        // The inline host does not count tool uses; `None`
+                        // keeps the notice from claiming an observed zero.
+                        tool_use_count: None,
                     },
                     crate::util_time::now_ms(),
                 )
