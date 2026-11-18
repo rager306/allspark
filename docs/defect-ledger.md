@@ -88,3 +88,5 @@ Notes on #24, so the fix is not guessed at again:
 | `real-model` QA tasks (CT-001/CT-002) | no access to a paid provider; validated by schema only |
 | abort/queue timing units | classified as load-correlated, not fixed; fixing needs a deadline measurement |
 | 26 | newest-writer restore | after the per-session key, `load_plan` returned the newest session's plan even for a session that had its own rows, so a restart lost the plan it wrote | `daf061e42` (own scope first; red-first restores `P9` instead of `P1,P2`) |
+| 27 | lost wakeup (abort) | `Agent::abort()` with no registered run did nothing, so a stop arriving between the worker's busy flag and the run slot was dropped and the turn waited out the provider response (measured: 60.31 s on a 60 s held reply) | `7804fc3a7` (sticky `abort_pending`; unit test red-first with `Elapsed`) |
+| 28 | flake bookkeeping | `docs/flaky.md` recorded the kill timing failure as a flake; the measurement says otherwise (passes alone and under CPU load, and the elapsed equals the held reply) | `fa771986f` (reclassified as a fixed defect) |
