@@ -237,6 +237,14 @@ impl ProjectRecorder {
         };
         let mut ids: Vec<String> = Vec::new();
         for event in events {
+            // Only this session's own writes. A project's log is shared, and a
+            // snapshot is a whole plan: treating another session's items as
+            // "previous" made this recorder emit `entity.removed` for steps it
+            // never wrote, deleting the other session's work from the record
+            // (measured: session B removed session A's `P2`).
+            if event.session_id != self.session_id {
+                continue;
+            }
             let Some(id) = event.payload.get("id").and_then(Value::as_str) else {
                 continue;
             };
@@ -662,5 +670,63 @@ mod tests {
             recorder.sync().unwrap();
         }
         eprintln!("record+sync: {:?}/call", start.elapsed() / rounds);
+    }
+
+    /// A project's log is shared between sessions, and a snapshot is a whole
+    /// plan. Treating another session's items as "previous" made this recorder
+    /// emit `entity.removed` for steps it never wrote: measured, session B
+    /// erased session A's `P2` from the log.
+    #[test]
+    fn a_snapshot_removes_only_this_sessions_own_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let first = ProjectRecorder::new(paths.clone(), Some("session-a".to_string()));
+        let second = ProjectRecorder::new(paths, Some("session-b".to_string()));
+
+        first
+            .record_plan(&[
+                item("P1", PlanItemStatus::InProgress),
+                item("P2", PlanItemStatus::Pending),
+            ])
+            .unwrap();
+        second
+            .record_plan(&[item("P1", PlanItemStatus::Completed)])
+            .unwrap();
+
+        let events = EventLog::at(&first.paths().events).read_all().unwrap();
+        let removals: Vec<&str> = events
+            .iter()
+            .filter(|event| event.event_type == "entity.removed")
+            .filter_map(|event| event.payload["id"].as_str())
+            .collect();
+        assert!(
+            removals.is_empty(),
+            "a session must not remove another session's rows: {removals:?}"
+        );
+    }
+
+    /// The same session replacing its own snapshot still removes the dropped
+    /// step: the rule narrowed to "own items", it did not disappear.
+    #[test]
+    fn a_session_still_removes_a_step_it_dropped_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = recorder(dir.path());
+        recorder
+            .record_plan(&[
+                item("P1", PlanItemStatus::InProgress),
+                item("P2", PlanItemStatus::Pending),
+            ])
+            .unwrap();
+        recorder
+            .record_plan(&[item("P1", PlanItemStatus::InProgress)])
+            .unwrap();
+
+        let events = EventLog::at(&recorder.paths().events).read_all().unwrap();
+        let removals: Vec<&str> = events
+            .iter()
+            .filter(|event| event.event_type == "entity.removed")
+            .filter_map(|event| event.payload["id"].as_str())
+            .collect();
+        assert_eq!(removals, vec!["P2"]);
     }
 }
