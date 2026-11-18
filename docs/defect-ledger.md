@@ -87,3 +87,4 @@ Notes on #24, so the fix is not guessed at again:
 | W3.3 `code_ref` resolver | no producer writes `ref.added`; a resolver would check an empty set |
 | `real-model` QA tasks (CT-001/CT-002) | no access to a paid provider; validated by schema only |
 | abort/queue timing units | classified as load-correlated, not fixed; fixing needs a deadline measurement |
+| 26 | newest-writer restore | after the per-session key, `load_plan` returned the newest session's plan even for a session that had its own rows, so a restart lost the plan it wrote | `daf061e42` (own scope first; red-first restores `P9` instead of `P1,P2`) |
