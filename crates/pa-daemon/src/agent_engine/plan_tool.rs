@@ -8,7 +8,7 @@ use pa_core::session_engine::plan::{PlanItem, PlanState, PlanStore};
 
 pub(crate) const PLAN_TOOL_NAME: &str = "update_plan";
 
-const DESCRIPTION: &str = "Replace the session plan for authorized multi-step work. Pass the complete items list with unique ids; at most one item may be in_progress. Update statuses as work progresses, alongside a real action rather than as a separate turn. Do not use this for plan-only or one-step requests.";
+const DESCRIPTION: &str = "Replace the session plan for authorized multi-step work. Pass the complete items list with unique ids; at most one item may be in_progress. Give an item a `verify` step when one exists, and put what showed it done (the command and its result) in `evidence` before marking it completed. Update statuses alongside a real action rather than as a separate turn. Do not use this for plan-only or one-step requests.";
 
 /// The plan tool backed by one session-scoped store.
 pub(crate) struct PlanTool {
@@ -39,7 +39,9 @@ impl PlanTool {
                                 "status": {
                                     "type": "string",
                                     "enum": ["pending", "in_progress", "completed", "blocked"]
-                                }
+                                },
+                                "verify": { "type": "string" },
+                                "evidence": { "type": "string" }
                             },
                             "required": ["id", "text", "status"],
                             "additionalProperties": false
@@ -137,6 +139,39 @@ mod tests {
         assert_eq!(state.items.len(), 2);
         assert_eq!(state.items[1].status, PlanItemStatus::InProgress);
         assert_eq!(result.details["items"][0]["text"], "first step");
+    }
+
+    #[tokio::test]
+    async fn the_tool_keeps_verify_and_evidence_on_an_item() {
+        let store = PlanStore::default();
+        let tool = Arc::new(PlanTool::new(store.clone()));
+        tool.execute(
+            "call-evidence".to_string(),
+            serde_json::json!({
+                "items": [{
+                    "id": "one",
+                    "text": "first step",
+                    "status": "completed",
+                    "verify": "cargo test -p pa-core",
+                    "evidence": "cargo test -p pa-core: 10 passed"
+                }]
+            }),
+            AbortSignal::never(),
+            no_updates(),
+        )
+        .await
+        .expect("the plan is valid");
+
+        let state = store.snapshot();
+        assert_eq!(
+            state.items[0].verify.as_deref(),
+            Some("cargo test -p pa-core")
+        );
+        assert_eq!(
+            state.items[0].evidence.as_deref(),
+            Some("cargo test -p pa-core: 10 passed")
+        );
+        state.ensure_completable().unwrap();
     }
 
     #[tokio::test]

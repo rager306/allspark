@@ -449,6 +449,8 @@ mod tests {
             id: id.to_string(),
             text: format!("finish {id}"),
             status,
+            verify: None,
+            evidence: None,
         }
     }
 

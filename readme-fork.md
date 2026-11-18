@@ -106,7 +106,9 @@ Extras:
   plan's settled count and up to three unfinished items;
 - `update_plan` keeps plan ids unique and stable and allows at most one
   `in_progress` item; an update that breaks either rule is rejected before the
-  plan is replaced;
+  plan is replaced. An item may declare `verify` (what would show it done) and
+  carry `evidence` (the command and result); a `completed` item that declared a
+  check but recorded no evidence blocks goal completion;
 - the roster passes through the tool-surface profile before the prompt is
   built (see below).
 

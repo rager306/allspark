@@ -489,9 +489,10 @@ fn native_tools_section(tools: &[&str], options: &BuildSystemPromptOptions<'_>) 
             "- `update_plan`: maintain the session's explicit work plan. Pass the complete items \
              list with unique, stable `id`s, `text`, and `status` (`pending`, `in_progress`, \
              `completed`, or `blocked`); keep at most one item `in_progress` and update statuses \
-             alongside a real action, not as a separate turn. Use it for authorized multi-step \
-             work so the harness can resume the next unblocked item. Do not use it for plan-only \
-             or one-step requests."
+             alongside a real action, not as a separate turn. When an item declares `verify`, \
+             record what showed it done in `evidence` before marking it `completed`. Use it for \
+             authorized multi-step work so the harness can resume the next unblocked item. Do not \
+             use it for plan-only or one-step requests."
                 .to_string(),
         );
     }
@@ -1079,6 +1080,10 @@ mod tests {
         assert!(plan.contains("authorized multi-step work"), "{plan}");
         assert!(plan.contains("unique, stable `id`s"), "{plan}");
         assert!(plan.contains("at most one item `in_progress`"), "{plan}");
+        assert!(
+            plan.contains("record what showed it done in `evidence`"),
+            "{plan}"
+        );
         assert!(
             !native_tools_section(&["bash"], &BuildSystemPromptOptions::default())
                 .contains("update_plan")

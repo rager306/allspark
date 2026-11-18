@@ -38,6 +38,14 @@ pub struct PlanItem {
     pub id: String,
     pub text: String,
     pub status: PlanItemStatus,
+    /// What would show this item is done (a command, a test, an observation).
+    /// Optional so plans written before the field existed stay readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify: Option<String>,
+    /// The evidence recorded when the item settled: the command and its
+    /// result, a review receipt id, or the observed state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
 }
 
 impl PlanItem {
@@ -48,6 +56,18 @@ impl PlanItem {
             self.status,
             PlanItemStatus::Pending | PlanItemStatus::InProgress
         )
+    }
+
+    /// Whether the item settled without recording how it was shown to be done.
+    /// An item that declared a `verify` step is the one the harness insists on.
+    #[must_use]
+    pub fn is_completed_without_evidence(&self) -> bool {
+        self.status == PlanItemStatus::Completed
+            && self.verify.is_some()
+            && self
+                .evidence
+                .as_deref()
+                .is_none_or(|evidence| evidence.trim().is_empty())
     }
 }
 
@@ -104,17 +124,29 @@ impl PlanState {
     ///
     /// # Errors
     ///
-    /// Returns an error naming the unfinished ids.
+    /// Returns an error naming the unfinished ids, or the item that claims
+    /// completion without the evidence its own `verify` step promised.
     pub fn ensure_completable(&self) -> anyhow::Result<()> {
         let unfinished = self.unfinished_item_ids();
-        if unfinished.is_empty() {
-            Ok(())
-        } else {
+        if !unfinished.is_empty() {
             anyhow::bail!(
                 "cannot complete the goal while plan items remain unfinished: {}; finish them or mark them blocked with update_plan",
                 unfinished.join(", ")
             )
         }
+        let unproven: Vec<&str> = self
+            .items
+            .iter()
+            .filter(|item| item.is_completed_without_evidence())
+            .map(|item| item.id.as_str())
+            .collect();
+        if !unproven.is_empty() {
+            anyhow::bail!(
+                "plan items claim completion without evidence: {}; record what showed the item done (the command and its result) in `evidence`",
+                unproven.join(", ")
+            );
+        }
+        Ok(())
     }
 
     /// Rebuild the plan from a session branch.
@@ -319,6 +351,8 @@ mod tests {
             id: id.to_string(),
             text: format!("finish {id}"),
             status,
+            verify: None,
+            evidence: None,
         }
     }
 
@@ -523,6 +557,38 @@ mod tests {
         .expect("the custom entry parses");
 
         assert_eq!(PlanState::from_entries(&[entry]).items, Vec::new());
+    }
+
+    #[test]
+    fn a_completed_item_that_promised_a_check_needs_evidence() {
+        let store = PlanStore::default();
+        store.replace(vec![PlanItem {
+            id: "one".to_string(),
+            text: "finish one".to_string(),
+            status: PlanItemStatus::Completed,
+            verify: Some("cargo test -p pa-core".to_string()),
+            evidence: None,
+        }]);
+        let error = store.snapshot().ensure_completable().unwrap_err();
+        assert!(error.to_string().contains("one"), "{error}");
+
+        store.replace(vec![PlanItem {
+            id: "one".to_string(),
+            text: "finish one".to_string(),
+            status: PlanItemStatus::Completed,
+            verify: Some("cargo test -p pa-core".to_string()),
+            evidence: Some("cargo test -p pa-core: 1831 passed".to_string()),
+        }]);
+        store.snapshot().ensure_completable().unwrap();
+    }
+
+    #[test]
+    fn a_plan_without_a_verify_step_stays_readable_and_completable() {
+        // Plans written before the field existed declare no check; they must
+        // not be blocked by a rule they never opted into.
+        let store = PlanStore::default();
+        store.replace(vec![item("one", PlanItemStatus::Completed)]);
+        store.snapshot().ensure_completable().unwrap();
     }
 
     #[test]
