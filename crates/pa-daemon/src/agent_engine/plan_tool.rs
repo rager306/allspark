@@ -119,12 +119,25 @@ impl AgentTool for PlanTool {
             // The session record already landed; a store failure is logged and
             // never fails the tool call, so a project store cannot break a
             // session that would otherwise work.
+            // The store write and the projection are blocking file and SQLite
+            // work (measured 17.2 ms per call). Running them inline would block
+            // an async worker for that long on the tool-call path, so they go to
+            // the blocking pool and the call waits for the result as it did.
             if let Some(recorder) = &self.recorder {
-                if let Err(error) = recorder
-                    .record_plan(&state.items)
-                    .and_then(|()| recorder.sync())
-                {
-                    eprintln!("pa-daemon: project plan event write failed: {error:#}");
+                let items = state.items.clone();
+                let recorder = std::sync::Arc::clone(recorder);
+                let written = tokio::task::spawn_blocking(move || {
+                    recorder.record_plan(&items).and_then(|()| recorder.sync())
+                })
+                .await;
+                match written {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        eprintln!("pa-daemon: project plan event write failed: {error:#}");
+                    }
+                    Err(error) => {
+                        eprintln!("pa-daemon: project plan write task failed: {error}");
+                    }
                 }
             }
             Ok(AgentToolResult {

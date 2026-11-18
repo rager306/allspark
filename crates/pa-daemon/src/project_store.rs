@@ -644,4 +644,23 @@ mod tests {
         assert_eq!(positions, vec![0, 1, 2]);
         assert_eq!(recorder.load_plan().unwrap().len(), 3);
     }
+    /// The tool call writes the log and projects it. Both are blocking file and
+    /// SQLite work, so the measurement exists to decide whether the call needs
+    /// to leave the async runtime.
+    #[test]
+    #[ignore = "measurement"]
+    fn record_and_sync_cost() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = recorder(dir.path());
+        let items: Vec<_> = (0..5)
+            .map(|index| item(&format!("P{index}"), PlanItemStatus::Pending))
+            .collect();
+        let rounds = 50;
+        let start = std::time::Instant::now();
+        for _ in 0..rounds {
+            recorder.record_plan(&items).unwrap();
+            recorder.sync().unwrap();
+        }
+        eprintln!("record+sync: {:?}/call", start.elapsed() / rounds);
+    }
 }
