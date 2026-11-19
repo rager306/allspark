@@ -240,3 +240,28 @@ including crates where only tests changed. `cargo check` answers "does it
 compile"; it does not answer "will the gate pass", and the difference here was
 `items_after_statements` and a redundant clone.
 
+## 12. A contract test needs three red-first probes, not one
+
+**Seen:** once (2026-11-19), on the `docs/flaky.md` contract test — and the three
+probes each found a different hole.
+
+1. **Substring matched the file it lived in.** Searching source for `#[ignore`
+   found the test's own doc comments, so the "bare attribute" check failed on a
+   clean tree. Probe: does the clean tree pass? Fixed by parsing the attribute
+   shape (line starts with it, followed by `]` or `=`).
+2. **The checker accepted its own skip-list.** Renaming a journal row to
+   `a_test_that_was_renamed` still passed, because the row also quotes its crate
+   (`pa-daemon`) and the checker matched that. Probe: does a FAKE name fail? It
+   only failed after crate names, flags and commit hashes were excluded by shape.
+3. **Too narrow a lookup.** `fn <name>` missed `IDLE_AFTER_ABORT_BUDGET`, a
+   constant the journal legitimately names. Probe: is every kind of thing the
+   journal cites found? Now it is "this identifier exists", with word boundaries
+   so `a_foo` is not satisfied by `a_foo_bar`.
+
+**And the test found a real lie on its first clean run:** the journal cited a
+renamed test and a reverted commit as coverage.
+
+**Rule:** a contract test over a document needs at least three probes — clean input
+passes, a fake entry fails, and every shape the document is allowed to cite is
+accepted. One probe proves the test runs, not that it discriminates.
+
