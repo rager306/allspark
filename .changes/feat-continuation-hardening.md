@@ -20,3 +20,4 @@
 - A project read model written by another version of the build is now rebuilt from the event log instead of being refused, so upgrading no longer makes a stored plan stop resuming.
 - A project record whose event log was replaced or truncated now rebuilds itself instead of freezing at the old contents.
 - A project record whose last write was interrupted (a full disk) repairs that partial line before the next write, instead of becoming unreadable.
+- A project record now keeps tracking removed plan steps even if its event log was briefly unreadable, instead of going silent for the rest of the session.
