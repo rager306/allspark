@@ -65,6 +65,8 @@ process defect, and the process is what this file exists to fix.
 | 35 | documented consumer that does not exist | `crates/pa-project/README.md` promised `pa-daemon` records "plan, evidence, and review events"; the only producer writes `plan_item` rows. The projector implements and tests evidence/relation/ref events with no writer behind them | `c41280206` (README names the gap). Adding the producer is the open step, and it is now the one place that says so |
 | 36 | failed read cached as a fact | `known_item_ids` cached a failed log read as an empty set, and an empty set is exactly a first write — so one transient unreadable log made a session record no removals for the rest of its life | `9dab32c5e` (`Option` answer; only success fills the cache; red-first `[]` vs `["session-1:P2"]`) |
 | 37 | wrong hypothesis, corrected by reading | the #36 slice opened on "a failed append poisons the cache"; `record_plan` fills the cache *after* `append_all` succeeds, so that path was already correct | recorded because it costs a slice when trusted: the fix is next to the guess, not at it |
+| 38 | two owners of one value | `record_plan` wrote `sessionId` into the event payload while the envelope already carried `session_id` from the same source, and nothing read the payload copy | `57120b908` (deleted; the envelope is canonical) |
+| 39 | public surface with no consumer | `pa-project` re-exported `ProjectionReport`, `READ_MODEL_VERSION` and `project` at the crate root; measured zero names outside the crate, and the only use of `READ_MODEL_VERSION` was one test inside it | `0c93281a6` (deleted; still reachable through the public modules, README states the API) |
 
 Notes on #24, so the fix is not guessed at again:
 
