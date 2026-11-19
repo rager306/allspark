@@ -72,14 +72,14 @@ impl ProviderOAuth {
         &self,
         provider_id: &str,
         credential: &AuthCredential,
-    ) -> Option<AuthCredential> {
+    ) -> Result<AuthCredential, String> {
         let AuthCredential::Oauth {
             refresh: Some(refresh_token),
             enterprise_url,
             ..
         } = credential
         else {
-            return None;
+            return Err("the stored credential has no refresh token".to_string());
         };
         let http = Arc::clone(&self.http);
         let provider_http = Arc::clone(&self.provider_http);
@@ -88,17 +88,16 @@ impl ProviderOAuth {
         let provider_id = provider_id.to_string();
         std::thread::Builder::new()
             .name("provider-oauth-refresh".to_string())
-            .spawn(move || {
+            .spawn(move || -> Result<AuthCredential, String> {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .ok()?;
-                let refreshed: Option<AuthCredential> = match provider_id.as_str() {
+                    .map_err(|error| error.to_string())?;
+                match provider_id.as_str() {
                     OPENAI_CODEX_PROVIDER_ID => {
                         let credentials = runtime
-                            .block_on(refresh_openai_codex_token(http.as_ref(), &refresh_token))
-                            .ok()?;
-                        Some(AuthCredential::Oauth {
+                            .block_on(refresh_openai_codex_token(http.as_ref(), &refresh_token))?;
+                        Ok(AuthCredential::Oauth {
                             access: credentials.access,
                             refresh: Some(credentials.refresh),
                             expires: credentials.expires,
@@ -113,13 +112,11 @@ impl ProviderOAuth {
                         })
                     }
                     ANTHROPIC_PROVIDER_ID => {
-                        let credentials = runtime
-                            .block_on(refresh_anthropic_token(
-                                provider_http.as_ref(),
-                                &refresh_token,
-                            ))
-                            .ok()?;
-                        Some(AuthCredential::Oauth {
+                        let credentials = runtime.block_on(refresh_anthropic_token(
+                            provider_http.as_ref(),
+                            &refresh_token,
+                        ))?;
+                        Ok(AuthCredential::Oauth {
                             access: credentials.access,
                             refresh: Some(credentials.refresh),
                             expires: credentials.expires,
@@ -136,14 +133,12 @@ impl ProviderOAuth {
                     GITHUB_COPILOT_PROVIDER_ID => {
                         // The stored GitHub token exchanges for a fresh Copilot token; the
                         // enterprise domain rides the credential.
-                        let credentials = runtime
-                            .block_on(refresh_github_copilot_token(
-                                provider_http.as_ref(),
-                                &refresh_token,
-                                enterprise_url.as_deref(),
-                            ))
-                            .ok()?;
-                        Some(AuthCredential::Oauth {
+                        let credentials = runtime.block_on(refresh_github_copilot_token(
+                            provider_http.as_ref(),
+                            &refresh_token,
+                            enterprise_url.as_deref(),
+                        ))?;
+                        Ok(AuthCredential::Oauth {
                             access: credentials.access,
                             refresh: Some(credentials.refresh),
                             expires: credentials.expires,
@@ -159,9 +154,8 @@ impl ProviderOAuth {
                     }
                     XAI_PROVIDER_ID => {
                         let credentials = runtime
-                            .block_on(refresh_xai_token(provider_http.as_ref(), &refresh_token))
-                            .ok()?;
-                        Some(AuthCredential::Oauth {
+                            .block_on(refresh_xai_token(provider_http.as_ref(), &refresh_token))?;
+                        Ok(AuthCredential::Oauth {
                             access: credentials.access,
                             refresh: Some(credentials.refresh),
                             expires: credentials.expires,
@@ -178,13 +172,11 @@ impl ProviderOAuth {
                     CODEBUDDY_PROVIDER_ID => {
                         // The refresh token rotates on every call; a missing
                         // rotation keeps the previous one.
-                        let credentials = runtime
-                            .block_on(refresh_codebuddy_token(
-                                provider_http.as_ref(),
-                                &refresh_token,
-                            ))
-                            .ok()?;
-                        Some(AuthCredential::Oauth {
+                        let credentials = runtime.block_on(refresh_codebuddy_token(
+                            provider_http.as_ref(),
+                            &refresh_token,
+                        ))?;
+                        Ok(AuthCredential::Oauth {
                             access: credentials.access,
                             refresh: Some(credentials.refresh.unwrap_or(refresh_token)),
                             expires: credentials.expires,
@@ -200,13 +192,12 @@ impl ProviderOAuth {
                     }
                     // The match arms cover the subscription ids;
                     // `refresh` never dispatches another.
-                    _ => None,
-                };
-                refreshed
+                    _ => Err("no token refresh for this provider".to_string()),
+                }
             })
-            .ok()?
+            .map_err(|error| error.to_string())?
             .join()
-            .ok()?
+            .map_err(|_| "the token refresh thread panicked".to_string())?
     }
 }
 
@@ -218,7 +209,11 @@ impl crate::auth::OAuthIntegration for ProviderOAuth {
         }
     }
 
-    fn refresh(&self, provider_id: &str, credentials: &AuthStorageData) -> Option<AuthCredential> {
+    fn refresh(
+        &self,
+        provider_id: &str,
+        credentials: &AuthStorageData,
+    ) -> Result<AuthCredential, String> {
         if !matches!(
             provider_id,
             OPENAI_CODEX_PROVIDER_ID
@@ -227,9 +222,11 @@ impl crate::auth::OAuthIntegration for ProviderOAuth {
                 | XAI_PROVIDER_ID
                 | CODEBUDDY_PROVIDER_ID
         ) {
-            return None;
+            return Err(format!("{provider_id} has no token refresh"));
         }
-        let credential = credentials.credential(provider_id)?;
+        let credential = credentials
+            .credential(provider_id)
+            .ok_or_else(|| "no stored credential".to_string())?;
         self.refresh_blocking(provider_id, &credential)
     }
 }

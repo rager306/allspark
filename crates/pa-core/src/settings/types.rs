@@ -818,8 +818,12 @@ pub struct Settings {
     pub editor_padding_x: Option<u64>,
     pub autocomplete_max_visible: Option<u64>,
     pub show_hardware_cursor: Option<bool>,
+    /// Typing `:name` in the prompt editor suggests matching emoji (unset means on).
+    pub emoji_shortcodes: Option<bool>,
     pub markdown: Option<MarkdownSettings>,
     pub warnings: Option<WarningSettings>,
+    /// Session storage can restore executable kernel state, so only global
+    /// settings (or an explicit CLI/environment override) may select it.
     pub session_dir: Option<String>,
     /// Log per-request provider timing phases to the diagnostic log
     /// (unset means OFF, exactly the TS default).

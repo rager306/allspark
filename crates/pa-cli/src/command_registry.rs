@@ -206,7 +206,7 @@ pub const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(
         &["update"],
         "update [--check] [--nightly|--stable]",
-        "Update to the latest Rust build (uninstalls the TypeScript version)",
+        "Update to the latest version (sessions preserved)",
     )
     .options(&[
         "--check  Print the update channel's latest release vs the running version, without installing",
@@ -299,6 +299,21 @@ and prints the per-layer breakdown (cached static layers, then the dynamic tail)
         "--model <selector>  Preview the per-model additions (model-prompts.toml) for a selector",
         "--cwd <dir>         Assemble for this working directory (default: current)",
         "--json              Print segments and prompt as JSON",
+    ]),
+    CommandSpec::new(
+        &["skills"],
+        "skills [--cwd <dir>] [--json]",
+        "List discovered skills and why each is or is not active",
+    )
+    .description(
+        "Resolves skills the way a fresh root session does and prints each discovered \
+skill with its state: active, hidden (callable via /skill:<name>), shadowed by another skill, \
+ignored because a bundled skill has the same name, disabled, invalid, or active as markdown \
+without its project Python code.",
+    )
+    .options(&[
+        "--cwd <dir>  Resolve for this working directory (default: current)",
+        "--json       Print the skills as JSON",
     ]),
 ];
 

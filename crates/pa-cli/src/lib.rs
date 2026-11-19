@@ -74,6 +74,7 @@ pub(crate) mod public_command;
 pub(crate) mod self_update;
 pub(crate) mod session_export;
 pub(crate) mod sessions_table_format;
+pub(crate) mod skills_command;
 pub(crate) mod subscription_login;
 pub(crate) mod telemetry_notice;
 pub(crate) mod traces_login;
@@ -257,6 +258,10 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
     }
 
     let app_mode = mode::AppMode::resolve(&parsed, std::io::stdin().is_terminal());
+    // The TUI owns the terminal: structured logs go to stderr only outside it.
+    if app_mode != mode::AppMode::Interactive {
+        pa_ai::utils::log::install_stderr_log_sink();
+    }
     // Daemon worker processes start with the worker role env var set: detected
     // here (before the debug-log install) so the worker launch is recognized
     // and does not claim the `cli` component below.

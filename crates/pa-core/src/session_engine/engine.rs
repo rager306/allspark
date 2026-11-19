@@ -180,36 +180,14 @@ async fn mcp_gating(
     settings: &crate::settings::SettingsManager,
     agent_dir: std::path::PathBuf,
 ) -> anyhow::Result<(Vec<String>, Vec<String>, crate::mcp::McpManager)> {
-    // MCP execution is user/global only, matching TS getGlobalMcpServers.
-    let user_servers = settings
-        .global_settings()
-        .mcp_servers
-        .clone()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|(server, config)| {
-            serde_json::from_value(config)
-                .ok()
-                .map(|parsed| (server, parsed))
-        })
-        .collect::<std::collections::HashMap<String, crate::mcp::McpServerConfig>>();
+    let global_settings = settings.global_settings().clone();
     // The MCP manager snapshots auth with a blocking lock; run it off the
     // async runtime.
-    tokio::task::spawn_blocking(move || mcp_gating_blocking(user_servers, &agent_dir))
+    tokio::task::spawn_blocking(move || crate::resources::mcp_gating(&global_settings, &agent_dir))
         .await
         .map_err(|error| anyhow::anyhow!("MCP gating task failed: {error}"))
 }
 
-fn mcp_gating_blocking(
-    user_servers: std::collections::HashMap<String, crate::mcp::McpServerConfig>,
-    agent_dir: &std::path::Path,
-) -> (Vec<String>, Vec<String>, crate::mcp::McpManager) {
-    crate::mcp::McpManager::prompt_gating(user_servers, agent_dir)
-}
-
-/// Join the host's append-system-prompt sources with any Phase-7 profile
-/// addenda (context first, then modes). Returns the joined prompt (empty when
-/// there is nothing to append).
 /// Join the host's append-system-prompt sources with a profile's addenda.
 ///
 /// Both halves are prompt input, and a prompt is model input and cache payload at once
@@ -422,6 +400,13 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         append_system_prompt: config.prompt_guidelines.clone(),
         ..Default::default()
     })?;
+
+    let skill_problems: Vec<crate::resources::SkillStatus> = resources
+        .skill_statuses
+        .iter()
+        .filter(|status| status.state.is_problem())
+        .cloned()
+        .collect();
 
     let model = config
         .model
@@ -906,6 +891,29 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         let has_service_tier_entry = session.has_service_tier();
         (messages, has_thinking_entry, has_service_tier_entry)
     };
+    // Skill problems report once, when a root session starts fresh: a
+    // revived session or a child of the same cwd would repeat them.
+    if !skill_problems.is_empty()
+        && existing_messages.is_empty()
+        && config.rlm_depth.unwrap_or(0) == 0
+    {
+        // No tracing subscriber is installed; the daemon's per-worker log
+        // captures stderr.
+        for problem in &skill_problems {
+            eprintln!(
+                "Warning: skill {} ({}): {}",
+                problem.name,
+                problem.path,
+                problem.describe()
+            );
+        }
+        boot_notice_rows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(super::skill_problems_notice::notice_message(
+                &skill_problems,
+            ));
+    }
     let thinking_level = config.thinking_level.unwrap_or(ThinkingLevel::Off);
     {
         let mut session = wiring.session.lock().await;
@@ -1168,6 +1176,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // push straight into the live session's queue.
     session.adopt_next_turn_rows(boot_notice_rows);
 
+    // `refine.status` answers from the session's own flight counter: the
+    // same Arc every refinement run holds its flight guard on.
+    turn_boundary.bind_refinements_in_flight(session.refinements_in_flight.clone());
     turn_boundary.bind(super::turn_boundary::TurnBoundaryRuntime {
         agent,
         session: wiring.session.clone(),
@@ -1358,7 +1369,16 @@ impl SessionEngine {
     /// The session's cached Codex WebSocket closes with it (TS `cleanupSessionResources` on
     /// dispose), so a worker that replaces its session does not hold the old socket until the
     /// idle expiry.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the refinement-cancellation mutex is poisoned.
     pub async fn dispose_kernel(&self) {
+        self.session
+            .refinement_cancel
+            .lock()
+            .expect("refinement cancellation lock")
+            .abort();
         if let Some(session_id) = self.session.agent().session_id() {
             pa_ai::codex_debug::close_websocket_sessions(Some(session_id));
         }

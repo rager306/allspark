@@ -2,6 +2,7 @@
 //! output mode asks for them, and decide the exit code from the headless
 //! terminal result plus the goal and autonomous continuation contracts.
 
+use pa_core::session_engine::goal_continuation::{ContinuationTrigger, GoalContinuationDecision};
 use pa_core::session_engine::provider_adapter::json_round_trip;
 use pa_core::session_engine::session_events::agent_event_json;
 use pa_types::ai::Model;
@@ -65,7 +66,7 @@ pub(super) async fn session_header_json(
 
 /// Admit prompts, stream json events when requested, and decide the exit code
 /// from the headless terminal result plus the autonomous gate contract.
-pub(super) async fn run_prompts_and_emit(
+pub(crate) async fn run_prompts_and_emit(
     engine: &std::sync::Arc<pa_core::session_engine::engine::SessionEngine>,
     model: &Model,
     api_key: Option<String>,
@@ -117,8 +118,6 @@ pub(super) async fn run_prompts_and_emit(
         &autonomous,
         Some(root_node),
     );
-    let global_harness_dir =
-        pa_core::refinement::get_global_harness_state_dir(&options.config.agent_dir);
     let mut boundary = crate::print_boundary::TurnBoundary::new(json_mode);
     // The autonomous runtime state the session-command executor mutates —
     // `/autonomous` rewrites what the hook, accounting, and exit contract read.
@@ -141,8 +140,8 @@ pub(super) async fn run_prompts_and_emit(
                 &goal,
                 model,
                 api_key.clone(),
-                global_harness_dir.clone(),
                 &autonomous_state,
+                &mut boundary,
                 &command,
                 &images,
             )
@@ -159,21 +158,14 @@ pub(super) async fn run_prompts_and_emit(
                     &mut boundary,
                     model,
                     api_key.clone(),
-                    global_harness_dir.clone(),
                     &continuation,
                 )
                 .await?;
             }
             // The same queue drain a settled turn gets: held continuations and armed steers run as
             // this prompt's follow-up turns.
-            goal.drive_boundary(
-                engine,
-                &mut boundary,
-                model,
-                api_key.clone(),
-                global_harness_dir.clone(),
-            )
-            .await?;
+            goal.drive_boundary(engine, &mut boundary, model, api_key.clone())
+                .await?;
             continue;
         }
         boundary
@@ -190,29 +182,17 @@ pub(super) async fn run_prompts_and_emit(
             .map_err(|error| format!("{error:#}"))?;
         engine.session.agent().wait_for_idle().await;
         boundary
-            .run_at_settled_turn(engine, model, api_key.clone(), global_harness_dir.clone())
+            .run_at_settled_turn(engine, model, api_key.clone())
             .await?;
-        goal.drive_boundary(
-            engine,
-            &mut boundary,
-            model,
-            api_key.clone(),
-            global_harness_dir.clone(),
-        )
-        .await?;
+        goal.drive_boundary(engine, &mut boundary, model, api_key.clone())
+            .await?;
         // The autonomous arm runs only when the goal does not own the boundary (the goal arm takes
         // exclusive priority).
         if !engine.goal_owns_continuation_wakeup().await {
             // The held threshold continuation drains as this invocation's follow-up
             // turn; the stop surfaces only through the exit contract.
             autonomous
-                .drive_boundary(
-                    engine,
-                    &mut boundary,
-                    model,
-                    api_key.clone(),
-                    global_harness_dir.clone(),
-                )
+                .drive_boundary(engine, &mut boundary, model, api_key.clone())
                 .await
                 .map_err(|error| format!("{error:#}"))?;
         }
@@ -227,7 +207,7 @@ pub(super) async fn run_prompts_and_emit(
             subscription.unsubscribe().await;
         }
         boundary
-            .drain_compact_auto_refine_at_disposal(engine, model, api_key, global_harness_dir)
+            .drain_compact_auto_refine_at_disposal(engine, model, api_key)
             .await;
         return Ok(1);
     }
@@ -247,33 +227,33 @@ pub(super) async fn run_prompts_and_emit(
             &mut boundary,
             model,
             api_key.clone(),
-            global_harness_dir.clone(),
         )
         .await?
         {
             continue;
         }
-        if let Some(continuation) = engine.take_owed_goal_continuation().await {
-            goal.publish_goal_update(engine).await;
-            goal.run_queued_turn(
-                engine,
-                &mut boundary,
-                model,
-                api_key.clone(),
-                global_harness_dir.clone(),
-                &continuation,
-            )
-            .await?;
-            continue;
+        // Quiescence settled every descendant: only an owed continuation delivers.
+        match engine
+            .consult_goal_continuation(ContinuationTrigger::OwedRetry, false)
+            .await
+        {
+            GoalContinuationDecision::Minted {
+                message: continuation,
+                ..
+            } => {
+                goal.publish_goal_update(engine).await;
+                goal.run_queued_turn(engine, &mut boundary, model, api_key.clone(), &continuation)
+                    .await?;
+                continue;
+            }
+            // A refused or failed mint can still move the goal (a failed persist fails it).
+            GoalContinuationDecision::NotMinted { .. } => goal.publish_goal_update(engine).await,
+            GoalContinuationDecision::NotOwned
+            | GoalContinuationDecision::NothingOwed
+            | GoalContinuationDecision::Owed => {}
         }
         if autonomous
-            .deliver_rlm_continuation(
-                engine,
-                &mut boundary,
-                model,
-                api_key.clone(),
-                global_harness_dir.clone(),
-            )
+            .deliver_rlm_continuation(engine, &mut boundary, model, api_key.clone())
             .await?
         {
             continue;
@@ -283,23 +263,11 @@ pub(super) async fn run_prompts_and_emit(
         // around — the leading quiescence pass then waits for whatever
         // they left behind.
         let mut boundary_ran = goal
-            .drive_boundary(
-                engine,
-                &mut boundary,
-                model,
-                api_key.clone(),
-                global_harness_dir.clone(),
-            )
+            .drive_boundary(engine, &mut boundary, model, api_key.clone())
             .await?;
         if !engine.goal_owns_continuation_wakeup().await {
             boundary_ran |= autonomous
-                .drive_boundary(
-                    engine,
-                    &mut boundary,
-                    model,
-                    api_key.clone(),
-                    global_harness_dir.clone(),
-                )
+                .drive_boundary(engine, &mut boundary, model, api_key.clone())
                 .await?;
         }
         if boundary_ran {
@@ -369,7 +337,14 @@ pub(super) async fn run_prompts_and_emit(
     // The disposal order: the exit code first, then the teardown drains a
     // compact-trigger auto-refine no later boundary consumed.
     boundary
-        .drain_compact_auto_refine_at_disposal(engine, model, api_key, global_harness_dir)
+        .drain_compact_auto_refine_at_disposal(engine, model, api_key)
         .await;
-    Ok(exit_code)
+    // A failed `/refine` command fails the print run (exit 1) even when every prompt
+    // succeeded — upstream #3406 moved refinement onto a background task, so the failure
+    // leaves through the boundary flag rather than the prompt's own result.
+    Ok(if boundary.refine_command_failed() {
+        1
+    } else {
+        exit_code
+    })
 }

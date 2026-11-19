@@ -13,6 +13,186 @@ branch (`feat/allspark-identity`). `fork.3` points at the SAME commit as `fork.2
 (`375ad95cf`) and is a duplicate tag, not a separate release — it has no entry here
 because nothing shipped between them. `FORK.md` carries the same correction.
 
+## fork.021 — upstream v0.10.4-beta.12 (15 commits past `v0.10.4-beta.3`)
+
+- Tag: `allspark-v0.10.4-beta.12-fork.021`, version **`0.10.4-beta.12`**
+- Base: upstream `v0.10.4-beta.12` (one tag-only commit past `main`).
+
+### What upstream brought
+
+- **`workspace_snapshot` deleted** (#3841). No consumer outside its own tests here either, so
+  the module, its `pa-core` dependency and its README paragraph are gone.
+- **`refine` no longer freezes the session** (#3406): planning runs in the background and the
+  plan commits between agent runs; `/refine`'s completion is handed off the turn runner.
+- **One `CoreSessionState`** owns build/retire/close (#3994); `agent_engine`'s per-field mutexes
+  are gone, so `set_transport` reads the live agent through `built_handles()`.
+- **`daemon` counts outstanding background bash jobs in terminal quiescence** (#3866),
+  **`413 image limit`** (#4017), **the busy state spans the whole agent run** (#3998),
+  **scripted faux providers get their own api so faux tests run in parallel** (#3846),
+  **macOS build + two daemon bugs** (#3871), **session identity on every model request**
+  (#3970), **emoji shortcode suggestions** (#3825), **line-tables-only dev debuginfo** (#3873),
+  **CI skips `.changes/` in the touched-crate selection** (#4046).
+
+### What the merge had to decide
+
+- **The fork's reason-aware retry ladder stays.** The merge had silently taken upstream's
+  `provider_retry.rs` and dropped `is_faux_provider_queue_exhausted`; restored, and the fork's
+  `reason` argument is threaded through `run_approved_refine` again (which now also takes
+  upstream's `cancel`).
+- **`print_boundary`/`print_runtime` follow upstream's refine shape.** `CompactAutoRefineSurface`
+  gives way to upstream's `RefineSurface` + `consume_compact_auto_refine`; the split
+  `print_runtime/` modules keep `run_prompts_and_emit` under `cfg(test)` because upstream's new
+  refinement test drives it, and the exit code reads `refine_command_failed()`.
+- **`models::resolver` re-exports the private-pair rule.** The fork's
+  `the_private_reference_rule_is_defined_once` pin caught upstream re-introducing the second
+  copy that had already drifted once (`to_lowercase` vs `to_ascii_lowercase`).
+- **`refine`'s three harness-state assertions read the artifact dir.** With the fork's
+  `local_harness_state_dir_for` identity, the bare session dir is the install-wide
+  `sessions/harness` — a directory the write no longer lands in.
+- **`ci_pr_crates` keeps the fork's crate rows** on top of upstream's reworked selector, or a
+  PR touching a FORK-ONLY crate would select nothing (review #20).
+- **`autonomous_last_keep_alive_ms` survives** the `CoreSessionState` rewrite (the valve is
+  what gives `subagent_keep_alive_ms` a consumer).
+
+### Verification
+
+`pa-core --lib` **1778**, `pa-daemon --lib` **1355** (+4 flakes green alone), `pa-graph` **586**,
+`pa-types` **166**. Gate `--fast` GREEN. Fork surface INTACT. Crate table matches
+`cargo metadata`.
+
+Three `agent_engine::tests::model_resolution` tests fail identically on a pristine
+`v0.10.4-beta.12` worktree (upstream debt at this tag). One upstream test
+(`refine_session_command_hands_completion_off_the_turn_runner`) needed the fork's
+`metadata.sources` gate satisfied in its fixture.
+
+---
+
+## fork.024 — upstream v0.10.6-beta.1 (the v0.10.5 release line)
+
+- Tag: `allspark-v0.10.6-beta.1-fork.024`, version **`0.10.6-beta.1`**
+- Base: live `main` at `b71a01879` -> upstream `v0.10.6-beta.1`.
+
+Five commits past `beta.17`: the v0.10.5 release fold, the home-uv-install acceptance fix
+(#4091), the skill-resolution rewrite (#4089), terminal Markdown styling (#4096), and a
+version-only nightly tag.
+
+### What changed and why it mattered
+
+- **`/skill:` works mid-message.** The expansion used to fire only on a leading
+  `/skill:<name>`; it now walks every reference in the message and returns every skill it
+  used, not one.
+- **Bundled skills win a name collision, visibly.** A user skill that loses its name to a
+  bundled one produces a display-only warning row on the first turn that names both paths.
+  Before, it vanished.
+- **The fork's capped skill read survives the rewrite.** `skill_block` takes its body through
+  `read_prompt_input_marked`, so the fork's review #4/#29/#2 findings (bounded read, FIFO
+  refusal, a truncation marker the model can see) apply to whichever path expands the skill.
+- **`mcp_gating_blocking` is deleted, not kept.** #4091 moved the logic into
+  `resources::mcp_gating`; keeping the old helper would have left two copies of one gating
+  decision.
+- **The compaction fixture stays at `thresholdPercent: 60` with `keepRecentTokens: 10_000`.**
+  Upstream lowered the retention to 9_000 for a symptom the fork had already fixed by raising
+  the percentage: the fork's trigger prices the fixed prompt prefix (~18 000 tokens), so a 5%
+  threshold skips as `TooShort` before compacting.
+
+### Verification
+
+`pa-core --lib` **1831**, `pa-daemon --lib` **1414**, `pa-graph` **586**, `pa-types` **167**.
+Gate `--fast` GREEN. Fork surface INTACT.
+
+Red on purpose-of-record: three `model_resolution` tests fail on a pristine `v0.10.6-beta.1`
+worktree (upstream debt), and `skill_statuses_explain_every_discovered_skill` fails there too
+because it discovers this machine's `~/.agents/skills` — an environment leak in the test, not
+in the product.
+
+### Ownership note
+
+`pa-project` is a crate the live branch added; it is absent from the `AGENTS.md` crate table.
+Reported, not fixed here: the table belongs to the change that introduces a crate.
+
+---
+
+## fork.023 — upstream v0.10.4-beta.17 (the v0.10.4 release line)
+
+- Tag: `allspark-v0.10.4-beta.17-fork.023`, version **`0.10.4-beta.17`**
+- Base: live `main` at `b71a01879` -> upstream `v0.10.4-beta.17`.
+
+Six commits past `beta.14`: the v0.10.4 release fold, the OSC 7501 program status (#3424), the
+harness-store unification (#4082), a renewed-credential pin (#4083), and a README cleanup.
+`beta.15/16/17` are version-only tags.
+
+### What changed and why it mattered
+
+- **Refinements now write the store the digest reads** (#4082). Daemon, print and RPC
+  refinements used to write the local store to a `<sessions>/harness` file no digest ever
+  opened — 55 refinements sat unread on a live install. Both stores now come from the
+  session's `HarnessDigestContext`, and the per-host `global_harness_dir` parameter is gone
+  end to end.
+- **The fork's parallel path is deleted, not reconciled.** FORK #22 had pinned "the writer and
+  the reader agree on one directory" with its own resolver (`local_harness_state_dir_for`).
+  #4082 reaches the same rule from the digest context, so the resolver and its 102 lines of
+  tests are removed: two addresses for one memory store is the defect both changes exist to
+  prevent.
+- **`AutoRetryEvent::End` and `EngineEvent::AgentEnd` gained `aborted`** — an immutable
+  cancellation outcome that does not depend on reading the error text. Exhaustion and settle
+  arms say `false`; `matches!` patterns still match every `End`.
+- **A memory must still name its evidence** (`0626c5c2a`, fork). Two upstream fixtures wrote
+  a memory create without `metadata.sources`; they now carry it.
+
+### Verification
+
+`pa-core --lib` **1798**, `pa-daemon --lib` **1376** (3 `model_resolution` failures reproduce on
+a pristine `v0.10.4-beta.17` worktree — upstream debt), `pa-graph` **586**, `pa-types` **167**.
+Gate `--fast` GREEN. Fork surface INTACT. Crate table matches `cargo metadata`.
+
+---
+
+## fork.022 — upstream v0.10.4-beta.14 (53 commits past `b71a01879`)
+
+- Tag: `allspark-v0.10.4-beta.14-fork.022`, version **`0.10.4-beta.14`**
+- Base: live `main` at `b71a01879` -> upstream `v0.10.4-beta.14`.
+
+Live `main` had been rewound past `fork.020`'s two merges (`2134cc2ba`, `331dfad6b` survived
+only in the object store), so this entry carries the entire 53-commit range rather than the
+three tags past `beta.12`. The replay kept those merges' 50 conflict resolutions instead of
+re-deriving them.
+
+### What upstream brought (53 commits, of which 3 are past `beta.12`)
+
+- **Project session-directory settings are ignored** (#4079): a repository can no longer
+  steer session storage through `.prime/agent/settings.json`; the file stays on disk, but
+  `sessionDir` and the executable settings are dropped from an effective read.
+- **README cleaned** (#4080): 57 lines of per-provider setup prose removed, including the
+  automatic-compaction section.
+- Everything in `fork.020`'s range: private-auth owned by the credential-scoped snapshot
+  (#4044), non-blocking `refine` (#3406), one `CoreSessionState` (#3994), ACP
+  `session/list`/`session/load` (#3845), the shared headless test mock (#3850),
+  `workspace_snapshot` deleted (#3841), `RunState` (#3996), the Connection state machine
+  (#4003), macOS build fixes (#3871), line-tables-only dev debuginfo (#3873), session
+  identity on every model request (#3970).
+
+### What the merge had to decide
+
+- **The replay's one conflict**: `_auth_identity`'s expiry check. Live main carries the
+  fork's `refresh=False` guard (an inventory probe must not mint a credential); the replay
+  carries upstream #4019's `_EXPIRY_SKEW_SECONDS`. Both survive, and the guard now sits
+  under upstream's named constant — the 30 s literal and its second copy are gone.
+- **README takes upstream's deletion.** The automatic-compaction section removed by #4080 was
+  upstream's own text, byte-identical to what it deleted, so nothing fork-specific was lost.
+- **All earlier decisions hold**: the fork's reason-aware retry ladder, the keep-alive valve,
+  the split `print_runtime/`, `models::resolver` re-exporting the private-pair rule, and the
+  fork's crate rows in `ci_pr_crates`.
+
+### Verification
+
+`pa-core --lib` **1778**, `pa-daemon --lib` **1359**, `pa-graph` **586**, `pa-types` **167**.
+Gate `--fast` GREEN. Fork surface INTACT. Crate table matches `cargo metadata`.
+
+Three `agent_engine::tests::model_resolution` tests fail identically on a pristine
+`v0.10.4-beta.14` worktree — upstream debt at the tag, not this merge's.
+
+---
+
 ## fork.020 — upstream main @ b71a01879 (20 commits past `42a07c13c`)
 
 - Tag: `allspark-v0.10.3-beta.17-fork.020` (cut by the release flow; the version stays

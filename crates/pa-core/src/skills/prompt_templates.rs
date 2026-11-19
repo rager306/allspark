@@ -151,6 +151,7 @@ fn load_template_from_file(file_path: &Path, source_info: SourceInfo) -> Option<
     let raw_content =
         crate::resources::read_prompt_input_marked(file_path, "PROMPT TEMPLATE").ok()?;
     let (frontmatter, body) = parse_frontmatter(&raw_content);
+    let frontmatter = frontmatter.unwrap_or_else(|_| serde_json::Map::new().into());
     let name = file_path
         .file_name()?
         .to_string_lossy()
