@@ -149,6 +149,7 @@ Droid (Factory) в публичных материалах делает акце
 | «инструмент вместо shell» **в описании** | нет; у нас это в маршрутной таблице промпта | **дёшево и безопасно**: перенести отрицательные примеры в описания |
 | retired-инструменты с редиректом | нет | полезно при переименованиях (`read_multiple_files` → `read_file` у них) |
 | арбитр после вызова | **есть** (`tool_arbiter.rs`, advisory) | оставить: замер дал 84% без эффекта |
+| `scriptFirst`-коррекция способа (read-only только из скрипта) | нет | **самое применимое** к нашему случаю: 96% вызовов уже идут через `python_repl`, и подсказка «вызови `graph.search` внутри ячейки» меняет способ, а не инструмент |
 | taste (правила + confidence) | нет; у нас `.commandcode/taste` **не про это дерево** | идея применима к подсказкам, но не к выбору инструмента |
 
 ### Главный вывод для #43
@@ -182,3 +183,74 @@ CommandCode в этой ситуации действует иначе — он 
   но структура восстановлена по строкам, а не по исходникам.
 - **Нет A/B** ни для одного пункта: все рекомендации — по аналогии и по их
   документированным замерам, не по нашим.
+
+## 6. Главная находка: `scriptFirst` / Codemode — коррекция *способа*, а не инструмента
+
+Это отвечает прямо на наш #43 и на вопрос «как поправлять выбор».
+
+CommandCode делит инструменты на два класса и **не даёт** модели выбирать
+неправильный:
+
+```js
+scriptFirst: ({model}) => {
+  const scope = getCodemodeSettingSync();
+  const codemodeOffered = supportsDeferredTools({model}) && modHost.isToolEnabled(…);
+  return tool => isScriptFirstTool({tool, scope, codemodeOffered});
+}
+
+function isScriptFirstTool({tool, scope, codemodeOffered}) {
+  return codemodeOffered && scope === "tools"
+      && tool.schema.name !== <code-execution tool>
+      && isInScope({name: tool.schema.name, scope, readOnly: tool.readOnly === true});
+}
+```
+
+Читается так: **только read-only-инструменты** становятся «script-first» —
+их предлагается вызывать из скрипта. Инструменты, которые правят, пишут или
+запускают команды, **никогда** не вызываются из скрипта:
+
+> Tools that edit, write, or run commands are never callable from a script; call
+> those directly instead. Other names reject with an Error.
+
+А модель, вызвавшая script-first инструмент напрямую, получает вместо ошибки
+**коррекцию способа**:
+
+```js
+function scriptFirstSteer({toolName}) {
+  return `"${toolName}" is a script-first tool this session. Next time call it
+          inside a codemode script (\`await tools.${toolName}(args)\`), batch
+          related calls in the same script, and return only the values you need.`
+}
+```
+
+Три свойства, которых у нашего арбитра нет:
+
+1. **Включается по модели**: `supportsDeferredTools({model})` — то же, что в
+   §1.1. Для семейства без codemode коррекция не предлагается вообще.
+2. **Корректирует способ, а не имя**: не «возьми другой инструмент», а «возьми
+   этот же, но внутри скрипта, и верни только нужные значения».
+3. **Считает выгоду**: обоснование в самом тексте — «a script that returns a
+   whole file or a whole result list has saved nothing.» Это критерий, по
+   которому видно, окупилась ли коррекция.
+
+### Почему это отвечает на наш случай
+
+Наш провал — 4 вызова `python_repl` вместо `graph` на вопросе о цепочке вызовов.
+У CommandCode аналог нашего `python_repl` — это тоже «script-first» среда: туда
+предлагается складывать батч read-only-вызовов. Но они **не подсказывают «не
+используй python»**, они подсказывают **«используй его правильно»** — и только
+когда модель реально вызвала read-инструмент напрямую.
+
+В нашей архитектуре это отображение один-в-один: `graph`, `lsp`, `edit` — это
+read-mostly инструменты; их естественный «script-first» режим — вызов
+**внутри `python_repl`**, где модель уже работает 96% времени. Подсказка
+«вызови `graph.search` напрямую, а не собирай то же из `bash`+`python`» —
+это ровно `scriptFirstSteer`, только с другим именем.
+
+### Ограничение, которое надо сохранить
+
+Их правило «никогда из скрипта» относится к инструментам, которые *меняют*
+состояние. Наш арбитр сформулирован для `bash`-команд и уже не блокирует —
+значит для нас правило такое: **подсказка только для read-only инструментов**,
+иначе она станет советом «делай правки в скрипте», что противоречит `edit`
+контракту (нужен read-then-edit в одном ходе).
