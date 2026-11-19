@@ -89,6 +89,7 @@ The module-reachability series starts at `DEADWEIGHT-AUDIT.md` and ends at
 | `learn_omp.md` (ru) | oh-my-pi's LSP/rename defects, `file:line` | **adopted** — rename and diagnostics guards |
 | `oh-my-pi-hashline-edit-audit.md` | is hashline worth its token cost | **open** — recommendation was *not* to port the grammar; the fork shipped it anyway |
 | `omp-tool-steering.md` (ru) | does oh-my-pi redirect a mis-chosen tool | **adopted** — no primitive exists; the arbiter is a note, not a redirect |
+| `omp-tool-steering-2026.md` | 153 подсказки арбитра: меняют ли выбор инструмента, и как это влияет на RLM REPL | **measured** — механизм уже портирован и работает (153 заметки за сессию), но 84% подсказок ведут к тому же `python_repl`; главный разрыв — покрытие (арбитр видит только `bash()` внутри ячейки, а 96% вызовов идут через Python API) |
 | `TOOL-AUDIT.md` | are the native tools lazy, and is laziness right | **planned** — LSP needs warming, not more laziness (22 s cold start) |
 | `accordeon-comparison.md` | Accordeon's context management vs ours | **open** — one real delta (reversible per-block folding); do not reimplement compaction |
 
