@@ -529,6 +529,28 @@ impl GraphStore {
         Ok(node)
     }
 
+    /// The node whose qualified name ends with `suffix`, if exactly one does.
+    ///
+    /// For a caller who knows part of the path (`project_store::Type::method`).
+    /// `None` when nothing matches and when several do: an ambiguous suffix is
+    /// not an answer, and the caller falls back to its own disambiguation.
+    ///
+    /// # Errors
+    /// Propagates SQLite errors.
+    pub fn node_by_qn_suffix(&self, project: &str, suffix: &str) -> Result<Option<Node>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id,project,label,name,qualified_name,file_path,start_line,end_line,props_json
+             FROM nodes WHERE project = ?1 AND qualified_name LIKE ?2 LIMIT 2",
+        )?;
+        let rows = stmt
+            .query_map(params![project, suffix], row_to_node)?
+            .collect::<rusqlite::Result<Vec<Node>>>()?;
+        Ok(match rows.len() {
+            1 => rows.into_iter().next(),
+            _ => None,
+        })
+    }
+
     /// In-degree and out-degree of a node, counted across all edge types.
     ///
     /// # Errors

@@ -601,6 +601,17 @@ fn resolve_symbol(store: &GraphStore, project: &str, symbol: &str) -> Result<i64
     if let Some(node) = store.node_by_qn(project, symbol)? {
         return Ok(node.id);
     }
+    // A caller who knows the module path names the same symbol as the caller who
+    // knows the whole crate path: `project_store::ProjectRecorder::sync` is not a
+    // different request from `crates::pa_daemon::src::project_store::…::sync`.
+    // Measured: the short path answered `symbol not found` while both the full
+    // qualified name and the bare leaf resolved (ledger #47).
+    if symbol.contains("::") {
+        let suffix = format!("%::{symbol}");
+        if let Some(node) = store.node_by_qn_suffix(project, &suffix)? {
+            return Ok(node.id);
+        }
+    }
     let matches = store.nodes_by_name(project, symbol)?;
     match matches.len() {
         0 => Err(GraphError::SymbolNotFound(symbol.to_string())),
@@ -783,6 +794,49 @@ mod tests {
             )
             .expect("e2");
         store
+    }
+
+    /// A symbol may be named by any suffix of its qualified path.
+    ///
+    /// The tool accepts `Type::method` and `module::Type::method` equally, but
+    /// `resolve_symbol` only tried the full qualified name and the bare leaf —
+    /// so `project_store::ProjectRecorder::sync` answered `symbol not found`
+    /// while `crates::pa-daemon::src::project_store::ProjectRecorder::sync` and
+    /// `sync` both resolved. A caller who knows the module path is not asking
+    /// for a different symbol.
+    #[test]
+    fn a_symbol_suffix_resolves_to_its_node() {
+        let store = GraphStore::open_in_memory().expect("store");
+        store.register_project("p", "/tmp").expect("project");
+        let node = Node {
+            id: 0,
+            project: "p".into(),
+            label: Label::Method,
+            name: "sync".into(),
+            qualified_name: "crates::pa_daemon::src::project_store::ProjectRecorder::sync".into(),
+            file_path: "crates/pa-daemon/src/project_store.rs".into(),
+            start_line: 1,
+            end_line: 3,
+            props: json!({}),
+        };
+        let id = store.upsert_node(&node).expect("node");
+
+        for query in [
+            "crates::pa_daemon::src::project_store::ProjectRecorder::sync",
+            "project_store::ProjectRecorder::sync",
+            "ProjectRecorder::sync",
+            "sync",
+        ] {
+            assert_eq!(
+                resolve_symbol(&store, "p", query).expect(query),
+                id,
+                "{query} must resolve"
+            );
+        }
+        assert!(
+            resolve_symbol(&store, "p", "Recorder::sync").is_err(),
+            "a suffix that no node carries must still fail"
+        );
     }
 
     /// The graph review §3.3: "Trace limit считает выданные steps… небольшой
