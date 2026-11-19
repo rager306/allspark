@@ -94,6 +94,16 @@ Notes on #24, so the fix is not guessed at again:
   a sticky "abort the next run" flag fixed a real window while cancelling the
   follow-up another command deliberately starts (#29).
 
+## 2026-11-19 — session 5: release preparation
+
+| # | Class | Finding | Status |
+|---|---|---|---|
+| 49 | probe reads the ambient environment | `the_published_fork_installer_selects_the_fork_layout_without_env` runs the installer's own layout block in `sh` and compares the paths it chose. The block reads `PRIME_AGENT_DAEMON_SOCKET` as "this is a fork run", and a live agent session exports `PRIME_AGENT_DAEMON_SOCKET=/tmp/allspark-daemon.sock` — which the probe inherited, so its "upstream-stamped" case answered `yes\|/probe/libexec\|/probe/bin/allspark` instead of the upstream paths. 31/31 with `env_clear()`, 30/1 without; red-first reproduced in this session | `4fc758279` (`env_clear()` on the probe: layer 1 reads only what the harness declares) |
+
+Why #49 matters beyond itself: **it can only fail from inside an agent session**, so CI never saw it and a release
+gate would have failed on the machine doing the release while passing everywhere else. A test that runs a
+subprocess must declare that subprocess's whole environment, not just the variables it happens to remember.
+
 ## What the classes say
 
 | Class | Count | The process fix |
