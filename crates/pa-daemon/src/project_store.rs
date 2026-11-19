@@ -121,7 +121,6 @@ impl ProjectRecorder {
                     // #24b). The `data.id` keeps the plan's own id for restore.
                     "id": self.row_id(&item.id),
                     "entityType": "plan_item",
-                    "sessionId": self.session_id.clone(),
                     // The plan is an ordered list, so the order is part of the
                     // record: a projection that kept only the items would come
                     // back in whatever order the database returned.
