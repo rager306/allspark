@@ -22,3 +22,4 @@
 - A project record whose last write was interrupted (a full disk) repairs that partial line before the next write, instead of becoming unreadable.
 - A project record now keeps tracking removed plan steps even if its event log was briefly unreadable, instead of going silent for the rest of the session.
 - Two sessions in one project can no longer fail each other when one opens the shared project record while the other writes: opening waits out a short write instead of answering "database is locked".
+- The advisory tool-selection note now stops repeating itself: one rule speaks at most three times per session instead of on every matching call.
