@@ -305,15 +305,20 @@ impl ProjectRecorder {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if cached.is_none() {
-            *cached = Some(self.read_known_item_ids());
+            // Only a read that succeeded may be cached. A failed read answered
+            // "no ids", and trusting that answer would make a session whose log
+            // was briefly unreadable stop recording removals for the rest of its
+            // life: the empty set looks exactly like a first write.
+            match self.read_known_item_ids() {
+                Some(ids) => *cached = Some(ids),
+                None => return Vec::new(),
+            }
         }
         cached.clone().unwrap_or_default()
     }
 
-    fn read_known_item_ids(&self) -> Vec<String> {
-        let Ok(events) = EventLog::at(&self.paths.events).read_all() else {
-            return Vec::new();
-        };
+    fn read_known_item_ids(&self) -> Option<Vec<String>> {
+        let events = EventLog::at(&self.paths.events).read_all().ok()?;
         let mut ids: Vec<String> = Vec::new();
         for event in events {
             // Only this session's own writes. A project's log is shared, and a
@@ -342,7 +347,7 @@ impl ProjectRecorder {
                 _ => {}
             }
         }
-        ids
+        Some(ids)
     }
 
     /// The row key for one of this session's plan items.
@@ -1077,5 +1082,57 @@ mod tests {
             "one snapshot plus the repair's own snapshot"
         );
         assert!(events.iter().all(|event| event.event_id != "torn"));
+    }
+
+    /// A read that failed must not be remembered as "this session has no ids".
+    ///
+    /// `known_item_ids` caches what the log holds, and only the cache's `None`
+    /// state distinguishes "not read yet" from "read, nothing there". Caching a
+    /// failed read as an empty set is the difference between a transient
+    /// unreadable log and a session that silently stops recording removals for
+    /// the rest of its life — the empty set is exactly a first write.
+    #[test]
+    fn a_failed_read_is_not_cached_as_an_empty_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = recorder(dir.path());
+        recorder
+            .record_plan(&[
+                item("P1", PlanItemStatus::InProgress),
+                item("P2", PlanItemStatus::Pending),
+            ])
+            .unwrap();
+
+        // A fresh recorder, so nothing is cached yet, and its first read fails:
+        // the log path is a directory, so `read_all` cannot open it.
+        let paths = paths(dir.path());
+        let log_path = paths.events.clone();
+        let parked = log_path.with_extension("jsonl.parked");
+        std::fs::rename(&log_path, &parked).unwrap();
+        std::fs::create_dir(&log_path).unwrap();
+        let fresh = ProjectRecorder::new(paths, Some("session-1".to_string()));
+        assert_eq!(
+            fresh.known_item_ids(),
+            Vec::<String>::new(),
+            "a failed read answers nothing"
+        );
+        std::fs::remove_dir(&log_path).unwrap();
+        std::fs::rename(&parked, &log_path).unwrap();
+
+        // The same recorder now writes a snapshot that drops P2. It must record
+        // the removal, which requires the ids it could not read a moment ago.
+        fresh
+            .record_plan(&[item("P1", PlanItemStatus::Completed)])
+            .unwrap();
+        let events = EventLog::at(&fresh.paths().events).read_all().unwrap();
+        let removals: Vec<&str> = events
+            .iter()
+            .filter(|event| event.event_type == "entity.removed")
+            .filter_map(|event| event.payload["id"].as_str())
+            .collect();
+        assert_eq!(
+            removals,
+            vec!["session-1:P2"],
+            "the dropped step must be recorded once the log is readable again"
+        );
     }
 }
