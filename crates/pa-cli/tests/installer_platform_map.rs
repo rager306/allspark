@@ -1574,9 +1574,15 @@ fn the_published_fork_installer_selects_the_fork_layout_without_env() {
         }
         harness.push_str(block);
         harness.push_str("\nprintf '%s|%s|%s\\n' \"$fork_layout\" \"$share_dir\" \"$launcher\"\n");
+        // The ambient environment is NOT part of the probe. A live session
+        // exports `PRIME_AGENT_DAEMON_SOCKET=/tmp/allspark-daemon.sock`, and the
+        // layout block reads that socket as "this is a fork run" — so an
+        // "upstream-stamped" probe run from inside a session silently became a
+        // fork probe and failed. Layer 1 reads only what the harness declares.
         let output = Command::new("sh")
             .arg("-c")
             .arg(&harness)
+            .env_clear()
             .output()
             .expect("run the layout block");
         assert!(
