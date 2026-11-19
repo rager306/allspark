@@ -21,3 +21,4 @@
 - A project record whose event log was replaced or truncated now rebuilds itself instead of freezing at the old contents.
 - A project record whose last write was interrupted (a full disk) repairs that partial line before the next write, instead of becoming unreadable.
 - A project record now keeps tracking removed plan steps even if its event log was briefly unreadable, instead of going silent for the rest of the session.
+- Two sessions in one project can no longer fail each other when one opens the shared project record while the other writes: opening waits out a short write instead of answering "database is locked".
