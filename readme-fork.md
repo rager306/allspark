@@ -308,6 +308,28 @@ ALLSPARK_FORK_BUILD=fork.NNN cargo build --profile dist --bin prime-agent --lock
 bin/allspark                 (launcher script, tracked)
 libexec/prime-agent          (payload binary)
 
+# verify a release artifact AND the installer, without touching a running daemon
+# (AGENTS.md forbids running install-rust.sh from inside a session: it stops
+#  daemons by socket path, so an experiment is indistinguishable from a real
+#  update. A container has its own /tmp and PID namespace, so it cannot reach
+#  one. `--archive` installs a local tarball and needs no network; the image
+#  needs python3, because the installer falls back to a system Python when it
+#  cannot bootstrap uv.)
+docker build -t allspark-verify - <<'EOF'
+FROM ubuntu:24.04
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends python3 ca-certificates
+EOF
+docker run --rm --network none \
+  -v "$PWD/dist:/dist:ro" -v "$PWD/install-rust.sh:/install-rust.sh:ro" allspark-verify \
+  sh -c 'PRIME_AGENT_RUST_PREFIX=/opt/allspark HOME=/root \
+         sh /install-rust.sh --archive /dist/<archive>.tar.gz --force --verbose \
+         && /opt/allspark/bin/allspark --version'
+# what a pass proves: bin/allspark + libexec/ payload + the bundled catalog,
+# runtime and skills land in the fork layout; the upstream share/ and bin/
+# paths stay empty; --version carries the fork build stamp; the launcher
+# honours ALLSPARK_HOME and creates its socket directory 0700; a second run
+# over the same prefix replaces the payload cleanly.
+
 # logs / diagnostics
 <agentDir>/logs/             daemon log, worker stderr, debug-*.log, agent.jsonl
 allspark incident --since "2 hours ago"
