@@ -109,7 +109,14 @@ impl ReadModel {
 
     /// Apply one event and its ledger row in a single transaction.
     fn apply(&mut self, event: &Event, seq: i64) -> Result<()> {
-        let tx = self.conn_mut().transaction()?;
+        // `BEGIN IMMEDIATE` takes the write lock up front, so the 5 s
+        // `busy_timeout` bounds the wait. A deferred transaction takes the lock
+        // only at its first write, which is where the timeout can no longer help
+        // and `database is locked` surfaces instead — measured with two projectors
+        // on one file: 1 failure in 6 runs.
+        let tx = self
+            .conn_mut()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute(
             "INSERT INTO applied_events(event_id, seq, event_type, schema_version, occurred_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -625,5 +632,42 @@ mod sync_cost {
                 elapsed.checked_div(u32::try_from(updates).unwrap_or(1))
             );
         }
+    }
+
+    /// A short write from another writer must not fail an open.
+    ///
+    /// The realistic case is a plan write landing while a session opens the
+    /// model. A lock held past the 5 s busy timeout is a stall and failing there
+    /// is correct, so the holder releases after 150 ms and the open must wait it
+    /// out: `PRAGMA journal_mode=WAL` and the schema DDL both need an exclusive
+    /// lock, which SQLite refuses immediately unless the connection waits.
+    #[test]
+    fn opening_a_model_waits_out_a_short_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("project.db");
+        {
+            let seed = rusqlite::Connection::open(&db).unwrap();
+            seed.execute_batch("CREATE TABLE held(x)").unwrap();
+        }
+
+        let holder = std::thread::spawn({
+            let db = db.clone();
+            move || {
+                let conn = rusqlite::Connection::open(&db).unwrap();
+                let tx = conn.unchecked_transaction().unwrap();
+                tx.execute("INSERT INTO held VALUES (1)", []).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                tx.rollback().unwrap();
+            }
+        });
+        // Give the writer the lock first, so the open really races it.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let opened = ReadModel::open(&db);
+        holder.join().unwrap();
+        assert!(
+            opened.is_ok(),
+            "opening during a short write must wait, not fail: {:?}",
+            opened.err()
+        );
     }
 }

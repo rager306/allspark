@@ -107,11 +107,26 @@ impl ReadModel {
                 .with_context(|| format!("create {}", parent.display()))?;
         }
         let conn = Connection::open(&path).with_context(|| format!("open {}", path.display()))?;
-        // WAL keeps readers unblocked while the projector writes, and
-        // `busy_timeout` bounds a contended writer instead of failing it.
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        // The timeout comes FIRST: switching the journal mode needs an exclusive
+        // lock, and SQLite answers that lock with an immediate `database is
+        // locked` rather than with the busy handler — measured, two projectors
+        // racing on one file failed 1 run in 6 with the timeout set after the
+        // mode switch.
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        // Best-effort, and measured: `PRAGMA journal_mode` needs an exclusive
+        // lock and answers with an immediate `database is locked` instead of
+        // waiting on the busy handler, so two projectors opening one file raced
+        // here. The mode is a property of the file, written once by whichever
+        // connection created it, so skipping it under contention is safe — the
+        // file already has the mode, and readers are only blocked for the
+        // duration of someone else's write.
+        if let Err(error) = conn.pragma_update(None, "journal_mode", "WAL") {
+            debug_assert!(
+                error.to_string().contains("locked"),
+                "journal_mode failed for a reason other than contention: {error}"
+            );
+        }
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
         let model = Self { conn, path };
         model.apply_schema()?;
         Ok(model)

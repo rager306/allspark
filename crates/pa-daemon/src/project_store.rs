@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use anyhow::Context;
 use pa_project::event::{Actor, EventLog, SCHEMA_VERSION};
 use serde_json::{json, Value};
 
@@ -254,7 +255,8 @@ impl ProjectRecorder {
         if let Some(parent) = self.paths.model.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut model = pa_project::model::ReadModel::open(&self.paths.model)?;
+        let mut model = pa_project::model::ReadModel::open(&self.paths.model)
+            .with_context(|| format!("open model {}", self.paths.model.display()))?;
         // Resume from the byte the model was projected through. Reading the
         // whole log per update made one session's cost quadratic in its own
         // length: measured 16 ms per sync at 100 events, 42 ms at 1 000, and
@@ -275,7 +277,9 @@ impl ProjectRecorder {
         if events.is_empty() {
             return Ok(());
         }
-        match pa_project::project::project(&mut model, &self.paths.project_id, &events) {
+        match pa_project::project::project(&mut model, &self.paths.project_id, &events)
+            .with_context(|| format!("project {} incremental", self.paths.model.display()))
+        {
             Ok(_) => {
                 model.set_log_offset(end)?;
                 Ok(())
@@ -1133,5 +1137,69 @@ mod tests {
             vec!["session-1:P2"],
             "the dropped step must be recorded once the log is readable again"
         );
+    }
+
+    /// Two sessions syncing one project's model must not lose rows.
+    ///
+    /// The applied-event ledger is what makes this safe: a concurrent pass that
+    /// starts from an older checkpoint replays events the other already applied
+    /// and skips them by id. The checkpoint can therefore move backwards, which
+    /// costs a redundant replay and nothing else — so the assertion is about
+    /// rows, not about the offset.
+    #[test]
+    fn two_writers_syncing_one_model_lose_no_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let first = std::sync::Arc::new(ProjectRecorder::new(
+            paths.clone(),
+            Some("session-a".to_string()),
+        ));
+        let second = std::sync::Arc::new(ProjectRecorder::new(
+            paths.clone(),
+            Some("session-b".to_string()),
+        ));
+        first
+            .record_plan(&[
+                item("P1", PlanItemStatus::InProgress),
+                item("P2", PlanItemStatus::Pending),
+            ])
+            .unwrap();
+        second
+            .record_plan(&[
+                item("P1", PlanItemStatus::Completed),
+                item("P2", PlanItemStatus::Pending),
+                item("P3", PlanItemStatus::Pending),
+            ])
+            .unwrap();
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = [first.clone(), second]
+            .into_iter()
+            .map(|recorder| {
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    recorder.sync()
+                })
+            })
+            .collect();
+        for handle in handles {
+            let result = handle.join().unwrap();
+            if let Err(error) = &result {
+                eprintln!("CONCURRENT SYNC FAILED: {error:#}");
+            }
+            result.expect("a concurrent sync must succeed");
+        }
+
+        let model = pa_project::model::ReadModel::open(&paths.model).unwrap();
+        assert_eq!(
+            model.count_entities("proj", "plan_item").unwrap(),
+            5,
+            "both sessions' rows must survive concurrent projection"
+        );
+        // And a later pass is still idempotent.
+        first.sync().unwrap();
+        let model = pa_project::model::ReadModel::open(&paths.model).unwrap();
+        assert_eq!(model.count_entities("proj", "plan_item").unwrap(), 5);
     }
 }
