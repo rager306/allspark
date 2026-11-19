@@ -522,6 +522,16 @@ fn native_tools_section(tools: &[&str], options: &BuildSystemPromptOptions<'_>) 
         );
     }
     if has_graph {
+        // Measured gap (ledger #43): on a live run against a three-file fixture
+        // the model answered a call-chain question with four `python_repl` calls
+        // and zero `graph` calls, with the tool available and working. The table
+        // had rows for "where is this" and "did my change reach", and none for
+        // "who calls this", so the most direct graph question had no route.
+        routes.push(
+            "- **Who calls this / how does this value get here** → `graph` `trace`: it follows \
+             edges in traversal order, which is the order the code EVALUATES them, so a chain \
+             read from it is already in execution order rather than in source-line order.",
+        );
         routes.push(
             "- **How is this code organised** → `graph` `architecture`; `coverage` says how much of \
              the tree the graph actually resolved, so a thin answer is attributable.",
@@ -994,6 +1004,12 @@ mod tests {
         );
         assert!(full.contains("## Which tool for which situation"));
         assert!(full.contains("`graph` `architecture`"));
+        // The call-chain route exists because a live session answered that exact
+        // question without it and never opened `trace` (ledger #43).
+        assert!(
+            full.contains("`graph` `trace`") && full.contains("Who calls this"),
+            "the call-chain question must have a route: {full}"
+        );
         // The route a session reaches first must name the pack action, or the
         // mechanism ships with no consumer (S9's stated gap).
         assert!(
