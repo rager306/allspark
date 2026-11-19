@@ -29,4 +29,12 @@ without touching canonical data.
 
 ## Consumers
 
-- `pa-daemon` — records plan, evidence, and review events for a project.
+- `pa-daemon` — records a session's plan for a project: `entity.upserted` and
+  `entity.removed` for `plan_item` rows, written by `ProjectRecorder`.
+
+Recorded as a gap rather than left implied: **no producer writes evidence or
+review events yet.** The crate projects `evidence` entities, `relation.*` edges
+and `ref.*` links, and the projector is tested on all of them, but the only
+writer in the tree writes plan rows. So the "evidence" and "review" halves of
+this record exist as a shape with a test and no data. Adding a producer is the
+missing step; until then a reader must not assume a project has any.
