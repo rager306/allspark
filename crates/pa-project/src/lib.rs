@@ -9,5 +9,10 @@ pub mod model;
 pub mod project;
 
 pub use event::{Actor, Event, EventLog, SCHEMA_VERSION};
-pub use model::{READ_MODEL_VERSION, ReadModel};
-pub use project::{ProjectionReport, project};
+pub use model::ReadModel;
+
+// `READ_MODEL_VERSION`, `ProjectionReport` and the `project` function are
+// deliberately not re-exported: nothing outside this crate reads them, and a
+// `pub use` with no consumer is surface debt this repo asks to delete rather
+// than keep. When a consumer needs one, that is a one-line change with a caller
+// to justify it.

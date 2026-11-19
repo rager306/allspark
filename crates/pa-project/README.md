@@ -38,3 +38,13 @@ and `ref.*` links, and the projector is tested on all of them, but the only
 writer in the tree writes plan rows. So the "evidence" and "review" halves of
 this record exist as a shape with a test and no data. Adding a producer is the
 missing step; until then a reader must not assume a project has any.
+
+## Public API
+
+`Event`, `EventLog`, `Actor`, `SCHEMA_VERSION`, `ReadModel`. The `event`,
+`model` and `project` modules are public, so `project()` and
+`READ_MODEL_VERSION` are reachable by full path; they are not re-exported at the
+crate root because nothing outside the crate reads them yet, and a re-export with
+no caller is surface the repo asks to delete rather than keep. Measured
+2026-11-19: `ProjectionReport`, `READ_MODEL_VERSION` and `project` had zero
+consumers outside this crate.

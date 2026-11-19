@@ -530,7 +530,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, crate::READ_MODEL_VERSION.to_string());
+        assert_eq!(version, crate::model::READ_MODEL_VERSION.to_string());
     }
 
     /// The daemon's fallback replays the whole log when an incremental pass
