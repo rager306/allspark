@@ -110,4 +110,4 @@ Notes on #24, so the fix is not guessed at again:
 | W4.3 residual ledger | no residual case exists that has nowhere to be written |
 | W7.2 graph-first guidance | **measured, and the measurement is the blocker.** This session's log (`01a1d0d1…jsonl`, 11 228 top-level tool calls over six days): `python_repl` 10 768 (95.9%), `edit` 217, `lsp` 203, `graph` 39, `jev` 1. But `bash()` is called *inside* `python_repl`, so the 95.9% mixes shell work with code execution and the split cannot be recovered from the log. A guidance change based on these numbers would be a claim about a quantity nobody measured |
 | W3.3 `code_ref` resolver | no producer writes `ref.added`; a resolver would check an empty set |
-| `real-model` QA tasks (CT-001/CT-002) | no access to a paid provider; validated by schema only |
+| `real-model` QA tasks (CT-001/CT-002) | **run live 2026-11-19, locally only** on `9router/cmc/deepseek/deepseek-v4.1-flash`: CT-001 produced the three files and answered `DONE`; CT-002 created nothing and answered with an analysis. The blocker was the runner (#42), not the product. Not wired into CI by request |
