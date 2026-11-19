@@ -102,50 +102,58 @@ fn every_journal_row_names_a_unit_that_still_exists() {
         // name is not a unit and a flag is not a name, so both are skipped by
         // shape rather than by a list.
         for name in backticked(unit) {
-            let is_unit_name = !name.starts_with('-')
-                && !name.contains(' ')
-                && !crates.contains(&name)
-                // A commit hash is not a unit name. Nine hex characters is the
-                // repo's short-hash shape; a Rust identifier with no underscore
-                // would look the same, and no test name is nine lowercase hex.
-                && !(name.len() == 9
-                    && name
-                        .chars()
-                        .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase()))
-                && name
-                    .chars()
-                    .next()
-                    .is_some_and(|first| first.is_ascii_alphanumeric());
-            if !is_unit_name {
+            if !is_unit_name(&name, &crates) {
                 continue;
             }
             // The journal names tests, but also a `const` it introduced, so the
             // check is "this identifier exists", not "a `fn` has this name".
-            // Word boundaries keep a rename visible: `a_foo` must not match
-            // `a_foo_bar`.
-            let needle = name.to_string();
-            let exists_as_identifier = walk(&root.join("crates")).into_iter().any(|file| {
-                let text = read(&file);
-                text.match_indices(&needle).any(|(index, _)| {
-                    let before = index.checked_sub(1).map(|i| text.as_bytes()[i]);
-                    let after = text.as_bytes().get(index + needle.len()).copied();
-                    let is_boundary = |byte: Option<u8>| {
-                        byte.is_none_or(|byte| !byte.is_ascii_alphanumeric() && byte != b'_')
-                    };
-                    is_boundary(before) && is_boundary(after)
-                })
-            });
-            let hit = walk(&root.join("crates"))
-                .into_iter()
-                .any(|file| read(&file).contains(&needle));
             assert!(
-                hit,
+                defines_identifier(&root.join("crates"), &name),
                 "`docs/flaky.md` names `{name}`, which the tree does not define"
             );
             checked += 1;
         }
     }
     assert!(checked > 0, "no journal row was checked");
+}
+
+/// Whether `name` reads as something the journal could cite as a unit.
+///
+/// The row also names its crate ("`pa-daemon`") and quotes flags ("`--lib`"),
+/// and a commit hash ("`7804fc3a7`") looks like an identifier. All three are
+/// skipped by shape, so a new row cannot be silently unchecked by forgetting a
+/// list entry.
+fn is_unit_name(name: &str, crates: &[String]) -> bool {
+    let is_hash = name.len() == 9
+        && name
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase());
+    let starts_as_identifier = name
+        .chars()
+        .next()
+        .is_some_and(|first| first.is_ascii_alphanumeric());
+    !name.starts_with('-')
+        && !name.contains(' ')
+        && !crates.contains(&String::from(name))
+        && !is_hash
+        && starts_as_identifier
+}
+
+/// Whether the tree defines `name` as a whole identifier.
+///
+/// Word boundaries are the point: a journal row naming `a_foo` must not be
+/// satisfied by the unrelated `a_foo_bar`, or a rename goes unnoticed.
+fn defines_identifier(root: &Path, name: &str) -> bool {
+    let is_boundary =
+        |byte: Option<u8>| byte.is_none_or(|byte| !byte.is_ascii_alphanumeric() && byte != b'_');
+    walk(root).into_iter().any(|file| {
+        let text = read(&file);
+        text.match_indices(name).any(|(index, _)| {
+            let before = index.checked_sub(1).map(|i| text.as_bytes()[i]);
+            let after = text.as_bytes().get(index + name.len()).copied();
+            is_boundary(before) && is_boundary(after)
+        })
+    })
 }
 
 fn backticked(text: &str) -> Vec<String> {
