@@ -24,3 +24,4 @@
 - Two sessions in one project can no longer fail each other when one opens the shared project record while the other writes: opening waits out a short write instead of answering "database is locked".
 - The advisory tool-selection note now stops repeating itself: one rule speaks at most three times per session instead of on every matching call.
 - `graph trace` and the other actions now accept a symbol named by its module path (`project_store::ProjectRecorder::sync`), not only by the full crate-qualified name or the bare leaf; a path that matched nothing used to read as "this symbol does not exist".
+- Fork release artifacts are now built against the glibc 2.35 baseline the installer promises: the release pipeline builds inside the pinned Ubuntu 22.04 container, so an artifact installed on Ubuntu 22.04 starts instead of failing with `GLIBC_2.39 not found` after the installer reported the system as supported.

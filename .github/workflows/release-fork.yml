@@ -91,17 +91,51 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    # THE GLIBC BASELINE the installer promises. The glibc-floor block in
+    # install-rust.sh states that the published Linux binaries require glibc
+    # symbols no newer than 2.35 (the ubuntu:22.04 container), and its host
+    # check accepts any system at or above that floor. Building on the ubuntu-24.04 RUNNER
+    # instead links against GLIBC_2.39: measured 2026-11-19 with the release
+    # artifact, `prime-agent --version` on Ubuntu 22.04 aborts with
+    # "version `GLIBC_2.39' not found" — after the installer's own floor check
+    # said the system was supported. release.yml's build-gnu job pinned this
+    # container and a `glibc235` cache key for exactly this reason; the fork
+    # pipeline was written without it.
+    container:
+      image: mirror.gcr.io/library/ubuntu@sha256:b8b6ee6aa931ecd9d0d952abc34dc0e5f7c6a30c6bb71b079fe399fde0329c02
+    defaults:
+      run:
+        shell: bash
     steps:
+      # The base image is minimal: the checkout/toolchain/cache actions and the
+      # build need these (git before checkout so clones do not fall back to the
+      # REST-API download path); cmake builds the wasmtime C API that
+      # tree-sitter's `wasm` feature needs; python3 runs the packaging step
+      # below.
+      - name: Install build prerequisites (Ubuntu 22.04 container)
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential curl ca-certificates python3 git binutils cmake
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
           # A dispatch re-publishes an existing tag: check out that tag's tree,
           # not the default branch (the version/changelog checks run on it).
           ref: ${{ env.FORK_TAG }}
+      - name: Trust the mounted checkout for release packaging
+        # checkout scopes its safe.directory setting to a temporary HOME; the
+        # later container steps need the same exact path in their own config.
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # the 1.98.1 pin
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          key: release-fork
+          # The glibc235 marker keeps this cache from restoring a target/ tree
+          # linked on the 24.04 host (cargo fingerprints do not encode the host
+          # libc). Same protocol as release.yml: the key moves only with a
+          # reviewed baseline change.
+          key: release-fork-glibc235
       - name: Build the dist payload
         env:
           ALLSPARK_FORK_BUILD: ${{ needs.tag-check.outputs.build }}
