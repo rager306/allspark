@@ -50,6 +50,17 @@ use pa_jev::{Answer, JudgmentRequest, JudgmentState, Question};
 use crate::jev::{ChainJudge, Judge, JudgeError};
 use crate::settings::{JevEnabledSetting, JevToolArbiterSetting};
 
+/// How many notes one rule may deliver in a session.
+///
+/// A note rides inside a tool result, so it is paid again in every later request
+/// until compaction, and a model that disregarded the first one will disregard
+/// the rest. Measured on a real six-day session (ledger #45): 157 delivered
+/// notes, 106 of them the same `graph.search` rule. Three is enough to teach the
+/// rule once and to cover a model that needed it twice; past that the note is
+/// context with no reader. oh-my-pi caps the same thing with
+/// `MAX_DSML_LEAK_NUDGES`; the fork had no cap at all.
+pub const MAX_NOTES_PER_RULE: u32 = 3;
+
 /// The per-call judgment bound: the command already finished, so a slow
 /// judge must never hold the tool result open.
 pub const ARBITER_TIMEOUT: Duration = Duration::from_millis(2500);
@@ -543,6 +554,9 @@ pub struct ToolArbiter {
     armed: Mutex<Armed>,
     timeout: Duration,
     failures: AtomicU32,
+    /// Notes delivered per rule id, so one rule cannot repeat itself for a whole
+    /// session (see [`MAX_NOTES_PER_RULE`]).
+    notes: Mutex<std::collections::HashMap<&'static str, u32>>,
 }
 
 impl std::fmt::Debug for ToolArbiter {
@@ -568,6 +582,7 @@ impl ToolArbiter {
             }),
             timeout: ARBITER_TIMEOUT,
             failures: AtomicU32::new(0),
+            notes: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -695,6 +710,12 @@ impl ToolArbiter {
     /// caller's tool result.
     pub async fn note(&self, command: &str) -> Option<ArbiterNote> {
         let suggestion = self.suggest(command)?;
+        // The budget is claimed before the judgment: the note is about to ride a
+        // tool result either way, and a judge that times out must not make the
+        // same rule payable again.
+        if !self.claim_note(suggestion.rule) {
+            return None;
+        }
         let verdict = match self.judge_choice(command, suggestion).await {
             Ok(verdict) => {
                 if verdict.is_some() {
@@ -719,6 +740,22 @@ impl ToolArbiter {
             verdict,
             text: note_text(suggestion, verdict),
         })
+    }
+}
+
+impl ToolArbiter {
+    /// Claim one of the rule's notes for this session; `false` once spent.
+    fn claim_note(&self, rule: &'static str) -> bool {
+        let mut notes = self
+            .notes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let delivered = notes.entry(rule).or_insert(0);
+        if *delivered >= MAX_NOTES_PER_RULE {
+            return false;
+        }
+        *delivered += 1;
+        true
     }
 }
 
@@ -1046,6 +1083,33 @@ mod tests {
         assert!(!arbiter.availability().any());
         assert!(!arbiter.has_judge());
         assert!(arbiter.note("grep -rn foo src").await.is_none());
+    }
+
+    /// One rule must not repeat itself for the whole session.
+    ///
+    /// Measured on a real six-day session (ledger #45): 157 delivered notes, of
+    /// which **106 named the same rule** (`graph.search`). The note rides inside
+    /// a tool result, so it is context that is paid for on every later request,
+    /// and a model that ignored the first one ignores the hundredth — oh-my-pi
+    /// caps exactly this (`MAX_DSML_LEAK_NUDGES`), and the fork had no cap.
+    #[tokio::test]
+    async fn one_rule_notes_at_most_its_budget_per_session() {
+        let arbiter = armed(None);
+        for attempt in 1..=MAX_NOTES_PER_RULE {
+            assert!(
+                arbiter.note("grep -rn foo src").await.is_some(),
+                "note {attempt} of the budget must still be emitted"
+            );
+        }
+        assert!(
+            arbiter.note("grep -rn foo src").await.is_none(),
+            "the budget is spent, so the same rule must stay silent"
+        );
+        // Another rule has its own budget: the cap is per rule, not per session.
+        assert!(
+            arbiter.note("sed -i s/a/b/ x.rs").await.is_some(),
+            "a different rule starts with its own budget"
+        );
     }
 
     #[tokio::test]
