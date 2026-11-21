@@ -89,6 +89,9 @@ Extras:
   note is appended after the output (`details.toolArbiter`). The deterministic table needs
   no judge; behind a native judge the arbiter asks one `choice` and a confident
   `use_specialized` strengthens the wording. `off` silences it entirely;
+  `jev.toolArbiterMaxNotes`, `jev.toolArbiterTimeoutMs` and
+  `jev.toolArbiterMaxCommandChars` tune the note budget, judgment bound and
+  judgment-state size (defaults 3 / 2500 ms / 400);
 - both consumers ride the same native-only gate as the tool (`[jev] enabled` must admit
   the layer and the chain must start native) and must pass the offline corpus gate in
   `crates/pa-core/src/jev/eval/` before a default flip: frozen corpus, dev/test split,

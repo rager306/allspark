@@ -612,8 +612,18 @@ pub fn python_note_text(suggestion: Suggestion) -> String {
 /// three-way menu).
 #[must_use]
 pub fn arbiter_request(command: &str, suggestion: Suggestion) -> JudgmentRequest {
+    arbiter_request_with_limit(command, suggestion, MAX_COMMAND_CHARS)
+}
+
+/// [`arbiter_request`] with the judgment-state bound from settings.
+#[must_use]
+pub fn arbiter_request_with_limit(
+    command: &str,
+    suggestion: Suggestion,
+    max_command_chars: usize,
+) -> JudgmentRequest {
     let state = JudgmentState::Json(serde_json::json!({
-        "command": truncate_command(command),
+        "command": truncate_command_with(command, max_command_chars),
         "shell_tool": "bash",
         "specialized_tool": suggestion.tool_name(),
         "specialized_reason": suggestion.hint,
@@ -657,11 +667,17 @@ pub fn arbiter_request(command: &str, suggestion: Suggestion) -> JudgmentRequest
 /// word and its arguments carry the intent).
 #[must_use]
 pub fn truncate_command(command: &str) -> String {
+    truncate_command_with(command, MAX_COMMAND_CHARS)
+}
+
+/// [`truncate_command`] with an explicit bound (the arbiter's settings).
+#[must_use]
+pub fn truncate_command_with(command: &str, max_command_chars: usize) -> String {
     let trimmed = command.trim();
-    if trimmed.chars().count() <= MAX_COMMAND_CHARS {
+    if trimmed.chars().count() <= max_command_chars {
         return trimmed.to_string();
     }
-    let mut out: String = trimmed.chars().take(MAX_COMMAND_CHARS).collect();
+    let mut out: String = trimmed.chars().take(max_command_chars).collect();
     out.push('…');
     out
 }
@@ -678,6 +694,8 @@ struct Armed {
 pub struct ToolArbiter {
     armed: Mutex<Armed>,
     timeout: Duration,
+    max_notes: u32,
+    max_command_chars: usize,
     failures: AtomicU32,
     /// Notes delivered per rule id, so one rule cannot repeat itself for a whole
     /// session (see [`MAX_NOTES_PER_RULE`]).
@@ -706,6 +724,8 @@ impl ToolArbiter {
                 judge: None,
             }),
             timeout: ARBITER_TIMEOUT,
+            max_notes: MAX_NOTES_PER_RULE,
+            max_command_chars: MAX_COMMAND_CHARS,
             failures: AtomicU32::new(0),
             notes: Mutex::new(std::collections::HashMap::new()),
         }
@@ -716,6 +736,21 @@ impl ToolArbiter {
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// Override the per-rule note budget (`jev.toolArbiterMaxNotes`).
+    #[must_use]
+    pub fn with_max_notes(mut self, max_notes: u32) -> Self {
+        self.max_notes = max_notes;
+        self
+    }
+
+    /// Override the command characters in the judgment state
+    /// (`jev.toolArbiterMaxCommandChars`).
+    #[must_use]
+    pub fn with_max_command_chars(mut self, max_command_chars: usize) -> Self {
+        self.max_command_chars = max_command_chars;
         self
     }
 
@@ -792,7 +827,7 @@ impl ToolArbiter {
         if self.is_suspended() {
             return Ok(None);
         }
-        let request = arbiter_request(command, suggestion);
+        let request = arbiter_request_with_limit(command, suggestion, self.max_command_chars);
         let judged = tokio::time::timeout(self.timeout, judge.judge(&request)).await;
         let result = match judged {
             Ok(outcome) => outcome?,
@@ -901,7 +936,7 @@ impl ToolArbiter {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let delivered = notes.entry(rule).or_insert(0);
-        if *delivered >= MAX_NOTES_PER_RULE {
+        if *delivered >= self.max_notes {
             return false;
         }
         *delivered += 1;
@@ -1314,6 +1349,26 @@ mod tests {
         assert!(!arbiter.availability().any());
         assert!(!arbiter.has_judge());
         assert!(arbiter.note("grep -rn foo src").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn the_note_budget_comes_from_the_arbiter_config() {
+        let arbiter = armed(None).with_max_notes(1);
+        assert!(arbiter.note("grep -rn foo src").await.is_some());
+        assert!(
+            arbiter.note("grep -rn bar src").await.is_none(),
+            "maxNotes=1 must stop after the first note"
+        );
+    }
+
+    #[test]
+    fn the_command_bound_comes_from_the_arbiter_config() {
+        assert_eq!(truncate_command_with("abcdefghij", 3), "abc…");
+        let suggestion = suggest("grep -rn foo src", ToolAvailability::all()).expect("fires");
+        let request = arbiter_request_with_limit(&"x".repeat(100), suggestion, 10);
+        let state = request.state.canonical();
+        assert!(state.contains("xxxxxxxxxx…"), "{state}");
+        assert!(!state.contains(&"x".repeat(50)), "{state}");
     }
 
     /// One rule must not repeat itself for the whole session.

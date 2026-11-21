@@ -384,8 +384,16 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // table never suggests a tool the model cannot call).
     let jev_tool_arbiter = settings.get_jev_tool_arbiter();
     let tool_arbiter: Option<Arc<crate::jev::ToolArbiter>> =
-        crate::jev::tool_arbiter::arbiter_admitted(jev_enabled, jev_tool_arbiter)
-            .then(|| Arc::new(crate::jev::ToolArbiter::new()));
+        crate::jev::tool_arbiter::arbiter_admitted(jev_enabled, jev_tool_arbiter).then(|| {
+            Arc::new(
+                crate::jev::ToolArbiter::new()
+                    .with_max_notes(settings.get_jev_tool_arbiter_max_notes())
+                    .with_timeout(std::time::Duration::from_millis(
+                        settings.get_jev_tool_arbiter_timeout_ms(),
+                    ))
+                    .with_max_command_chars(settings.get_jev_tool_arbiter_max_command_chars()),
+            )
+        });
     // Phase-7 tool-surface profile, captured before `settings` moves into the
     // resource loader (the profile selects a context and modes).
     let resolved_profile =

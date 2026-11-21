@@ -544,6 +544,32 @@ mod tests {
     }
 
     #[test]
+    fn the_arbiter_tuning_settings_reach_their_accessors() {
+        let storage: Arc<dyn SettingsStorage> =
+            Arc::new(super::super::storage::InMemorySettingsStorage::default());
+        storage
+            .with_lock(SettingsScope::Global, &mut |_| {
+                Some(
+                    r#"{ "jev": { "toolArbiterMaxNotes": 1, "toolArbiterTimeoutMs": 250,
+                        "toolArbiterMaxCommandChars": 50 } }"#
+                        .into(),
+                )
+            })
+            .unwrap();
+        let manager = SettingsManager::from_storage(storage);
+        assert_eq!(manager.get_jev_tool_arbiter_max_notes(), 1);
+        assert_eq!(manager.get_jev_tool_arbiter_timeout_ms(), 250);
+        assert_eq!(manager.get_jev_tool_arbiter_max_command_chars(), 50);
+
+        let defaults = SettingsManager::from_storage(Arc::new(
+            super::super::storage::InMemorySettingsStorage::default(),
+        ));
+        assert_eq!(defaults.get_jev_tool_arbiter_max_notes(), 3);
+        assert_eq!(defaults.get_jev_tool_arbiter_timeout_ms(), 2500);
+        assert_eq!(defaults.get_jev_tool_arbiter_max_command_chars(), 400);
+    }
+
+    #[test]
     fn wrong_typed_fields_never_fail_load() {
         let storage: Arc<dyn SettingsStorage> =
             Arc::new(super::super::storage::InMemorySettingsStorage::default());

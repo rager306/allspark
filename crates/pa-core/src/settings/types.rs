@@ -502,6 +502,15 @@ pub struct JevSettings {
     /// deterministic table always applies, the judgment layer needs a native
     /// judge).
     pub tool_arbiter: Option<String>,
+    /// FORK-ONLY: how many notes one arbiter rule may deliver per session
+    /// (`3` when unset).
+    pub tool_arbiter_max_notes: Option<u64>,
+    /// FORK-ONLY: the per-call arbiter judgment bound in milliseconds
+    /// (`2500` when unset).
+    pub tool_arbiter_timeout_ms: Option<u64>,
+    /// FORK-ONLY: the command characters the arbiter's judgment state may
+    /// carry (`400` when unset).
+    pub tool_arbiter_max_command_chars: Option<u64>,
 }
 
 /// `[agents]`: the subagent admission surface. `maxConcurrentPerProvider`
