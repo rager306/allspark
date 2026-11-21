@@ -301,3 +301,29 @@ by the first name on `PATH`. For rustup tools, check `RUSTUP_HOME`, the active
 `$HOME/.rustup`, and the real home's `.rustup` when `HOME` is isolated; keep a
 clear PATH fallback. A child process's stderr is diagnostic evidence, not noise:
 pipe it into the spawn error instead of discarding it.
+
+## 15. A test I wrote asserted the wrong string shape, twice
+
+**Seen:** 2026-11-21, the `[limits]` slice. Two self-inflicted failures, both in
+tests I had just written.
+
+1. `truncate_tail` splits on `'\n'`; a stream that ends with a newline yields a
+   final EMPTY element that consumes one `max_lines` slot. With `max_lines = 3`
+   over `seq 1 10` the kept text is `"9\n10\n"`, not `"8\n9\n10"`. My first
+   assertion expected the second.
+2. The same off-by-one hit the unit test: `max_lines = 3`, `max_bytes = 50` over
+   100 generated lines keeps two visible lines, not three.
+
+**Caught by:** running the test and reading the actual `left`/`right`, then
+simulating the exact algorithm in a REPL cell before rewriting the assertion.
+
+**Rule:** when an assertion fails on a string shape, reproduce the function's
+algorithm on a tiny input in the REPL and read what it returns; do not re-guess
+the expected string. A line-counting test must account for the trailing empty
+element (`n` visible lines need `max_lines = n + 1` when the stream ends with a
+newline). Record the shape as a memory so the next slice does not repeat it.
+
+**Also seen in the same slice:** a clippy `format_collect` from
+`.map(|n| format!(...)).collect::<String>()` — `writeln!` into a `String` is the
+form the lint wants. Run clippy on the new test code, not only the production
+code.
