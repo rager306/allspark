@@ -62,6 +62,12 @@ Registered in `create_session`, gated by settings (all default **on**), plus the
 
 Extras:
 
+- `lsp` resolves `rust-analyzer` from an installed rustup toolchain that ships
+  it (`RUSTUP_HOME`, the active `$HOME/.rustup`, and the real home's `.rustup`
+  above an isolated allspark home) before falling back to `PATH`. The PATH
+  `rust-analyzer` is a rustup shim bound to the ACTIVE toolchain; when that
+  toolchain omits the component the shim answers `Unknown binary` and the spawn
+  dies as `service stopped`;
 - `lsp.servers`, `lsp.idleTimeoutMs`, `graph.dbPath`, `editHybrid.defaultMode`,
   `editHybrid.allowModes` refine the surfaces;
 - `jev.autoThinking = "auto"` (**default off**) lets the judge classify each turn's

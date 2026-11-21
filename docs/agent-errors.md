@@ -285,3 +285,19 @@ accepted. One probe proves the test runs, not that it discriminates.
   suffix resolver was fixed in fork.020. **Rule:** after `graph.search`, use the
   resolved path; a failed trace is not proof the symbol is absent.
 
+## 14. A PATH tool that is a shim for a toolchain without the tool
+
+**Seen:** 2026-11-21. `lsp.find_referencing_symbols` failed with the opaque
+`initialize failed: service stopped`, then backed rust-analyzer off for 180 s.
+The binary on `PATH` was the rustup shim; the active toolchain (1.99.1) did not
+ship `rust-analyzer`, while `stable` and `1.99.0` did. The spawn error was a shim
+message ("Unknown binary") that the LSP client discarded on `stderr = null`.
+
+**Caught by:** running `rust-analyzer --version` directly, then scanning
+`~/.rustup/toolchains/*/bin/rust-analyzer`.
+
+**Rule:** resolve a tool by what the current environment actually provides, not
+by the first name on `PATH`. For rustup tools, check `RUSTUP_HOME`, the active
+`$HOME/.rustup`, and the real home's `.rustup` when `HOME` is isolated; keep a
+clear PATH fallback. A child process's stderr is diagnostic evidence, not noise:
+pipe it into the spawn error instead of discarding it.
