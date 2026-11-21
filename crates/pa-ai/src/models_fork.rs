@@ -2,10 +2,13 @@
 // FORK-ONLY: this file does not exist upstream. See docs/fork-identity.md.
 //!
 //! The upstream catalog chain (remote fetch -> disk cache -> bundled snapshot ->
-//! [`crate::models_generated`]) never carries this fork's providers, so their
-//! entries live here and `pa-core`'s registry merges them into the built-in set
-//! after the chain resolves. [`crate::models_generated`] stays a byte-faithful
-//! mirror of the TS fallback file; fork additions never touch it.
+//! [`crate::models_generated`]) never carries this fork's providers, so the
+//! shipped [`FORK_CATALOG_ASSET`] carries them and `pa-core`'s registry merges
+//! them into the built-in set after the chain resolves. The asset is compiled
+//! into the binary, so the offline path needs no network and no disk read; a
+//! runtime `$AGENT_DIR/models/fork-models.v1.json` overrides it by
+//! `(provider, id)`. [`crate::models_generated`] stays a byte-faithful mirror of
+//! the TS fallback file; fork additions never touch it.
 //!
 //! Providers:
 //! - `muse` — Meta Model API (`api.meta.ai`). Muse Code subscription keys are
@@ -24,942 +27,19 @@
 
 use std::sync::LazyLock;
 
-use crate::types::{
-    CompatKind, JsNumber, Model, ModelCompat, ModelCost, ModelInput, ModelThinkingLevel,
-    OpenAiCompletionsCompat, ThinkingLevelMap,
-};
+use crate::types::Model;
 
-/// One fork catalog entry (the [`crate::models_generated`] layout, minus the
-/// fields no fork provider uses).
-struct ForkModel {
-    provider: &'static str,
-    id: &'static str,
-    name: &'static str,
-    api: &'static str,
-    base_url: &'static str,
-    reasoning: bool,
-    thinking_levels: &'static [(ModelThinkingLevel, Option<&'static str>)],
-    input: &'static [ModelInput],
-    /// (`input`, `output`, `cacheRead`, `cacheWrite`) in $/million tokens.
-    cost: (f64, f64, f64, f64),
-    context_window: u64,
-    max_tokens: u64,
-    headers: &'static [(&'static str, &'static str)],
-    /// The OpenAI-completions compat overrides for this entry, `None` for the
-    /// detected defaults.
-    supports_developer_role: Option<bool>,
-    /// `Some(MaxTokens)` when the gateway only reads the legacy `max_tokens`
-    /// field and ignores `max_completion_tokens` (the `CodeBuddy` gateways
-    /// silently drop the completion-tokens form).
-    max_tokens_field: Option<crate::types::MaxTokensField>,
-}
+/// The shipped fork catalog, compiled into the binary. This asset is the
+/// source: adding or changing a fork model is an asset edit, not a Rust edit
+/// and a rebuild. The compiled-in form is also the offline path (no network,
+/// no disk read).
+const FORK_CATALOG_ASSET: &str = include_str!("../assets/fork-models.v1.json");
 
-/// The IDE headers the `CodeBuddy` gateway requires on every chat request.
-const CODEBUDDY_HEADERS: &[(&str, &str)] = &[
-    ("User-Agent", "IDE/2.108.1 CodeBuddy/2.108.1"),
-    ("X-Product", "SaaS"),
-    ("X-IDE-Type", "IDE"),
-    ("X-IDE-Name", "IDE"),
-    ("x-requested-with", "XMLHttpRequest"),
-    ("x-codebuddy-request", "1"),
-];
-
-/// Genspark effort variants: `low`..=`xhigh`, no `off`/`minimal`/`max`.
-const EFFORT_NO_OFF: &[(ModelThinkingLevel, Option<&str>)] = &[
-    (ModelThinkingLevel::Off, None),
-    (ModelThinkingLevel::Minimal, None),
-    (ModelThinkingLevel::Low, Some("low")),
-    (ModelThinkingLevel::Medium, Some("medium")),
-    (ModelThinkingLevel::High, Some("high")),
-    (ModelThinkingLevel::Xhigh, Some("xhigh")),
-    (ModelThinkingLevel::Max, None),
-];
-
-/// Genspark effort variants that accept `none` (the `OpenAI` off value) and
-/// top out at `xhigh`.
-const EFFORT_WITH_NONE: &[(ModelThinkingLevel, Option<&str>)] = &[
-    (ModelThinkingLevel::Off, Some("none")),
-    (ModelThinkingLevel::Minimal, None),
-    (ModelThinkingLevel::Low, Some("low")),
-    (ModelThinkingLevel::Medium, Some("medium")),
-    (ModelThinkingLevel::High, Some("high")),
-    (ModelThinkingLevel::Xhigh, Some("xhigh")),
-    (ModelThinkingLevel::Max, None),
-];
-
-/// Genspark effort variants `low`..=`max`, no `off`/`minimal`/`xhigh`.
-const EFFORT_NO_OFF_WITH_MAX: &[(ModelThinkingLevel, Option<&str>)] = &[
-    (ModelThinkingLevel::Off, None),
-    (ModelThinkingLevel::Minimal, None),
-    (ModelThinkingLevel::Low, Some("low")),
-    (ModelThinkingLevel::Medium, Some("medium")),
-    (ModelThinkingLevel::High, Some("high")),
-    (ModelThinkingLevel::Xhigh, None),
-    (ModelThinkingLevel::Max, Some("max")),
-];
-
-/// `oc/deepseek-v4.1-flash-free` (`OpenCode` Zen free tier): the upstream serves
-/// and forwards `low|high|max` verbatim (no low→high collapse, unlike `DeepSeek`'s
-/// own API), and does NOT serve `medium`/`xhigh` — the generic `DeepSeek` set
-/// advertised levels the model answers 400 to (9router v0.5.109 `313559f4`).
-const EFFORT_LOW_HIGH_MAX: &[(ModelThinkingLevel, Option<&str>)] = &[
-    (ModelThinkingLevel::Off, None),
-    (ModelThinkingLevel::Minimal, None),
-    (ModelThinkingLevel::Low, Some("low")),
-    (ModelThinkingLevel::Medium, None),
-    (ModelThinkingLevel::High, Some("high")),
-    (ModelThinkingLevel::Xhigh, None),
-    (ModelThinkingLevel::Max, Some("max")),
-];
-
-/// Genspark effort variants `low`..=`high` only.
-const EFFORT_LOW_MEDIUM_HIGH: &[(ModelThinkingLevel, Option<&str>)] = &[
-    (ModelThinkingLevel::Off, None),
-    (ModelThinkingLevel::Minimal, None),
-    (ModelThinkingLevel::Low, Some("low")),
-    (ModelThinkingLevel::Medium, Some("medium")),
-    (ModelThinkingLevel::High, Some("high")),
-    (ModelThinkingLevel::Xhigh, None),
-    (ModelThinkingLevel::Max, None),
-];
-
-/// Muse Spark thinking is always on: `off` is unsupported (`none` effort
-/// returns 400). The range is `minimal`..=`max` (verified live against
-/// `api.meta.ai`).
-const MUSE_THINKING_LEVELS: &[(ModelThinkingLevel, Option<&str>)] = &[
-    (ModelThinkingLevel::Off, None),
-    (ModelThinkingLevel::Minimal, Some("minimal")),
-    (ModelThinkingLevel::Low, Some("low")),
-    (ModelThinkingLevel::Medium, Some("medium")),
-    (ModelThinkingLevel::High, Some("high")),
-    (ModelThinkingLevel::Xhigh, Some("xhigh")),
-    (ModelThinkingLevel::Max, Some("max")),
-];
-
-/// `muse-spark-1.1`/`1.2`/`1.2-contributor` reject `reasoning_effort: "max"` with a 400
-/// listing `[minimal, low, medium, high, xhigh]`; measured live against `api.meta.ai`
-/// (2026-10-25). Only 1.3, the contributor twin, and the wonder models accept `max`.
-const MUSE_THINKING_LEVELS_NO_MAX: &[(ModelThinkingLevel, Option<&str>)] = &[
-    (ModelThinkingLevel::Off, None),
-    (ModelThinkingLevel::Minimal, Some("minimal")),
-    (ModelThinkingLevel::Low, Some("low")),
-    (ModelThinkingLevel::Medium, Some("medium")),
-    (ModelThinkingLevel::High, Some("high")),
-    (ModelThinkingLevel::Xhigh, Some("xhigh")),
-];
-
+/// The parsed catalog, once per process.
 static FORK_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
-    FORK_RAW_MODELS
-        .iter()
-        .map(|raw| {
-            let thinking_level_map: Option<ThinkingLevelMap> = (!raw.thinking_levels.is_empty())
-                .then(|| {
-                    raw.thinking_levels
-                        .iter()
-                        .copied()
-                        .map(|(level, value)| (level, value.map(String::from)))
-                        .collect()
-                });
-            let headers = (!raw.headers.is_empty()).then(|| {
-                raw.headers
-                    .iter()
-                    .copied()
-                    .map(|(k, v)| (k.to_string(), v.to_string()))
-                    .collect()
-            });
-            Model {
-                compat: raw.supports_developer_role.map(|flag| {
-                    ModelCompat::from_kind(CompatKind::OpenAiCompletions(Box::new(
-                        OpenAiCompletionsCompat {
-                            supports_developer_role: Some(flag),
-                            max_tokens_field: raw.max_tokens_field,
-                            ..OpenAiCompletionsCompat::default()
-                        },
-                    )))
-                }),
-                id: raw.id.to_string(),
-                name: raw.name.to_string(),
-                api: raw.api.to_string(),
-                provider: raw.provider.to_string(),
-                base_url: raw.base_url.to_string(),
-                reasoning: raw.reasoning,
-                thinking_level_map,
-                input: raw.input.to_vec(),
-                cost: ModelCost {
-                    input: JsNumber::from(raw.cost.0),
-                    output: JsNumber::from(raw.cost.1),
-                    cache_read: JsNumber::from(raw.cost.2),
-                    cache_write: JsNumber::from(raw.cost.3),
-                },
-                context_window: raw.context_window,
-                max_tokens: raw.max_tokens,
-                max_tokens_explicit: false,
-                featured: None,
-                // A fork provider model comes from the fork's own table: it is not a
-                // Prime Inference route, so it carries no serving class (upstream #4009).
-                serving: None,
-                headers,
-            }
-        })
-        .collect()
+    serde_json::from_str(FORK_CATALOG_ASSET)
+        .expect("the shipped fork catalog must parse (crates/pa-ai/assets/fork-models.v1.json)")
 });
-
-static FORK_RAW_MODELS: &[ForkModel] = &[
-    // --- OpenCode (native free tier, fork-only) ----------------------------
-    // Direct access to OpenCode's free models (no proxy needed). The free
-    // tier requires three things HTTP/1.1 clients miss: (1) HTTP/2 via
-    // ALPN, (2) stream:true on every request, (3) the v2 protocol shape
-    // (UA `opencode/<channel>/<version>/cli`, session-id triplet headers,
-    // timestamp-encoded session ids with a small counter, fingerprint
-    // tools bash/glob/grep/read, `Authorization: Bearer public`).
-    // Reverse-engineered from the OpenCode CLI (Go) and the 9router proxy
-    // (Node.js); verified live 2026-10-18.
-    ForkModel {
-        provider: "opencode",
-        id: "deepseek-v4.1-flash-free",
-        name: "DeepSeek v4.1 Flash (OpenCode free)",
-        api: "openai-completions",
-        base_url: "https://opencode.ai/inference/v1",
-        reasoning: true,
-        thinking_levels: EFFORT_LOW_HIGH_MAX,
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (0.0, 0.0, 0.0, 0.0),
-        // 200K/32K, not the 128K/8K first recorded: models.dev
-        // (opencode provider entry, verified 2026-10-23) gives
-        // limit.context 200000 and limit.output 32000, and lists `image`
-        // among the input modalities. Under-reading the window made
-        // compaction fire 36% early.
-        context_window: 200_000,
-        max_tokens: 32_000,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "opencode",
-        id: "glm-5.3-flash-free",
-        name: "GLM 5.3 Flash (OpenCode free)",
-        api: "openai-completions",
-        base_url: "https://opencode.ai/inference/v1",
-        reasoning: true,
-        thinking_levels: EFFORT_NO_OFF,
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (0.0, 0.0, 0.0, 0.0),
-        // Same correction as above: models.dev reports 200K context and
-        // 32K output for this id.
-        context_window: 200_000,
-        max_tokens: 32_000,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    // --- 9router (free LLM gateway) --------------------------------------------
-    // An OpenAI-compatible proxy (Node.js) that routes to free tiers:
-    // OpenCode free (`oc/` models), OpenRouter `:free` models, and
-    // provider free tiers (Kiro, Vertex). The TLS/client fingerprint that
-    // OpenCode requires is handled by the 9router process — allspark only
-    // speaks standard OpenAI chat completions to it.
-    // Env: NINEROUTER_URL (default http://127.0.0.1:20128/v1),
-    //      NINEROUTER_API_KEY (the 9router dashboard key).
-    // Model ids carry the 9router routing prefix (`oc/`, `openrouter/`, ...).
-    ForkModel {
-        provider: "ninerouter",
-        id: "oc/deepseek-v4.1-flash-free",
-        name: "DeepSeek v4.1 Flash (free, via 9router)",
-        api: "openai-completions",
-        base_url: "http://127.0.0.1:20128/v1",
-        reasoning: true,
-        thinking_levels: EFFORT_LOW_HIGH_MAX,
-        input: &[ModelInput::Text],
-        cost: (0.0, 0.0, 0.0, 0.0),
-        context_window: 128_000,
-        max_tokens: 8_192,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    // --- Subquadratic (SubQ Snap) ----------------------------------------------
-    // A decision model speaking the TypeSafe System One wire byte-for-byte
-    // (`POST {base}/v1/systemone`, same {model, state, questions} request and
-    // {model, answers, usage} response, verified live 2026-10-17): it joins
-    // the judge chain through the existing `typesafe` dialect with no Rust of
-    // its own. Judgments only - the chat endpoints reject this model - so it
-    // is never a session model. Caps 16 questions per request (17 answers
-    // 422; batches above that must chunk, `pa-jev` does when configured);
-    // output is not billed. `SUBQ_API_KEY` authenticates (Bearer).
-    ForkModel {
-        provider: "subquadratic",
-        id: "subq-snap-1.2",
-        name: "SubQ Snap 1.2",
-        api: "typesafe",
-        base_url: "https://api.subq.ai",
-        reasoning: false,
-        thinking_levels: &[],
-        input: &[ModelInput::Text, ModelInput::Image],
-        // $0.04/1M input, output free (the official 1.2 pricing).
-        cost: (0.04, 0.0, 0.0, 0.0),
-        context_window: 393_216,
-        max_tokens: 4_096,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    // --- Muse (Meta Model API) -------------------------------------------------
-    // PAYG Standard pricing; context/output per the Meta guide.
-    ForkModel {
-        provider: "muse",
-        id: "muse-spark-1.3",
-        name: "Muse Spark 1.3",
-        api: "openai-responses",
-        base_url: "https://api.meta.ai/v1",
-        reasoning: true,
-        thinking_levels: MUSE_THINKING_LEVELS,
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (1.25, 4.25, 0.15, 0.0),
-        context_window: 1_048_576,
-        max_tokens: 131_072,
-        headers: &[("x-api-version", "1.0.0")],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "muse",
-        id: "muse-spark-1.3-contributor",
-        name: "Muse Spark 1.3 Contributor",
-        api: "openai-responses",
-        base_url: "https://api.meta.ai/v1",
-        reasoning: true,
-        thinking_levels: MUSE_THINKING_LEVELS,
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (0.10, 0.20, 0.0, 0.0),
-        context_window: 1_048_576,
-        max_tokens: 131_072,
-        headers: &[("x-api-version", "1.0.0")],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "muse",
-        id: "muse-spark-1.2",
-        name: "Muse Spark 1.2",
-        api: "openai-responses",
-        base_url: "https://api.meta.ai/v1",
-        reasoning: true,
-        thinking_levels: MUSE_THINKING_LEVELS_NO_MAX,
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (1.25, 4.25, 0.15, 0.0),
-        context_window: 1_048_576,
-        max_tokens: 131_072,
-        headers: &[("x-api-version", "1.0.0")],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "muse",
-        id: "muse-spark-1.2-contributor",
-        name: "Muse Spark 1.2 Contributor",
-        api: "openai-responses",
-        base_url: "https://api.meta.ai/v1",
-        reasoning: true,
-        thinking_levels: MUSE_THINKING_LEVELS_NO_MAX,
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (0.10, 0.20, 0.0, 0.0),
-        context_window: 1_048_576,
-        max_tokens: 131_072,
-        headers: &[("x-api-version", "1.0.0")],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "muse",
-        id: "muse-spark-1.1",
-        name: "Muse Spark 1.1",
-        api: "openai-responses",
-        base_url: "https://api.meta.ai/v1",
-        reasoning: true,
-        thinking_levels: MUSE_THINKING_LEVELS_NO_MAX,
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (1.25, 4.25, 0.15, 0.0),
-        context_window: 1_048_576,
-        max_tokens: 131_072,
-        headers: &[("x-api-version", "1.0.0")],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    // --- CodeBuddy (codebuddy.ai IDE plan) -------------------------------------
-    // Subscription credits: no per-token list price, so cost stays zero.
-    // Context/output windows mirror the gateway's model metadata.
-    ForkModel {
-        provider: "codebuddy",
-        id: "glm-5.2",
-        name: "GLM-5.2",
-        api: "openai-completions",
-        base_url: "https://www.codebuddy.ai/v2",
-        reasoning: true,
-        thinking_levels: &[],
-        input: &[ModelInput::Text],
-        cost: (0.0, 0.0, 0.0, 0.0),
-        context_window: 1_000_000,
-        max_tokens: 131_072,
-        headers: CODEBUDDY_HEADERS,
-        supports_developer_role: Some(false),
-        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
-    },
-    ForkModel {
-        provider: "codebuddy",
-        id: "glm-5.1",
-        name: "GLM-5.1",
-        api: "openai-completions",
-        base_url: "https://www.codebuddy.ai/v2",
-        reasoning: true,
-        thinking_levels: &[],
-        input: &[ModelInput::Text],
-        cost: (0.0, 0.0, 0.0, 0.0),
-        context_window: 200_000,
-        max_tokens: 128_000,
-        headers: CODEBUDDY_HEADERS,
-        supports_developer_role: Some(false),
-        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
-    },
-    ForkModel {
-        provider: "codebuddy",
-        id: "glm-5.0",
-        name: "GLM-5.0",
-        api: "openai-completions",
-        base_url: "https://www.codebuddy.ai/v2",
-        reasoning: true,
-        thinking_levels: &[],
-        input: &[ModelInput::Text],
-        cost: (0.0, 0.0, 0.0, 0.0),
-        context_window: 200_000,
-        max_tokens: 128_000,
-        headers: CODEBUDDY_HEADERS,
-        supports_developer_role: Some(false),
-        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
-    },
-    ForkModel {
-        provider: "codebuddy",
-        id: "glm-5.0-turbo",
-        name: "GLM-5.0-Turbo",
-        api: "openai-completions",
-        base_url: "https://www.codebuddy.ai/v2",
-        reasoning: true,
-        thinking_levels: &[],
-        input: &[ModelInput::Text],
-        cost: (0.0, 0.0, 0.0, 0.0),
-        context_window: 200_000,
-        max_tokens: 128_000,
-        headers: CODEBUDDY_HEADERS,
-        supports_developer_role: Some(false),
-        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
-    },
-    ForkModel {
-        provider: "codebuddy",
-        id: "glm-5v-turbo",
-        name: "GLM-5v-Turbo",
-        api: "openai-completions",
-        base_url: "https://www.codebuddy.ai/v2",
-        reasoning: true,
-        thinking_levels: &[],
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (0.0, 0.0, 0.0, 0.0),
-        context_window: 200_000,
-        max_tokens: 128_000,
-        headers: CODEBUDDY_HEADERS,
-        supports_developer_role: Some(false),
-        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
-    },
-    ForkModel {
-        provider: "codebuddy",
-        id: "glm-4.7",
-        name: "GLM-4.7",
-        api: "openai-completions",
-        base_url: "https://www.codebuddy.ai/v2",
-        reasoning: true,
-        thinking_levels: &[],
-        input: &[ModelInput::Text],
-        cost: (0.0, 0.0, 0.0, 0.0),
-        context_window: 200_000,
-        max_tokens: 128_000,
-        headers: CODEBUDDY_HEADERS,
-        supports_developer_role: Some(false),
-        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
-    },
-    ForkModel {
-        provider: "codebuddy",
-        id: "minimax-m3",
-        name: "MiniMax-M3",
-        api: "openai-completions",
-        base_url: "https://www.codebuddy.ai/v2",
-        reasoning: true,
-        thinking_levels: &[],
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (0.0, 0.0, 0.0, 0.0),
-        context_window: 1_000_000,
-        max_tokens: 131_072,
-        headers: CODEBUDDY_HEADERS,
-        supports_developer_role: Some(false),
-        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
-    },
-    ForkModel {
-        provider: "codebuddy",
-        id: "minimax-m2.7",
-        name: "MiniMax-M2.7",
-        api: "openai-completions",
-        base_url: "https://www.codebuddy.ai/v2",
-        reasoning: true,
-        thinking_levels: &[],
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (0.0, 0.0, 0.0, 0.0),
-        context_window: 204_800,
-        max_tokens: 131_072,
-        headers: CODEBUDDY_HEADERS,
-        supports_developer_role: Some(false),
-        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
-    },
-    ForkModel {
-        provider: "codebuddy",
-        id: "kimi-k2.7",
-        name: "Kimi-K2.7-Code",
-        api: "openai-completions",
-        base_url: "https://www.codebuddy.ai/v2",
-        reasoning: true,
-        thinking_levels: &[],
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (0.0, 0.0, 0.0, 0.0),
-        context_window: 262_144,
-        max_tokens: 262_144,
-        headers: CODEBUDDY_HEADERS,
-        supports_developer_role: Some(false),
-        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
-    },
-    ForkModel {
-        provider: "codebuddy",
-        id: "kimi-k2.6",
-        name: "Kimi-K2.6",
-        api: "openai-completions",
-        base_url: "https://www.codebuddy.ai/v2",
-        reasoning: true,
-        thinking_levels: &[],
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (0.0, 0.0, 0.0, 0.0),
-        context_window: 262_144,
-        max_tokens: 262_144,
-        headers: CODEBUDDY_HEADERS,
-        supports_developer_role: Some(false),
-        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
-    },
-    ForkModel {
-        provider: "codebuddy",
-        id: "kimi-k2.5",
-        name: "Kimi-K2.5",
-        api: "openai-completions",
-        base_url: "https://www.codebuddy.ai/v2",
-        reasoning: true,
-        thinking_levels: &[],
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (0.0, 0.0, 0.0, 0.0),
-        context_window: 262_144,
-        max_tokens: 262_144,
-        headers: CODEBUDDY_HEADERS,
-        supports_developer_role: Some(false),
-        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
-    },
-    ForkModel {
-        provider: "codebuddy",
-        id: "hy3-preview",
-        name: "Hy3 Preview",
-        api: "openai-completions",
-        base_url: "https://www.codebuddy.ai/v2",
-        reasoning: true,
-        thinking_levels: &[],
-        input: &[ModelInput::Text],
-        cost: (0.0, 0.0, 0.0, 0.0),
-        context_window: 262_144,
-        max_tokens: 262_144,
-        headers: CODEBUDDY_HEADERS,
-        supports_developer_role: Some(false),
-        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
-    },
-    ForkModel {
-        provider: "codebuddy",
-        id: "deepseek-v4-pro",
-        name: "DeepSeek-V4-Pro",
-        api: "openai-completions",
-        base_url: "https://www.codebuddy.ai/v2",
-        reasoning: true,
-        thinking_levels: &[],
-        input: &[ModelInput::Text],
-        cost: (0.0, 0.0, 0.0, 0.0),
-        context_window: 1_000_000,
-        max_tokens: 384_000,
-        headers: CODEBUDDY_HEADERS,
-        supports_developer_role: Some(false),
-        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
-    },
-    ForkModel {
-        provider: "codebuddy",
-        id: "deepseek-v4.1-flash",
-        name: "DeepSeek-V4.1-Flash",
-        api: "openai-completions",
-        base_url: "https://www.codebuddy.ai/v2",
-        reasoning: true,
-        thinking_levels: &[],
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (0.0, 0.0, 0.0, 0.0),
-        context_window: 1_000_000,
-        max_tokens: 384_000,
-        headers: CODEBUDDY_HEADERS,
-        supports_developer_role: Some(false),
-        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
-    },
-    ForkModel {
-        provider: "codebuddy",
-        id: "deepseek-v3-2-volc",
-        name: "DeepSeek-V3.2",
-        api: "openai-completions",
-        base_url: "https://www.codebuddy.ai/v2",
-        reasoning: true,
-        thinking_levels: &[],
-        input: &[ModelInput::Text],
-        cost: (0.0, 0.0, 0.0, 0.0),
-        context_window: 128_000,
-        max_tokens: 64_000,
-        headers: CODEBUDDY_HEADERS,
-        supports_developer_role: Some(false),
-        max_tokens_field: Some(crate::types::MaxTokensField::MaxTokens),
-    },
-    // --- Genspark (genspark.ai agents/GenCode, LiteLLM proxy) ------------------
-    // Credits-priced: costs are credit prices converted at the Plus rate
-    // ($24.99 / 10,000 credits = $0.0025/credit). The model list is a
-    // server-driven snapshot (2026-10-11); thinking maps mirror the proxy's
-    // accepted reasoning_effort variants per model.
-    ForkModel {
-        provider: "genspark",
-        id: "claude-fable-5",
-        name: "Claude Fable 5 (Genspark)",
-        api: "openai-completions",
-        base_url: "https://www.genspark.ai/api/llm_proxy/v1",
-        reasoning: true,
-        thinking_levels: EFFORT_NO_OFF,
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (13.75, 68.75, 0.0, 0.0),
-        context_window: 1_000_000,
-        max_tokens: 128_000,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "genspark",
-        id: "claude-opus-5",
-        name: "Claude Opus 5 (Genspark)",
-        api: "openai-completions",
-        base_url: "https://www.genspark.ai/api/llm_proxy/v1",
-        reasoning: true,
-        thinking_levels: EFFORT_NO_OFF,
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (6.875, 34.375, 0.6875, 8.59375),
-        context_window: 1_000_000,
-        max_tokens: 128_000,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "genspark",
-        id: "claude-sonnet-5-5",
-        name: "Claude Sonnet 5.5 (Genspark)",
-        api: "openai-completions",
-        base_url: "https://www.genspark.ai/api/llm_proxy/v1",
-        reasoning: true,
-        thinking_levels: EFFORT_NO_OFF,
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (2.75, 13.75, 0.0, 0.0),
-        context_window: 1_000_000,
-        max_tokens: 128_000,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "genspark",
-        id: "claude-haiku-5-5",
-        name: "Claude Haiku 5.5 (Genspark)",
-        api: "openai-completions",
-        base_url: "https://www.genspark.ai/api/llm_proxy/v1",
-        reasoning: true,
-        thinking_levels: EFFORT_LOW_MEDIUM_HIGH,
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (0.1375, 0.6875, 0.0, 0.0),
-        context_window: 1_000_000,
-        max_tokens: 128_000,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "genspark",
-        id: "gpt-6-astra",
-        name: "GPT-6 Astra (Genspark)",
-        api: "openai-completions",
-        base_url: "https://www.genspark.ai/api/llm_proxy/v1",
-        reasoning: true,
-        thinking_levels: EFFORT_WITH_NONE,
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (13.75, 68.75, 0.0, 0.0),
-        context_window: 1_000_000,
-        max_tokens: 128_000,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "genspark",
-        id: "gpt-6-sol",
-        name: "GPT-6 Sol (Genspark)",
-        api: "openai-completions",
-        base_url: "https://www.genspark.ai/api/llm_proxy/v1",
-        reasoning: true,
-        thinking_levels: EFFORT_WITH_NONE,
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (2.75, 13.75, 0.0, 0.0),
-        context_window: 1_000_000,
-        max_tokens: 128_000,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "genspark",
-        id: "gpt-6-luna",
-        name: "GPT-6 Luna (Genspark)",
-        api: "openai-completions",
-        base_url: "https://www.genspark.ai/api/llm_proxy/v1",
-        reasoning: true,
-        thinking_levels: EFFORT_WITH_NONE,
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (0.1375, 0.6875, 0.0, 0.0),
-        context_window: 1_000_000,
-        max_tokens: 128_000,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "genspark",
-        id: "gpt-5.6-sol",
-        name: "GPT-5.6 Sol (Genspark)",
-        api: "openai-completions",
-        base_url: "https://www.genspark.ai/api/llm_proxy/v1",
-        reasoning: true,
-        thinking_levels: EFFORT_WITH_NONE,
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (5.5, 27.5, 0.0, 0.0),
-        context_window: 1_000_000,
-        max_tokens: 128_000,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "genspark",
-        id: "gpt-5.6-terra",
-        name: "GPT-5.6 Terra (Genspark)",
-        api: "openai-completions",
-        base_url: "https://www.genspark.ai/api/llm_proxy/v1",
-        reasoning: true,
-        thinking_levels: EFFORT_WITH_NONE,
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (2.75, 16.5, 0.0, 0.0),
-        context_window: 1_000_000,
-        max_tokens: 128_000,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "genspark",
-        id: "deepseek-v4-pro-0813",
-        name: "DeepSeek V4 Pro (Genspark)",
-        api: "openai-completions",
-        base_url: "https://www.genspark.ai/api/llm_proxy/v1",
-        reasoning: true,
-        thinking_levels: EFFORT_WITH_NONE,
-        input: &[ModelInput::Text],
-        cost: (1.815, 5.445, 0.0, 0.0),
-        context_window: 1_000_000,
-        max_tokens: 128_000,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "genspark",
-        id: "deep-seek-v4.1-flash",
-        name: "DeepSeek V4.1 Flash (Genspark)",
-        api: "openai-completions",
-        base_url: "https://www.genspark.ai/api/llm_proxy/v1",
-        reasoning: true,
-        thinking_levels: EFFORT_WITH_NONE,
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (0.4125, 1.65, 0.0, 0.0),
-        context_window: 1_000_000,
-        max_tokens: 128_000,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "genspark",
-        id: "glm-5p3",
-        name: "GLM-5.3 (Genspark)",
-        api: "openai-completions",
-        base_url: "https://www.genspark.ai/api/llm_proxy/v1",
-        reasoning: true,
-        thinking_levels: EFFORT_NO_OFF_WITH_MAX,
-        input: &[ModelInput::Text],
-        cost: (1.925, 6.05, 0.0, 0.0),
-        context_window: 1_000_000,
-        max_tokens: 131_072,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "genspark",
-        id: "kimi-k3",
-        name: "Kimi K3 (Genspark)",
-        api: "openai-completions",
-        base_url: "https://www.genspark.ai/api/llm_proxy/v1",
-        reasoning: true,
-        thinking_levels: EFFORT_NO_OFF_WITH_MAX,
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (4.125, 20.625, 0.0, 0.0),
-        context_window: 1_048_576,
-        max_tokens: 32_768,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "genspark",
-        id: "grok-4.5",
-        name: "Grok 4.5 (Genspark)",
-        api: "openai-completions",
-        base_url: "https://www.genspark.ai/api/llm_proxy/v1",
-        reasoning: true,
-        thinking_levels: EFFORT_LOW_MEDIUM_HIGH,
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (2.75, 8.25, 0.0, 0.0),
-        context_window: 200_000,
-        max_tokens: 32_768,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "genspark",
-        id: "minimax-m3",
-        name: "MiniMax M3 (Genspark)",
-        api: "openai-completions",
-        base_url: "https://www.genspark.ai/api/llm_proxy/v1",
-        reasoning: true,
-        thinking_levels: EFFORT_WITH_NONE,
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (0.4125, 1.65, 0.0, 0.0),
-        context_window: 524_288,
-        max_tokens: 32_768,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "genspark",
-        id: "mimo-v2.6-flash",
-        name: "MiMo V2.6 Flash (Genspark)",
-        api: "openai-completions",
-        base_url: "https://www.genspark.ai/api/llm_proxy/v1",
-        reasoning: false,
-        thinking_levels: &[],
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (0.1925, 0.385, 0.0, 0.0),
-        context_window: 1_048_576,
-        max_tokens: 65_536,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    // --- Agnes AI (agnes-ai.com subscription) ---------------------------------
-    // Subscription: 1500 model requests / 5 hours, powered by Agnes-3.0-Flash
-    // (about 100 TPS, 150 TPS during off-peak). API is OpenAI-compatible.
-    // Bearer auth with the subscription api key (AGNES_API_KEY or auth.json).
-    // Subscription limits are enforced by the provider, not the client.
-    ForkModel {
-        provider: "agnes",
-        id: "agnes-3.0-flash",
-        name: "Agnes 3.0 Flash",
-        api: "openai-completions",
-        base_url: "https://apihub.agnes-ai.com/v1",
-        reasoning: true,
-        thinking_levels: &[],
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (0.0, 0.0, 0.0, 0.0),
-        context_window: 512_000,
-        max_tokens: 65_536,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "agnes",
-        id: "agnes-2.5-flash",
-        name: "Agnes 2.5 Flash",
-        api: "openai-completions",
-        base_url: "https://apihub.agnes-ai.com/v1",
-        reasoning: true,
-        thinking_levels: &[],
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (0.0, 0.0, 0.0, 0.0),
-        context_window: 512_000,
-        max_tokens: 65_536,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "agnes",
-        id: "agnes-2.5-pro-alpha",
-        name: "Agnes 2.5 Pro Alpha",
-        api: "openai-completions",
-        base_url: "https://apihub.agnes-ai.com/v1",
-        reasoning: true,
-        thinking_levels: &[],
-        input: &[ModelInput::Text, ModelInput::Image],
-        cost: (0.45, 0.0, 0.0, 0.0),
-        context_window: 1_000_000,
-        max_tokens: 65_536,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-    ForkModel {
-        provider: "agnes",
-        id: "agnes-2.0-flash",
-        name: "Agnes 2.0 Flash",
-        api: "openai-completions",
-        base_url: "https://apihub.agnes-ai.com/v1",
-        reasoning: true,
-        thinking_levels: &[],
-        input: &[ModelInput::Text],
-        cost: (0.0, 0.0, 0.0, 0.0),
-        context_window: 512_000,
-        max_tokens: 65_536,
-        headers: &[],
-        supports_developer_role: None,
-        max_tokens_field: None,
-    },
-];
 
 /// The fork's built-in providers, merged into the registry's built-in set.
 #[must_use]
@@ -971,8 +51,8 @@ pub fn fork_provider_models() -> Vec<Model> {
 ///
 /// An endpoint fact, not a chain fact: `SubQ Snap` answers 422 to a 17-question
 /// request, so its batches must be split. `None` means "no known cap" — the
-/// caller sends the request whole. Kept beside the catalog entry that documents
-/// the number so the two cannot drift.
+/// caller sends the request whole. Expressed in code because the shipped
+/// catalog's schema has no field for it.
 #[must_use]
 pub fn judgment_question_cap(provider: &str) -> Option<usize> {
     match provider {
@@ -991,7 +71,7 @@ pub fn fork_providers() -> &'static [&'static str] {
         "genspark",
         "subquadratic",
         "ninerouter",
-        // The free-tier natives. Their models were already in FORK_MODELS while
+        // The free-tier natives. Their models were already in the catalog while
         // the provider id was absent here, so anything keyed off this list had no
         // entry for them (issue #9).
         "opencode",
@@ -1002,7 +82,7 @@ pub fn fork_providers() -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ModelExt;
+    use crate::types::{ModelExt, ModelThinkingLevel};
 
     #[test]
     fn entries_are_unique_per_provider() {
@@ -1121,63 +201,79 @@ mod tests {
         }
     }
 
+    /// The gateway's security policy rejects `developer`-role messages outright
+    /// ("Illegal API invocation from an unapproved channel"), so the system
+    /// prompt must go out as a `system` message; and it only reads the legacy
+    /// `max_tokens` form, silently dropping `max_completion_tokens`.
     #[test]
-    fn codebuddy_models_carry_the_gateway_headers() {
+    fn codebuddy_models_carry_the_gateway_headers_and_compat() {
         let models: Vec<_> = fork_provider_models()
             .into_iter()
-            .filter(|m| m.provider == "codebuddy")
+            .filter(|model| model.provider == "codebuddy")
             .collect();
         assert_eq!(models.len(), 15, "the codebuddy.ai IDE lineup");
-        for model in &models {
+        for model in models {
             assert_eq!(model.api, "openai-completions", "{}", model.id);
             assert_eq!(model.base_url, "https://www.codebuddy.ai/v2");
             let headers = model.headers.as_ref().expect("codebuddy carries headers");
-            for (name, _) in CODEBUDDY_HEADERS {
-                assert!(
-                    headers.contains_key(*name),
-                    "{} misses header {name}",
-                    model.id
-                );
+            for name in [
+                "User-Agent",
+                "X-Product",
+                "X-IDE-Type",
+                "X-IDE-Name",
+                "x-requested-with",
+                "x-codebuddy-request",
+            ] {
+                assert!(headers.contains_key(name), "{} misses {name}", model.id);
             }
-            // The gateway's security policy rejects `developer`-role messages
-            // outright ("Illegal API invocation from an unapproved channel"),
-            // so the system prompt must go out as a `system` message.
             let Some(crate::types::CompatKind::OpenAiCompletions(compat)) = model.compat_kind()
             else {
                 panic!("codebuddy model {} carries a compat object", model.id);
             };
             assert_eq!(compat.supports_developer_role, Some(false));
-            // The gateway only reads the legacy `max_tokens` form; a
-            // `max_completion_tokens` field is silently dropped.
             assert_eq!(
                 compat.max_tokens_field,
                 Some(crate::types::MaxTokensField::MaxTokens)
             );
         }
     }
-    /// 9router v0.5.109 (`313559f4`): the `OpenCode` free `deepseek-v4.1-flash` serves
-    /// `low|high|max` verbatim — no low→high collapse, no medium/xhigh. The
-    /// generic `DeepSeek` set advertised levels the upstream answers 400 to.
+
+    /// 9router v0.5.109 (`313559f4`): the `OpenCode` free `deepseek-v4.1-flash`
+    /// serves `low|high|max` verbatim — no low→high collapse, no medium/xhigh.
     #[test]
     fn opencode_free_deepseek_serves_low_high_max_only() {
-        let levels: &[&[(ModelThinkingLevel, Option<&str>)]] =
-            &[EFFORT_LOW_HIGH_MAX, EFFORT_LOW_HIGH_MAX];
-        for table in levels {
-            let served: Vec<&str> = table.iter().filter_map(|(_, wire)| *wire).collect();
-            assert_eq!(served, vec!["low", "high", "max"]);
+        for (provider, id) in [
+            ("opencode", "deepseek-v4.1-flash-free"),
+            ("ninerouter", "oc/deepseek-v4.1-flash-free"),
+        ] {
+            let model = fork_provider_models()
+                .into_iter()
+                .find(|model| model.provider == provider && model.id == id)
+                .unwrap_or_else(|| panic!("{provider}/{id} entry"));
+            let map = model.thinking_level_map.expect("the entry carries a map");
+            let served: Vec<&str> = map.values().filter_map(|wire| wire.as_deref()).collect();
+            assert_eq!(served, vec!["low", "high", "max"], "{provider}/{id}");
         }
-        // And both OpenCode entries (direct + via 9router) use exactly this table.
-        let direct = FORK_RAW_MODELS
+    }
+
+    #[test]
+    fn an_asset_only_model_is_served() {
+        // The asset is the source: this id exists in no Rust table.
+        let data: Vec<serde_json::Value> =
+            serde_json::from_str(FORK_CATALOG_ASSET).expect("the asset parses");
+        let asset_ids: std::collections::HashSet<&str> = data
             .iter()
-            .find(|model| model.provider == "opencode" && model.id == "deepseek-v4.1-flash-free")
-            .expect("opencode direct entry");
-        assert_eq!(direct.thinking_levels, EFFORT_LOW_HIGH_MAX);
-        let via_9router = FORK_RAW_MODELS
-            .iter()
-            .find(|model| {
-                model.provider == "ninerouter" && model.id == "oc/deepseek-v4.1-flash-free"
-            })
-            .expect("ninerouter oc entry");
-        assert_eq!(via_9router.thinking_levels, EFFORT_LOW_HIGH_MAX);
+            .filter_map(|entry| entry.get("id").and_then(serde_json::Value::as_str))
+            .collect();
+        let served: std::collections::HashSet<String> = fork_provider_models()
+            .into_iter()
+            .map(|model| model.id)
+            .collect();
+        for id in asset_ids {
+            assert!(
+                served.contains(id),
+                "the served catalog must carry the asset entry {id}"
+            );
+        }
     }
 }

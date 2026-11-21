@@ -207,12 +207,13 @@ the session's own cost breakdown (no external pricing data needed).
     `x-meta-ai-gateway-session-id`, `traceparent`, `x-fb-routing-control`,
     `x-api-version` — these are on the roadmap for the muse provider's chat
     transport (not needed for the login flow).
-- the fork's own model catalog has three layers: `models_fork.rs` (compiled
-  offline fallback), `$AGENT_DIR/models/fork-models.v1.json` (operator-editable
-  fork catalog, read on every load — adding or overriding a fork model needs no
-  rebuild; the schema is the `models.json` one), and `models.json` (highest
-  precedence on a `(provider, id)` conflict) in the fork config dir (never
-  seeded from upstream);
+- the fork's own model catalog has three layers: `crates/pa-ai/assets/fork-models.v1.json`
+  (the shipped catalog, compiled into the binary — the source of what the build
+  serves, so a new fork model is an asset edit, not a Rust edit), then
+  `$AGENT_DIR/models/fork-models.v1.json` (operator-editable, read on every load —
+  adding or overriding a fork model needs no rebuild; the schema is the
+  `models.json` one), then `models.json` (highest precedence on a `(provider, id)`
+  conflict) in the fork config dir (never seeded from upstream);
 - OAuth refresh + failover behave per provider; transport errors now surface
   their underlying cause (DNS/TLS/reset) in the panel message;
 - the Muse device flow sends the canonical launcher identity

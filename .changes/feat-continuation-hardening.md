@@ -30,3 +30,4 @@
 - A daemon session's plan now survives a revive: `update_plan` writes its `session_plan_state` row through the worker's durable session file instead of the engine's in-memory manager, so the next build restores the plan.
 - A malformed fork catalog now reports `Invalid fork-models.v1.json` instead of mislabeling the file as `models.json`; the built-in models still list.
 - `retry.provider.timeoutMs` now bounds each daemon provider request; an unset value keeps the 300 s stall bound, and the print path keeps the default.
+- Fork models are now data: the shipped `crates/pa-ai/assets/fork-models.v1.json` is the catalog the binary serves, so a new fork model is an asset edit instead of a Rust edit and a rebuild. The `$AGENT_DIR/models/fork-models.v1.json` override and `models.json` still layer on top.
