@@ -265,3 +265,23 @@ renamed test and a reverted commit as coverage.
 passes, a fake entry fails, and every shape the document is allowed to cite is
 accepted. One probe proves the test runs, not that it discriminates.
 
+## 13. Long-lived cells and the wrong edit surface
+
+**Seen:** 2026-11-21, while restoring repo context and fixing durable plan state.
+
+- Nine `python_repl` cells hit the 60 s interrupt while waiting on builds or tests.
+  **Rule:** start long commands as background handles, keep working on independent
+  reads, and collect on the completion notification; do not `sleep()` or poll a
+  build in a cell.
+- The previous session logged 40 Python tracebacks, mostly cheap type/name errors
+  in scratch code. **Rule:** assign typed results to variables and check the
+  daemon store's shape (`SessionEntry.fields` is flattened JSON) before writing a
+  test oracle against `pa_types::FileEntry`.
+- The user had to name the edit surface: edits go through the native `edit` engine
+  (`replace`, `apply_patch`, `hashline`), and Python is for reading, searching, and
+  parsing. **Rule:** a file change is an `edit` call; `cargo fmt` is the only
+  command that rewrites.
+- Three `graph trace` failures named `project_store::ProjectRecorder::sync`; the
+  suffix resolver was fixed in fork.020. **Rule:** after `graph.search`, use the
+  resolved path; a failed trace is not proof the symbol is absent.
+
