@@ -85,6 +85,24 @@ because nothing shipped between them. `FORK.md` carries the same correction.
 
 ---
 
+### Settings without a restart, and a model catalog you can edit
+
+- The model registry now reads `$AGENT_DIR/models/fork-models.v1.json` (or the file beside
+  `models.json`) on every load. A fork model can be added or overridden without rebuilding the
+  binary; precedence is the compiled table -> the runtime fork catalog -> `models.json`, which
+  still wins on a `(provider, id)` conflict. Pinned by
+  `fork_catalog_adds_a_model_without_rebuilding` and
+  `models_json_still_wins_over_the_fork_catalog`.
+- SubQ Snap 1.2 replaces the retired preview: 384K context, $0.04/1M input, text and images.
+- The TUI `/reload` now reloads MCP and retires the built session so the next prompt rebuilds
+  the tool roster and prompt from the settings on disk. A turn in flight is refused (the
+  command asks to wait); the Python namespace is snapshotted rather than discarded. Cold
+  settings (socket, session dir, transport, kernel venv) still require a daemon restart.
+- Verification: `cargo check`, `cargo clippy --all-targets -- -D warnings` and
+  `cargo fmt --check` clean; 34 registry tests, 11 `session_custom` tests, 8 `models_fork`
+  tests and the route-table test pass; the `dist` build is green and its prompt carries
+  `update_plan` and the `graph` `trace` route.
+
 ## fork.019 — upstream main @ 42a07c13c (3 commits past `6abb29e69`)
 
 - Tag: `allspark-v0.10.3-beta.17-fork.019`
