@@ -65,7 +65,7 @@ settings.json:
     type: "stdio",
     command: "uvx",
     args: ["--from","git+https://github.com/oraios/serena","serena","start-mcp-server",
-           "--context","codex","--project","/root/prime-agent"]
+           "--context","codex","--project","/root/allspark"]
   }
 ```
 Модель: `await mcp.call_tool("serena","find_symbol",{...})`.

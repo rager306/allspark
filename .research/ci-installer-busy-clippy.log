@@ -12,7 +12,7 @@
     Checking num-bigint-dig v0.8.6
     Checking rsa v0.9.10
     Checking wasmtime-cranelift v29.0.1
-    Checking pa-ai v0.10.1-beta.35 (/root/prime-agent/crates/pa-ai)
+    Checking pa-ai v0.10.1-beta.35 (/root/allspark/crates/pa-ai)
     Checking wasmtime v29.0.1
 warning: unexpected `cfg` condition name: `winapi`
    --> vendor/crossterm/src/lib.rs:256:11
@@ -84,17 +84,17 @@ warning: struct `InternalEventFilter` is never constructed
    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
 
 warning: `crossterm` (lib) generated 6 warnings (run `cargo clippy --fix --lib -p crossterm -- -D warnings` to apply 1 suggestion)
-    Checking pa-models v0.10.1-beta.35 (/root/prime-agent/crates/pa-models)
+    Checking pa-models v0.10.1-beta.35 (/root/allspark/crates/pa-models)
     Checking wasmtime-c-api-impl v29.0.1
-    Checking pa-telemetry v0.10.1-beta.35 (/root/prime-agent/crates/pa-telemetry)
+    Checking pa-telemetry v0.10.1-beta.35 (/root/allspark/crates/pa-telemetry)
     Checking tree-sitter v0.25.10
     Checking ast-grep-core v0.39.9
-    Checking pa-jev v0.10.1-beta.35 (/root/prime-agent/crates/pa-jev)
-    Checking pa-ast v0.10.1-beta.35 (/root/prime-agent/crates/pa-ast)
-    Checking pa-graph v0.10.1-beta.35 (/root/prime-agent/crates/pa-graph)
-    Checking pa-lsp v0.10.1-beta.35 (/root/prime-agent/crates/pa-lsp)
-    Checking pa-edit v0.10.1-beta.35 (/root/prime-agent/crates/pa-edit)
-    Checking pa-core v0.10.1-beta.35 (/root/prime-agent/crates/pa-core)
-    Checking pa-daemon v0.10.1-beta.35 (/root/prime-agent/crates/pa-daemon)
-    Checking pa-cli v0.10.1-beta.35 (/root/prime-agent/crates/pa-cli)
+    Checking pa-jev v0.10.1-beta.35 (/root/allspark/crates/pa-jev)
+    Checking pa-ast v0.10.1-beta.35 (/root/allspark/crates/pa-ast)
+    Checking pa-graph v0.10.1-beta.35 (/root/allspark/crates/pa-graph)
+    Checking pa-lsp v0.10.1-beta.35 (/root/allspark/crates/pa-lsp)
+    Checking pa-edit v0.10.1-beta.35 (/root/allspark/crates/pa-edit)
+    Checking pa-core v0.10.1-beta.35 (/root/allspark/crates/pa-core)
+    Checking pa-daemon v0.10.1-beta.35 (/root/allspark/crates/pa-daemon)
+    Checking pa-cli v0.10.1-beta.35 (/root/allspark/crates/pa-cli)
     Finished `dev` profile [unoptimized] target(s) in 1m 50s

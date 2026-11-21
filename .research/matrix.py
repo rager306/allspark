@@ -11,7 +11,7 @@
 import json, sys, collections
 from collections import deque
 
-PATH = '/root/prime-agent/.research/design-matrix.jsonld'
+PATH = '/root/allspark/.research/design-matrix.jsonld'
 
 def load():
     rows = [json.loads(l) for l in open(PATH)]

@@ -68,9 +68,9 @@ warning: struct `InternalEventFilter` is never constructed
    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
 
 warning: `crossterm` (lib) generated 6 warnings (run `cargo fix --lib -p crossterm` to apply 1 suggestion)
-   Compiling pa-core v0.10.1-beta.35 (/root/prime-agent/crates/pa-core)
-   Compiling pa-daemon v0.10.1-beta.35 (/root/prime-agent/crates/pa-daemon)
-   Compiling pa-cli v0.10.1-beta.35 (/root/prime-agent/crates/pa-cli)
+   Compiling pa-core v0.10.1-beta.35 (/root/allspark/crates/pa-core)
+   Compiling pa-daemon v0.10.1-beta.35 (/root/allspark/crates/pa-daemon)
+   Compiling pa-cli v0.10.1-beta.35 (/root/allspark/crates/pa-cli)
     Finished `test` profile [unoptimized] target(s) in 2m 18s
      Running tests/clipboard_auth_commands_e2e.rs (target/debug/deps/clipboard_auth_commands_e2e-ec8f0d77e1556edf)
 

@@ -34,11 +34,11 @@
     Checking serde_json v1.0.151
     Checking inotify v0.11.5
     Checking idna v1.1.0
-    Checking crossterm v0.28.1 (/root/prime-agent/vendor/crossterm)
+    Checking crossterm v0.28.1 (/root/allspark/vendor/crossterm)
     Checking strum v0.26.3
     Checking tokio-util v0.7.19
     Checking notify v8.2.0
-    Checking pa-types v0.10.1-beta.35 (/root/prime-agent/crates/pa-types)
+    Checking pa-types v0.10.1-beta.35 (/root/allspark/crates/pa-types)
 warning: unexpected `cfg` condition name: `winapi`
    --> vendor/crossterm/src/lib.rs:256:11
     |
@@ -123,5 +123,5 @@ warning: `crossterm` (lib) generated 6 warnings (run `cargo clippy --fix --lib -
     Checking once_cell v1.21.4
     Checking tempfile v3.27.0
     Checking proptest v1.11.0
-    Checking pa-tui v0.10.1-beta.35 (/root/prime-agent/crates/pa-tui)
+    Checking pa-tui v0.10.1-beta.35 (/root/allspark/crates/pa-tui)
     Finished `dev` profile [unoptimized] target(s) in 1m 34s

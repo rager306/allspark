@@ -2,7 +2,7 @@
 
 **Status:** research/design note (no code landed). **Sources:** local read-only clone
 `/tmp/omp-src` (oh-my-pi), live EXA/TypeSafe docs (`docs.typesafe.ai`), the allspark fork
-at `/root/prime-agent`.
+at `/root/allspark`.
 
 **One-line thesis.** JEV is a *typed-decision* API (state + questions -> calibrated
 answers), not a chat model. It is cheap and fast enough to sit on hot paths where the fork

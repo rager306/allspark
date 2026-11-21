@@ -1,5 +1,5 @@
 # Тестирование coding-agent инструментов: Codex CLI / oh-my-pi / grok-build
-## Gap-анализ для форка allspark (`/root/prime-agent`)
+## Gap-анализ для форка allspark (`/root/allspark`)
 
 > **Дата**: 2026 · **Ветка/ревизия**: main (read-only snapshot) · **Метод**: GitHub API (tree + raw), EXA search, локальный `/tmp/omp-src`,
 > `crates/ruvector/**/docs/adr/` · **Режим**: read-only research

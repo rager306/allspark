@@ -30,7 +30,7 @@ accuracy; future multi-criterion scoring needs a separately versioned rubric.
 
 ```sh
 PA_TS_BINARY=/nonexistent/ts CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_JOBS=2 cargo build -p pa-ai --example qa_judge_request
-python3 scripts/qa/run_suite.py --tasks RT-007 --lane faux --trials 1 --bin /root/prime-agent/target/debug/prime-agent --strict --judge live --judge-model opencode/deepseek-v4.1-flash-free --judge-timeout 30 --out .research/b1-live-run
+python3 scripts/qa/run_suite.py --tasks RT-007 --lane faux --trials 1 --bin /root/allspark/target/debug/prime-agent --strict --judge live --judge-model opencode/deepseek-v4.1-flash-free --judge-timeout 30 --out .research/b1-live-run
 ```
 
 No hidden auto-build. Missing executable is clearly unscored. `--judge-bin`

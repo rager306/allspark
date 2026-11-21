@@ -10,7 +10,7 @@ const ctx = {
   toolListMode: true, toolRefs: {read:"read",edit:"edit",bash:"bash",grep:"grep",glob:"glob",task:"task",todo_write:"todo_write",write:"write",find:"find",lsp:"lsp",web_search:"web_search",think:"think",wait:"wait"},
   tools: ["read","edit","bash","grep","glob","task","todo_write","write","find","lsp","web_search","think","wait"],
   environment: [{label:"OS",value:"linux 6.8.0"},{label:"Arch",value:"x64"}],
-  cwd: "/root/prime-agent", additionalWorkspaceRoots: [], model: "anthropic/claude-opus-4",
+  cwd: "/root/allspark", additionalWorkspaceRoots: [], model: "anthropic/claude-opus-4",
   delegationBias:"restrained", inlineFirstDelegation:true, eagerTasks:false, MAX_CONCURRENCY:8,
   personality:"", intentTracing:false, secretsEnabled:false, includeWorkspaceTree:false,
   renderMermaid:true, renderSvg:true, autoGraph:true, reactions:false, xdevTools:[], hasDynamicXdevTools:false,

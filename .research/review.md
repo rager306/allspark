@@ -1,6 +1,6 @@
 # Independent review: architecture hypotheses vs current Prime Agent
 
-Scope: read-only review of `/tmp/prime-architecture-research/baseline.md`, `/tmp/prime-architecture-research/gsd-research.md`, `/root/prime-agent/AGENTS.md`, and selected source under `/root/prime-agent`. I did not run tests, builds, or indexing. I inspected the codebase-memory MCP schemas only; source checks below are direct file reads/grep.
+Scope: read-only review of `/tmp/prime-architecture-research/baseline.md`, `/tmp/prime-architecture-research/gsd-research.md`, `/root/allspark/AGENTS.md`, and selected source under `/root/allspark`. I did not run tests, builds, or indexing. I inspected the codebase-memory MCP schemas only; source checks below are direct file reads/grep.
 
 ## Executive finding
 

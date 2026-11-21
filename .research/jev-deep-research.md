@@ -5,7 +5,7 @@
 TypeSafe, arXiv (2609.38850 OpenJev-RLCD, 2609.29769, 2610.17820, 2610.20634), Arize,
 LangChain, The Register, Arthur Katcher, The AI Operator; локальный read-only clone
 oh-my-pi `/tmp/omp-src` (`grep -ri 'jev|typesafe|systemone|judgment'`); форк
-`/root/prime-agent`.
+`/root/allspark`.
 
 **TL;DR.** JEV — это **не LLM**, а *System One* модель: на вход `state` + типизированные
 `questions`, на выход — типизированные ответы с **калиброванными** вероятностями
@@ -557,7 +557,7 @@ TypeSafe-маркетинг: «193.6× быстрее, 444.6× дешевле» 
 
 ## 7. Рекомендации для форка allspark
 
-Форк `/root/prime-agent` сейчас **не имеет** Jev/TypeSafe ни в `crates/`, ни в настройках
+Форк `/root/allspark` сейчас **не имеет** Jev/TypeSafe ни в `crates/`, ни в настройках
 (`grep` пуст). Есть отдельная note `.research/jev-fork-integration.md` (422 строки),
 где предложен детальный дизайн. Ниже — сжатые, приоритезированные рекомендации,
 обогащённые новыми данными этого исследования.

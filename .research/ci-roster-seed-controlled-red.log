@@ -1,21 +1,21 @@
    Compiling regalloc2 v0.11.2
    Compiling wasmtime-environ v29.0.1
    Compiling cranelift-codegen v0.116.1
-   Compiling pa-ai v0.10.1-beta.35 (/root/prime-agent/crates/pa-ai)
+   Compiling pa-ai v0.10.1-beta.35 (/root/allspark/crates/pa-ai)
    Compiling cranelift-native v0.116.1
    Compiling cranelift-frontend v0.116.1
    Compiling wasmtime-cranelift v29.0.1
    Compiling wasmtime v29.0.1
-   Compiling pa-models v0.10.1-beta.35 (/root/prime-agent/crates/pa-models)
+   Compiling pa-models v0.10.1-beta.35 (/root/allspark/crates/pa-models)
    Compiling wasmtime-c-api-impl v29.0.1
    Compiling tree-sitter v0.25.10
    Compiling ast-grep-core v0.39.9
-   Compiling pa-ast v0.10.1-beta.35 (/root/prime-agent/crates/pa-ast)
-   Compiling pa-edit v0.10.1-beta.35 (/root/prime-agent/crates/pa-edit)
-   Compiling pa-lsp v0.10.1-beta.35 (/root/prime-agent/crates/pa-lsp)
-   Compiling pa-graph v0.10.1-beta.35 (/root/prime-agent/crates/pa-graph)
-   Compiling pa-core v0.10.1-beta.35 (/root/prime-agent/crates/pa-core)
-   Compiling pa-daemon v0.10.1-beta.35 (/root/prime-agent/crates/pa-daemon)
+   Compiling pa-ast v0.10.1-beta.35 (/root/allspark/crates/pa-ast)
+   Compiling pa-edit v0.10.1-beta.35 (/root/allspark/crates/pa-edit)
+   Compiling pa-lsp v0.10.1-beta.35 (/root/allspark/crates/pa-lsp)
+   Compiling pa-graph v0.10.1-beta.35 (/root/allspark/crates/pa-graph)
+   Compiling pa-core v0.10.1-beta.35 (/root/allspark/crates/pa-core)
+   Compiling pa-daemon v0.10.1-beta.35 (/root/allspark/crates/pa-daemon)
     Finished `test` profile [unoptimized] target(s) in 4m 08s
      Running unittests src/lib.rs (target/debug/deps/pa_daemon-79b520564baacf93)
 

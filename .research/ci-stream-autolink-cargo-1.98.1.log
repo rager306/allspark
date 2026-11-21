@@ -63,7 +63,7 @@
    Compiling idna v1.1.0
    Compiling crossbeam-deque v0.8.8
    Compiling rand_chacha v0.9.0
-   Compiling crossterm v0.28.1 (/root/prime-agent/vendor/crossterm)
+   Compiling crossterm v0.28.1 (/root/allspark/vendor/crossterm)
    Compiling strum v0.26.3
    Compiling rand v0.9.5
    Compiling rand_xorshift v0.4.0
@@ -146,12 +146,12 @@ warning: `crossterm` (lib) generated 6 warnings (run `cargo fix --lib -p crosste
    Compiling ratatui v0.29.0
    Compiling tokio-util v0.7.19
    Compiling notify v8.2.0
-   Compiling pa-types v0.10.1-beta.35 (/root/prime-agent/crates/pa-types)
+   Compiling pa-types v0.10.1-beta.35 (/root/allspark/crates/pa-types)
    Compiling ignore v0.4.33
    Compiling url v2.5.8
    Compiling fancy-regex v0.14.0
    Compiling uuid v1.26.1
-   Compiling pa-tui v0.10.1-beta.35 (/root/prime-agent/crates/pa-tui)
+   Compiling pa-tui v0.10.1-beta.35 (/root/allspark/crates/pa-tui)
     Finished `test` profile [unoptimized] target(s) in 2m 23s
      Running unittests src/lib.rs (target/debug/deps/pa_tui-e84b02148aa403c3)
 

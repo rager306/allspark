@@ -1,6 +1,6 @@
 # Pattern review for Prime Agent architecture hypotheses
 
-Scope: read-only synthesis from `/tmp/prime-architecture-research/baseline.md`, `/tmp/prime-architecture-research/gsd-research.md`, `/root/prime-agent/AGENTS.md`, and selected Prime Agent source. I did not run tests, builds, or indexing. Source paths are evidence that the current mechanisms exist or that a gap is concrete. They are not a proposal to port code.
+Scope: read-only synthesis from `/tmp/prime-architecture-research/baseline.md`, `/tmp/prime-architecture-research/gsd-research.md`, `/root/allspark/AGENTS.md`, and selected Prime Agent source. I did not run tests, builds, or indexing. Source paths are evidence that the current mechanisms exist or that a gap is concrete. They are not a proposal to port code.
 
 Important framing:
 

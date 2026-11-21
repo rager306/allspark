@@ -1,7 +1,7 @@
 <!-- FORK-ONLY: research note for the allspark fork; not shipped -->
 # The testing matrix, multidimensional — allspark against this machine and against 2026 practice
 
-**Date:** 2026-10-24 · **Tree:** `/root/prime-agent` @ `01de64db2` · **Mode:** read-only
+**Date:** 2026-10-24 · **Tree:** `/root/allspark` @ `01de64db2` · **Mode:** read-only
 (no build, no test run, no install; `cargo metadata` only). Public repos read via `gh api` + DeepWiki.
 
 **Scope.** Axis-by-axis evaluation of our test architecture (not a test count), compared against the
@@ -214,7 +214,7 @@ file counts, not estimates.
 
 | repo | unit | integration | e2e / cross-process | PTY-TUI | daemon lane | snapshot | property | mutation | golden / differential | release artifact | bench | fuzz |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| **allspark** (`/root/prime-agent`) | 7,716 attrs | 239 targets | 118 e2e | **16** files | **68** targets | none | **2** | none | 53 golden cases + 2 diff targets | sha256 + install-and-smoke in `release-fork.yml` | 9 scenarios × 4 profiles | none |
+| **allspark** (`/root/allspark`) | 7,716 attrs | 239 targets | 118 e2e | **16** files | **68** targets | none | **2** | none | 53 golden cases + 2 diff targets | sha256 + install-and-smoke in `release-fork.yml` | 9 scenarios × 4 profiles | none |
 | **grok-build** | 3,689 `.rs` files (count not taken) | 252 test `.rs` in the pty-harness crate (217 in `tests/pty_e2e/`, 28 top-level, 7 in `tests/leader_pty_e2e/`) | **217** PTY files | **217** + **45 YAML scenarios** + 7 `leader_pty` | leader/client handshake | **12** `.snap` | **UNVERIFIED** (not measured) | none found | YAML scenario predicates | `VERSION_WITH_COMMIT` stamp + `SOURCE_REV` | `benches/` in harness crate | none |
 | **codex** | 5,515 `.rs` files | 661 `tests/suite/` files | PTY via `PtyCodex` | ~110 pty-named paths | app-server + daemon probe | **1,618** `.snap` | **UNVERIFIED** | **UNVERIFIED** (none found in tree) | `context_snapshot` + `.snap` baselines | `codex-rs/build-info` (`STABLE_GIT_COMMIT`, sha256) | `benches/` | none in tree |
 | **OpenHands** | Vitest | Vitest integration | Playwright **mock-LLM** + live | 10 pty-named paths | ACP docker e2e | 1 `.snap` | none | none | scripted trajectories | UNVERIFIED | none | none |

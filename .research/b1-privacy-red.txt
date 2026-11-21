@@ -17,10 +17,10 @@ F
 FAIL: test_live_judge_never_receives_detected_secrets (test_run_suite_judge.RunnerSecretEvidenceTests.test_live_judge_never_receives_detected_secrets) (leak_source='transcript')
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/root/prime-agent/scripts/qa/test_run_suite_judge.py", line 70, in test_live_judge_never_receives_detected_secrets
+  File "/root/allspark/scripts/qa/test_run_suite_judge.py", line 70, in test_live_judge_never_receives_detected_secrets
     self.check_contaminated_trial(leak_source, "live")
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
-  File "/root/prime-agent/scripts/qa/test_run_suite_judge.py", line 121, in check_contaminated_trial
+  File "/root/allspark/scripts/qa/test_run_suite_judge.py", line 121, in check_contaminated_trial
     self.assertEqual((result["judge"]["status"], result["judge"]["verdict"],
     ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
                       result["judge"]["score"]), ("unscored", None, None))
@@ -38,10 +38,10 @@ First differing element 0:
 FAIL: test_live_judge_never_receives_detected_secrets (test_run_suite_judge.RunnerSecretEvidenceTests.test_live_judge_never_receives_detected_secrets) (leak_source='stdout')
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/root/prime-agent/scripts/qa/test_run_suite_judge.py", line 70, in test_live_judge_never_receives_detected_secrets
+  File "/root/allspark/scripts/qa/test_run_suite_judge.py", line 70, in test_live_judge_never_receives_detected_secrets
     self.check_contaminated_trial(leak_source, "live")
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
-  File "/root/prime-agent/scripts/qa/test_run_suite_judge.py", line 121, in check_contaminated_trial
+  File "/root/allspark/scripts/qa/test_run_suite_judge.py", line 121, in check_contaminated_trial
     self.assertEqual((result["judge"]["status"], result["judge"]["verdict"],
     ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
                       result["judge"]["score"]), ("unscored", None, None))

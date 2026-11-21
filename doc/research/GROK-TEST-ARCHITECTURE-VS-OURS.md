@@ -2,11 +2,11 @@
 
 Date: 2026-10-24. Scope: read-only. Every claim about `xai-org/grok-build` is read from the
 public tree at `SOURCE_REV 559751fdcec02d413e4c57c8832ab275e4f44980` through `gh api`
-(contents + git tree); every claim about us is read from `/root/prime-agent` at `01de64db2`
+(contents + git tree); every claim about us is read from `/root/allspark` at `01de64db2`
 plus the working tree. Nothing was built, run, cloned or committed; no process was started.
 
 Paths under "Grok" are relative to the repo root of `xai-org/grok-build`. Paths under "ours"
-are relative to `/root/prime-agent`. `UNVERIFIED` marks a claim I could not read directly
+are relative to `/root/allspark`. `UNVERIFIED` marks a claim I could not read directly
 (usually because the file lives outside the public subset, or the code-search API rate-limited).
 
 ## 0. What bounds this report

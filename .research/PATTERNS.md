@@ -1,6 +1,6 @@
 # Prime Agent: паттерны, а не перенос кода
 
-Исследован Prime Agent /root/prime-agent @ 6879027856c55158f5f1286c16c78f20d6bec452. Read-only; эффект не измерялся. Выводы — гипотезы для проверяемых экспериментов. Использованы subagents и все подключённые MCP: codebase-memory-mcp, GitNexus, arsumbris. GitNexus Prime не индексирует; gsd-context индекс устарел, выводы сверяются с рабочими исходниками. Рабочая копия Accordeon содержит чужие незакоммиченные изменения и не менялась.
+Исследован Prime Agent /root/allspark @ 6879027856c55158f5f1286c16c78f20d6bec452. Read-only; эффект не измерялся. Выводы — гипотезы для проверяемых экспериментов. Использованы subagents и все подключённые MCP: codebase-memory-mcp, GitNexus, arsumbris. GitNexus Prime не индексирует; gsd-context индекс устарел, выводы сверяются с рабочими исходниками. Рабочая копия Accordeon содержит чужие незакоммиченные изменения и не менялась.
 
 ## Принципы Prime
 

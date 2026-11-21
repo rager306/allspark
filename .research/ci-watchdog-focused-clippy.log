@@ -199,7 +199,7 @@
     Checking tree-sitter-json v0.24.8
     Checking tree-sitter-javascript v0.25.0
     Checking tree-sitter-yaml v0.7.2
-    Checking tree-sitter-go v0.25.0 (/root/prime-agent/vendor/tree-sitter-go)
+    Checking tree-sitter-go v0.25.0 (/root/allspark/vendor/tree-sitter-go)
     Checking tree-sitter-typescript v0.23.2
     Checking tree-sitter-diff v0.1.0
     Checking tree-sitter-python v0.25.0
@@ -208,7 +208,7 @@
     Checking getrandom v0.4.3
     Checking wasmprinter v0.221.3
     Checking phf v0.14.0
-    Checking pa-types v0.10.1-beta.35 (/root/prime-agent/crates/pa-types)
+    Checking pa-types v0.10.1-beta.35 (/root/allspark/crates/pa-types)
     Checking sha1 v0.10.7
     Checking xxhash-rust v0.8.19
     Checking unicode-segmentation v1.13.3
@@ -261,7 +261,7 @@
     Checking rayon v1.12.0
     Checking signal-hook-mio v0.2.5
     Checking castaway v0.2.4
-    Checking pa-agent v0.10.1-beta.35 (/root/prime-agent/crates/pa-agent)
+    Checking pa-agent v0.10.1-beta.35 (/root/allspark/crates/pa-agent)
     Checking fancy-regex v0.14.0
     Checking xattr v1.6.1
     Checking serde_spanned v1.1.2
@@ -269,7 +269,7 @@
     Checking itertools v0.13.0
     Checking filetime v0.2.29
     Checking libyaml-rs v0.3.0
-    Checking pa-diff v0.10.1-beta.35 (/root/prime-agent/crates/pa-diff)
+    Checking pa-diff v0.10.1-beta.35 (/root/allspark/crates/pa-diff)
     Checking toml_writer v1.1.3+spec-1.1.0
     Checking hyper-rustls v0.27.9
     Checking winnow v0.7.15
@@ -283,11 +283,11 @@
     Checking clap_builder v4.6.7
     Checking tar v0.4.46
     Checking unicode-truncate v1.1.0
-    Checking crossterm v0.28.1 (/root/prime-agent/vendor/crossterm)
+    Checking crossterm v0.28.1 (/root/allspark/vendor/crossterm)
     Checking strum v0.26.3
-    Checking pa-jev v0.10.1-beta.35 (/root/prime-agent/crates/pa-jev)
+    Checking pa-jev v0.10.1-beta.35 (/root/allspark/crates/pa-jev)
    Compiling darling v0.24.1
-    Checking pa-telemetry v0.10.1-beta.35 (/root/prime-agent/crates/pa-telemetry)
+    Checking pa-telemetry v0.10.1-beta.35 (/root/allspark/crates/pa-telemetry)
     Checking nix v0.29.0
    Compiling instability v0.3.13
     Checking sharded-slab v0.1.7
@@ -376,20 +376,20 @@ warning: `crossterm` (lib) generated 6 warnings (run `cargo clippy --fix --lib -
     Checking ratatui v0.29.0
     Checking clap v4.6.7
     Checking async-lsp v0.2.4
-    Checking pa-ai v0.10.1-beta.35 (/root/prime-agent/crates/pa-ai)
-    Checking pa-tui v0.10.1-beta.35 (/root/prime-agent/crates/pa-tui)
+    Checking pa-ai v0.10.1-beta.35 (/root/allspark/crates/pa-ai)
+    Checking pa-tui v0.10.1-beta.35 (/root/allspark/crates/pa-tui)
     Checking cranelift-native v0.116.1
     Checking cranelift-frontend v0.116.1
     Checking wasmtime-cranelift v29.0.1
     Checking wasmtime v29.0.1
-    Checking pa-models v0.10.1-beta.35 (/root/prime-agent/crates/pa-models)
+    Checking pa-models v0.10.1-beta.35 (/root/allspark/crates/pa-models)
     Checking wasmtime-c-api-impl v29.0.1
     Checking ast-grep-core v0.39.9
-    Checking pa-ast v0.10.1-beta.35 (/root/prime-agent/crates/pa-ast)
-    Checking pa-edit v0.10.1-beta.35 (/root/prime-agent/crates/pa-edit)
-    Checking pa-graph v0.10.1-beta.35 (/root/prime-agent/crates/pa-graph)
-    Checking pa-lsp v0.10.1-beta.35 (/root/prime-agent/crates/pa-lsp)
-    Checking pa-core v0.10.1-beta.35 (/root/prime-agent/crates/pa-core)
-    Checking pa-daemon v0.10.1-beta.35 (/root/prime-agent/crates/pa-daemon)
-    Checking pa-cli v0.10.1-beta.35 (/root/prime-agent/crates/pa-cli)
+    Checking pa-ast v0.10.1-beta.35 (/root/allspark/crates/pa-ast)
+    Checking pa-edit v0.10.1-beta.35 (/root/allspark/crates/pa-edit)
+    Checking pa-graph v0.10.1-beta.35 (/root/allspark/crates/pa-graph)
+    Checking pa-lsp v0.10.1-beta.35 (/root/allspark/crates/pa-lsp)
+    Checking pa-core v0.10.1-beta.35 (/root/allspark/crates/pa-core)
+    Checking pa-daemon v0.10.1-beta.35 (/root/allspark/crates/pa-daemon)
+    Checking pa-cli v0.10.1-beta.35 (/root/allspark/crates/pa-cli)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 09s

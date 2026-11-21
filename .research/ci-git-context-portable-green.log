@@ -1,4 +1,4 @@
-   Compiling pa-core v0.10.1-beta.35 (/root/prime-agent/crates/pa-core)
+   Compiling pa-core v0.10.1-beta.35 (/root/allspark/crates/pa-core)
     Finished `test` profile [unoptimized] target(s) in 3.88s
      Running tests/git_context.rs (target/debug/deps/git_context-0fe46d6a242a4dd0)
 

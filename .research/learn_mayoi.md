@@ -1,7 +1,7 @@
 # Mayoi → allspark: что перенимать (read-only аудит)
 
 Источник: [sorrycc/Mayoi](https://github.com/sorrycc/Mayoi) @ `8708da764770` (Go-редактор, shallow clone в /tmp/mayoi).
-Приёмник: allspark = форк prime-agent, /root/prime-agent (Rust, 17 крейтов).
+Приёмник: allspark = форк prime-agent, /root/allspark (Rust, 17 крейтов).
 Дата: 2026-10-19. Формат: паттерн → как у них → как у нас → решение.
 
 ---

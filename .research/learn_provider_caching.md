@@ -5,7 +5,7 @@ Audit date: **2026-10-18**. Every number below is copied from a provider's own d
 guessing. Anything marked `[SECONDARY]` comes from an error string observed in the
 wild, not from the docs.
 
-Repo under audit: `/root/prime-agent` @ `87dad4c63` + working-tree P0 changes
+Repo under audit: `/root/allspark` @ `87dad4c63` + working-tree P0 changes
 (`crates/pa-ai/src/providers/anthropic/params.rs`, `convert.rs`).
 
 ---

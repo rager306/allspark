@@ -1,6 +1,6 @@
 # /tmp archive inventory and cleanup boundary
 
-Audit: 2026-10-19. Repository `/root/prime-agent`. No `/tmp` path was deleted.
+Audit: 2026-10-19. Repository `/root/allspark`. No `/tmp` path was deleted.
 Only research/fixture files were written; no runtime implementation or constants changed.
 Existing text was changed with exact-match `edit`. No git add/commit/push/reset,
 git identity changes, full clones, target trees, node_modules or binary blobs.
