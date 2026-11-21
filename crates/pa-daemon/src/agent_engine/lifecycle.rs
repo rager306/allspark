@@ -5,12 +5,12 @@ use std::sync::atomic::Ordering;
 
 use super::{
     execute_session_command, json_round_trip, map_thinking_level,
-    register_agent_message_host_handlers, register_agent_observe_host_handlers,
-    switchable_stream_fn_with_live_auth, AgentEngineConfig, AgentSessionEngine, Arc,
-    CoreSessionEngine, EngineModelSelection, HostRequestHandlers, LinkAgentMessageController,
-    LinkAgentObserveController, Model, OverflowRecovery, ProducerUsageSink, PromptContextBoundary,
-    ProviderTarget, QuotaParkState, SessionCommandExecution, SessionCommandParams,
-    SessionEngineConfig, SupervisorChildSessions, Value,
+    register_agent_message_host_handlers, register_agent_observe_host_handlers, AgentEngineConfig,
+    AgentSessionEngine, Arc, CoreSessionEngine, EngineModelSelection, HostRequestHandlers,
+    LinkAgentMessageController, LinkAgentObserveController, Model, OverflowRecovery,
+    ProducerUsageSink, PromptContextBoundary, ProviderTarget, QuotaParkState,
+    SessionCommandExecution, SessionCommandParams, SessionEngineConfig, SupervisorChildSessions,
+    Value,
 };
 
 /// The instruction the floor appends to a bare skill invocation: ask what
@@ -1210,10 +1210,17 @@ impl AgentSessionEngine {
                 engine.resolve_request_auth(model)
             })
         };
-        let stream_fn = switchable_stream_fn_with_live_auth(
-            std::sync::Arc::clone(&self.provider_target),
-            live_auth,
-        );
+        let request_timeout: pa_core::session_engine::provider_adapter::RequestTimeoutProvider = {
+            let settings =
+                pa_core::settings::SettingsManager::create(self.cwd(), &self.config.agent_dir);
+            std::sync::Arc::new(move || settings.get_provider_timeout_ms())
+        };
+        let stream_fn =
+            pa_core::session_engine::provider_adapter::switchable_stream_fn_with_live_auth_and_timeout(
+                std::sync::Arc::clone(&self.provider_target),
+                live_auth,
+                request_timeout,
+            );
         // The narrow provider bracket (ADR `ratelimit-admission`, M1): the
         // admission slot is taken per LLM STREAM and released on its
         // settle/error/abort/drop — never held for the worker's lifetime

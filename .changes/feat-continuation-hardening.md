@@ -29,3 +29,4 @@
 - `/reload` now rebuilds a session against the settings on disk instead of requiring a daemon restart: the MCP manager reloads, the built runtime retires, and the next prompt reconstructs the tool roster and prompt from the files while the Python namespace stays revivable from its snapshot. A turn in flight is left alone and the command asks to wait.
 - A daemon session's plan now survives a revive: `update_plan` writes its `session_plan_state` row through the worker's durable session file instead of the engine's in-memory manager, so the next build restores the plan.
 - A malformed fork catalog now reports `Invalid fork-models.v1.json` instead of mislabeling the file as `models.json`; the built-in models still list.
+- `retry.provider.timeoutMs` now bounds each daemon provider request; an unset value keeps the 300 s stall bound, and the print path keeps the default.

@@ -531,6 +531,19 @@ mod tests {
     }
 
     #[test]
+    fn the_provider_timeout_setting_reaches_its_accessor() {
+        let storage: Arc<dyn SettingsStorage> =
+            Arc::new(super::super::storage::InMemorySettingsStorage::default());
+        storage
+            .with_lock(SettingsScope::Global, &mut |_| {
+                Some(r#"{ "retry": { "provider": { "timeoutMs": 1234 } } }"#.into())
+            })
+            .unwrap();
+        let manager = SettingsManager::from_storage(storage);
+        assert_eq!(manager.get_provider_timeout_ms(), Some(1234));
+    }
+
+    #[test]
     fn wrong_typed_fields_never_fail_load() {
         let storage: Arc<dyn SettingsStorage> =
             Arc::new(super::super::storage::InMemorySettingsStorage::default());
