@@ -22,6 +22,10 @@ use super::private_auth::{
     PRIVATE_PRIME_AUTHORIZATION_CACHE_TTL_MS,
 };
 
+/// The operator-editable fork catalog, read beside `models.json`. Additions and
+/// overrides land without rebuilding the binary.
+const FORK_CATALOG_FILE: &str = "fork-models.v1.json";
+
 /// Request-auth bits a provider can configure in models.json.
 #[derive(Debug, Clone, Default)]
 pub struct ProviderRequestConfig {
@@ -489,6 +493,13 @@ impl ModelRegistry {
     }
 
     fn load_models(&mut self) {
+        // The fork catalog loads first so a user's models.json still wins on a
+        // (provider, id) conflict; its request config is stored by the shared
+        // loader, and models.json's entries overwrite it below.
+        let runtime_fork = self.load_runtime_fork_models();
+        if let Some(error) = &runtime_fork.error {
+            self.load_error = Some(error.clone());
+        }
         let path = self.models_json_path.clone();
         let result = match &path {
             Some(path) => self.load_custom_models_file(path),
@@ -514,7 +525,7 @@ impl ModelRegistry {
         }
 
         let credentials = self.prime_credentials();
-        let mut built_in = self.load_built_in_models(&result, credentials.as_ref());
+        let mut built_in = self.load_built_in_models(&result, &runtime_fork, credentials.as_ref());
         built_in.extend(private_models.into_values());
         self.models = Self::merge_custom_models(built_in, result.models);
         self.apply_subscription_model_adaptations();
@@ -585,27 +596,78 @@ impl ModelRegistry {
     }
 
     fn load_custom_models_file(&mut self, path: &Path) -> CustomModelsResult {
-        if !path.exists() {
-            return CustomModelsResult::default();
-        }
-        let Ok(content) = std::fs::read_to_string(path) else {
-            return CustomModelsResult {
-                error: Some(format!(
-                    "Failed to load models.json\n\nFile: {}",
-                    path.display()
-                )),
-                ..Default::default()
-            };
-        };
-        let mut result = load_custom_models(
-            &content,
+        self.load_models_file(
+            path,
+            "models.json",
             &|provider| !pa_ai::models_generated::get_models(provider).is_empty(),
             &|provider| {
                 pa_ai::models_generated::get_models(provider)
                     .first()
                     .map(|model| (model.api.clone(), model.base_url.clone()))
             },
-        );
+        )
+    }
+
+    /// The operator-editable fork catalog (`$AGENT_DIR/models/fork-models.v1.json`,
+    /// or beside `models.json`): additions and overrides for the compiled fork
+    /// table. Read on every registry load, so adding a fork model needs no rebuild.
+    fn load_runtime_fork_models(&mut self) -> CustomModelsResult {
+        let Some(agent_dir) = self
+            .models_json_path
+            .as_ref()
+            .and_then(|path| path.parent())
+            .map(Path::to_path_buf)
+        else {
+            return CustomModelsResult::default();
+        };
+        let candidates = [
+            agent_dir.join("models").join(FORK_CATALOG_FILE),
+            agent_dir.join(FORK_CATALOG_FILE),
+        ];
+        let Some(path) = candidates.iter().find(|path| path.is_file()) else {
+            return CustomModelsResult::default();
+        };
+        self.load_models_file(
+            path,
+            FORK_CATALOG_FILE,
+            &|provider| {
+                !pa_ai::models_generated::get_models(provider).is_empty()
+                    || pa_ai::models_fork::fork_providers().contains(&provider)
+            },
+            &|provider| {
+                pa_ai::models_fork::fork_provider_models()
+                    .into_iter()
+                    .find(|model| model.provider == provider)
+                    .map(|model| (model.api, model.base_url))
+                    .or_else(|| {
+                        pa_ai::models_generated::get_models(provider)
+                            .first()
+                            .map(|model| (model.api.clone(), model.base_url.clone()))
+                    })
+            },
+        )
+    }
+
+    fn load_models_file(
+        &mut self,
+        path: &Path,
+        label: &str,
+        built_in_providers: &dyn Fn(&str) -> bool,
+        built_in_defaults: &dyn Fn(&str) -> Option<(String, String)>,
+    ) -> CustomModelsResult {
+        if !path.exists() {
+            return CustomModelsResult::default();
+        }
+        let Ok(content) = std::fs::read_to_string(path) else {
+            return CustomModelsResult {
+                error: Some(format!(
+                    "Failed to load {label}\n\nFile: {}",
+                    path.display()
+                )),
+                ..Default::default()
+            };
+        };
+        let mut result = load_custom_models(&content, built_in_providers, built_in_defaults);
         // Provider/model request config from the parsed document.
         if result.error.is_none() {
             if let Ok(config) =
@@ -648,7 +710,7 @@ impl ModelRegistry {
         }
         if let Some(error) = &result.error {
             // Keep built-ins only; message mirrors the TS load failure format.
-            if !error.contains("models.json") {
+            if !error.contains(label) {
                 result.error = Some(format!("{error}\n\nFile: {}", path.display()));
             }
         }
@@ -678,8 +740,15 @@ impl ModelRegistry {
     fn load_built_in_models(
         &self,
         custom: &CustomModelsResult,
+        runtime_fork: &CustomModelsResult,
         credentials: Option<&pa_models::PrimeCredentials>,
     ) -> Vec<Model> {
+        // The compiled fork table is the offline floor; the operator's
+        // fork-models.v1.json replaces it by (provider, id) and adds entries.
+        let fork = Self::merge_custom_models(
+            pa_ai::models_fork::fork_provider_models(),
+            runtime_fork.models.clone(),
+        );
         self.catalog
             .resolve(credentials)
             .into_iter()
@@ -687,34 +756,38 @@ impl ModelRegistry {
             // carries them); models.json overrides below apply to them like any
             // other provider.
             // FORK-ONLY: fork provider catalog overlay (not in upstream)
-            .chain(pa_ai::models_fork::fork_provider_models())
+            .chain(fork)
             .map(|mut model| {
-                if let Some(provider_override) = custom.provider_overrides.get(&model.provider) {
-                    if let Some(base_url) = &provider_override.base_url {
-                        model.base_url = base_url.clone();
-                        // The live catalog's serving class labels the
-                        // official endpoint; a user-replaced endpoint voids
-                        // it (the label must not claim a serving path the
-                        // route no longer uses).
-                        if model.provider == PRIME_INFERENCE_PROVIDER_ID {
-                            model.serving = None;
-                        }
-                    }
-                    if provider_override.compat.is_some() {
-                        model.compat =
-                            merge_compat(model.compat.as_ref(), provider_override.compat.clone());
-                    }
-                }
-                if let Some(model_override) = custom
-                    .model_overrides
-                    .get(&model.provider)
-                    .and_then(|overrides| overrides.get(&model.id))
-                {
-                    model = apply_model_override(&model, model_override);
-                }
+                Self::apply_custom_overrides(&mut model, runtime_fork);
+                Self::apply_custom_overrides(&mut model, custom);
                 model
             })
             .collect()
+    }
+
+    fn apply_custom_overrides(model: &mut Model, custom: &CustomModelsResult) {
+        if let Some(provider_override) = custom.provider_overrides.get(&model.provider) {
+            if let Some(base_url) = &provider_override.base_url {
+                model.base_url = base_url.clone();
+                // The live catalog's serving class labels the official
+                // endpoint; a user-replaced endpoint voids it (the label must
+                // not claim a serving path the route no longer uses).
+                if model.provider == PRIME_INFERENCE_PROVIDER_ID {
+                    model.serving = None;
+                }
+            }
+            if provider_override.compat.is_some() {
+                model.compat =
+                    merge_compat(model.compat.as_ref(), provider_override.compat.clone());
+            }
+        }
+        if let Some(model_override) = custom
+            .model_overrides
+            .get(&model.provider)
+            .and_then(|overrides| overrides.get(&model.id))
+        {
+            *model = apply_model_override(model, model_override);
+        }
     }
 
     /// Custom models win on provider+id conflicts.

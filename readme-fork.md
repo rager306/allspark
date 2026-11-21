@@ -207,9 +207,12 @@ the session's own cost breakdown (no external pricing data needed).
     `x-meta-ai-gateway-session-id`, `traceparent`, `x-fb-routing-control`,
     `x-api-version` — these are on the roadmap for the muse provider's chat
     transport (not needed for the login flow).
-- the fork's own model catalog lives in `models_fork.rs` (compiled) and can
-  be overridden by `models.json` in the fork config dir (never seeded from
-  upstream);
+- the fork's own model catalog has three layers: `models_fork.rs` (compiled
+  offline fallback), `$AGENT_DIR/models/fork-models.v1.json` (operator-editable
+  fork catalog, read on every load — adding or overriding a fork model needs no
+  rebuild; the schema is the `models.json` one), and `models.json` (highest
+  precedence on a `(provider, id)` conflict) in the fork config dir (never
+  seeded from upstream);
 - OAuth refresh + failover behave per provider; transport errors now surface
   their underlying cause (DNS/TLS/reset) in the panel message;
 - the Muse device flow sends the canonical launcher identity
@@ -329,6 +332,14 @@ docker run --rm --network none \
 # paths stay empty; --version carries the fork build stamp; the launcher
 # honours ALLSPARK_HOME and creates its socket directory 0700; a second run
 # over the same prefix replaces the payload cleanly.
+
+# apply settings changes to a live session without restarting the daemon:
+# the TUI `/reload` reloads MCP, retires the built session and lets the next
+# prompt rebuild the tool roster/prompt from the files; the Python namespace is
+# snapshotted. Cold settings (socket, session dir, transport, kernel venv) still
+# need a daemon restart.
+# models added to <agentDir>/models/fork-models.v1.json are picked up by the
+# same reload (no rebuild).
 
 # logs / diagnostics
 <agentDir>/logs/             daemon log, worker stderr, debug-*.log, agent.jsonl

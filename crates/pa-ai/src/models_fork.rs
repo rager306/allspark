@@ -289,15 +289,16 @@ static FORK_RAW_MODELS: &[ForkModel] = &[
     // output is not billed. `SUBQ_API_KEY` authenticates (Bearer).
     ForkModel {
         provider: "subquadratic",
-        id: "subq-snap-preview",
-        name: "SubQ Snap (preview)",
+        id: "subq-snap-1.2",
+        name: "SubQ Snap 1.2",
         api: "typesafe",
         base_url: "https://api.subq.ai",
         reasoning: false,
         thinking_levels: &[],
-        input: &[ModelInput::Text],
-        cost: (0.05, 0.0, 0.0, 0.0),
-        context_window: 64_000,
+        input: &[ModelInput::Text, ModelInput::Image],
+        // $0.04/1M input, output free (the official 1.2 pricing).
+        cost: (0.04, 0.0, 0.0, 0.0),
+        context_window: 393_216,
         max_tokens: 4_096,
         headers: &[],
         supports_developer_role: None,
@@ -1035,14 +1036,14 @@ mod tests {
             .iter()
             .find(|model| model.provider == "subquadratic")
             .expect("the subquadratic catalog entry exists");
-        assert_eq!(snap.id, "subq-snap-preview");
+        assert_eq!(snap.id, "subq-snap-1.2");
         // The wire dialect is what resolves the judge candidate; a decision
         // model must never resolve as a chat backend.
         assert_eq!(snap.api, "typesafe");
         assert_eq!(snap.base_url, "https://api.subq.ai");
         // Input-only billing: the output side of the tuple stays zero so
         // usage accounting never invents output cost.
-        assert_eq!(snap.cost.input, 0.05.into());
+        assert_eq!(snap.cost.input, 0.04.into());
         assert_eq!(snap.cost.output, 0.0.into());
     }
 

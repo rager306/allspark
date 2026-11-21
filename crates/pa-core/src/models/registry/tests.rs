@@ -369,6 +369,55 @@ fn models_json_provider_overrides_reach_fork_providers() {
 }
 
 #[test]
+fn fork_catalog_adds_a_model_without_rebuilding() {
+    let dir = tempfile::tempdir().unwrap();
+    let models_path = dir.path().join("models.json");
+    std::fs::write(&models_path, r#"{ "providers": {} }"#).unwrap();
+    let fork_dir = dir.path().join("models");
+    std::fs::create_dir_all(&fork_dir).unwrap();
+    std::fs::write(
+        fork_dir.join("fork-models.v1.json"),
+        r#"{ "providers": { "subquadratic": { "api": "typesafe", "baseUrl": "https://api.subq.ai",
+            "models": [ { "id": "subq-snap-9.9", "name": "SubQ test", "contextWindow": 393216, "maxTokens": 4096 } ] } } }"#,
+    )
+    .unwrap();
+    let registry = ModelRegistry::create(auth_with(&serde_json::json!({})), &models_path);
+    assert!(registry.get_error().is_none(), "{:?}", registry.get_error());
+    assert!(registry
+        .get_all()
+        .iter()
+        .any(|model| model.provider == "subquadratic" && model.id == "subq-snap-9.9"));
+}
+
+#[test]
+fn models_json_still_wins_over_the_fork_catalog() {
+    let dir = tempfile::tempdir().unwrap();
+    let models_path = dir.path().join("models.json");
+    std::fs::write(
+        &models_path,
+        r#"{ "providers": { "subquadratic": { "api": "typesafe", "baseUrl": "https://models-json.example",
+            "apiKey": "k", "models": [ { "id": "subq-snap-9.9", "contextWindow": 1, "maxTokens": 1 } ] } } }"#,
+    )
+    .unwrap();
+    let fork_dir = dir.path().join("models");
+    std::fs::create_dir_all(&fork_dir).unwrap();
+    std::fs::write(
+        fork_dir.join("fork-models.v1.json"),
+        r#"{ "providers": { "subquadratic": { "api": "typesafe", "baseUrl": "https://fork.example",
+            "models": [ { "id": "subq-snap-9.9", "contextWindow": 2, "maxTokens": 2 } ] } } }"#,
+    )
+    .unwrap();
+    let registry = ModelRegistry::create(auth_with(&serde_json::json!({})), &models_path);
+    let model = registry
+        .get_all()
+        .iter()
+        .find(|model| model.provider == "subquadratic" && model.id == "subq-snap-9.9")
+        .expect("the model resolves");
+    assert_eq!(model.base_url, "https://models-json.example");
+    assert_eq!(model.context_window, 1);
+}
+
+#[test]
 fn models_json_error_keeps_built_ins() {
     let dir = tempfile::tempdir().unwrap();
     let models_path = dir.path().join("models.json");
@@ -842,7 +891,11 @@ fn a_custom_model_override_keeps_the_other_fork_models() {
 fn an_upstream_shaped_asset_keeps_the_fork_providers() {
     let auth = AuthStorage::in_memory_without_env(&AuthStorageData::default(), Arc::new(NoOAuth));
     let registry = ModelRegistry::in_memory(auth);
-    let models = registry.load_built_in_models(&CustomModelsResult::default(), None);
+    let models = registry.load_built_in_models(
+        &CustomModelsResult::default(),
+        &CustomModelsResult::default(),
+        None,
+    );
     let providers: std::collections::HashSet<&str> =
         models.iter().map(|model| model.provider.as_str()).collect();
     // The fork table's providers ride the built-in set whatever the asset holds.

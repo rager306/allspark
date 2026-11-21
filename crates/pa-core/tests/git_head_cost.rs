@@ -2,7 +2,7 @@ use std::time::Instant;
 #[test]
 #[ignore = "measurement"]
 fn head_read_cost() {
-    let cwd = std::path::Path::new("/root/prime-agent");
+    let cwd = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
     let n = 200;
     let start = Instant::now();
     for _ in 0..n {

@@ -8,7 +8,7 @@ import os, re, subprocess, sys
 candidates = [
     os.environ.get("QA_DIST_BIN"),
     os.path.join(os.environ.get("QA_REPO", "."), "target", "dist", "prime-agent"),
-    "/root/prime-agent/target/dist/prime-agent",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "target", "dist", "prime-agent"),
     sys.argv[1] if len(sys.argv) > 1 else None,
 ]
 binary = next((c for c in candidates if c and os.path.isfile(c) and os.access(c, os.X_OK)), None)

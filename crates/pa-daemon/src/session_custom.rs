@@ -305,18 +305,24 @@ impl Worker {
         response_success(None, "refine", Some(result))
     }
 
-    /// `reload`: re-read the session's live inputs — the MCP manager
-    /// re-reads its settings and auth state. Request auth needs no
-    /// re-read: the live session's stream re-resolves it from the
-    /// credential store on every provider call, so a `/login` from
-    /// another process serves the next request with or without a reload.
-    /// Settings and the model catalog resolve per use and need no
-    /// re-read. The reload touches the MCP auth store, whose snapshot
-    /// takes a blocking lock — it parks on a blocking thread, the same
-    /// posture as `get_mcp_connections`.
+    /// `reload`: re-read the session's live inputs and settings. The MCP
+    /// manager reloads its settings and auth state, and the built session is
+    /// retired so the next demand seam rebuilds it against the settings on
+    /// disk (the Python namespace stays revivable from its snapshot). A turn
+    /// in flight is not rewritten: the reload answers with the wait request
+    /// instead, because a mid-turn roster/prompt change would split the turn
+    /// across two configurations.
     pub(crate) async fn handle_reload(&self) -> DaemonResponse {
         if let Err(response) = self.require_created("reload") {
             return response;
+        }
+        if self.core.lock().unwrap().busy {
+            return response_failure(
+                None,
+                "reload",
+                "reload applies between turns: wait for the current turn to settle",
+                None,
+            );
         }
         if let Some(engine) = &self.agent_engine {
             let engine = std::sync::Arc::clone(engine);
@@ -325,7 +331,8 @@ impl Worker {
             // or the join itself (a panic). Both answer the client's
             // reload with the failure, never a success the session did
             // not apply.
-            match tokio::task::spawn_blocking(move || engine.reload_live_inputs()).await {
+            let mcp_engine = std::sync::Arc::clone(&engine);
+            match tokio::task::spawn_blocking(move || mcp_engine.reload_live_inputs()).await {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
                     return response_failure(
@@ -344,6 +351,9 @@ impl Worker {
                     );
                 }
             }
+            // The settings half: retire the runtime; the next prompt/state
+            // demand rebuilds the tool roster and prompt from the files.
+            engine.retire_session_runtime_for_reload().await;
         }
         response_success(None, "reload", None)
     }
@@ -1002,6 +1012,23 @@ mod tests {
             .await;
         assert!(response.success, "failed: {response:?}");
         assert!(response.data.is_none());
+    }
+
+    #[tokio::test]
+    async fn reload_refuses_while_a_turn_is_busy() {
+        let worker = created_worker().await;
+        worker.core.lock().unwrap().busy = true;
+        let response = worker
+            .dispatch("reload", &json!({ "activeSessionId": "custom-session" }))
+            .await;
+        assert!(!response.success);
+        assert!(
+            response
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("between turns")),
+            "{response:?}"
+        );
     }
 
     /// The reload parks the engine's blocking work off the async executor:

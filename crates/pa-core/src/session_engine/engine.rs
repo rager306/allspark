@@ -1385,6 +1385,24 @@ impl SessionEngine {
             .await;
     }
 
+    /// Retire the live session for a settings rebuild while keeping the Python
+    /// namespace revivable: the kernel stops with a snapshot, and the
+    /// session-owned clients (LSP, graph watcher) are shut down so the rebuilt
+    /// session cannot leak them. Unlike [`Self::dispose_kernel`], the next use
+    /// boots a fresh kernel and revives the snapshot instead of starting empty.
+    pub async fn retire_kernel_for_settings_reload(&self) {
+        if let Some(session_id) = self.session.agent().session_id() {
+            pa_ai::codex_debug::close_websocket_sessions(Some(session_id));
+        }
+        self.stop_kernel_snapshot().await;
+        if let Some(manager) = &self.lsp_manager {
+            manager.shutdown_all().await;
+        }
+        if let Some(watch) = &self.graph_watch {
+            watch.stop().await;
+        }
+    }
+
     /// One factory activity over this session's live kernel: the `/factory`
     /// view's bridge lane (graph/status/watch/run/stop/resume). A `run`
     /// prefights the spec's declared models first (allowlist pin, request

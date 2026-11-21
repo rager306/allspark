@@ -17,6 +17,15 @@ use super::{
 /// the user wants first, never an imperative to execute.
 pub(crate) const BARE_SKILL_INVOCATION_INSTRUCTION: &str = "The user invoked this skill with no task text - ask what they want before executing any protocol inside it.";
 
+/// What happens to the Python kernel when the session runtime is retired.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KernelDisposition {
+    /// Drop the namespace (a moved branch must not carry the old one).
+    Dispose,
+    /// Keep the namespace revivable for the rebuilt session (`/reload`).
+    Snapshot,
+}
+
 impl AgentSessionEngine {
     /// Build the engine: the shared async runtime, the model selection
     /// (create config), the supervisor link, the children registry, and the
@@ -836,6 +845,19 @@ impl AgentSessionEngine {
     /// must not carry the old session's namespace — and the build gate
     /// is held across the teardown.
     pub(crate) async fn retire_session_runtime(&self) {
+        self.retire_session_runtime_with(KernelDisposition::Dispose)
+            .await;
+    }
+
+    /// `/reload`'s session half: retire the runtime so the next demand seam
+    /// rebuilds it against the current settings, keeping the Python namespace
+    /// revivable from its snapshot.
+    pub(crate) async fn retire_session_runtime_for_reload(&self) {
+        self.retire_session_runtime_with(KernelDisposition::Snapshot)
+            .await;
+    }
+
+    async fn retire_session_runtime_with(&self, disposition: KernelDisposition) {
         let _build = self.session_build.lock().await;
         let built = self.session.lock().await.take();
         *self
@@ -872,7 +894,10 @@ impl AgentSessionEngine {
             if let Some(telemetry) = &engine.telemetry {
                 let _ = telemetry.end().await;
             }
-            engine.dispose_kernel().await;
+            match disposition {
+                KernelDisposition::Dispose => engine.dispose_kernel().await,
+                KernelDisposition::Snapshot => engine.retire_kernel_for_settings_reload().await,
+            }
         }
     }
 
