@@ -16,10 +16,12 @@
 //! | `onboarding` | onboarding flags, package/resource arrays |
 //! | `tools` | the fork's native-tool gates and routing |
 //! | `jev` | the `[jev]` typed-judgment settings |
+//! | `limits` | the `[limits]` tool output windows |
 
 mod core;
 mod defaults;
 mod jev;
+mod limits;
 mod onboarding;
 mod runtime;
 mod telemetry;

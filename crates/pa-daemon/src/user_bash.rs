@@ -24,12 +24,46 @@ const EXIT_STDIO_GRACE: std::time::Duration = std::time::Duration::from_millis(1
 const CLOSE_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Streaming window: chunks are retained (spilled to disk beyond this).
 const DEFAULT_MAX_BYTES: usize = 50 * 1024;
-/// Streaming retention cap: the in-memory tail (TS `maxOutputBytes`).
-const STREAM_MAX_BYTES: usize = DEFAULT_MAX_BYTES * 2;
 /// Tail truncation line budget (TS `DEFAULT_MAX_LINES`).
 const DEFAULT_MAX_LINES: usize = 2000;
 /// The TS spill prefix (temp file names in `$TMPDIR`).
 const SPILL_PREFIX: &str = "pa-bash";
+
+/// The `[limits]` window one `bash()` result keeps: the tail-truncation budgets.
+/// [`Self::default`] is the TS window (50 KiB / 2000 lines); a caller threads
+/// the session's settings instead.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BashOutputWindow {
+    max_bytes: usize,
+    max_lines: usize,
+}
+
+impl Default for BashOutputWindow {
+    fn default() -> Self {
+        Self {
+            max_bytes: DEFAULT_MAX_BYTES,
+            max_lines: DEFAULT_MAX_LINES,
+        }
+    }
+}
+
+impl BashOutputWindow {
+    /// The window a session's `[limits]` settings resolve. Both accessors
+    /// already fall back to the compiled default, so a caller passes them
+    /// straight through.
+    fn from_settings(settings: &pa_core::settings::SettingsManager) -> Self {
+        Self {
+            max_bytes: settings.get_bash_output_bytes(),
+            max_lines: settings.get_bash_output_lines(),
+        }
+    }
+
+    /// The in-memory retention cap (TS `maxOutputBytes`): twice the shown
+    /// window, so the tail truncation always has enough collected to fill it.
+    fn stream_max_bytes(self) -> usize {
+        self.max_bytes.saturating_mul(2)
+    }
+}
 
 /// The user-bash slot: one command runs at a time (TS `_userBashRunning`),
 /// with a kill switch `abort_bash` pulls.
@@ -246,11 +280,13 @@ impl Worker {
             };
             let prefix = settings.settings().shell_command_prefix.clone();
             let shell_path = settings.settings().shell_path.clone();
+            let window = BashOutputWindow::from_settings(&settings);
             let end = run_bash(RunBash {
                 command: &command,
                 cwd: &cwd,
                 prefix: prefix.as_deref(),
                 shell_path: shell_path.as_deref(),
+                window,
                 cancellation: &cancellation,
                 on_chunk: Some((Arc::clone(&core), Arc::clone(&events))),
             })
@@ -356,15 +392,17 @@ impl Worker {
                 None,
             );
         };
-        let (cwd, prefix, shell_path) = {
+        let (cwd, prefix, shell_path, window) = {
             let core = self.core.lock().unwrap();
             let settings =
                 pa_core::settings::SettingsManager::create(&core.cwd, &self.config.agent_dir);
+            let window = BashOutputWindow::from_settings(&settings);
             let settings = settings.settings();
             (
                 core.cwd.clone(),
                 settings.shell_command_prefix.clone(),
                 settings.shell_path.clone(),
+                window,
             )
         };
         let command = command.to_string();
@@ -384,6 +422,7 @@ impl Worker {
             cwd: &cwd,
             prefix: prefix.as_deref(),
             shell_path: shell_path.as_deref(),
+            window,
             cancellation: &awaited.cancellation,
             // The awaited path emits nothing (TS passes no `onChunk`).
             on_chunk: None,
@@ -480,13 +519,16 @@ pub(crate) async fn run_bash_to_result(
     cwd: &str,
     prefix: Option<&str>,
     shell_path: Option<&str>,
+    settings: &pa_core::settings::SettingsManager,
     cancellation: &CancellationToken,
 ) -> serde_json::Value {
+    let window = BashOutputWindow::from_settings(settings);
     let end = run_bash(RunBash {
         command,
         cwd,
         prefix,
         shell_path,
+        window,
         cancellation,
         on_chunk: None,
     })
@@ -532,6 +574,8 @@ struct RunBash<'a> {
     cwd: &'a str,
     prefix: Option<&'a str>,
     shell_path: Option<&'a str>,
+    /// The `[limits]` output window this run's result keeps.
+    window: BashOutputWindow,
     cancellation: &'a CancellationToken,
     /// The streaming emit target for each sanitized chunk; `None` on
     /// the awaited path, which emits nothing.
@@ -548,6 +592,7 @@ struct OutputStream {
     retained_bytes: usize,
     total_bytes: usize,
     spill: OutputSpill,
+    window: BashOutputWindow,
     on_chunk: Option<(
         Arc<std::sync::Mutex<crate::worker::SessionCore>>,
         Arc<crate::worker::EventPump>,
@@ -561,6 +606,7 @@ impl Clone for OutputStream {
             retained_bytes: self.retained_bytes,
             total_bytes: self.total_bytes,
             spill: OutputSpill::new(),
+            window: self.window,
             on_chunk: self.on_chunk.clone(),
         }
     }
@@ -579,14 +625,15 @@ impl OutputStream {
             return;
         }
         self.total_bytes += text.len();
-        if self.total_bytes > DEFAULT_MAX_BYTES {
+        if self.total_bytes > self.window.max_bytes {
             self.spill.open(&self.chunks);
         }
         self.spill.write(&text);
         self.chunks.push(text.clone());
         self.retained_bytes += self.chunks.last().map(String::len).unwrap_or_default();
         // The in-memory window keeps the tail (TS `maxOutputBytes`).
-        while self.retained_bytes > STREAM_MAX_BYTES && self.chunks.len() > 1 {
+        let retained_cap = self.window.stream_max_bytes();
+        while self.retained_bytes > retained_cap && self.chunks.len() > 1 {
             let removed = self.chunks.remove(0);
             self.retained_bytes -= removed.len();
         }
@@ -665,6 +712,7 @@ async fn run_bash(run: RunBash<'_>) -> BashEnd {
         retained_bytes: 0,
         total_bytes: 0,
         spill: OutputSpill::new(),
+        window: run.window,
         on_chunk: run.on_chunk,
     }));
     // stdout and stderr merge into one stream (TS wires both pipes to the
@@ -740,7 +788,7 @@ async fn run_bash(run: RunBash<'_>) -> BashEnd {
             .clone_stream(),
     };
     let full_output = stream.chunks.join("");
-    let (output, truncated) = truncate_tail(&full_output);
+    let (output, truncated) = truncate_tail(&full_output, run.window);
     // A line-truncated run spills at settle even under the byte budget,
     // so the truncation notice can always name a full-output file.
     if truncated {
@@ -904,31 +952,34 @@ impl OutputSpill {
     }
 }
 
-/// Tail truncation (TS `truncateTail`): the last 2000 lines within 50KB
-/// win; an oversized last line keeps its tail, blank trailing lines permitting.
-fn truncate_tail(content: &str) -> (String, bool) {
+/// Tail truncation (TS `truncateTail`): the last `max_lines` lines within
+/// `max_bytes` win; an oversized last line keeps its tail, blank trailing lines
+/// permitting.
+fn truncate_tail(content: &str, window: BashOutputWindow) -> (String, bool) {
+    let max_bytes = window.max_bytes;
+    let max_lines = window.max_lines;
     let total_bytes = content.len();
     let lines: Vec<&str> = content.split('\n').collect();
     let total_lines = lines.len();
-    if total_lines <= DEFAULT_MAX_LINES && total_bytes <= DEFAULT_MAX_BYTES {
+    if total_lines <= max_lines && total_bytes <= max_bytes {
         return (content.to_string(), false);
     }
     let mut collected: Vec<&str> = Vec::new();
     let mut output_bytes = 0usize;
     for line in lines.iter().rev() {
-        if collected.len() >= DEFAULT_MAX_LINES {
+        if collected.len() >= max_lines {
             break;
         }
         let line_bytes = line.len() + usize::from(!collected.is_empty());
-        if output_bytes + line_bytes > DEFAULT_MAX_BYTES {
+        if output_bytes + line_bytes > max_bytes {
             // The oversized-line rescue: trailing blanks must not defeat
             // the rescue, so keep as many as the budget allows and unshift
             // the line's own tail.
             if collected.iter().all(|collected| collected.is_empty()) {
-                let kept_blanks = collected.len().min(DEFAULT_MAX_BYTES.saturating_sub(1));
-                let budget = DEFAULT_MAX_BYTES.saturating_sub(kept_blanks);
+                let kept_blanks = collected.len().min(max_bytes.saturating_sub(1));
+                let budget = max_bytes.saturating_sub(kept_blanks);
                 let truncated_line = truncate_string_to_bytes_from_end(line, budget);
-                let mut out = String::with_capacity(DEFAULT_MAX_BYTES);
+                let mut out = String::with_capacity(max_bytes);
                 out.push_str(&truncated_line);
                 for _ in 0..kept_blanks {
                     out.push('\n');
@@ -1032,6 +1083,38 @@ mod tests {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// `[limits] bashOutputLines` reaches a real run: the session's settings
+    /// window wins over the compiled 2000-line budget, and the kept text is the
+    /// newest lines.
+    #[tokio::test]
+    async fn a_session_limits_window_bounds_the_recorded_output() {
+        let cwd = tempfile::tempdir().expect("tempdir");
+        let worker = created_worker(cwd.path()).await;
+        std::fs::create_dir_all(&worker.config.agent_dir).expect("agent dir");
+        std::fs::write(
+            worker.config.agent_dir.join("settings.json"),
+            json!({ "limits": { "bashOutputLines": 3, "bashOutputBytes": 4096 } }).to_string(),
+        )
+        .expect("settings");
+        let response = worker
+            .dispatch(
+                "execute_bash_and_wait",
+                &json!({
+                    "activeSessionId": "bash-session",
+                    "command": "seq 1 10",
+                }),
+            )
+            .await;
+        assert!(response.success, "failed: {response:?}");
+        let data = response.data.expect("data");
+        assert_eq!(data["truncated"], json!(true));
+        assert_eq!(
+            data["output"],
+            json!("9\n10\n"),
+            "the newest max_lines lines win, not the default's 2000"
+        );
     }
 
     #[tokio::test]
@@ -1540,16 +1623,45 @@ mod tests {
 
     #[test]
     fn truncate_tail_keeps_the_tail_budget() {
-        let (content, truncated) = truncate_tail("one\ntwo\nthree\n");
+        let window = BashOutputWindow::default();
+        let (content, truncated) = truncate_tail("one\ntwo\nthree\n", window);
         assert!(!truncated);
         assert_eq!(content, "one\ntwo\nthree\n");
 
         // A long output keeps only its tail (the TS window).
         let big = "x".repeat(DEFAULT_MAX_BYTES + 10_000);
-        let (kept, truncated) = truncate_tail(&big);
+        let (kept, truncated) = truncate_tail(&big, window);
         assert!(truncated);
         assert!(kept.len() <= DEFAULT_MAX_BYTES);
         assert!(big.ends_with(&kept), "the tail wins");
+    }
+
+    /// `[limits] bashOutputBytes` / `bashOutputLines` win over the compiled TS
+    /// window: a tighter window truncates a run the default would have kept
+    /// whole, and the kept text is the newest bytes.
+    #[test]
+    fn a_tighter_limits_window_truncates_what_the_default_keeps() {
+        use std::fmt::Write as _;
+        let mut content = String::new();
+        for n in 0..100 {
+            let _ = writeln!(content, "line-{n:03}");
+        }
+        let (whole, truncated) = truncate_tail(&content, BashOutputWindow::default());
+        assert!(!truncated, "100 short lines fit the default window");
+        assert_eq!(whole, content);
+
+        // The trailing newline is its own empty split element and takes one
+        // line slot, so the newest three visible lines need `max_lines = 4`.
+        let tight = BashOutputWindow {
+            max_bytes: 50,
+            max_lines: 4,
+        };
+        let (kept, truncated) = truncate_tail(&content, tight);
+        assert!(truncated);
+        assert_eq!(
+            kept, "line-097\nline-098\nline-099\n",
+            "the newest lines win, not the default's 2000"
+        );
     }
 
     /// Readiness wait for a racing thread's entered signal: the signal is

@@ -266,6 +266,7 @@ pub fn kernel_provisioner(
     excluded_apis: &[String],
     session_artifact_dir: Option<std::path::PathBuf>,
     cell_timeout_ms: Option<u64>,
+    max_output_chars: Option<usize>,
     on_restore: Option<crate::kernel::provisioner::RestoreCallback>,
     on_background_work_settled: Option<crate::kernel::shared::BackgroundWorkSettledCallback>,
     on_unavailable_skills: Option<crate::kernel::provisioner::UnavailableSkillsCallback>,
@@ -321,6 +322,9 @@ pub fn kernel_provisioner(
             // The engine-resolved default cell time limit (`None`: daemonless;
             // the runtime bootstrap and state ops never arm it).
             cell_timeout_ms,
+            // `[limits] kernelOutputChars`: the session's cell output window;
+            // `None` keeps the compiled 64 KiB default.
+            max_output_chars,
             evidence_dir: session_artifact_dir,
             ready_gate,
             on_restore,
@@ -383,10 +387,12 @@ impl IpythonKernelProvisioner for KernelProvisioner {
             let signal = signal.map(crate::kernel::cancellation::AbortSignal::from_token);
             let manager = this.ensure(on_progress, signal).await?;
             let cell_timeout_ms = this.cell_timeout_ms();
+            let max_output_chars = this.max_output_chars();
             let evidence_dir = this.evidence_dir();
             Ok(Box::new(KernelManagerExecutor {
                 manager,
                 cell_timeout_ms,
+                max_output_chars,
                 evidence_dir,
             }) as Box<dyn KernelExecutor>)
         })
@@ -405,6 +411,9 @@ struct KernelManagerExecutor {
     manager: crate::kernel::manager::ReplKernelManager,
     /// The session's default cell time limit (`None`: never armed; `0`: disabled).
     cell_timeout_ms: Option<u64>,
+    /// The cell output window (`[limits] kernelOutputChars`); `None` keeps the
+    /// compiled default.
+    max_output_chars: Option<usize>,
     /// Where a clipped stdout/stderr keeps its original stream (`None` for an
     /// ephemeral session: the clip is then the only record).
     evidence_dir: Option<std::path::PathBuf>,
@@ -428,6 +437,9 @@ impl KernelExecutor for KernelManagerExecutor {
         // The evidence dir is the executor's own field (our side), so it must be
         // captured here before the async block moves `self` out of scope.
         let evidence_dir = self.evidence_dir.clone();
+        // `[limits] kernelOutputChars`: the session's cell window; `None` keeps
+        // the compiled default.
+        let max_output_chars = self.max_output_chars;
         // The session decides whether cells are limited at all; the model's
         // per-call `timeout` only replaces the default limit.
         let cell_timeout_ms = self
@@ -442,6 +454,7 @@ impl KernelExecutor for KernelManagerExecutor {
                         signal: signal.map(crate::kernel::cancellation::AbortSignal::from_token),
                         on_late_sent_agent_message,
                         cell_timeout_ms,
+                        max_output_chars,
                         evidence_dir,
                         ..Default::default()
                     },

@@ -160,6 +160,13 @@ impl IpythonKernelProvisioner {
         self.inner.options.cell_timeout_ms
     }
 
+    /// The cell output window (`[limits] kernelOutputChars`), or `None` for
+    /// the compiled default.
+    #[must_use]
+    pub fn max_output_chars(&self) -> Option<usize> {
+        self.inner.options.max_output_chars
+    }
+
     /// Where a clipped stdout/stderr keeps its original stream.
     #[must_use]
     pub fn evidence_dir(&self) -> Option<PathBuf> {

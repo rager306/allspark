@@ -19,6 +19,10 @@ pub struct IpythonKernelProvisionerOptions {
     /// `timeout` argument replaces it. The runtime bootstrap and internal
     /// state ops never arm it.
     pub cell_timeout_ms: Option<u64>,
+    /// Characters one cell's stdout/stderr/result keeps (`[limits]
+    /// kernelOutputChars`). `None` keeps the compiled default; the overflow is
+    /// spilled and named by a marker.
+    pub max_output_chars: Option<usize>,
     pub env: HashMap<String, String>,
     /// Command prefix prepended to every kernel `bash()` invocation.
     pub command_prefix: Option<String>,

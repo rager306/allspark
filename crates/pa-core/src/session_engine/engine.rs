@@ -401,6 +401,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // Captured before `settings` moves into the resource loader: the
     // default cell time limit (default 60s, `0` disables).
     let python_cell_timeout_ms = settings.get_python_cell_timeout_ms();
+    let kernel_output_chars = settings.get_kernel_output_chars();
     let web_search_provider = settings.get_web_search_provider();
     let (mcp_skill_overrides, mcp_generic_servers, built_manager) =
         mcp_gating(&settings, config.agent_dir.clone()).await?;
@@ -655,6 +656,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         &resolved_profile.excluded_apis,
         session_artifact_dir,
         cell_timeout_ms,
+        Some(kernel_output_chars),
         on_restore,
         config.on_background_work_settled.clone(),
         on_unavailable_skills,
