@@ -418,6 +418,23 @@ fn models_json_still_wins_over_the_fork_catalog() {
 }
 
 #[test]
+fn a_broken_fork_catalog_names_its_own_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let models_path = dir.path().join("models.json");
+    std::fs::write(&models_path, r#"{ "providers": {} }"#).unwrap();
+    let fork_dir = dir.path().join("models");
+    std::fs::create_dir_all(&fork_dir).unwrap();
+    std::fs::write(fork_dir.join("fork-models.v1.json"), "{ not json").unwrap();
+    let registry = ModelRegistry::create(auth_with(&serde_json::json!({})), &models_path);
+    let error = registry
+        .get_error()
+        .expect("a broken fork catalog reports an error");
+    assert!(error.starts_with("Invalid fork-models.v1.json"), "{error}");
+    assert!(!error.contains("Invalid models.json"), "{error}");
+    assert!(!registry.get_all().is_empty(), "built-ins still list");
+}
+
+#[test]
 fn models_json_error_keeps_built_ins() {
     let dir = tempfile::tempdir().unwrap();
     let models_path = dir.path().join("models.json");

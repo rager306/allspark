@@ -12,7 +12,9 @@ use crate::auth::manager::AuthStorage;
 use crate::auth::types::{AuthCredential, PRIME_INFERENCE_PROVIDER_ID};
 
 use super::catalog_chain;
-use super::custom::{apply_model_override, load_custom_models, merge_compat, CustomModelsResult};
+use super::custom::{
+    apply_model_override, load_custom_models_labeled, merge_compat, CustomModelsResult,
+};
 use super::prime_inference::is_private_prime_inference_model;
 use super::private_auth::{
     fetch_authorized_private_prime_inference_models, is_offline_mode_enabled,
@@ -667,7 +669,8 @@ impl ModelRegistry {
                 ..Default::default()
             };
         };
-        let mut result = load_custom_models(&content, built_in_providers, built_in_defaults);
+        let mut result =
+            load_custom_models_labeled(&content, label, built_in_providers, built_in_defaults);
         // Provider/model request config from the parsed document.
         if result.error.is_none() {
             if let Ok(config) =
