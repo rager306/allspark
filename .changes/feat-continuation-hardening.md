@@ -31,3 +31,4 @@
 - A malformed fork catalog now reports `Invalid fork-models.v1.json` instead of mislabeling the file as `models.json`; the built-in models still list.
 - `retry.provider.timeoutMs` now bounds each daemon provider request; an unset value keeps the 300 s stall bound, and the print path keeps the default.
 - Fork models are now data: the shipped `crates/pa-ai/assets/fork-models.v1.json` is the catalog the binary serves, so a new fork model is an asset edit instead of a Rust edit and a rebuild. The `$AGENT_DIR/models/fork-models.v1.json` override and `models.json` still layer on top.
+- The advisory tool arbiter now covers read-only Python cells: `open`/glob/tree walks and a `subprocess` grep/find get a script-first note naming `graph.search`/`lsp.find_symbol` and the payoff (return only the values you need). Writes and deletes never get the Python note.

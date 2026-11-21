@@ -15,6 +15,11 @@
 //!   the judge one `choice` (`use_specialized | use_bash | unsure`) over the
 //!   command plus the table's suggestion; a confident `use_specialized`
 //!   (above [`STRONG_CONFIDENCE`]) strengthens the note's wording.
+//! - **Coverage spans the shell and the Python cell.** A cell's `bash()`
+//!   command keeps the table/judge path. A read-only Python habit (`open`,
+//!   glob/tree walks, a `subprocess` grep/find) gets a script-first note
+//!   naming the same specialized tools and the payoff (return only the values);
+//!   writes and deletes veto the Python arm.
 //! - **Never blocking, never substituting.** The command always runs exactly
 //!   as written and the result is the command's own; the note is appended
 //!   *after* it (`[tool-arbiter] ... nothing was blocked; the call ran
@@ -326,6 +331,113 @@ pub fn suggest(command: &str, available: ToolAvailability) -> Option<Suggestion>
     None
 }
 
+/// The Python-habit rule id: a read-only lookup reconstructed in a cell.
+const PYTHON_READ_TO_GRAPH: &str = "python-read-to-graph";
+const PYTHON_READ_TO_LSP: &str = "python-read-to-lsp";
+
+/// The deterministic Python layer: a read-only file/tree lookup in the cell's
+/// source points at the code graph (or `lsp` when `graph` is absent). Writes
+/// veto the note: the contract says only read-only work is steered, so the
+/// arbiter never tells the model to edit from a script.
+#[must_use]
+pub fn suggest_python(code: &str, available: ToolAvailability) -> Option<Suggestion> {
+    if code.trim().is_empty() || python_writes(code) || !python_reads(code) {
+        return None;
+    }
+    let (tool, rule, hint) = if available.graph {
+        (
+            SuggestedTool::GraphSearch,
+            PYTHON_READ_TO_GRAPH,
+            "the code graph answers a read-only code lookup with definitions, callers and \
+             file:line instead of a Python file walk",
+        )
+    } else if available.lsp {
+        (
+            SuggestedTool::LspFindSymbol,
+            PYTHON_READ_TO_LSP,
+            "`lsp` `find_symbol` resolves a code symbol through the language server instead \
+             of a Python file walk",
+        )
+    } else {
+        return None;
+    };
+    Some(Suggestion { tool, rule, hint })
+}
+
+/// Whether the cell reads a file or walks a tree with Python. Deliberately a
+/// substring table, not a Python parser: the note is advisory and must cost
+/// nothing on the tool-result path.
+fn python_reads(code: &str) -> bool {
+    const READ_MARKERS: &[&str] = &[
+        "open(",
+        ".read_text(",
+        ".read_bytes(",
+        ".read(",
+        "os.walk(",
+        "os.listdir(",
+        "os.scandir(",
+        "glob.glob(",
+        "glob.iglob(",
+        ".rglob(",
+        ".glob(",
+        ".iterdir(",
+        "json.load(",
+    ];
+    READ_MARKERS.iter().any(|marker| code.contains(marker))
+        || (code.contains("subprocess")
+            && ["grep", "rg", "ripgrep", "find", "fd"]
+                .iter()
+                .any(|program| code.contains(program)))
+}
+
+/// Whether the cell writes, deletes or runs a state-changing command. A veto:
+/// an edit belongs in `edit`, never in a script-first hint.
+fn python_writes(code: &str) -> bool {
+    const WRITE_MARKERS: &[&str] = &[
+        "write_text(",
+        "write_bytes(",
+        ".unlink(",
+        "os.remove(",
+        "os.unlink(",
+        "shutil.rmtree(",
+        "shutil.move(",
+        "os.rename(",
+        ".mkdir(",
+        ".touch(",
+        "os.system(",
+    ];
+    if WRITE_MARKERS.iter().any(|marker| code.contains(marker)) {
+        return true;
+    }
+    code.contains("open(")
+        && [
+            ", \"w\"",
+            ", 'w'",
+            ",\"w\"",
+            ",'w'",
+            ", \"a\"",
+            ", 'a'",
+            ",\"a\"",
+            ",'a'",
+            ", \"x\"",
+            ", 'x'",
+            ",\"x\"",
+            ",'x'",
+            ", \"r+\"",
+            ", 'r+'",
+            "mode=\"w\"",
+            "mode='w'",
+            "mode=\"a\"",
+            "mode='a'",
+            "mode=\"x\"",
+            "mode='x'",
+            "mode=\"r+\"",
+            "mode='r+'",
+        ]
+        .iter()
+        .any(|mode| code.contains(mode))
+}
+
 /// The line's primary segment: everything before the first top-level `|`,
 /// `;` or `&` (quotes respected, so `echo "a | b"` stays one segment). A
 /// pipeline's later stages are filters over the first one - the arbiter
@@ -481,6 +593,19 @@ pub fn note_text(suggestion: Suggestion, verdict: Option<ArbiterVerdict>) -> Str
             suggestion.tool_name()
         ),
     }
+}
+
+/// The script-first wording for a read-only Python cell: correct the *way*,
+/// not the tool name. It names the specialized surface and the payoff
+/// criterion (return only the values, not the whole file or result list).
+#[must_use]
+pub fn python_note_text(suggestion: Suggestion) -> String {
+    format!(
+        "{NOTE_PREFIX}hint: this cell did a read-only lookup in Python. Next time call \
+         `{}` and return only the values you need; a cell that reads whole files or whole \
+         result lists has saved nothing. ({NOT_BLOCKED})",
+        suggestion.tool_name()
+    )
 }
 
 /// Build the one-question judgment for `command` (a `choice` over the
@@ -739,6 +864,31 @@ impl ToolArbiter {
             suggestion,
             verdict,
             text: note_text(suggestion, verdict),
+        })
+    }
+
+    /// The cell-level note: the bash rule wins when the cell's `bash()` call
+    /// matched one; otherwise a read-only Python habit gets the script-first
+    /// correction. Table-only for the Python arm (no judge: the state is a
+    /// cell, not a shell command) and capped by the same per-rule budget.
+    pub async fn note_for_cell(
+        &self,
+        code: &str,
+        bash_command: Option<&str>,
+    ) -> Option<ArbiterNote> {
+        if let Some(command) = bash_command {
+            if let Some(note) = self.note(command).await {
+                return Some(note);
+            }
+        }
+        let suggestion = suggest_python(code, self.availability())?;
+        if !self.claim_note(suggestion.rule) {
+            return None;
+        }
+        Some(ArbiterNote {
+            suggestion,
+            verdict: None,
+            text: python_note_text(suggestion),
         })
     }
 }
@@ -1035,6 +1185,87 @@ mod tests {
         }
         // The call was never blocked or rewritten: the note says it ran.
         assert!(plain.contains("ran unchanged"), "{plain}");
+    }
+
+    #[test]
+    fn a_read_only_python_cell_gets_the_script_first_hint() {
+        let suggestion =
+            suggest_python("print(open('src/lib.rs').read())", ToolAvailability::all())
+                .expect("a read-only cell fires");
+        assert_eq!(suggestion.rule, PYTHON_READ_TO_GRAPH);
+        assert_eq!(suggestion.tool, SuggestedTool::GraphSearch);
+        let text = python_note_text(suggestion);
+        assert!(text.starts_with(NOTE_PREFIX), "{text}");
+        assert!(text.contains("read-only lookup in Python"), "{text}");
+        assert!(text.contains("graph.search"), "{text}");
+        assert!(text.contains("return only the values"), "{text}");
+        assert!(text.contains(NOT_BLOCKED), "{text}");
+        // With graph absent, the same habit points at lsp; with both absent,
+        // the arbiter stays silent.
+        let lsp_only = suggest_python(
+            "open('x').read()",
+            ToolAvailability {
+                graph: false,
+                lsp: true,
+                edit: false,
+            },
+        )
+        .expect("lsp fires");
+        assert_eq!(lsp_only.rule, PYTHON_READ_TO_LSP);
+        assert_eq!(lsp_only.tool, SuggestedTool::LspFindSymbol);
+        assert!(suggest_python("open('x').read()", ToolAvailability::NONE).is_none());
+    }
+
+    #[test]
+    fn python_writes_and_non_reads_are_not_steered() {
+        for code in [
+            "open('x', 'w').write('y')",
+            "Path('x').write_text('y')",
+            "shutil.rmtree('x')",
+            "subprocess.run(['sed', '-i', 's/a/b/', 'x'])",
+            "print(1)",
+            "await bash('grep -rn x src')",
+        ] {
+            assert!(
+                suggest_python(code, ToolAvailability::all()).is_none(),
+                "{code}"
+            );
+        }
+        assert!(suggest_python(
+            "subprocess.run(['rg', 'foo', 'src'])",
+            ToolAvailability::all()
+        )
+        .is_some());
+        assert!(suggest_python("os.walk('src')", ToolAvailability::all()).is_some());
+    }
+
+    #[tokio::test]
+    async fn a_python_note_is_capped_and_bash_wins_over_it() {
+        let arbiter = armed(None);
+        let note = arbiter
+            .note_for_cell("open('x').read()", None)
+            .await
+            .expect("the Python habit fires");
+        assert_eq!(note.suggestion.rule, PYTHON_READ_TO_GRAPH);
+        assert_eq!(note.to_json()["judged"], false);
+        let bash = arbiter
+            .note_for_cell("open('x').read()", Some("grep -rn foo src"))
+            .await
+            .expect("the bash rule wins");
+        assert_eq!(bash.suggestion.rule, "grep-to-graph");
+        for attempt in 1..MAX_NOTES_PER_RULE {
+            assert!(
+                arbiter
+                    .note_for_cell("open('x').read()", None)
+                    .await
+                    .is_some(),
+                "note {attempt} of the Python budget must still be emitted"
+            );
+        }
+        assert!(arbiter
+            .note_for_cell("open('x').read()", None)
+            .await
+            .is_none());
     }
 
     #[test]

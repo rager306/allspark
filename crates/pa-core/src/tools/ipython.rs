@@ -507,11 +507,18 @@ pub async fn execute_ipython(
     let (r, kernel_restarted) = result.map_err(|err| anyhow::anyhow!("{}", err.message()))?;
 
     // FORK-ONLY (jev Phase 2): the advisory arbiter note over the cell's
-    // `bash()` command. Fail-open: no arbiter, no rule, or a judge failure
-    // leaves the cell's own text byte-identical.
-    let arbiter_note = match (&options.arbiter, &r.bash_commands) {
-        (Some(arbiter), Some(bash)) => arbiter.note(&bash.first).await,
-        _ => None,
+    // `bash()` command and its read-only Python habits. Fail-open: no arbiter,
+    // no rule, or a judge failure leaves the cell's own text byte-identical.
+    let arbiter_note = match &options.arbiter {
+        Some(arbiter) => {
+            arbiter
+                .note_for_cell(
+                    code,
+                    r.bash_commands.as_ref().map(|bash| bash.first.as_str()),
+                )
+                .await
+        }
+        None => None,
     };
 
     let mut text = format_execute_text(&r, r.background_output.as_deref(), kernel_restarted);
@@ -860,6 +867,47 @@ mod tests {
             "the cell's own row stands"
         );
         assert!(!result.is_error);
+    }
+
+    /// A read-only Python habit gets the script-first note; the cell still ran
+    /// unchanged and the details name the Python rule.
+    #[tokio::test]
+    async fn a_python_read_cell_gets_the_script_first_note() {
+        let options = arbiter_options(None);
+        let result = execute_ipython(&options, "print(open('x').read())", None, None, None, None)
+            .await
+            .expect("the cell succeeds");
+        let text = text_of(&result);
+        assert!(text.contains("[tool-arbiter]"), "{text}");
+        assert!(text.contains("read-only lookup in Python"), "{text}");
+        assert!(text.contains("graph.search"), "{text}");
+        assert!(text.contains("return only the values"), "{text}");
+        let details = result.details.expect("details");
+        assert_eq!(details["toolArbiter"]["rule"], "python-read-to-graph");
+        assert_eq!(details["toolArbiter"]["judged"], false);
+        assert!(!result.is_error);
+    }
+
+    /// A write is never steered into a script: the cell gets no note.
+    #[tokio::test]
+    async fn a_python_write_cell_gets_no_note() {
+        let options = arbiter_options(None);
+        let result = execute_ipython(
+            &options,
+            "open('x', 'w').write('y')",
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("the cell succeeds");
+        assert!(!text_of(&result).contains("[tool-arbiter]"));
+        assert!(result
+            .details
+            .expect("details")
+            .get("toolArbiter")
+            .is_none());
     }
 
     /// No `bash()` in the cell (or a `bash()` that matches no rule): nothing
