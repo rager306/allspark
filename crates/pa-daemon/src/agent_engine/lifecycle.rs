@@ -197,6 +197,7 @@ impl AgentSessionEngine {
             quota_parked_this_run: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             autonomous_driver,
             plan_store: pa_core::session_engine::plan::PlanStore::default(),
+            plan_persist_sink: std::sync::Mutex::new(None),
             autonomous_driver_default: std::sync::atomic::AtomicBool::new(true),
             held_autonomous_continuation: std::sync::Mutex::new(None),
             autonomous_admission: std::sync::Mutex::new(None),
@@ -359,6 +360,16 @@ impl AgentSessionEngine {
         }
     }
 
+    /// Install the worker's durable plan appender. The daemon build's core
+    /// session manager is in-memory, so without this the plan rows exist only
+    /// for the current build and a revive loses them.
+    pub(crate) fn set_plan_persist_sink(&self, sink: super::PlanPersistSink) {
+        *self
+            .plan_persist_sink
+            .lock()
+            .expect("plan persist sink lock") = Some(sink);
+    }
+
     /// Record every model plan change as a `session_plan_state` custom entry,
     /// so the plan survives a compaction that drops the `update_plan` call.
     ///
@@ -368,9 +379,20 @@ impl AgentSessionEngine {
     /// the next update rewrites the whole plan anyway.
     fn install_plan_persist_hook(&self, built: &Arc<CoreSessionEngine>) {
         let persistence = built.session.shared_persistence();
+        let sink = self
+            .plan_persist_sink
+            .lock()
+            .expect("plan persist sink lock")
+            .clone();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
         tokio::spawn(async move {
             while let Some(value) = rx.recv().await {
+                if let Some(sink) = sink.clone() {
+                    if let Err(error) = tokio::task::spawn_blocking(move || sink(value)).await {
+                        eprintln!("pa-daemon: plan state persist task failed: {error}");
+                    }
+                    continue;
+                }
                 let written = {
                     let mut session = persistence.lock().await;
                     session

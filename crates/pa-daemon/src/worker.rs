@@ -97,6 +97,29 @@ use crate::session_store::{session_file_name, SessionFile};
 
 use crate::types::{AgentConnectionState, SessionActionSnapshot};
 
+/// The worker's durable append for the session plan. The daemon build's core
+/// session manager is in-memory, so the plan hook must write through the
+/// worker's `SessionFile` to survive a revive.
+fn plan_persist_sink(core: Arc<Mutex<SessionCore>>) -> crate::agent_engine::PlanPersistSink {
+    Arc::new(move |value| {
+        let mut core = core
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(store) = core.store.as_mut() else {
+            return;
+        };
+        if let Err(error) = store.persist_entry(
+            "custom",
+            json!({
+                "customType": pa_core::session_engine::plan::PLAN_STATE_CUSTOM_TYPE,
+                "data": value,
+            }),
+        ) {
+            eprintln!("pa-daemon: plan state persist failed: {error:#}");
+        }
+    })
+}
+
 pub struct Worker {
     pub(crate) config: WorkerConfig,
     /// The bind-time filesystem identity of this worker's own socket file
@@ -476,6 +499,7 @@ impl Worker {
                 // The in-run autonomous continuation seam: the hook holds
                 // itself weakly through the registered arc.
                 concrete.register_arc();
+                concrete.set_plan_persist_sink(plan_persist_sink(Arc::clone(&core)));
                 concrete
                     .set_rlm_usage_store(std::sync::Arc::new(CoreUsageStore(Arc::clone(&core))));
                 let sink_core = Arc::clone(&core);
