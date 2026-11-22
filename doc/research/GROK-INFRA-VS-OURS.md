@@ -1,6 +1,6 @@
 # Grok-build test infrastructure vs ours — item-by-item, with the red-first test for each gap
 
-Date: 2026-10-24. Read-only survey of `/root/prime-agent` (allspark fork). Nothing was built, run,
+Date: 2026-10-24. Read-only survey of `/root/allspark` (allspark fork). Nothing was built, run,
 edited or committed; the only write is this file. Every claim about us carries `file:line`, verified
 with `rg` in this tree. Claims about Grok are the task brief's summary and are marked `grok:brief`;
 I did not read the Grok tree, so anything of their shape is quoted as given.

@@ -9,7 +9,7 @@
 
 ## Native verification for the root queue
 
-Run from `/root/prime-agent` with the root's Rust 1.98.1 environment:
+Run from `/root/allspark` with the root's Rust 1.98.1 environment:
 
 ```sh
 cargo test -p pa-jev --lib wire::tests

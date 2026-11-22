@@ -6,6 +6,8 @@
 //! so the fork carries no JSON asset and no schema surface upstream must merge.
 //! Extend the table rather than branching the spawn path.
 
+use std::path::{Path, PathBuf};
+
 /// One language-server entry.
 ///
 /// Owned strings rather than `&'static str`: `lsp.servers` lets an operator override a
@@ -16,7 +18,7 @@
 pub struct ServerConfig {
     /// Stable name used in `lsp(action="status")` and error text.
     pub name: String,
-    /// Executable to spawn (resolved on `PATH`).
+    /// Executable to spawn (a resolved path, or a name resolved on `PATH`).
     pub command: String,
     /// Fixed argv passed before the transport arguments.
     pub args: Vec<String>,
@@ -28,6 +30,71 @@ pub struct ServerConfig {
     pub language_id: String,
 }
 
+/// The rust-analyzer command for this install.
+///
+/// `rust-analyzer` on `PATH` is usually the rustup shim, and the shim only
+/// knows the ACTIVE toolchain. A host whose active toolchain omits the
+/// component (the fork hit this with 1.99.1 while `stable` carried it) answers
+/// `Unknown binary 'rust-analyzer'`; the spawn then fails with the opaque
+/// `service stopped`. Prefer a toolchain that actually ships the binary.
+fn rust_analyzer_command() -> String {
+    rust_analyzer_in_roots(&rustup_toolchains_roots())
+        .unwrap_or_else(|| "rust-analyzer".to_string())
+}
+
+/// Every rustup toolchains directory this install may use: `RUSTUP_HOME`, the
+/// active `$HOME/.rustup`, and the real user's `.rustup` above an isolated
+/// allspark home (`HOME=~/.allspark-home`). The last one matters because the
+/// launcher pins `HOME` while rustup's installed toolchains may live in the
+/// original home.
+fn rustup_toolchains_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(rustup_home) = std::env::var_os("RUSTUP_HOME") {
+        roots.push(PathBuf::from(rustup_home).join("toolchains"));
+    }
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        roots.push(home.join(".rustup").join("toolchains"));
+        if let Some(parent) = home.parent() {
+            roots.push(parent.join(".rustup").join("toolchains"));
+        }
+    }
+    roots.dedup();
+    roots
+}
+
+fn rust_analyzer_in_roots(roots: &[PathBuf]) -> Option<String> {
+    roots
+        .iter()
+        .find_map(|root| rust_analyzer_in_toolchains(root))
+}
+
+/// The first installed toolchain that ships `rust-analyzer`, preferring
+/// `stable`, then `beta`, then `nightly`, then the rest.
+fn rust_analyzer_in_toolchains(toolchains: &Path) -> Option<String> {
+    let mut names: Vec<String> = std::fs::read_dir(toolchains)
+        .ok()?
+        .filter_map(|entry| entry.ok()?.file_name().to_str().map(str::to_string))
+        .collect();
+    names.sort_by_key(|name| {
+        let rank = if name.starts_with("stable") {
+            0
+        } else if name.starts_with("beta") {
+            1
+        } else if name.starts_with("nightly") {
+            2
+        } else {
+            3
+        };
+        (rank, std::cmp::Reverse(name.clone()))
+    });
+    names.into_iter().find_map(|name| {
+        let binary = toolchains.join(name).join("bin").join("rust-analyzer");
+        binary
+            .is_file()
+            .then(|| binary.to_string_lossy().into_owned())
+    })
+}
+
 /// The built-in server table. Order is the tie-break for ambiguous extensions
 /// (first match wins), so keep the more specific entries first.
 #[must_use]
@@ -35,7 +102,7 @@ pub fn builtin_servers() -> Vec<ServerConfig> {
     vec![
         ServerConfig {
             name: "rust-analyzer".to_string(),
-            command: "rust-analyzer".to_string(),
+            command: rust_analyzer_command(),
             args: vec![],
             extensions: vec![".rs".to_string()],
             root_markers: vec!["Cargo.toml".to_string()],
@@ -287,6 +354,52 @@ mod tests {
         );
         // With no overrides the table is exactly the built-ins.
         assert_eq!(resolve_servers(None).len(), builtin_servers().len());
+    }
+
+    #[test]
+    fn rust_analyzer_prefers_a_toolchain_that_ships_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // The active toolchain has the component missing; stable ships it.
+        std::fs::create_dir_all(root.join("1.99.1-x86_64-unknown-linux-gnu/bin")).unwrap();
+        let stable = root.join("stable-x86_64-unknown-linux-gnu/bin/rust-analyzer");
+        std::fs::create_dir_all(stable.parent().unwrap()).unwrap();
+        std::fs::write(&stable, "").unwrap();
+        assert_eq!(
+            rust_analyzer_in_toolchains(root),
+            Some(stable.to_string_lossy().into_owned()),
+            "the shim's active toolchain is skipped when another ships the binary"
+        );
+        // A second non-stable toolchain is still usable when stable is absent.
+        let older = root.join("1.99.0-x86_64-unknown-linux-gnu/bin/rust-analyzer");
+        std::fs::create_dir_all(older.parent().unwrap()).unwrap();
+        std::fs::write(&older, "").unwrap();
+        assert_eq!(
+            rust_analyzer_in_toolchains(root),
+            Some(stable.to_string_lossy().into_owned()),
+            "stable wins over a versioned toolchain"
+        );
+        std::fs::remove_file(&stable).unwrap();
+        assert_eq!(
+            rust_analyzer_in_toolchains(root),
+            Some(older.to_string_lossy().into_owned())
+        );
+        assert_eq!(rust_analyzer_in_toolchains(&root.join("missing")), None);
+    }
+
+    #[test]
+    fn the_builtin_table_uses_the_resolved_rust_analyzer_binary() {
+        let roots = rustup_toolchains_roots();
+        let Some(expected) = rust_analyzer_in_roots(&roots) else {
+            return;
+        };
+        let command = builtin_servers()
+            .into_iter()
+            .find(|server| server.name == "rust-analyzer")
+            .expect("the rust-analyzer entry")
+            .command;
+        assert_eq!(command, expected, "the spawn must use a binary that exists");
+        assert!(Path::new(&command).is_file(), "{command}");
     }
 
     #[test]

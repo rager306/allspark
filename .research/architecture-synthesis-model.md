@@ -453,7 +453,7 @@ ruvector даёт **готовые Rust-крейты** для того, что c
 
 ## 19. ⚠️ КРИТИЧНОЕ ОГРАНИЧЕНИЕ: forbid(unsafe_code)
 
-`/root/prime-agent/Cargo.toml:49`: **`unsafe_code = "forbid"`** (workspace lints).
+`/root/allspark/Cargo.toml:49`: **`unsafe_code = "forbid"`** (workspace lints).
 Все крейты форка — pedantic-clean, unsafe запрещён.
 
 | Крейт | unsafe | Собирается в prime? |

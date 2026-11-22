@@ -739,7 +739,7 @@ daemon half; `--self-test` covers the install half, which is what failed here.
 
 ## Appendix A — reproduction of every measurement (commands as run)
 
-All scratch output lived under `/root/prime-agent/.tmp` (nothing outside the repo, no
+All scratch output lived under `/root/allspark/.tmp` (nothing outside the repo, no
 daemon touched, no `install`/`update` invoked).
 
 ```bash

@@ -265,3 +265,65 @@ renamed test and a reverted commit as coverage.
 passes, a fake entry fails, and every shape the document is allowed to cite is
 accepted. One probe proves the test runs, not that it discriminates.
 
+## 13. Long-lived cells and the wrong edit surface
+
+**Seen:** 2026-11-21, while restoring repo context and fixing durable plan state.
+
+- Nine `python_repl` cells hit the 60 s interrupt while waiting on builds or tests.
+  **Rule:** start long commands as background handles, keep working on independent
+  reads, and collect on the completion notification; do not `sleep()` or poll a
+  build in a cell.
+- The previous session logged 40 Python tracebacks, mostly cheap type/name errors
+  in scratch code. **Rule:** assign typed results to variables and check the
+  daemon store's shape (`SessionEntry.fields` is flattened JSON) before writing a
+  test oracle against `pa_types::FileEntry`.
+- The user had to name the edit surface: edits go through the native `edit` engine
+  (`replace`, `apply_patch`, `hashline`), and Python is for reading, searching, and
+  parsing. **Rule:** a file change is an `edit` call; `cargo fmt` is the only
+  command that rewrites.
+- Three `graph trace` failures named `project_store::ProjectRecorder::sync`; the
+  suffix resolver was fixed in fork.020. **Rule:** after `graph.search`, use the
+  resolved path; a failed trace is not proof the symbol is absent.
+
+## 14. A PATH tool that is a shim for a toolchain without the tool
+
+**Seen:** 2026-11-21. `lsp.find_referencing_symbols` failed with the opaque
+`initialize failed: service stopped`, then backed rust-analyzer off for 180 s.
+The binary on `PATH` was the rustup shim; the active toolchain (1.99.1) did not
+ship `rust-analyzer`, while `stable` and `1.99.0` did. The spawn error was a shim
+message ("Unknown binary") that the LSP client discarded on `stderr = null`.
+
+**Caught by:** running `rust-analyzer --version` directly, then scanning
+`~/.rustup/toolchains/*/bin/rust-analyzer`.
+
+**Rule:** resolve a tool by what the current environment actually provides, not
+by the first name on `PATH`. For rustup tools, check `RUSTUP_HOME`, the active
+`$HOME/.rustup`, and the real home's `.rustup` when `HOME` is isolated; keep a
+clear PATH fallback. A child process's stderr is diagnostic evidence, not noise:
+pipe it into the spawn error instead of discarding it.
+
+## 15. A test I wrote asserted the wrong string shape, twice
+
+**Seen:** 2026-11-21, the `[limits]` slice. Two self-inflicted failures, both in
+tests I had just written.
+
+1. `truncate_tail` splits on `'\n'`; a stream that ends with a newline yields a
+   final EMPTY element that consumes one `max_lines` slot. With `max_lines = 3`
+   over `seq 1 10` the kept text is `"9\n10\n"`, not `"8\n9\n10"`. My first
+   assertion expected the second.
+2. The same off-by-one hit the unit test: `max_lines = 3`, `max_bytes = 50` over
+   100 generated lines keeps two visible lines, not three.
+
+**Caught by:** running the test and reading the actual `left`/`right`, then
+simulating the exact algorithm in a REPL cell before rewriting the assertion.
+
+**Rule:** when an assertion fails on a string shape, reproduce the function's
+algorithm on a tiny input in the REPL and read what it returns; do not re-guess
+the expected string. A line-counting test must account for the trailing empty
+element (`n` visible lines need `max_lines = n + 1` when the stream ends with a
+newline). Record the shape as a memory so the next slice does not repeat it.
+
+**Also seen in the same slice:** a clippy `format_collect` from
+`.map(|n| format!(...)).collect::<String>()` — `writeln!` into a `String` is the
+form the lint wants. Run clippy on the new test code, not only the production
+code.

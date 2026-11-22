@@ -131,6 +131,47 @@ impl SettingsManager {
             .unwrap_or_default()
     }
 
+    /// Per-rule note budget (`jev.toolArbiterMaxNotes`, default 3).
+    #[must_use]
+    pub fn get_jev_tool_arbiter_max_notes(&self) -> u32 {
+        self.merged
+            .jev
+            .as_ref()
+            .and_then(|jev| jev.tool_arbiter_max_notes)
+            .filter(|notes| *notes > 0)
+            .map_or(crate::jev::tool_arbiter::MAX_NOTES_PER_RULE, |notes| {
+                u32::try_from(notes).unwrap_or(u32::MAX)
+            })
+    }
+
+    /// Per-call judgment bound (`jev.toolArbiterTimeoutMs`, default 2500).
+    #[must_use]
+    pub fn get_jev_tool_arbiter_timeout_ms(&self) -> u64 {
+        self.merged
+            .jev
+            .as_ref()
+            .and_then(|jev| jev.tool_arbiter_timeout_ms)
+            .filter(|timeout| *timeout > 0)
+            .unwrap_or(
+                u64::try_from(crate::jev::tool_arbiter::ARBITER_TIMEOUT.as_millis())
+                    .unwrap_or(u64::MAX),
+            )
+    }
+
+    /// Command characters in the judgment state (`jev.toolArbiterMaxCommandChars`,
+    /// default 400).
+    #[must_use]
+    pub fn get_jev_tool_arbiter_max_command_chars(&self) -> usize {
+        self.merged
+            .jev
+            .as_ref()
+            .and_then(|jev| jev.tool_arbiter_max_command_chars)
+            .filter(|chars| *chars > 0)
+            .map_or(crate::jev::tool_arbiter::MAX_COMMAND_CHARS, |chars| {
+                usize::try_from(chars).unwrap_or(usize::MAX)
+            })
+    }
+
     /// The judgment answer cache gate (`jev.cache.enabled`, default on).
     #[must_use]
     pub fn get_jev_cache_enabled(&self) -> bool {

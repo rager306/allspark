@@ -3,12 +3,12 @@
     Blocking waiting for file lock on package cache
     Blocking waiting for file lock on package cache
     Blocking waiting for file lock on build directory
-   Compiling pa-ast v0.10.1-beta.35 (/root/prime-agent/crates/pa-ast)
-   Compiling pa-ai v0.10.1-beta.35 (/root/prime-agent/crates/pa-ai)
-   Compiling pa-agent v0.10.1-beta.35 (/root/prime-agent/crates/pa-agent)
-   Compiling pa-edit v0.10.1-beta.35 (/root/prime-agent/crates/pa-edit)
-   Compiling pa-lsp v0.10.1-beta.35 (/root/prime-agent/crates/pa-lsp)
-   Compiling pa-models v0.10.1-beta.35 (/root/prime-agent/crates/pa-models)
+   Compiling pa-ast v0.10.1-beta.35 (/root/allspark/crates/pa-ast)
+   Compiling pa-ai v0.10.1-beta.35 (/root/allspark/crates/pa-ai)
+   Compiling pa-agent v0.10.1-beta.35 (/root/allspark/crates/pa-agent)
+   Compiling pa-edit v0.10.1-beta.35 (/root/allspark/crates/pa-edit)
+   Compiling pa-lsp v0.10.1-beta.35 (/root/allspark/crates/pa-lsp)
+   Compiling pa-models v0.10.1-beta.35 (/root/allspark/crates/pa-models)
 warning: unexpected `cfg` condition name: `winapi`
    --> vendor/crossterm/src/lib.rs:256:11
     |
@@ -79,13 +79,13 @@ warning: struct `InternalEventFilter` is never constructed
    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
 
 warning: `crossterm` (lib) generated 6 warnings (run `cargo fix --lib -p crossterm` to apply 1 suggestion)
-   Compiling pa-graph v0.10.1-beta.35 (/root/prime-agent/crates/pa-graph)
-   Compiling pa-telemetry v0.10.1-beta.35 (/root/prime-agent/crates/pa-telemetry)
-   Compiling pa-jev v0.10.1-beta.35 (/root/prime-agent/crates/pa-jev)
-   Compiling pa-tui v0.10.1-beta.35 (/root/prime-agent/crates/pa-tui)
-   Compiling pa-core v0.10.1-beta.35 (/root/prime-agent/crates/pa-core)
-   Compiling pa-daemon v0.10.1-beta.35 (/root/prime-agent/crates/pa-daemon)
-   Compiling pa-cli v0.10.1-beta.35 (/root/prime-agent/crates/pa-cli)
+   Compiling pa-graph v0.10.1-beta.35 (/root/allspark/crates/pa-graph)
+   Compiling pa-telemetry v0.10.1-beta.35 (/root/allspark/crates/pa-telemetry)
+   Compiling pa-jev v0.10.1-beta.35 (/root/allspark/crates/pa-jev)
+   Compiling pa-tui v0.10.1-beta.35 (/root/allspark/crates/pa-tui)
+   Compiling pa-core v0.10.1-beta.35 (/root/allspark/crates/pa-core)
+   Compiling pa-daemon v0.10.1-beta.35 (/root/allspark/crates/pa-daemon)
+   Compiling pa-cli v0.10.1-beta.35 (/root/allspark/crates/pa-cli)
     Finished `test` profile [unoptimized] target(s) in 8m 23s
      Running unittests src/lib.rs (target/debug/deps/pa_cli-3338666d044b8b6f)
 

@@ -1,6 +1,6 @@
 # Accordeon vs Prime Agent context-management patterns
 
-Scope: source-only, read-only comparison of `/root/Accordeon` and `/root/prime-agent`. I did not run builds/tests and did not edit Accordeon. Accordeon is dirty (`main...origin/main [ahead 78]` plus modified/untracked files), so all Accordeon evidence below is from the current working tree. MCP schema discovery was done before calls. GitNexus `gsd-context` was used only as leads and then verified in source; codebase-memory `prime-agent` was used as leads and then verified in source.
+Scope: source-only, read-only comparison of `/root/Accordeon` and `/root/allspark`. I did not run builds/tests and did not edit Accordeon. Accordeon is dirty (`main...origin/main [ahead 78]` plus modified/untracked files), so all Accordeon evidence below is from the current working tree. MCP schema discovery was done before calls. GitNexus `gsd-context` was used only as leads and then verified in source; codebase-memory `prime-agent` was used as leads and then verified in source.
 
 ## Executive conclusion
 

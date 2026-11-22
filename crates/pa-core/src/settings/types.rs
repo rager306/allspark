@@ -502,6 +502,15 @@ pub struct JevSettings {
     /// deterministic table always applies, the judgment layer needs a native
     /// judge).
     pub tool_arbiter: Option<String>,
+    /// FORK-ONLY: how many notes one arbiter rule may deliver per session
+    /// (`3` when unset).
+    pub tool_arbiter_max_notes: Option<u64>,
+    /// FORK-ONLY: the per-call arbiter judgment bound in milliseconds
+    /// (`2500` when unset).
+    pub tool_arbiter_timeout_ms: Option<u64>,
+    /// FORK-ONLY: the command characters the arbiter's judgment state may
+    /// carry (`400` when unset).
+    pub tool_arbiter_max_command_chars: Option<u64>,
 }
 
 /// `[agents]`: the subagent admission surface. `maxConcurrentPerProvider`
@@ -723,6 +732,21 @@ pub struct SubagentModelChoice {
 /// The default inbox reminder repeat interval: 10 minutes.
 pub const DEFAULT_AGENT_INBOX_REMINDER_INTERVAL_MS: u64 = 600_000;
 
+/// `[limits]`: the output windows the tools show the model. Each bounds how
+/// much of a stream reaches the transcript, so an unbounded read cannot flood
+/// context and cache. Unset (or `0`) reads the compiled default.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LimitsSettings {
+    /// Bytes one user/kernel `bash()` result keeps (tail window; default 50 KiB).
+    pub bash_output_bytes: Option<u64>,
+    /// Lines one `bash()` result keeps (default 2000).
+    pub bash_output_lines: Option<u64>,
+    /// Characters one `python_repl` cell's stdout/stderr/result keeps
+    /// (default 65536); the overflow is spilled and named by a marker.
+    pub kernel_output_chars: Option<u64>,
+}
+
 /// The settings document: every known field optional; unknown keys preserved.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -777,6 +801,8 @@ pub struct Settings {
     pub routing: Option<RoutingSettings>,
     /// `[agents]`: subagent admission (the per-provider AIMD ceiling).
     pub agents: Option<AgentsSettings>,
+    /// `[limits]`: the tool output windows (see [`LimitsSettings`]).
+    pub limits: Option<LimitsSettings>,
     pub agent_inbox: Option<AgentInboxSettings>,
     pub telemetry: Option<TelemetrySettings>,
     pub branch_summary: Option<BranchSummarySettings>,

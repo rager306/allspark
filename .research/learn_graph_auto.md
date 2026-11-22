@@ -110,7 +110,7 @@ background-thread и возвращается, ответ не блокируе�
   с историей (rg-domain/src/run_fsm.rs), бюджет — hard-fuse по размерностям
   (rg-domain/src/budget.rs).
 
-### 1.4 Наш код (/root/prime-agent)
+### 1.4 Наш код (/root/allspark)
 
 - `crates/pa-core/src/tools/graph.rs:61-80` — `ensure_indexed`: при первом
   search/trace/architecture, если `file_count(project)==0`, строит индекс **синхронно в запросе**

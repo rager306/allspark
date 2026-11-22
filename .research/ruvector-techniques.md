@@ -212,7 +212,7 @@ codebase-memory реализует на C. Для нашего Rust-форка �
 
 ## ⚠️ КРИТИЧНОЕ ОГРАНИЧЕНИЕ: prime-agent запрещает unsafe
 
-`/root/prime-agent/Cargo.toml:49`: `unsafe_code = "forbid"` (workspace lints).
+`/root/allspark/Cargo.toml:49`: `unsafe_code = "forbid"` (workspace lints).
 
 **Следствие для переноса**:
 - `ruvector-rabitq` (22 места `unsafe { get_unchecked }`) — **НЕ соберётся**

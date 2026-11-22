@@ -656,7 +656,11 @@ model — do not "fix" either half.
   redeploy.
 - **Isolation is structural, one knob: `HOME`.** The launcher points `HOME` at
   `~/.allspark-home` (`ALLSPARK_HOME` overrides) and pins the daemon socket
-  with `PRIME_AGENT_DAEMON_SOCKET=${TMPDIR:-/tmp}/allspark-daemon.sock`. Every
+  inside that home: `PRIME_AGENT_DAEMON_SOCKET=$ALLSPARK_HOME/run/daemon.sock`,
+  in a private directory created 0700 (mode and ownership are checked before
+  the daemon sees the path, because a predictable shared-temp path can be
+  bound first by another local user). `ALLSPARK_DAEMON_SOCKET` and
+  `ALLSPARK_DAEMON_SOCKET_DIR` override the file and its directory. Every
   product path derives from `$HOME`, so a co-installed upstream `prime-agent`
   shares no sessions, auth, config, kernel venv, or socket. Keep upstream
   env-var names (`PRIME_AGENT_*`, `PI_*` wire names) — the collision is

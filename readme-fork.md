@@ -62,6 +62,12 @@ Registered in `create_session`, gated by settings (all default **on**), plus the
 
 Extras:
 
+- `lsp` resolves `rust-analyzer` from an installed rustup toolchain that ships
+  it (`RUSTUP_HOME`, the active `$HOME/.rustup`, and the real home's `.rustup`
+  above an isolated allspark home) before falling back to `PATH`. The PATH
+  `rust-analyzer` is a rustup shim bound to the ACTIVE toolchain; when that
+  toolchain omits the component the shim answers `Unknown binary` and the spawn
+  dies as `service stopped`;
 - `lsp.servers`, `lsp.idleTimeoutMs`, `graph.dbPath`, `editHybrid.defaultMode`,
   `editHybrid.allowModes` refine the surfaces;
 - `jev.autoThinking = "auto"` (**default off**) lets the judge classify each turn's
@@ -73,14 +79,24 @@ Extras:
   are moved below the survivors, labelled `demoted-by-jev (p=…)`, and the rest are marked
   `verified-by-jev` (`details.verified_jev`). A judge failure returns the store's own
   order untouched;
-- `jev.toolArbiter = "auto"` (**default `auto`**) adds a `[tool-arbiter]` note to a
-  `bash` result when the command is a shell habit a fork tool covers better (`grep`/`rg`/
-  `find`/`fd` → `graph.search` or `lsp.find_symbol`, `sed -i`/`perl -i`/`awk -i inplace`/
-  `cat`/`head`/`tail` → `edit`). Advisory by construction: the command runs unchanged, its
-  exit status is untouched, and the note is appended after the output
-  (`details.toolArbiter`). The deterministic table needs no judge; behind a native judge
-  the arbiter asks one `choice` and a confident `use_specialized` strengthens the wording.
-  `off` silences it entirely;
+- `jev.toolArbiter = "auto"` (**default `auto`**) adds a `[tool-arbiter]` note when a
+  shell command or a read-only Python cell is a habit a fork tool covers better
+  (`grep`/`rg`/`find`/`fd` → `graph.search` or `lsp.find_symbol`, `sed -i`/`perl -i`/`awk -i inplace`/
+  `cat`/`head`/`tail` → `edit`). A cell's `open`/glob/tree walk/`subprocess` grep gets the
+  script-first wording — call the specialized tool and return only the values you need;
+  writes and deletes (`write_text`, `open(...,'w')`, `rmtree`) never get the Python note.
+  Advisory by construction: the call runs unchanged, its exit status is untouched, and the
+  note is appended after the output (`details.toolArbiter`). The deterministic table needs
+  no judge; behind a native judge the arbiter asks one `choice` and a confident
+  `use_specialized` strengthens the wording. `off` silences it entirely;
+  `jev.toolArbiterMaxNotes`, `jev.toolArbiterTimeoutMs` and
+  `jev.toolArbiterMaxCommandChars` tune the note budget, judgment bound and
+  judgment-state size (defaults 3 / 2500 ms / 400);
+- `[limits]` bounds how much tool output reaches the transcript and the prompt
+  cache: `bashOutputBytes` / `bashOutputLines` for a `bash()` result (defaults
+  50 KiB / 2000 lines) and `kernelOutputChars` for one `python_repl` cell
+  (default 65536, with the overflow spilled and named by a marker). A value of
+  `0` or an unset key keeps the compiled default;
 - both consumers ride the same native-only gate as the tool (`[jev] enabled` must admit
   the layer and the chain must start native) and must pass the offline corpus gate in
   `crates/pa-core/src/jev/eval/` before a default flip: frozen corpus, dev/test split,
@@ -207,9 +223,13 @@ the session's own cost breakdown (no external pricing data needed).
     `x-meta-ai-gateway-session-id`, `traceparent`, `x-fb-routing-control`,
     `x-api-version` — these are on the roadmap for the muse provider's chat
     transport (not needed for the login flow).
-- the fork's own model catalog lives in `models_fork.rs` (compiled) and can
-  be overridden by `models.json` in the fork config dir (never seeded from
-  upstream);
+- the fork's own model catalog has three layers: `crates/pa-ai/assets/fork-models.v1.json`
+  (the shipped catalog, compiled into the binary — the source of what the build
+  serves, so a new fork model is an asset edit, not a Rust edit), then
+  `$AGENT_DIR/models/fork-models.v1.json` (operator-editable, read on every load —
+  adding or overriding a fork model needs no rebuild; the schema is the
+  `models.json` one), then `models.json` (highest precedence on a `(provider, id)`
+  conflict) in the fork config dir (never seeded from upstream);
 - OAuth refresh + failover behave per provider; transport errors now surface
   their underlying cause (DNS/TLS/reset) in the panel message;
 - the Muse device flow sends the canonical launcher identity
@@ -329,6 +349,14 @@ docker run --rm --network none \
 # paths stay empty; --version carries the fork build stamp; the launcher
 # honours ALLSPARK_HOME and creates its socket directory 0700; a second run
 # over the same prefix replaces the payload cleanly.
+
+# apply settings changes to a live session without restarting the daemon:
+# the TUI `/reload` reloads MCP, retires the built session and lets the next
+# prompt rebuild the tool roster/prompt from the files; the Python namespace is
+# snapshotted. Cold settings (socket, session dir, transport, kernel venv) still
+# need a daemon restart.
+# models added to <agentDir>/models/fork-models.v1.json are picked up by the
+# same reload (no rebuild).
 
 # logs / diagnostics
 <agentDir>/logs/             daemon log, worker stderr, debug-*.log, agent.jsonl

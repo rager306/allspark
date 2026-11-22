@@ -173,8 +173,17 @@ pub struct ProviderOverride {
 ///
 /// Human-readable error when the document is not valid JSON after stripping.
 pub fn parse_models_config(content: &str) -> Result<ModelsConfig, String> {
+    parse_models_config_labeled(content, "models.json")
+}
+
+/// Parse a model catalog document, naming the file the error came from.
+///
+/// # Errors
+///
+/// Human-readable error when the document is not valid JSON after stripping.
+pub fn parse_models_config_labeled(content: &str, label: &str) -> Result<ModelsConfig, String> {
     let stripped = strip_json_comments(content);
-    serde_json::from_str(&stripped).map_err(|error| format!("Invalid models.json: {error}"))
+    serde_json::from_str(&stripped).map_err(|error| format!("Invalid {label}: {error}"))
 }
 
 /// Semantic checks beyond the schema.
@@ -377,7 +386,22 @@ pub fn load_custom_models(
     built_in_providers: &dyn Fn(&str) -> bool,
     built_in_defaults: &dyn Fn(&str) -> Option<(String, String)>,
 ) -> CustomModelsResult {
-    let config = match parse_models_config(content) {
+    load_custom_models_labeled(
+        content,
+        "models.json",
+        built_in_providers,
+        built_in_defaults,
+    )
+}
+
+/// Load a model catalog document, naming the source file in a parse error.
+pub fn load_custom_models_labeled(
+    content: &str,
+    label: &str,
+    built_in_providers: &dyn Fn(&str) -> bool,
+    built_in_defaults: &dyn Fn(&str) -> Option<(String, String)>,
+) -> CustomModelsResult {
+    let config = match parse_models_config_labeled(content, label) {
         Ok(config) => config,
         Err(error) => {
             return CustomModelsResult {

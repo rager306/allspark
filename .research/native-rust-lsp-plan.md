@@ -193,7 +193,7 @@ src/
 - проверить: модель вызывает `lsp` tool, получает диагностику rust-analyzer
 
 ### Шаг 4: проверка
-- запустить allspark в /root/prime-agent
+- запустить allspark в /root/allspark
 - tool call: `lsp(action="diagnostics", file="crates/pa-core/src/lib.rs")`
 - ожидание: реальные diagnostics от rust-analyzer
 

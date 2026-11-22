@@ -583,6 +583,89 @@ mod tests {
     }
 
     #[test]
+    fn the_provider_timeout_setting_reaches_its_accessor() {
+        let storage: Arc<dyn SettingsStorage> =
+            Arc::new(super::super::storage::InMemorySettingsStorage::default());
+        storage
+            .with_lock(SettingsScope::Global, &mut |_| {
+                Some(r#"{ "retry": { "provider": { "timeoutMs": 1234 } } }"#.into())
+            })
+            .unwrap();
+        let manager = SettingsManager::from_storage(storage);
+        assert_eq!(manager.get_provider_timeout_ms(), Some(1234));
+    }
+
+    #[test]
+    fn the_arbiter_tuning_settings_reach_their_accessors() {
+        let storage: Arc<dyn SettingsStorage> =
+            Arc::new(super::super::storage::InMemorySettingsStorage::default());
+        storage
+            .with_lock(SettingsScope::Global, &mut |_| {
+                Some(
+                    r#"{ "jev": { "toolArbiterMaxNotes": 1, "toolArbiterTimeoutMs": 250,
+                        "toolArbiterMaxCommandChars": 50 } }"#
+                        .into(),
+                )
+            })
+            .unwrap();
+        let manager = SettingsManager::from_storage(storage);
+        assert_eq!(manager.get_jev_tool_arbiter_max_notes(), 1);
+        assert_eq!(manager.get_jev_tool_arbiter_timeout_ms(), 250);
+        assert_eq!(manager.get_jev_tool_arbiter_max_command_chars(), 50);
+
+        let defaults = SettingsManager::from_storage(Arc::new(
+            super::super::storage::InMemorySettingsStorage::default(),
+        ));
+        assert_eq!(defaults.get_jev_tool_arbiter_max_notes(), 3);
+        assert_eq!(defaults.get_jev_tool_arbiter_timeout_ms(), 2500);
+        assert_eq!(defaults.get_jev_tool_arbiter_max_command_chars(), 400);
+    }
+
+    #[test]
+    fn the_limits_settings_reach_their_accessors() {
+        let storage: Arc<dyn SettingsStorage> =
+            Arc::new(super::super::storage::InMemorySettingsStorage::default());
+        storage
+            .with_lock(SettingsScope::Global, &mut |_| {
+                Some(
+                    r#"{ "limits": { "bashOutputBytes": 4096, "bashOutputLines": 120,
+                        "kernelOutputChars": 8192 } }"#
+                        .into(),
+                )
+            })
+            .unwrap();
+        let manager = SettingsManager::from_storage(storage);
+        assert_eq!(manager.get_bash_output_bytes(), 4096);
+        assert_eq!(manager.get_bash_output_lines(), 120);
+        assert_eq!(manager.get_kernel_output_chars(), 8192);
+
+        // Unset and zero both keep the compiled defaults: a zero window would
+        // report every run as truncated.
+        let defaults = SettingsManager::from_storage(Arc::new(
+            super::super::storage::InMemorySettingsStorage::default(),
+        ));
+        assert_eq!(defaults.get_bash_output_bytes(), 50 * 1024);
+        assert_eq!(defaults.get_bash_output_lines(), 2000);
+        assert_eq!(defaults.get_kernel_output_chars(), 65_536);
+
+        let zeroed: Arc<dyn SettingsStorage> =
+            Arc::new(super::super::storage::InMemorySettingsStorage::default());
+        zeroed
+            .with_lock(SettingsScope::Global, &mut |_| {
+                Some(
+                    r#"{ "limits": { "bashOutputBytes": 0, "bashOutputLines": 0,
+                        "kernelOutputChars": 0 } }"#
+                        .into(),
+                )
+            })
+            .unwrap();
+        let zeroed = SettingsManager::from_storage(zeroed);
+        assert_eq!(zeroed.get_bash_output_bytes(), 50 * 1024);
+        assert_eq!(zeroed.get_bash_output_lines(), 2000);
+        assert_eq!(zeroed.get_kernel_output_chars(), 65_536);
+    }
+
+    #[test]
     fn wrong_typed_fields_never_fail_load() {
         let storage: Arc<dyn SettingsStorage> =
             Arc::new(super::super::storage::InMemorySettingsStorage::default());

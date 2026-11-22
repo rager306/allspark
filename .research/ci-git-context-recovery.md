@@ -15,7 +15,7 @@ Created standalone safe fixture `.research/git-context-rewrite-fixture/gitconfig
     insteadOf = git@github.com:
 ```
 
-`PA_TS_BINARY=/nonexistent/ts CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_JOBS=2 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/root/prime-agent/.research/git-context-rewrite-fixture/gitconfig cargo +1.98.1 test -p pa-core --test git_context keeps_ssh_remote_url_verbatim_when_unnormalizable -- --exact > .research/ci-git-context-planted-red.log 2>&1`
+`PA_TS_BINARY=/nonexistent/ts CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_JOBS=2 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/root/allspark/.research/git-context-rewrite-fixture/gitconfig cargo +1.98.1 test -p pa-core --test git_context keeps_ssh_remote_url_verbatim_when_unnormalizable -- --exact > .research/ci-git-context-planted-red.log 2>&1`
 
 Original source exited **101**: exactly the existing assertion, actual `https://github.com/acme/widgets.git`, expected `git@github.com:acme/widgets.git`. One run, no timeout/deadlock or retry-to-green.
 

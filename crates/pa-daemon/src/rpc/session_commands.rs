@@ -30,9 +30,8 @@ async fn bash(state: &Arc<RpcState>, payload: &Value) -> Result<ResponseData, St
         .ok_or_else(|| "bash requires a command".to_string())?;
     let cwd = state.settings_cwd().await;
     let settings = pa_core::settings::SettingsManager::create(&cwd, &state.agent_dir);
-    let settings = settings.settings();
-    let prefix = settings.shell_command_prefix.clone();
-    let shell_path = settings.shell_path.clone();
+    let prefix = settings.settings().shell_command_prefix.clone();
+    let shell_path = settings.settings().shell_path.clone();
     // The awaited bracket registers a cancellation token, so `abort_bash` reaches
     // this run exactly as it reaches a daemon-side one, and the slot reports busy
     // while it is in flight.
@@ -43,6 +42,7 @@ async fn bash(state: &Arc<RpcState>, payload: &Value) -> Result<ResponseData, St
         &cwd,
         prefix.as_deref(),
         shell_path.as_deref(),
+        &settings,
         awaited.cancellation(),
     )
     .await;

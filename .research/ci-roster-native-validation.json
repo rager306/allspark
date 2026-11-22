@@ -5,7 +5,7 @@
     "CARGO_PROFILE_DEV_DEBUG": "0",
     "CARGO_PROFILE_TEST_DEBUG": "0",
     "CARGO_BUILD_JOBS": "2",
-    "PRIME_AGENT_SESSION_DIR": "/root/prime-agent/.research/ci-roster-override-fixture (owned empty override; command scope only)"
+    "PRIME_AGENT_SESSION_DIR": "/root/allspark/.research/ci-roster-override-fixture (owned empty override; command scope only)"
   },
   "queue_exit_code": 0,
   "source_sha256": {

@@ -3,9 +3,9 @@
 Status: **proposal**, one open decision (§6). Written 2026-10-24 against `0c24251d5`.
 Scope: how a provider's model list and each model's properties are discovered, cached,
 and retired. Today the catalog is a hand-maintained Rust mirror
-(`crates/pa-ai/src/models_generated.rs`) plus a hand-written fork list
-(`crates/pa-ai/src/models_fork.rs`); `crates/pa-models/src/opencode_models.rs` already
-does the live thing for one provider.
+(`crates/pa-ai/src/models_generated.rs`) plus the fork's shipped data catalog
+(`crates/pa-ai/assets/fork-models.v1.json`, read through `crates/pa-ai/src/models_fork.rs`);
+`crates/pa-models/src/opencode_models.rs` already does the live thing for one provider.
 
 ## 1. Why this exists
 

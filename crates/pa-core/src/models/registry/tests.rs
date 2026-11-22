@@ -267,6 +267,72 @@ fn a_failed_refresh_with_nothing_else_to_serve_fails_with_the_re_login_sentence(
 }
 
 #[test]
+fn fork_catalog_adds_a_model_without_rebuilding() {
+    let dir = tempfile::tempdir().unwrap();
+    let models_path = dir.path().join("models.json");
+    std::fs::write(&models_path, r#"{ "providers": {} }"#).unwrap();
+    let fork_dir = dir.path().join("models");
+    std::fs::create_dir_all(&fork_dir).unwrap();
+    std::fs::write(
+        fork_dir.join("fork-models.v1.json"),
+        r#"{ "providers": { "subquadratic": { "api": "typesafe", "baseUrl": "https://api.subq.ai",
+            "models": [ { "id": "subq-snap-9.9", "name": "SubQ test", "contextWindow": 393216, "maxTokens": 4096 } ] } } }"#,
+    )
+    .unwrap();
+    let registry = ModelRegistry::create(auth_with(&serde_json::json!({})), &models_path);
+    assert!(registry.get_error().is_none(), "{:?}", registry.get_error());
+    assert!(registry
+        .get_all()
+        .iter()
+        .any(|model| model.provider == "subquadratic" && model.id == "subq-snap-9.9"));
+}
+
+#[test]
+fn models_json_still_wins_over_the_fork_catalog() {
+    let dir = tempfile::tempdir().unwrap();
+    let models_path = dir.path().join("models.json");
+    std::fs::write(
+        &models_path,
+        r#"{ "providers": { "subquadratic": { "api": "typesafe", "baseUrl": "https://models-json.example",
+            "apiKey": "k", "models": [ { "id": "subq-snap-9.9", "contextWindow": 1, "maxTokens": 1 } ] } } }"#,
+    )
+    .unwrap();
+    let fork_dir = dir.path().join("models");
+    std::fs::create_dir_all(&fork_dir).unwrap();
+    std::fs::write(
+        fork_dir.join("fork-models.v1.json"),
+        r#"{ "providers": { "subquadratic": { "api": "typesafe", "baseUrl": "https://fork.example",
+            "models": [ { "id": "subq-snap-9.9", "contextWindow": 2, "maxTokens": 2 } ] } } }"#,
+    )
+    .unwrap();
+    let registry = ModelRegistry::create(auth_with(&serde_json::json!({})), &models_path);
+    let model = registry
+        .get_all()
+        .iter()
+        .find(|model| model.provider == "subquadratic" && model.id == "subq-snap-9.9")
+        .expect("the model resolves");
+    assert_eq!(model.base_url, "https://models-json.example");
+    assert_eq!(model.context_window, 1);
+}
+
+#[test]
+fn a_broken_fork_catalog_names_its_own_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let models_path = dir.path().join("models.json");
+    std::fs::write(&models_path, r#"{ "providers": {} }"#).unwrap();
+    let fork_dir = dir.path().join("models");
+    std::fs::create_dir_all(&fork_dir).unwrap();
+    std::fs::write(fork_dir.join("fork-models.v1.json"), "{ not json").unwrap();
+    let registry = ModelRegistry::create(auth_with(&serde_json::json!({})), &models_path);
+    let error = registry
+        .get_error()
+        .expect("a broken fork catalog reports an error");
+    assert!(error.starts_with("Invalid fork-models.v1.json"), "{error}");
+    assert!(!error.contains("Invalid models.json"), "{error}");
+    assert!(!registry.get_all().is_empty(), "built-ins still list");
+}
+
+#[test]
 fn models_json_error_keeps_built_ins() {
     let dir = tempfile::tempdir().unwrap();
     let models_path = dir.path().join("models.json");
@@ -636,6 +702,210 @@ async fn scope_readiness_timeout_keeps_models_available_before_refresh() {
             .map(|entry| entry.model)
             .collect::<Vec<_>>(),
         vec![existing]
+    );
+}
+
+// ── FORK MODELS SURVIVE EVERY CATALOG SOURCE ────────────────────────────────
+//
+// The registry chains `fork_provider_models()` after the catalog chain
+// (`registry.rs:600`), so the fork's providers exist in every mode. A release
+// install ships `models.bundled.json` (step 2 of the no-cold-start chain), and
+// a stale or upstream-shaped asset would silently replace the compiled catalog:
+// the user then sees fewer models than the build carries, which reads as
+// "провайдеры есть, а моделей нет" and is indistinguishable from a broken build.
+//
+// These pin the invariant on the SOURCE the registry reads, so a packaging
+// mistake (a fixture catalog, an upstream snapshot) fails here instead of in a
+// user's picker.
+#[test]
+fn the_fork_model_table_carries_every_fork_provider() {
+    let fork = pa_ai::models_fork::fork_provider_models();
+    for provider in pa_ai::models_fork::fork_providers() {
+        assert!(
+            fork.iter().any(|model| model.provider == *provider),
+            "provider {provider} is registered but has no model in the fork table: \
+             the picker would show the provider with an empty list"
+        );
+    }
+}
+
+/// Every fork model must survive the registry's own load path (which chains the
+/// fork table after the catalog chain and then merges a caller's models.json).
+#[test]
+fn a_fresh_registry_lists_the_fork_models() {
+    let registry = ModelRegistry::in_memory(auth_without_env(&serde_json::json!({})));
+    let listed: std::collections::HashSet<(String, String)> = registry
+        .get_all()
+        .iter()
+        .map(|model| (model.provider.clone(), model.id.clone()))
+        .collect();
+    let mut missing = Vec::new();
+    for model in pa_ai::models_fork::fork_provider_models() {
+        if !listed.contains(&(model.provider.clone(), model.id.clone())) {
+            missing.push(format!("{}/{}", model.provider, model.id));
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "the registry dropped fork models from its catalog: {missing:?}"
+    );
+}
+
+/// A caller's `models.json` OVERRIDES a fork entry by (provider, id); it must
+/// never delete the rest of the table. This is the shape the release install
+/// hits when a user customises one model.
+#[test]
+fn a_custom_model_override_keeps_the_other_fork_models() {
+    let auth = auth_without_env(&serde_json::json!({}));
+    let registry = ModelRegistry::in_memory(auth);
+    let before = registry
+        .get_all()
+        .iter()
+        .filter(|model| model.provider == "muse")
+        .count();
+    assert!(
+        before > 0,
+        "the fixture needs at least one muse model to test the merge"
+    );
+    // The merge itself is what this pins: `merge_custom_models` replaces by
+    // (provider, id) and appends the rest (registry.rs:627).
+    let custom = vec![model("muse-spark-1.3", "muse")];
+    let built_in = registry.get_all().to_vec();
+    let merged = ModelRegistry::merge_custom_models(built_in, custom);
+    let after = merged
+        .iter()
+        .filter(|model| model.provider == "muse")
+        .count();
+    assert_eq!(
+        after, before,
+        "a single override must replace one entry, not drop the provider's others"
+    );
+}
+
+/// An upstream-shaped bundled asset (the live catalog, which by definition
+/// carries NO fork provider) must still leave the fork's own models in the
+/// built-in set: the registry chains the compiled fork table after whatever
+/// the asset holds (`registry.rs` `.chain(fork_provider_models())`).
+///
+/// This is the guard the packaging gate proxies for. The gate must NOT require
+/// fork providers inside the asset: the upstream catalog cannot carry them, so
+/// such a requirement makes the release path impossible (it did — the fork.011
+/// release job died on it while every fork model was present in the binary).
+#[test]
+fn an_upstream_shaped_asset_keeps_the_fork_providers() {
+    let auth = AuthStorage::in_memory_without_env(&AuthStorageData::default(), Arc::new(NoOAuth));
+    let registry = ModelRegistry::in_memory(auth);
+    let models = registry.load_built_in_models(
+        &CustomModelsResult::default(),
+        &CustomModelsResult::default(),
+        None,
+    );
+    let providers: std::collections::HashSet<&str> =
+        models.iter().map(|model| model.provider.as_str()).collect();
+    // The fork table's providers ride the built-in set whatever the asset holds.
+    for provider in ["codebuddy", "genspark", "muse", "subquadratic"] {
+        assert!(
+            providers.contains(provider),
+            "the fork provider {provider} must survive an upstream-shaped asset; got {}",
+            {
+                let mut known: Vec<&str> = providers.iter().copied().collect();
+                known.sort_unstable();
+                known.join(", ")
+            }
+        );
+    }
+}
+
+/// §3.2 (audit): an offline restart must still offer the ids discovery found
+/// last time. The saved snapshot used to be read only on a forced refresh, so
+/// a fresh process with no network lost every discovered-only model.
+#[test]
+fn a_saved_snapshot_survives_an_offline_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let models_json = dir.path().join("models.json");
+    std::fs::write(&models_json, r#"{"providers":{}}"#).unwrap();
+    // A snapshot naming an id the hand table does not describe.
+    let mut snapshot = pa_models::discovery::DiscoverySnapshot::default();
+    snapshot.providers.insert(
+        "subquadratic".to_string(),
+        pa_models::discovery::DiscoveredProvider {
+            provider: "subquadratic".to_string(),
+            synced_at: "t1".to_string(),
+            ids: vec!["subq-snap-fresh-id".to_string()],
+            deprecated: Vec::new(),
+        },
+    );
+    // The snapshot lives beside models.json (models_json.parent()), the same
+    // directory `refresh_discovery` writes it to.
+    pa_models::discovery::write_snapshot(dir.path(), &snapshot).unwrap();
+
+    // A fresh registry (the restart) sees it without any refresh.
+    let auth = AuthStorage::in_memory_without_env(&AuthStorageData::default(), Arc::new(NoOAuth));
+    let registry = ModelRegistry::create(auth, models_json);
+    let ids: Vec<(&str, &str)> = registry
+        .get_all()
+        .iter()
+        .map(|model| (model.provider.as_str(), model.id.as_str()))
+        .collect();
+    assert!(
+        ids.contains(&("subquadratic", "subq-snap-fresh-id")),
+        "the saved snapshot's id must survive an offline restart: {} total models",
+        ids.len()
+    );
+}
+
+/// Review 4.1: discovery must survive every REBUILD, not just construction.
+///
+/// `load_models` is called after a credential change (`clear_private_authorization`
+/// — the path a user with no Prime key takes on the refresh), after a settings
+/// reload, and after a custom-model edit. Each rebuild used to replace
+/// `self.models` with the curated set, dropping every discovered-only id that
+/// had been appended after construction: the picker loses models mid-session,
+/// with no error and no way to see it.
+#[test]
+fn a_rebuild_keeps_the_discovered_ids() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let models_json = dir.path().join("models.json");
+    std::fs::write(&models_json, "{\"providers\":{}}").expect("models.json");
+    let mut providers = std::collections::BTreeMap::new();
+    providers.insert(
+        "subquadratic".to_string(),
+        pa_models::discovery::DiscoveredProvider {
+            provider: "subquadratic".to_string(),
+            synced_at: "2026-10-27T00:00:00Z".to_string(),
+            ids: vec!["survives-the-rebuild".to_string()],
+            deprecated: Vec::new(),
+        },
+    );
+    let snapshot = pa_models::discovery::DiscoverySnapshot {
+        synced_at: "2026-10-27T00:00:00Z".to_string(),
+        providers,
+    };
+    pa_models::discovery::write_snapshot(dir.path(), &snapshot).expect("write snapshot");
+
+    let auth = crate::auth::AuthStorage::in_memory_without_env(
+        &crate::auth::AuthStorageData::default(),
+        std::sync::Arc::new(crate::auth::NoOAuth),
+    );
+    let mut registry = ModelRegistry::create(auth, models_json);
+    assert!(
+        registry
+            .get_all()
+            .iter()
+            .any(|model| model.id == "survives-the-rebuild"),
+        "the constructor must see the snapshot"
+    );
+
+    // The rebuild a credential change triggers (upstream's compact registry
+    // routes it through `refresh`: auth reload + `load_models`).
+    registry.refresh();
+    assert!(
+        registry
+            .get_all()
+            .iter()
+            .any(|model| model.id == "survives-the-rebuild"),
+        "a rebuild must not drop the discovered overlay: {:?}",
+        registry.get_all().len()
     );
 }
 

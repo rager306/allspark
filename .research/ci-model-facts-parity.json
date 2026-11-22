@@ -4,11 +4,11 @@
   "ts_release_archive_sha256": "83fb09129bf78e3e60268212cd70932166591b15188caa70c1b0efbcc76235e2",
   "binaries": {
     "ts": {
-      "path": "/root/prime-agent/.research/ci-tty-ts-reference/package/prime-agent",
+      "path": "/root/allspark/.research/ci-tty-ts-reference/package/prime-agent",
       "sha256": "94e90d59b5853036371c6e6a5eb7f5ef3f49d72aa66998be0b41b9d925b1a1c0"
     },
     "rust": {
-      "path": "/root/prime-agent/target/debug/prime-agent",
+      "path": "/root/allspark/target/debug/prime-agent",
       "sha256": "cc57a09d810c798effe19888969035b88c184b10123363b7d44e445cfe5f1a5c"
     }
   },

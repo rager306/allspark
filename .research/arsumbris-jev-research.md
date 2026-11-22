@@ -82,7 +82,7 @@ Hooks-shapes: `observer | mediator | stamper | session-start`. Tools — это 
 | `grep -riI 'jev'` в `/root/arsumbris` (excl node_modules) | **0** |
 | `grep -riI 'muse'` в `/root/arsumbris` | **0** |
 | `grep -riI 'typesafe'` в `/root/arsumbris` | **0** |
-| `grep -riI 'typesafe|jev|judge'` в `/root/prime-agent/crates` | **0** |
+| `grep -riI 'typesafe|jev|judge'` в `/root/allspark/crates` | **0** |
 
 Совпадения «jev» в `/root/arsumbris` были **только** в `pnpm-lock.yaml` (base64 integrity-хэши) — ложные срабатывания.
 

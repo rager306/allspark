@@ -7,7 +7,7 @@
 тесты `test/tools/lsp-regressions.test.ts` (5906 стр., ~180 кейсов), `test/lsp-mux.test.ts`,
 `test/tools/lsp-diagnostics-freshness.test.ts`, `test/tools/lsp-batching.test.ts`.
 
-**Наша сторона (для аналогий):** `/root/prime-agent/crates/pa-lsp/src/*` (8640 стр.),
+**Наша сторона (для аналогий):** `/root/allspark/crates/pa-lsp/src/*` (8640 стр.),
 `crates/pa-graph/src/*`, `crates/pa-edit/src/*`, `crates/pa-core/src/tools/edit_hybrid.rs`.
 
 Формат находки: ID · ИСТОЧНИК · СИМПТОМ · ПРИЧИНА · НАШ АНАЛОГ · РЕГРЕССИОННЫЙ ТЕСТ · СЕРЬЁЗНОСТЬ.

@@ -99,7 +99,7 @@
 
 ---
 
-## ТОП-5 идей для allspark (форк /root/prime-agent)
+## ТОП-5 идей для allspark (форк /root/allspark)
 
 1. **Cascade с фиттнутым shadow-порогом на pa-jev** (`inbox/jevagentharness-...`): decision-child (SystemOne) отвечает первым на tool-choice/аргументы; порог `c(s) ≥ q_L − ΔC/V` фиттится на shadow-траекториях самих сессий. Ожидание по бумаге: −14% цены при −0.0 п. качества. Не делегировать необратимые и free-text шаги.
 2. **Acceptance-критерий рефайнмента должен видеть инфраструктурный вклад** (RSI-обзор §3.6 + Ecdysis): сегодня `refine` = «маленькие evidence-backed правки»; добавить вердикт-атрибуцию `helped|hurt|no effect|confounded` в refinement-историю и порог повторяемости (провал в ≥2 разных контекстах) прежде, чем урок становится prompt-note/скиллом.

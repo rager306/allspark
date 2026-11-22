@@ -20,7 +20,7 @@ test_unknown_choice_is_unscored_not_zero (test_qa_judge.JudgeRegressionTests.tes
 FAIL: test_each_provenance_mismatch_is_excluded (test_qa_judge.JudgeComparisonTests.test_each_provenance_mismatch_is_excluded) (field='backend')
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/root/prime-agent/scripts/qa/test_qa_judge.py", line 86, in test_each_provenance_mismatch_is_excluded
+  File "/root/allspark/scripts/qa/test_qa_judge.py", line 86, in test_each_provenance_mismatch_is_excluded
     self.assertEqual(
 AssertionError: {'better': 1, 'worse': 0, 'same': 0, 'excluded': 0} != {'better': 0, 'worse': 0, 'same': 0, 'excluded': 1}
 - {'better': 1, 'excluded': 0, 'same': 0, 'worse': 0}
@@ -34,7 +34,7 @@ AssertionError: {'better': 1, 'worse': 0, 'same': 0, 'excluded': 0} != {'better'
 FAIL: test_each_provenance_mismatch_is_excluded (test_qa_judge.JudgeComparisonTests.test_each_provenance_mismatch_is_excluded) (field='bundle')
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/root/prime-agent/scripts/qa/test_qa_judge.py", line 86, in test_each_provenance_mismatch_is_excluded
+  File "/root/allspark/scripts/qa/test_qa_judge.py", line 86, in test_each_provenance_mismatch_is_excluded
     self.assertEqual(
 AssertionError: {'better': 1, 'worse': 0, 'same': 0, 'excluded': 0} != {'better': 0, 'worse': 0, 'same': 0, 'excluded': 1}
 - {'better': 1, 'excluded': 0, 'same': 0, 'worse': 0}
@@ -48,7 +48,7 @@ AssertionError: {'better': 1, 'worse': 0, 'same': 0, 'excluded': 0} != {'better'
 FAIL: test_each_provenance_mismatch_is_excluded (test_qa_judge.JudgeComparisonTests.test_each_provenance_mismatch_is_excluded) (field='model')
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/root/prime-agent/scripts/qa/test_qa_judge.py", line 86, in test_each_provenance_mismatch_is_excluded
+  File "/root/allspark/scripts/qa/test_qa_judge.py", line 86, in test_each_provenance_mismatch_is_excluded
     self.assertEqual(
 AssertionError: {'better': 1, 'worse': 0, 'same': 0, 'excluded': 0} != {'better': 0, 'worse': 0, 'same': 0, 'excluded': 1}
 - {'better': 1, 'excluded': 0, 'same': 0, 'worse': 0}
@@ -62,7 +62,7 @@ AssertionError: {'better': 1, 'worse': 0, 'same': 0, 'excluded': 0} != {'better'
 FAIL: test_each_provenance_mismatch_is_excluded (test_qa_judge.JudgeComparisonTests.test_each_provenance_mismatch_is_excluded) (field='prompt_rev')
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/root/prime-agent/scripts/qa/test_qa_judge.py", line 86, in test_each_provenance_mismatch_is_excluded
+  File "/root/allspark/scripts/qa/test_qa_judge.py", line 86, in test_each_provenance_mismatch_is_excluded
     self.assertEqual(
 AssertionError: {'better': 1, 'worse': 0, 'same': 0, 'excluded': 0} != {'better': 0, 'worse': 0, 'same': 0, 'excluded': 1}
 - {'better': 1, 'excluded': 0, 'same': 0, 'worse': 0}
@@ -76,7 +76,7 @@ AssertionError: {'better': 1, 'worse': 0, 'same': 0, 'excluded': 0} != {'better'
 FAIL: test_each_provenance_mismatch_is_excluded (test_qa_judge.JudgeComparisonTests.test_each_provenance_mismatch_is_excluded) (field='rubric_sha256')
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/root/prime-agent/scripts/qa/test_qa_judge.py", line 86, in test_each_provenance_mismatch_is_excluded
+  File "/root/allspark/scripts/qa/test_qa_judge.py", line 86, in test_each_provenance_mismatch_is_excluded
     self.assertEqual(
 AssertionError: {'better': 1, 'worse': 0, 'same': 0, 'excluded': 0} != {'better': 0, 'worse': 0, 'same': 0, 'excluded': 1}
 - {'better': 1, 'excluded': 0, 'same': 0, 'worse': 0}
@@ -90,7 +90,7 @@ AssertionError: {'better': 1, 'worse': 0, 'same': 0, 'excluded': 0} != {'better'
 FAIL: test_error_status_cannot_supply_a_rankable_verdict (test_qa_judge.JudgeComparisonTests.test_error_status_cannot_supply_a_rankable_verdict)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/root/prime-agent/scripts/qa/test_qa_judge.py", line 101, in test_error_status_cannot_supply_a_rankable_verdict
+  File "/root/allspark/scripts/qa/test_qa_judge.py", line 101, in test_error_status_cannot_supply_a_rankable_verdict
     self.assertEqual((delta["excluded"], delta["worse"]), (1, 0))
 AssertionError: Tuples differ: (0, 1) != (1, 0)
 
@@ -105,9 +105,9 @@ First differing element 0:
 FAIL: test_http_429_is_unscored_not_scripted (test_qa_judge.JudgeRegressionTests.test_http_429_is_unscored_not_scripted)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/root/prime-agent/scripts/qa/test_qa_judge.py", line 41, in test_http_429_is_unscored_not_scripted
+  File "/root/allspark/scripts/qa/test_qa_judge.py", line 41, in test_http_429_is_unscored_not_scripted
     self.assert_unscored(self.judge())
-  File "/root/prime-agent/scripts/qa/test_qa_judge.py", line 33, in assert_unscored
+  File "/root/allspark/scripts/qa/test_qa_judge.py", line 33, in assert_unscored
     self.assertEqual(
 AssertionError: Tuples differ: ('scripted', 'achieved', None) != ('unscored', None, None)
 
@@ -122,9 +122,9 @@ First differing element 0:
 FAIL: test_live_without_key_is_unscored_not_scripted (test_qa_judge.JudgeRegressionTests.test_live_without_key_is_unscored_not_scripted)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/root/prime-agent/scripts/qa/test_qa_judge.py", line 44, in test_live_without_key_is_unscored_not_scripted
+  File "/root/allspark/scripts/qa/test_qa_judge.py", line 44, in test_live_without_key_is_unscored_not_scripted
     self.assert_unscored(self.judge(api_key=None, key_source="absent"))
-  File "/root/prime-agent/scripts/qa/test_qa_judge.py", line 33, in assert_unscored
+  File "/root/allspark/scripts/qa/test_qa_judge.py", line 33, in assert_unscored
     self.assertEqual(
 AssertionError: Tuples differ: ('scripted', 'achieved', None) != ('unscored', None, None)
 
@@ -139,9 +139,9 @@ First differing element 0:
 FAIL: test_malformed_choices_are_unscored (test_qa_judge.JudgeRegressionTests.test_malformed_choices_are_unscored) (response={})
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/root/prime-agent/scripts/qa/test_qa_judge.py", line 56, in test_malformed_choices_are_unscored
+  File "/root/allspark/scripts/qa/test_qa_judge.py", line 56, in test_malformed_choices_are_unscored
     self.assert_unscored(self.judge())
-  File "/root/prime-agent/scripts/qa/test_qa_judge.py", line 33, in assert_unscored
+  File "/root/allspark/scripts/qa/test_qa_judge.py", line 33, in assert_unscored
     self.assertEqual(
 AssertionError: Tuples differ: ('live', None, None) != ('unscored', None, None)
 
@@ -160,9 +160,9 @@ First differing element 0:
 FAIL: test_malformed_choices_are_unscored (test_qa_judge.JudgeRegressionTests.test_malformed_choices_are_unscored) (response={'choice': 'unrecognized'})
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/root/prime-agent/scripts/qa/test_qa_judge.py", line 56, in test_malformed_choices_are_unscored
+  File "/root/allspark/scripts/qa/test_qa_judge.py", line 56, in test_malformed_choices_are_unscored
     self.assert_unscored(self.judge())
-  File "/root/prime-agent/scripts/qa/test_qa_judge.py", line 33, in assert_unscored
+  File "/root/allspark/scripts/qa/test_qa_judge.py", line 33, in assert_unscored
     self.assertEqual(
 AssertionError: Tuples differ: ('live', 'unrecognized', None) != ('unscored', None, None)
 
@@ -177,9 +177,9 @@ First differing element 0:
 FAIL: test_malformed_choices_are_unscored (test_qa_judge.JudgeRegressionTests.test_malformed_choices_are_unscored) (response={'choice': ['achieved']})
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/root/prime-agent/scripts/qa/test_qa_judge.py", line 56, in test_malformed_choices_are_unscored
+  File "/root/allspark/scripts/qa/test_qa_judge.py", line 56, in test_malformed_choices_are_unscored
     self.assert_unscored(self.judge())
-  File "/root/prime-agent/scripts/qa/test_qa_judge.py", line 33, in assert_unscored
+  File "/root/allspark/scripts/qa/test_qa_judge.py", line 33, in assert_unscored
     self.assertEqual(
 AssertionError: Tuples differ: ('live', ['achieved'], None) != ('unscored', None, None)
 
@@ -194,7 +194,7 @@ First differing element 0:
 FAIL: test_scripted_mode_is_explicitly_labelled (test_qa_judge.JudgeRegressionTests.test_scripted_mode_is_explicitly_labelled)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/root/prime-agent/scripts/qa/test_qa_judge.py", line 60, in test_scripted_mode_is_explicitly_labelled
+  File "/root/allspark/scripts/qa/test_qa_judge.py", line 60, in test_scripted_mode_is_explicitly_labelled
     self.assertEqual((result.get("status"), result.get("backend")), ("scripted", "scripted"))
 AssertionError: Tuples differ: ('scripted', None) != ('scripted', 'scripted')
 
@@ -209,9 +209,9 @@ None
 FAIL: test_unknown_choice_is_unscored_not_zero (test_qa_judge.JudgeRegressionTests.test_unknown_choice_is_unscored_not_zero)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/root/prime-agent/scripts/qa/test_qa_judge.py", line 50, in test_unknown_choice_is_unscored_not_zero
+  File "/root/allspark/scripts/qa/test_qa_judge.py", line 50, in test_unknown_choice_is_unscored_not_zero
     self.assert_unscored(self.judge())
-  File "/root/prime-agent/scripts/qa/test_qa_judge.py", line 33, in assert_unscored
+  File "/root/allspark/scripts/qa/test_qa_judge.py", line 33, in assert_unscored
     self.assertEqual(
 AssertionError: Tuples differ: ('live', 'unknown', None) != ('unscored', None, None)
 

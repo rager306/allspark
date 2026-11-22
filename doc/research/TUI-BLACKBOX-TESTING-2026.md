@@ -340,7 +340,7 @@ tmux new-session -d -s inc -x 110 -y 34
 tmux send-keys -t inc "exec /usr/bin/env -i HOME=$root PRIME_AGENT_CODING_AGENT_DIR=$root/agent \
   PRIME_AGENT_DAEMON_SOCKET=$root/d.sock PI_PACKAGE_DIR=$root/libexec \
   DO_NOT_TRACK=1 NO_COLOR=1 TERM=screen-256color PATH=/usr/local/bin:/usr/bin:/bin \
-  /root/prime-agent/target/dist/prime-agent --offline" Enter
+  /root/allspark/target/dist/prime-agent --offline" Enter
 sleep 1; tmux send-keys -t inc -l '/model'; sleep 0.2; tmux send-keys -t inc Enter; sleep 1
 tmux capture-pane -t inc -p | tail -20      # → (1/196), "Fixture <provider> model N"
 tmux kill-session -t inc; rm -rf "$root"
@@ -442,7 +442,7 @@ analogue of "rendered" vs "rendered correctly".
 
 ### 5.1 Measured baseline (this machine, this tree, today)
 
-Via tmux 3.4, `/root/prime-agent/target/dist/prime-agent`, hermetic `env -i`, 110×34:
+Via tmux 3.4, `/root/allspark/target/dist/prime-agent`, hermetic `env -i`, 110×34:
 
 | Step | Measured |
 |---|---|

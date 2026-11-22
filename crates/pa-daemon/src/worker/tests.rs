@@ -198,6 +198,7 @@ mod goal_tests;
 mod kill_broadcast_tests;
 mod last_answer_tests;
 mod navigation_pause_tests;
+mod plan_durability_tests;
 mod queue_tests;
 mod sidecar_exit_tests;
 mod summary_tests;

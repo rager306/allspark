@@ -18,8 +18,7 @@ use pa_core::session_engine::agent_messaging::{
 };
 use pa_core::session_engine::engine::{SessionEngine as CoreSessionEngine, SessionEngineConfig};
 use pa_core::session_engine::provider_adapter::{
-    json_round_trip, map_thinking_level, switchable_stream_fn_with_live_auth, to_agent_model,
-    ProviderTarget,
+    json_round_trip, map_thinking_level, to_agent_model, ProviderTarget,
 };
 use pa_core::session_engine::session_commands::{
     execute_session_command, SessionCommandExecution, SessionCommandParams,
@@ -107,6 +106,11 @@ pub(crate) const QUOTA_WAKE_MAX_RETRIES: u32 = 3;
 /// The session's snapshot-flushing kernel stop as a boxed-future factory.
 pub(crate) type SettledKernelRelease =
     std::sync::Arc<dyn Fn() -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
+
+/// A worker-owned sink for the session plan's durable `session_plan_state`
+/// rows. The daemon engine's core session manager is in-memory, so the worker
+/// supplies the append that actually reaches the session JSONL.
+pub(crate) type PlanPersistSink = std::sync::Arc<dyn Fn(Value) + Send + Sync>;
 
 /// A captured prompt boundary: an empty transcript or a stable durable leaf.
 /// The owning slot's None means no worker boundary has been supplied.
@@ -280,6 +284,9 @@ pub struct AgentSessionEngine {
     /// The session-scoped explicit plan shared by the `update_plan` tool and
     /// the continuation consult.
     pub(crate) plan_store: pa_core::session_engine::plan::PlanStore,
+    /// The worker's durable append for plan rows; `None` when the engine owns
+    /// a durable session manager (print/tests).
+    pub(crate) plan_persist_sink: std::sync::Mutex<Option<PlanPersistSink>>,
     /// Whether `autonomous_driver` still holds the product default: a cwd
     /// rebind swaps the default but must keep an injected one.
     autonomous_driver_default: std::sync::atomic::AtomicBool,

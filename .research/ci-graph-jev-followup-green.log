@@ -58,11 +58,11 @@
    Compiling tempfile v3.27.0
    Compiling sha2 v0.10.9
    Compiling petgraph v0.8.3
-   Compiling pa-ast v0.10.1-beta.35 (/root/prime-agent/crates/pa-ast)
+   Compiling pa-ast v0.10.1-beta.35 (/root/allspark/crates/pa-ast)
    Compiling futures v0.3.34
    Compiling reqwest v0.12.28
-   Compiling pa-graph v0.10.1-beta.35 (/root/prime-agent/crates/pa-graph)
-   Compiling pa-jev v0.10.1-beta.35 (/root/prime-agent/crates/pa-jev)
+   Compiling pa-graph v0.10.1-beta.35 (/root/allspark/crates/pa-graph)
+   Compiling pa-jev v0.10.1-beta.35 (/root/allspark/crates/pa-jev)
     Finished `test` profile [unoptimized] target(s) in 3m 19s
      Running unittests src/lib.rs (target/debug/deps/pa_graph-7668c2c17eb50714)
 

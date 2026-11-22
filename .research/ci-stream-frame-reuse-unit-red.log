@@ -68,7 +68,7 @@ warning: struct `InternalEventFilter` is never constructed
    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
 
 warning: `crossterm` (lib) generated 6 warnings (run `cargo fix --lib -p crossterm` to apply 1 suggestion)
-   Compiling pa-tui v0.10.1-beta.35 (/root/prime-agent/crates/pa-tui)
+   Compiling pa-tui v0.10.1-beta.35 (/root/allspark/crates/pa-tui)
     Finished `test` profile [unoptimized] target(s) in 1m 31s
      Running unittests src/lib.rs (target/debug/deps/pa_tui-e84b02148aa403c3)
 

@@ -367,8 +367,16 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // table never suggests a tool the model cannot call).
     let jev_tool_arbiter = settings.get_jev_tool_arbiter();
     let tool_arbiter: Option<Arc<crate::jev::ToolArbiter>> =
-        crate::jev::tool_arbiter::arbiter_admitted(jev_enabled, jev_tool_arbiter)
-            .then(|| Arc::new(crate::jev::ToolArbiter::new()));
+        crate::jev::tool_arbiter::arbiter_admitted(jev_enabled, jev_tool_arbiter).then(|| {
+            Arc::new(
+                crate::jev::ToolArbiter::new()
+                    .with_max_notes(settings.get_jev_tool_arbiter_max_notes())
+                    .with_timeout(std::time::Duration::from_millis(
+                        settings.get_jev_tool_arbiter_timeout_ms(),
+                    ))
+                    .with_max_command_chars(settings.get_jev_tool_arbiter_max_command_chars()),
+            )
+        });
     // Phase-7 tool-surface profile, captured before `settings` moves into the
     // resource loader (the profile selects a context and modes).
     let resolved_profile =
@@ -376,6 +384,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // Captured before `settings` moves into the resource loader: the
     // default cell time limit (default 60s, `0` disables).
     let python_cell_timeout_ms = settings.get_python_cell_timeout_ms();
+    let kernel_output_chars = settings.get_kernel_output_chars();
     let web_search_provider = settings.get_web_search_provider();
     let (mcp_skill_overrides, generic_mcp_servers, built_manager) =
         mcp_gating(&settings, config.agent_dir.clone()).await?;
@@ -631,9 +640,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         &resolved_profile.excluded_apis,
         session_artifact_dir,
         cell_timeout_ms,
-        // The `[limits]` cells arrive on the live tip's reapply; this base has
-        // no setting yet, so the compiled defaults stand.
-        None,
+        Some(kernel_output_chars),
         None,
         on_restore,
         config.on_background_work_settled.clone(),
@@ -1399,6 +1406,24 @@ impl SessionEngine {
                 drain_host_requests: true,
             }))
             .await;
+    }
+
+    /// Retire the live session for a settings rebuild while keeping the Python
+    /// namespace revivable: the kernel stops with a snapshot, and the
+    /// session-owned clients (LSP, graph watcher) are shut down so the rebuilt
+    /// session cannot leak them. Unlike [`Self::dispose_kernel`], the next use
+    /// boots a fresh kernel and revives the snapshot instead of starting empty.
+    pub async fn retire_kernel_for_settings_reload(&self) {
+        if let Some(session_id) = self.session.agent().session_id() {
+            pa_ai::codex_debug::close_websocket_sessions(Some(session_id));
+        }
+        self.stop_kernel_snapshot().await;
+        if let Some(manager) = &self.lsp_manager {
+            manager.shutdown_all().await;
+        }
+        if let Some(watch) = &self.graph_watch {
+            watch.stop().await;
+        }
     }
 
     /// One factory activity over this session's live kernel: the `/factory`

@@ -1,6 +1,6 @@
 # Prime Agent architecture review (read-only)
 
-Scope: `/root/prime-agent`, clean HEAD `6879027856c55158f5f1286c16c78f20d6bec452` (`feat/fork-providers`). No repository files changed. No secrets read. No benchmarks run, so any performance statement below is a hypothesis or architecture risk, not a measured result.
+Scope: `/root/allspark`, clean HEAD `6879027856c55158f5f1286c16c78f20d6bec452` (`feat/fork-providers`). No repository files changed. No secrets read. No benchmarks run, so any performance statement below is a hypothesis or architecture risk, not a measured result.
 
 ## MCP evidence and graph limits
 
@@ -8,7 +8,7 @@ Scope: `/root/prime-agent`, clean HEAD `6879027856c55158f5f1286c16c78f20d6bec452
 
 Required calls were run and saved under `/tmp/prime-architecture-research/cbm-*.txt`:
 
-- `list_projects`: confirmed project `prime-agent /root/prime-agent feat/fork-providers`.
+- `list_projects`: confirmed project `prime-agent /root/allspark feat/fork-providers`.
 - `index_status`: `status: ready`, `36687` nodes, `255260` edges, indexed at `2026-10-11T18:43:59Z`; parse partial count is truncated; `.github/VOUCHED.td` is unusable.
 - `get_architecture`: entry points are `crates/pa-cli/src/main.rs`, `crates/pa-daemon/src/main.rs`, and `prime-agent-runtime/src/rlm/repl.py`; graph reports 19 node labels and 24 edge types.
 - `search_graph`: query saturated (`candidate_window_saturated: true`) for broad architecture terms. Useful for finding symbols, not exhaustive proof.

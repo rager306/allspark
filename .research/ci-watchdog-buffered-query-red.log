@@ -1,4 +1,4 @@
-   Compiling pa-graph v0.10.1-beta.35 (/root/prime-agent/crates/pa-graph)
+   Compiling pa-graph v0.10.1-beta.35 (/root/allspark/crates/pa-graph)
 warning: unexpected `cfg` condition name: `winapi`
    --> vendor/crossterm/src/lib.rs:256:11
     |
@@ -69,10 +69,10 @@ warning: struct `InternalEventFilter` is never constructed
    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
 
 warning: `crossterm` (lib) generated 6 warnings (run `cargo fix --lib -p crossterm` to apply 1 suggestion)
-   Compiling pa-jev v0.10.1-beta.35 (/root/prime-agent/crates/pa-jev)
-   Compiling pa-core v0.10.1-beta.35 (/root/prime-agent/crates/pa-core)
-   Compiling pa-daemon v0.10.1-beta.35 (/root/prime-agent/crates/pa-daemon)
-   Compiling pa-cli v0.10.1-beta.35 (/root/prime-agent/crates/pa-cli)
+   Compiling pa-jev v0.10.1-beta.35 (/root/allspark/crates/pa-jev)
+   Compiling pa-core v0.10.1-beta.35 (/root/allspark/crates/pa-core)
+   Compiling pa-daemon v0.10.1-beta.35 (/root/allspark/crates/pa-daemon)
+   Compiling pa-cli v0.10.1-beta.35 (/root/allspark/crates/pa-cli)
     Finished `test` profile [unoptimized] target(s) in 1m 54s
      Running tests/terminal_state_differential_e2e/main.rs (target/debug/deps/terminal_state_differential_e2e-f8b8a7c78a514db2)
 

@@ -68,5 +68,5 @@ warning: struct `InternalEventFilter` is never constructed
    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
 
 warning: `crossterm` (lib) generated 6 warnings (run `cargo clippy --fix --lib -p crossterm -- -D warnings` to apply 1 suggestion)
-    Checking pa-cli v0.10.1-beta.35 (/root/prime-agent/crates/pa-cli)
+    Checking pa-cli v0.10.1-beta.35 (/root/allspark/crates/pa-cli)
     Finished `dev` profile [unoptimized] target(s) in 45.71s

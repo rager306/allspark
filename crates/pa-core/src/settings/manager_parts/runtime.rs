@@ -148,6 +148,19 @@ impl SettingsManager {
         }
     }
 
+    /// The per-request provider timeout (`retry.provider.timeoutMs`). `None`
+    /// keeps the adapter's default bound; zero is not a usable timeout and is
+    /// treated as unset.
+    #[must_use]
+    pub fn get_provider_timeout_ms(&self) -> Option<u64> {
+        self.merged
+            .retry
+            .as_ref()
+            .and_then(|retry| retry.provider.as_ref())
+            .and_then(|provider| provider.timeout_ms)
+            .filter(|timeout| *timeout > 0)
+    }
+
     /// The provider-failover policy from settings (`retry.failover`).
     #[must_use]
     pub fn get_provider_failover_policy(

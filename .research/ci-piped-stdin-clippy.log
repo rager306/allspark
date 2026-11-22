@@ -76,20 +76,20 @@ warning: `crossterm` (lib) generated 6 warnings (run `cargo clippy --fix --lib -
     Checking tower v0.5.3
     Checking h2 v0.4.19
     Checking tower-http v0.6.11
-    Checking pa-types v0.10.1-beta.35 (/root/prime-agent/crates/pa-types)
+    Checking pa-types v0.10.1-beta.35 (/root/allspark/crates/pa-types)
     Checking hyper v1.11.1
     Checking hyper-util v0.1.20
     Checking hyper-rustls v0.27.9
     Checking reqwest v0.12.28
     Checking tokio-tungstenite v0.28.0
-    Checking pa-agent v0.10.1-beta.35 (/root/prime-agent/crates/pa-agent)
-    Checking pa-jev v0.10.1-beta.35 (/root/prime-agent/crates/pa-jev)
-    Checking pa-telemetry v0.10.1-beta.35 (/root/prime-agent/crates/pa-telemetry)
-    Checking pa-ai v0.10.1-beta.35 (/root/prime-agent/crates/pa-ai)
-    Checking pa-lsp v0.10.1-beta.35 (/root/prime-agent/crates/pa-lsp)
-    Checking pa-tui v0.10.1-beta.35 (/root/prime-agent/crates/pa-tui)
-    Checking pa-models v0.10.1-beta.35 (/root/prime-agent/crates/pa-models)
-    Checking pa-core v0.10.1-beta.35 (/root/prime-agent/crates/pa-core)
-    Checking pa-daemon v0.10.1-beta.35 (/root/prime-agent/crates/pa-daemon)
-    Checking pa-cli v0.10.1-beta.35 (/root/prime-agent/crates/pa-cli)
+    Checking pa-agent v0.10.1-beta.35 (/root/allspark/crates/pa-agent)
+    Checking pa-jev v0.10.1-beta.35 (/root/allspark/crates/pa-jev)
+    Checking pa-telemetry v0.10.1-beta.35 (/root/allspark/crates/pa-telemetry)
+    Checking pa-ai v0.10.1-beta.35 (/root/allspark/crates/pa-ai)
+    Checking pa-lsp v0.10.1-beta.35 (/root/allspark/crates/pa-lsp)
+    Checking pa-tui v0.10.1-beta.35 (/root/allspark/crates/pa-tui)
+    Checking pa-models v0.10.1-beta.35 (/root/allspark/crates/pa-models)
+    Checking pa-core v0.10.1-beta.35 (/root/allspark/crates/pa-core)
+    Checking pa-daemon v0.10.1-beta.35 (/root/allspark/crates/pa-daemon)
+    Checking pa-cli v0.10.1-beta.35 (/root/allspark/crates/pa-cli)
     Finished `dev` profile [unoptimized] target(s) in 1m 45s

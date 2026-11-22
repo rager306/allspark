@@ -1,7 +1,7 @@
 # RE-VERIFY: 14 свежих коммитов форка на HEAD
 
 **Дата:** 2026-10-17
-**Репозиторий:** `/root/prime-agent`, ветка `feat/isolated-defaults`
+**Репозиторий:** `/root/allspark`, ветка `feat/isolated-defaults`
 **Диапазон:** `375ad95cf..74d1e3d04` — 14 коммитов
 **HEAD на момент прогона:** `cfb29fb94` (14 коммитов задачи + `cfb29fb94 docs(fork): readme-fork covers the jev layer…`, только `readme-fork.md`, кода не касается)
 **Окружение каждого прогона:** `PA_TS_BINARY=/nonexistent/ts`, `CARGO_PROFILE_DEV_DEBUG=0`, `DO_NOT_TRACK=1`; ambient `PRIME_AGENT_CODING_AGENT_DIR` / `SESSION_DIR` / `DAEMON_SOCKET` и `GH_TOKEN` / `GOOGLE_*` сняты (см. «Методика»).

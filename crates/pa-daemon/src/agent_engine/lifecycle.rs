@@ -5,17 +5,26 @@ use std::sync::atomic::Ordering;
 
 use super::{
     execute_session_command, json_round_trip, map_thinking_level,
-    register_agent_message_host_handlers, register_agent_observe_host_handlers,
-    switchable_stream_fn_with_live_auth, AgentEngineConfig, AgentSessionEngine, Arc,
-    CoreSessionEngine, EngineModelSelection, HostRequestHandlers, LinkAgentMessageController,
-    LinkAgentObserveController, Model, OverflowRecovery, ProducerUsageSink, PromptContextBoundary,
-    ProviderTarget, QuotaParkState, SessionCommandExecution, SessionCommandParams,
-    SessionEngineConfig, SupervisorChildSessions, Value,
+    register_agent_message_host_handlers, register_agent_observe_host_handlers, AgentEngineConfig,
+    AgentSessionEngine, Arc, CoreSessionEngine, EngineModelSelection, HostRequestHandlers,
+    LinkAgentMessageController, LinkAgentObserveController, Model, OverflowRecovery,
+    ProducerUsageSink, PromptContextBoundary, ProviderTarget, QuotaParkState,
+    SessionCommandExecution, SessionCommandParams, SessionEngineConfig, SupervisorChildSessions,
+    Value,
 };
 
 /// The instruction the floor appends to a bare skill invocation: ask what
 /// the user wants first, never an imperative to execute.
 pub(crate) const BARE_SKILL_INVOCATION_INSTRUCTION: &str = "The user invoked this skill with no task text - ask what they want before executing any protocol inside it.";
+
+/// What happens to the Python kernel when the session runtime is retired.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KernelDisposition {
+    /// Drop the namespace (a moved branch must not carry the old one).
+    Dispose,
+    /// Keep the namespace revivable for the rebuilt session (`/reload`).
+    Snapshot,
+}
 
 impl AgentSessionEngine {
     /// Build the engine: the shared async runtime, the model selection
@@ -186,6 +195,7 @@ impl AgentSessionEngine {
             quota_parked_this_run: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             autonomous_driver,
             plan_store: pa_core::session_engine::plan::PlanStore::default(),
+            plan_persist_sink: std::sync::Mutex::new(None),
             autonomous_driver_default: std::sync::atomic::AtomicBool::new(true),
             held_autonomous_continuation: std::sync::Mutex::new(None),
             autonomous_admission: std::sync::Mutex::new(None),
@@ -349,6 +359,16 @@ impl AgentSessionEngine {
         }
     }
 
+    /// Install the worker's durable plan appender. The daemon build's core
+    /// session manager is in-memory, so without this the plan rows exist only
+    /// for the current build and a revive loses them.
+    pub(crate) fn set_plan_persist_sink(&self, sink: super::PlanPersistSink) {
+        *self
+            .plan_persist_sink
+            .lock()
+            .expect("plan persist sink lock") = Some(sink);
+    }
+
     /// Record every model plan change as a `session_plan_state` custom entry,
     /// so the plan survives a compaction that drops the `update_plan` call.
     ///
@@ -358,9 +378,20 @@ impl AgentSessionEngine {
     /// the next update rewrites the whole plan anyway.
     fn install_plan_persist_hook(&self, built: &Arc<CoreSessionEngine>) {
         let persistence = built.session.shared_persistence();
+        let sink = self
+            .plan_persist_sink
+            .lock()
+            .expect("plan persist sink lock")
+            .clone();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
         tokio::spawn(async move {
             while let Some(value) = rx.recv().await {
+                if let Some(sink) = sink.clone() {
+                    if let Err(error) = tokio::task::spawn_blocking(move || sink(value)).await {
+                        eprintln!("pa-daemon: plan state persist task failed: {error}");
+                    }
+                    continue;
+                }
                 let written = {
                     let mut session = persistence.lock().await;
                     session
@@ -777,6 +808,19 @@ impl AgentSessionEngine {
     /// must not carry the old session's namespace — and the build gate
     /// is held across the teardown.
     pub(crate) async fn retire_session_runtime(&self) {
+        self.retire_session_runtime_with(KernelDisposition::Dispose)
+            .await;
+    }
+
+    /// `/reload`'s session half: retire the runtime so the next demand seam
+    /// rebuilds it against the current settings, keeping the Python namespace
+    /// revivable from its snapshot.
+    pub(crate) async fn retire_session_runtime_for_reload(&self) {
+        self.retire_session_runtime_with(KernelDisposition::Snapshot)
+            .await;
+    }
+
+    async fn retire_session_runtime_with(&self, disposition: KernelDisposition) {
         let _build = self.session_build.lock().await;
         let built = self.session.lock().await.take();
         self.retire_handles();
@@ -802,7 +846,10 @@ impl AgentSessionEngine {
             if let Some(telemetry) = &engine.telemetry {
                 let _ = telemetry.end().await;
             }
-            engine.dispose_kernel().await;
+            match disposition {
+                KernelDisposition::Dispose => engine.dispose_kernel().await,
+                KernelDisposition::Snapshot => engine.retire_kernel_for_settings_reload().await,
+            }
         }
     }
 
@@ -1057,10 +1104,17 @@ impl AgentSessionEngine {
                 engine.resolve_request_auth(model)
             })
         };
-        let stream_fn = switchable_stream_fn_with_live_auth(
-            std::sync::Arc::clone(&self.provider_target),
-            live_auth,
-        );
+        let request_timeout: pa_core::session_engine::provider_adapter::RequestTimeoutProvider = {
+            let settings =
+                pa_core::settings::SettingsManager::create(self.cwd(), &self.config.agent_dir);
+            std::sync::Arc::new(move || settings.get_provider_timeout_ms())
+        };
+        let stream_fn =
+            pa_core::session_engine::provider_adapter::switchable_stream_fn_with_live_auth_and_timeout(
+                std::sync::Arc::clone(&self.provider_target),
+                live_auth,
+                request_timeout,
+            );
         // The narrow provider bracket (ADR `ratelimit-admission`, M1): the
         // admission slot is taken per LLM STREAM and released on its
         // settle/error/abort/drop — never held for the worker's lifetime

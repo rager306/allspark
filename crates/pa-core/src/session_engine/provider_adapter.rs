@@ -193,6 +193,12 @@ pub fn switchable_stream_fn(target: Arc<std::sync::RwLock<Option<ProviderTarget>
 /// `request_model` carries the per-call request model (TS `requestModel`).
 pub type LiveAuthResolver = Arc<dyn Fn(&Model) -> crate::models::ResolvedRequestAuth + Send + Sync>;
 
+/// Resolves the per-request timeout at stream time. `None` keeps the default
+/// [`PROVIDER_REQUEST_TIMEOUT_MS`] bound; a positive value replaces it. The
+/// daemon wraps the session's settings here, so `retry.provider.timeoutMs`
+/// reaches every provider attempt without a rebuild of the adapter.
+pub type RequestTimeoutProvider = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
+
 /// [`switchable_stream_fn`] plus the per-request auth re-resolution the TS
 /// session stream performs on every call (`getApiKeyAndHeaders` inside its
 /// `streamFn`, v0.9.8 sdk.ts:301-313): the slot keeps the model and the
@@ -218,10 +224,29 @@ pub fn switchable_stream_fn_with_live_auth(
     target: Arc<std::sync::RwLock<Option<ProviderTarget>>>,
     live_auth: LiveAuthResolver,
 ) -> StreamFn {
+    switchable_stream_fn_with_live_auth_and_timeout(target, live_auth, Arc::new(|| None))
+}
+
+/// [`switchable_stream_fn_with_live_auth`] with a per-request timeout source.
+///
+/// The daemon passes the session's `retry.provider.timeoutMs`; `None` keeps the
+/// default bound, so a configured value overrides it without disabling the
+/// stall protection.
+///
+/// # Panics
+///
+/// Panics at stream time if the provider target lock is poisoned or the target
+/// slot was never set before the first stream.
+pub fn switchable_stream_fn_with_live_auth_and_timeout(
+    target: Arc<std::sync::RwLock<Option<ProviderTarget>>>,
+    live_auth: LiveAuthResolver,
+    request_timeout: RequestTimeoutProvider,
+) -> StreamFn {
     Arc::new(
         move |_requested: AgentModel, context: LlmContext, options: StreamRequestOptions| {
             let target = Arc::clone(&target);
             let live_auth = Arc::clone(&live_auth);
+            let request_timeout = Arc::clone(&request_timeout);
             Box::pin(async move {
                 let mut target_value = target
                     .read()
@@ -272,7 +297,15 @@ pub fn switchable_stream_fn_with_live_auth(
                     service_tier,
                     headers,
                 } = target_value;
-                stream_once(&model, api_key, service_tier, headers, context, options)
+                stream_once_with_timeout(
+                    &model,
+                    api_key,
+                    service_tier,
+                    headers,
+                    context,
+                    options,
+                    request_timeout(),
+                )
             })
         },
     )
@@ -293,6 +326,32 @@ pub fn stream_once(
     headers: Option<std::collections::BTreeMap<String, String>>,
     context: LlmContext,
     options: StreamRequestOptions,
+) -> anyhow::Result<Box<dyn ModelStream>> {
+    stream_once_with_timeout(
+        model,
+        api_key,
+        service_tier,
+        headers,
+        context,
+        options,
+        None,
+    )
+}
+
+/// [`stream_once`] with an explicit per-request timeout. `None` keeps the
+/// default [`PROVIDER_REQUEST_TIMEOUT_MS`] bound.
+///
+/// # Errors
+///
+/// Returns the provider stream's error when the request fails.
+pub fn stream_once_with_timeout(
+    model: &Model,
+    api_key: Option<String>,
+    service_tier: Option<pa_types::ai::ServiceTier>,
+    headers: Option<std::collections::BTreeMap<String, String>>,
+    context: LlmContext,
+    options: StreamRequestOptions,
+    request_timeout_ms: Option<u64>,
 ) -> anyhow::Result<Box<dyn ModelStream>> {
     let messages: Vec<pa_types::ai::Message> = context
         .messages
@@ -345,7 +404,7 @@ pub fn stream_once(
             // hanging the turn forever. The timeout bounds the wait for
             // response headers only — a long stream body is not cut off —
             // and pairs with the transport's abort-signal race.
-            timeout_ms: Some(PROVIDER_REQUEST_TIMEOUT_MS),
+            timeout_ms: Some(request_timeout_ms.unwrap_or(PROVIDER_REQUEST_TIMEOUT_MS)),
         },
         reasoning: Some(model_thinking_level(options.reasoning)),
         thinking_budgets: None,
@@ -646,6 +705,55 @@ mod tests {
             *observed.lock().unwrap(),
             vec![Some(PROVIDER_REQUEST_TIMEOUT_MS)]
         );
+        registration.unregister();
+    }
+
+    #[tokio::test]
+    async fn a_configured_request_timeout_replaces_the_default() {
+        let registration =
+            pa_ai::faux::register_faux_provider(pa_ai::faux::RegisterFauxProviderOptions {
+                api: Some("configured-timeout-test".to_owned()),
+                ..Default::default()
+            });
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = observed.clone();
+        registration.set_responses(vec![pa_ai::faux::FauxResponseStep::Factory(Arc::new(
+            move |_, options, _, _| {
+                captured
+                    .lock()
+                    .unwrap()
+                    .push(options.and_then(|options| options.timeout_ms));
+                Ok(pa_ai::faux::faux_assistant_text_message(
+                    "ok",
+                    pa_ai::faux::FauxAssistantMessageOptions::default(),
+                ))
+            },
+        ))]);
+        let target = Arc::new(std::sync::RwLock::new(Some(ProviderTarget {
+            api_key: None,
+            model: registration.get_model(),
+            service_tier: None,
+            headers: None,
+        })));
+        let live_auth: LiveAuthResolver = Arc::new(|_| ResolvedRequestAuth {
+            ok: true,
+            api_key: Some("live-key".to_string()),
+            ..Default::default()
+        });
+        let stream_fn = switchable_stream_fn_with_live_auth_and_timeout(
+            target,
+            live_auth,
+            Arc::new(|| Some(1234)),
+        );
+        let mut stream = stream_fn(
+            AgentModel::unknown(),
+            LlmContext::default(),
+            StreamRequestOptions::default(),
+        )
+        .await
+        .unwrap();
+        stream.result().await.unwrap();
+        assert_eq!(*observed.lock().unwrap(), vec![Some(1234)]);
         registration.unregister();
     }
 
