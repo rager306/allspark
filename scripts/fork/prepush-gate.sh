@@ -529,7 +529,10 @@ pa-cli#test:termios_process_exit_e2e
 pa-cli#test:kitty_early_typing_e2e
 pa-daemon#test:kernel_dispose_e2e
 pa-daemon#test:idle_passivation_e2e
-pa-tui#test:tui_rss_stability"
+pa-tui#test:tui_rss_stability
+pa-daemon#test:persistent_shells_e2e
+pa-daemon#test:agent_family_e2e
+pa-cli#test:agents_view_flash_e2e"
 
 export -f run_unit
 export OUT
