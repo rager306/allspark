@@ -700,14 +700,15 @@ fn outcome_row_and_end_event(
 /// A threshold that the PREFIX alone pushes over must not announce a compaction
 /// the compactor would refuse.
 ///
-/// The trigger prices the next request (messages + system prompt + tool schemas
-/// + output reserve), while the compactor needs summarizable history. A short
+/// The trigger prices the next request (messages, system prompt, tool schemas and
+/// the output reserve), while the compactor needs summarizable history. A short
 /// session can therefore sit over the threshold with nothing before the cut to
 /// summarize. When the trigger asked only the pricing question, every such turn
 /// boundary streamed a `compaction_start`/`compaction_end` pair whose end was
-/// "Session is too short to compact" — a warning on turns where nothing was
+/// "Session is too short to compact", a warning on turns where nothing was
 /// wrong. `auto_compaction_due` now asks the compactor's own question too, so
 /// this shape produces NO threshold pair and no durable outcome row.
+
 #[test]
 fn a_prefix_only_crossing_does_not_announce_a_threshold_compaction() {
     let (probe, _probe_dir) = faux_engine_with_settings(
