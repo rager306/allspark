@@ -650,11 +650,9 @@ mod context_tests {
     /// imported `toolResult` as orphaned and refuses as "too short").
     #[test]
     fn foreign_tool_calls_become_typed_content_blocks() {
-        let content = format!(
-            r#"{{"type":"session","id":"s","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/w","version":3}}
-{{"type":"message","id":"u1","parentId":null,"timestamp":"2024-01-01T00:00:01.000Z","message":{{"role":"user","content":[{{"type":"text","text":"go"}}],"timestamp":0}}}}
-{{"type":"message","id":"a1","parentId":"u1","timestamp":"2024-01-01T00:00:02.000Z","message":{{"role":"assistant","content":[],"api":"openai-completions","provider":"prime-inference","model":"m","usage":{{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}}},"stopReason":"tool_calls","timestamp":0,"toolCalls":[{{"id":"call-0","name":"ipython","arguments":{{"code":"print(1)"}}}}]}}}}"#
-        );
+        let content = r#"{"type":"session","id":"s","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/w","version":3}
+{"type":"message","id":"u1","parentId":null,"timestamp":"2024-01-01T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"go"}],"timestamp":0}}
+{"type":"message","id":"a1","parentId":"u1","timestamp":"2024-01-01T00:00:02.000Z","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"prime-inference","model":"m","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"tool_calls","timestamp":0,"toolCalls":[{"id":"call-0","name":"ipython","arguments":{"code":"print(1)"}}]}}"#.to_string();
         let entries = parse_session_entries(&content);
         let calls = entries
             .iter()
