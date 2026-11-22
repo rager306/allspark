@@ -348,8 +348,16 @@ impl ReadModel {
     }
 
     fn write_version(&self) -> Result<()> {
+        // `ON CONFLICT` for the same reason `set_log_offset` has it: two
+        // projectors can open one file and both take the `stored == None` arm,
+        // and the loser used to fail with `UNIQUE constraint failed:
+        // read_model_meta.k`. Measured under the gate's parallel load
+        // (`two_writers_syncing_one_model_lose_no_rows`). `DO NOTHING` rather
+        // than `DO UPDATE`: both writers write the SAME version, and a stale
+        // write is not the winner's to overwrite.
         self.conn.execute(
-            "INSERT INTO read_model_meta(k, v) VALUES ('version', ?1)",
+            "INSERT INTO read_model_meta(k, v) VALUES ('version', ?1)
+             ON CONFLICT(k) DO NOTHING",
             [READ_MODEL_VERSION.to_string()],
         )?;
         Ok(())
@@ -373,5 +381,50 @@ impl ReadModel {
                 .execute_batch(&format!("DROP TABLE IF EXISTS \"{name}\""))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two projectors can open one read-model file at the same time, and both
+    /// take the "no version row yet" branch in `apply_schema`. The loser's
+    /// INSERT used to fail with `UNIQUE constraint failed: read_model_meta.k`,
+    /// which surfaced as "open model ... constraint failed" and turned a
+    /// concurrent sync into an error.
+    ///
+    /// Written as a direct contract check rather than a two-thread race: the
+    /// race window is one SELECT-to-INSERT gap, so a threaded test proves
+    /// nothing when it does not lose (measured: it passed without the fix).
+    /// Both connections here are already open, so the second `write_version`
+    /// is exactly the loser's statement.
+    #[test]
+    fn two_openers_of_one_file_agree_on_the_version_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("project.db");
+        let first = ReadModel::open(&path).unwrap();
+        let second = ReadModel::open(&path).unwrap();
+        // Both projectors see an unversioned file (a fresh one, or one whose
+        // rebuild dropped the tables).
+        let clear = |model: &ReadModel| {
+            model
+                .conn
+                .execute("DELETE FROM read_model_meta WHERE k = 'version'", [])
+                .unwrap();
+        };
+        clear(&first);
+        first.write_version().unwrap();
+        // The loser: the row now exists, and its write must not fail the open.
+        second
+            .write_version()
+            .expect("a concurrent version write must not fail");
+        let stored: String = second
+            .conn
+            .query_row("SELECT v FROM read_model_meta WHERE k = 'version'", [], |row| {
+                row.get(0)
+            })
+            .expect("the version row");
+        assert_eq!(stored, READ_MODEL_VERSION.to_string());
     }
 }

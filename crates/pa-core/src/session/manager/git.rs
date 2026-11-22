@@ -234,7 +234,10 @@ mod tests {
 
     #[test]
     fn a_directory_outside_a_repository_answers_none() {
-        let dir = tempfile::tempdir().unwrap();
+        // Outside any repository: the gate's repo-local `TMPDIR` would put the
+        // fixture inside this checkout, where `git` legitimately answers a
+        // commit and the test would assert the opposite of its own name.
+        let dir = tempfile::tempdir_in(std::path::Path::new("/tmp")).unwrap();
         assert_eq!(read_head_commit(dir.path()), None);
     }
     /// A session often starts in a subdirectory; `git` answers from any depth,
