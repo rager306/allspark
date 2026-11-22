@@ -407,8 +407,7 @@ impl ModelRegistry {
             self.load_error = Some(error.clone());
         }
         let credentials = self.prime_credentials();
-        let built_in =
-            self.load_built_in_models(&result, &runtime_fork, credentials.as_ref());
+        let built_in = self.load_built_in_models(&result, &runtime_fork, credentials.as_ref());
         self.models = Self::merge_custom_models(built_in, result.models);
         self.apply_subscription_model_adaptations();
         // REBUILD APPLIES THE SAVED DISCOVERY OVERLAY. `load_models` is called from

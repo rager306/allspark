@@ -629,7 +629,7 @@ mod tests {
             .with_lock(SettingsScope::Global, &mut |_| {
                 Some(
                     r#"{ "limits": { "bashOutputBytes": 4096, "bashOutputLines": 120,
-                        "kernelOutputChars": 8192 } }"#
+                        "kernelOutputChars": 8192, "kernelBashOutputBytes": 65536 } }"#
                         .into(),
                 )
             })
@@ -638,6 +638,7 @@ mod tests {
         assert_eq!(manager.get_bash_output_bytes(), 4096);
         assert_eq!(manager.get_bash_output_lines(), 120);
         assert_eq!(manager.get_kernel_output_chars(), 8192);
+        assert_eq!(manager.get_kernel_bash_output_bytes(), 65_536);
 
         // Unset and zero both keep the compiled defaults: a zero window would
         // report every run as truncated.
@@ -647,6 +648,7 @@ mod tests {
         assert_eq!(defaults.get_bash_output_bytes(), 50 * 1024);
         assert_eq!(defaults.get_bash_output_lines(), 2000);
         assert_eq!(defaults.get_kernel_output_chars(), 65_536);
+        assert_eq!(defaults.get_kernel_bash_output_bytes(), 512 * 1024);
 
         let zeroed: Arc<dyn SettingsStorage> =
             Arc::new(super::super::storage::InMemorySettingsStorage::default());
@@ -663,6 +665,7 @@ mod tests {
         assert_eq!(zeroed.get_bash_output_bytes(), 50 * 1024);
         assert_eq!(zeroed.get_bash_output_lines(), 2000);
         assert_eq!(zeroed.get_kernel_output_chars(), 65_536);
+        assert_eq!(zeroed.get_kernel_bash_output_bytes(), 512 * 1024);
     }
 
     /// `[graph]` windows: the tool's compiled constants become defaults.

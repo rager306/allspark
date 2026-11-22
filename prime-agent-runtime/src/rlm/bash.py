@@ -33,8 +33,42 @@ if _IS_POSIX:
     import fcntl
     import termios
 
-_HEAD_CAP = 512 * 1024
-_TAIL_CAP = 3 * 512 * 1024
+_HEAD_CAP_DEFAULT = 512 * 1024
+_TAIL_CAP_DEFAULT = 3 * 512 * 1024
+# A hard ceiling on the env override: a huge value must not let one cell's
+# output OOM the kernel. 16 MiB head + 3x tail matches the largest window any
+# product surface documents.
+_HEAD_CAP_CEILING = 16 * 1024 * 1024
+
+
+def _cap_from_env(
+    name: str, default: int, ceiling: int
+) -> int:
+    """The `[limits] bashOutputBytes` override the host exports, clamped.
+
+    The host (pa-core `runtime_wiring::kernel_provisioner`) writes
+    `PRIME_AGENT_BASH_HEAD_CAP_BYTES`; an absent, malformed, non-positive or
+    over-ceiling value falls back to the compiled default so a typo can never
+    shrink a window to nothing or grow it past the OOM guard.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    if value <= 0:
+        return default
+    return min(value, ceiling)
+
+
+_HEAD_CAP = _cap_from_env(
+    "PRIME_AGENT_BASH_HEAD_CAP_BYTES", _HEAD_CAP_DEFAULT, _HEAD_CAP_CEILING
+)
+_TAIL_CAP = _cap_from_env(
+    "PRIME_AGENT_BASH_TAIL_CAP_BYTES", _TAIL_CAP_DEFAULT, _HEAD_CAP_CEILING * 3
+)
 _READ_CHUNK = 65536
 # Fixed child-side fd for the status channel; POSIX shells (notably dash) only
 # guarantee single-digit fds in redirection syntax.

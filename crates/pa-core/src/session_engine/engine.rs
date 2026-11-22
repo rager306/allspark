@@ -393,6 +393,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // default cell time limit (default 60s, `0` disables).
     let python_cell_timeout_ms = settings.get_python_cell_timeout_ms();
     let kernel_output_chars = settings.get_kernel_output_chars();
+    let kernel_bash_output_bytes = settings.get_kernel_bash_output_bytes();
     let web_search_provider = settings.get_web_search_provider();
     let (mcp_skill_overrides, generic_mcp_servers, built_manager) =
         mcp_gating(&settings, config.agent_dir.clone()).await?;
@@ -649,7 +650,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         session_artifact_dir,
         cell_timeout_ms,
         Some(kernel_output_chars),
-        None,
+        Some(kernel_bash_output_bytes),
         on_restore,
         config.on_background_work_settled.clone(),
         on_unavailable_skills,

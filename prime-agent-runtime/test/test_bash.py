@@ -1939,5 +1939,40 @@ class PersistentBashTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.files(), [])
 
 
+class BashCapFromEnvTest(unittest.TestCase):
+    """`[limits] kernelBashOutputBytes` reaches `_HEAD_CAP`/`_TAIL_CAP` through
+    the two env vars the host exports, with the compiled default as fallback and
+    a ceiling so a misconfigured value cannot let one cell OOM the kernel."""
+
+    def _cap(self, name, env, default=1024, ceiling=8192):
+        with mock.patch.dict(os.environ, env, clear=False):
+            if env == {}:
+                os.environ.pop(name, None)
+            return bash_module._cap_from_env(name, default, ceiling)
+
+    def test_absent_reads_the_default(self):
+        self.assertEqual(self._cap("PRIME_AGENT_BASH_HEAD_CAP_BYTES", {}), 1024)
+
+    def test_a_configured_value_wins(self):
+        self.assertEqual(
+            self._cap("PRIME_AGENT_BASH_HEAD_CAP_BYTES", {"PRIME_AGENT_BASH_HEAD_CAP_BYTES": "4096"}),
+            4096,
+        )
+
+    def test_malformed_zero_and_negative_read_the_default(self):
+        for value in ("not-a-number", "0", "-5", "  "):
+            self.assertEqual(
+                self._cap("PRIME_AGENT_BASH_HEAD_CAP_BYTES", {"PRIME_AGENT_BASH_HEAD_CAP_BYTES": value}),
+                1024,
+                value,
+            )
+
+    def test_a_value_above_the_ceiling_is_clamped(self):
+        self.assertEqual(
+            self._cap("PRIME_AGENT_BASH_HEAD_CAP_BYTES", {"PRIME_AGENT_BASH_HEAD_CAP_BYTES": "999999"}),
+            8192,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

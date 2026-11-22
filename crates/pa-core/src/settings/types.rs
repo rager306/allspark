@@ -751,10 +751,16 @@ pub const DEFAULT_AGENT_INBOX_REMINDER_INTERVAL_MS: u64 = 600_000;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LimitsSettings {
-    /// Bytes one user/kernel `bash()` result keeps (tail window; default 50 KiB).
+    /// Bytes one USER `!` shell result keeps (tail window; default 50 KiB).
+    /// Not the model's `bash()`: see [`Self::kernel_bash_output_bytes`].
     pub bash_output_bytes: Option<u64>,
-    /// Lines one `bash()` result keeps (default 2000).
+    /// Lines one USER `!` shell result keeps (default 2000).
     pub bash_output_lines: Option<u64>,
+    /// Bytes the MODEL's `bash()` (the Python kernel tool) keeps: the head+tail
+    /// view of one command's output (default 2 MiB = 512 KiB head + 1.5 MiB
+    /// tail). The split keeps the runtime's 1:3 head:tail ratio, so Python's
+    /// last-printed verdict stays visible.
+    pub kernel_bash_output_bytes: Option<u64>,
     /// Characters one `python_repl` cell's stdout/stderr/result keeps
     /// (default 65536); the overflow is spilled and named by a marker.
     pub kernel_output_chars: Option<u64>,

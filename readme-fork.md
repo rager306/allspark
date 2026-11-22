@@ -93,8 +93,10 @@ Extras:
   `jev.toolArbiterMaxCommandChars` tune the note budget, judgment bound and
   judgment-state size (defaults 3 / 2500 ms / 400);
 - `[limits]` bounds how much tool output reaches the transcript and the prompt
-  cache: `bashOutputBytes` / `bashOutputLines` for a `bash()` result (defaults
-  50 KiB / 2000 lines) and `kernelOutputChars` for one `python_repl` cell
+  cache: `bashOutputBytes` / `bashOutputLines` for a USER `!` shell result
+  (defaults 50 KiB / 2000 lines), `kernelBashOutputBytes` for the MODEL's
+  `bash()` in the Python kernel (default 512 KiB head + 1.5 MiB tail, the
+  runtime's 1:3 ratio), and `kernelOutputChars` for one `python_repl` cell
   (default 65536, with the overflow spilled and named by a marker). A value of
   `0` or an unset key keeps the compiled default;
 - `[graph]` makes three graph windows settings instead of compiled
