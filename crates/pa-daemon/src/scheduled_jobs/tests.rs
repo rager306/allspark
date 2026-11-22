@@ -1784,7 +1784,7 @@ async fn a_seam_set_heartbeat_fire_routes_into_the_inbox() {
         store: Arc::new(AgentCronJobStore::for_session_artifacts()),
         recovery: Arc::new(std::sync::Mutex::new(None)),
         dispatch_ids: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-        events: Arc::new(crate::worker::EventPump::new()),
+        events,
         inbox_seam: Mutex::new(Some(InboxSeam {
             engine: Arc::downgrade(&engine),
             arrivals: pa_core::session_engine::inbox::InboxArrivals::default(),
