@@ -97,6 +97,15 @@ Extras:
   50 KiB / 2000 lines) and `kernelOutputChars` for one `python_repl` cell
   (default 65536, with the overflow spilled and named by a marker). A value of
   `0` or an unset key keeps the compiled default;
+- `[graph]` makes three graph windows settings instead of compiled
+  constants: `outputMaxBytes` caps one rendered `architecture` report (default
+  50 KiB, cut named in the answer), `packSymbols` is a `context` pack's
+  default symbol budget (default 12, clamped to the pack ceiling 64), and
+  `searchLimit` replaces the store's default for a `search` that sets no
+  `limit` (clamped to the search ceiling 200). A call's own `limit` always
+  wins, a value of `0` or an unset key keeps the compiled default, and a value
+  above a ceiling is clamped rather than honoured — a setting cannot raise a
+  bound the model itself cannot raise;
 - both consumers ride the same native-only gate as the tool (`[jev] enabled` must admit
   the layer and the chain must start native) and must pass the offline corpus gate in
   `crates/pa-core/src/jev/eval/` before a default flip: frozen corpus, dev/test split,

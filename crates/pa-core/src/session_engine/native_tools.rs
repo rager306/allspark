@@ -26,6 +26,9 @@ pub(crate) struct NativeToolSettings {
     pub graph_enabled: bool,
     pub graph_db_path: Option<std::path::PathBuf>,
     pub graph_auto: GraphAuto,
+    /// `[graph]` output/search/pack windows; `None` fields keep the compiled
+    /// defaults. Resolved by the caller (the manager owns the clamping).
+    pub graph_limits: crate::tools::graph::tool::GraphLimits,
     pub jev_enabled: crate::settings::JevEnabledSetting,
     pub jev_graph_rerank: crate::settings::JevGraphRerankSetting,
     /// The raw spelling, so a status can show "on" and "auto" as the same gate.
@@ -189,6 +192,9 @@ pub(crate) fn register_native_tools(
                 // build path: the tool owns the query-time build too, so the policy
                 // must travel with it (review #32).
                 .with_auto(settings.graph_auto)
+                // `graph.outputMaxBytes` / `packSymbols` / `searchLimit`: the
+                // constants become defaults, and an unset key changes nothing.
+                .with_limits(settings.graph_limits)
                 .with_reranker(reranker)
                 .with_rerank_gate(settings.jev_graph_rerank_raw.clone(), rerank_armed),
         ));

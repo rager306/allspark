@@ -22,6 +22,23 @@ pub mod schema;
 /// shared module went away with the built-in bash tool upstream).
 pub const GRAPH_OUTPUT_MAX_BYTES: usize = 50 * 1024;
 
+/// The operator's `[graph]` windows, captured once when the tool is built.
+///
+/// Every field is `None` until a setting names it, and `None` keeps the compiled
+/// default: an operator who writes nothing sees the same answers as before the
+/// keys existed. `pack_symbols` and `search_limit` arrive already clamped by
+/// `SettingsManager`, because a setting must not raise a ceiling the model
+/// itself cannot raise.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GraphLimits {
+    /// `graph.outputMaxBytes`: byte cap for one rendered report.
+    pub output_max_bytes: Option<usize>,
+    /// `graph.packSymbols`: symbols a `context` pack carries without a call `limit`.
+    pub pack_symbols: Option<usize>,
+    /// `graph.searchLimit`: results a `search` returns without a call `limit`.
+    pub search_limit: Option<usize>,
+}
+
 pub struct GraphTool {
     db_path: PathBuf,
     cwd: PathBuf,
@@ -50,6 +67,8 @@ pub struct GraphTool {
     /// or stale instead of quietly paying for the walk the user switched off
     /// (review #32).
     auto: crate::settings::types::GraphAuto,
+    /// `[graph]` output/search/pack windows; unset fields keep the constants.
+    limits: GraphLimits,
 }
 
 impl GraphTool {
@@ -66,7 +85,16 @@ impl GraphTool {
             reranker: None,
             rerank_gate: None,
             auto: crate::settings::types::GraphAuto::default(),
+            limits: GraphLimits::default(),
         }
+    }
+
+    /// Attach the operator's `[graph]` windows. Unset fields keep the compiled
+    /// defaults, so this builder is the only place a setting reaches an answer.
+    #[must_use]
+    pub fn with_limits(mut self, limits: GraphLimits) -> Self {
+        self.limits = limits;
+        self
     }
 
     /// Set the query-time build policy (`graph.auto`). `off` leaves the explicit

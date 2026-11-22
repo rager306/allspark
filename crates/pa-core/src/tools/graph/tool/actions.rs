@@ -156,6 +156,11 @@ impl GraphTool {
         // the first query into a real answer instead of a false negative.
         let indexed_now = self.ensure_indexed(&root, &project)?;
         let mut opts = SearchOptions::new(&project);
+        // `graph.searchLimit` replaces the store's own default for a call that
+        // sets no `limit`; the accessor already clamped it to the ceiling.
+        if let Some(limit) = self.limits.search_limit {
+            opts = opts.with_limit(limit);
+        }
         // The store can already diversify (MMR), restrict by label and filter by
         // regex, but nothing could ask it to: every knob was reachable only from
         // Rust. These four read the model's request into the same builder, so a
@@ -767,13 +772,18 @@ impl GraphTool {
         }
         // A `structure` view on a large repo is one line per module edge, so
         // the report gets the same byte ceiling as bash output and says so
-        // when it is cut.
+        // when it is cut. `graph.outputMaxBytes` replaces the compiled ceiling;
+        // unset or 0 keeps 50 KiB (the accessor already dropped a zero).
+        let max_bytes = self
+            .limits
+            .output_max_bytes
+            .unwrap_or(GRAPH_OUTPUT_MAX_BYTES);
         let mut report = lines.join("\n");
         let (capped, was_truncated) =
-            crate::resources::truncate_context_content(&report, GRAPH_OUTPUT_MAX_BYTES);
+            crate::resources::truncate_context_content(&report, max_bytes);
         if was_truncated {
             report = format!(
-                "{capped}\n[architecture report truncated at {GRAPH_OUTPUT_MAX_BYTES} bytes; \
+                "{capped}\n[architecture report truncated at {max_bytes} bytes; \
                  query a narrower view]",
             );
         }
@@ -1279,10 +1289,13 @@ impl GraphTool {
         let root = self.resolve_root(params);
         let project = self.project_key(&root);
         let indexed_now = self.ensure_indexed(&root, &project)?;
+        // The call's `limit` wins; without one, `graph.packSymbols` (already
+        // clamped to the ceiling by the accessor) replaces the compiled 12.
+        let default_budget = self.limits.pack_symbols.unwrap_or(PACK_DEFAULT_SYMBOLS);
         let budget = params
             .get("limit")
             .and_then(serde_json::Value::as_u64)
-            .map_or(PACK_DEFAULT_SYMBOLS, |limit| {
+            .map_or(default_budget, |limit| {
                 (limit as usize).clamp(1, PACK_MAX_SYMBOLS)
             });
 

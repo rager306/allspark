@@ -665,6 +665,62 @@ mod tests {
         assert_eq!(zeroed.get_kernel_output_chars(), 65_536);
     }
 
+    /// `[graph]` windows: the tool's compiled constants become defaults.
+    ///
+    /// Four cases matter and each has a way to get it wrong: a custom value must
+    /// win, an unset key must keep the constant, a `0` must not shrink a window
+    /// to nothing, and a value above a model-facing ceiling must be clamped
+    /// rather than honoured — a setting must not raise a bound the model cannot.
+    #[test]
+    fn the_graph_windows_reach_their_accessors_and_clamp_to_the_ceilings() {
+        let read = |json: serde_json::Value| {
+            let settings: Settings = serde_json::from_value(json).unwrap();
+            let manager = SettingsManager::in_memory(&settings);
+            (
+                manager.get_graph_output_max_bytes(),
+                manager.get_graph_pack_symbols(),
+                manager.get_graph_search_limit(),
+            )
+        };
+
+        // Custom values win over every compiled constant.
+        assert_eq!(
+            read(serde_json::json!({ "graph": {
+                "outputMaxBytes": 1024, "packSymbols": 5, "searchLimit": 7,
+            } })),
+            (Some(1024), Some(5), Some(7))
+        );
+        // Unset keeps the compiled defaults, which the consumers supply.
+        assert_eq!(read(serde_json::json!({})), (None, None, None));
+        assert_eq!(
+            read(serde_json::json!({ "graph": { "enabled": true } })),
+            (None, None, None)
+        );
+        // Zero reads as unset: a zero-byte report, a zero-symbol pack and a
+        // zero-hit search are all empty answers dressed as results.
+        assert_eq!(
+            read(serde_json::json!({ "graph": {
+                "outputMaxBytes": 0, "packSymbols": 0, "searchLimit": 0,
+            } })),
+            (None, None, None),
+            "a zero window keeps the default instead of shrinking to nothing"
+        );
+        // Above the ceilings: clamped, never honoured.
+        let (_, pack, search) = read(serde_json::json!({ "graph": {
+            "packSymbols": 10_000, "searchLimit": 10_000,
+        } }));
+        assert_eq!(
+            pack,
+            Some(crate::tools::graph::reports::PACK_MAX_SYMBOLS),
+            "packSymbols must not raise the pack ceiling"
+        );
+        assert_eq!(
+            search,
+            Some(crate::tools::graph::args::SEARCH_MAX_LIMIT),
+            "searchLimit must not raise the search ceiling"
+        );
+    }
+
     #[test]
     fn wrong_typed_fields_never_fail_load() {
         let storage: Arc<dyn SettingsStorage> =

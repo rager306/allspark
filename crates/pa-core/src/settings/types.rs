@@ -331,6 +331,19 @@ pub struct LspSettings {
 pub struct GraphSettings {
     pub enabled: Option<bool>,
     pub db_path: Option<String>,
+    /// Byte cap for one rendered graph report (`architecture`).
+    ///
+    /// Unset or `0` keeps the compiled 50 KiB window: a zero-size window would
+    /// cut every answer to nothing and mark it truncated. The owner is free to
+    /// narrow or widen it; no model-facing parameter reaches this knob.
+    pub output_max_bytes: Option<u64>,
+    /// Symbols a `context` evidence pack carries when the call sets no `limit`
+    /// (default 12). Clamped to the pack's ceiling, so a setting cannot raise a
+    /// bound the model already cannot.
+    pub pack_symbols: Option<u64>,
+    /// Results a `search` returns when the call sets no `limit` (unset keeps the
+    /// store's own default). Clamped to the search ceiling.
+    pub search_limit: Option<u64>,
     /// Build (and refresh) the graph in the background at session start.
     ///
     /// Unset reads as `auto`: the first `search`/`trace`/`architecture` query
