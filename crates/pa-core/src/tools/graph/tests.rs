@@ -2242,6 +2242,136 @@ async fn architecture_report_lives_in_content_not_details() {
     );
 }
 
+/// `graph.outputMaxBytes` replaces the compiled 50 KiB report ceiling, and the
+/// cut is visible in the answer instead of looking like a short report.
+///
+/// Red-first: restore `truncate_context_content(&report, GRAPH_OUTPUT_MAX_BYTES)`
+/// and the 200-byte report below comes back whole, so both the marker and the
+/// "late file is gone" assertion fail.
+#[tokio::test]
+async fn the_configured_output_cap_truncates_the_architecture_report() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    // A `file_tree` view prints one line per file, so the report is genuinely
+    // long without needing a cross-file call graph to resolve.
+    for n in 0..24 {
+        std::fs::write(
+            src.join(format!("module_{n:02}_parser.rs")),
+            format!("pub fn parse_variant_{n:02}() -> u32 {{ {n} }}\n"),
+        )
+        .unwrap();
+    }
+
+    let uncapped = tool(dir.path());
+    uncapped
+        .dispatch(&serde_json::json!({ "action": "index" }))
+        .unwrap();
+    let full = uncapped
+        .dispatch(&serde_json::json!({ "action": "architecture", "view": "file_tree" }))
+        .unwrap();
+    let full_text = text_of(&full);
+    assert!(
+        full_text.contains("parse_variant_23") || full_text.contains("module_23_parser.rs"),
+        "the fixture report must be long enough to cut: {full_text}"
+    );
+    assert!(
+        !full_text.contains("report truncated"),
+        "an unset cap keeps the compiled default: {full_text}"
+    );
+
+    let capped = GraphTool::new(dir.path().join("graph.db"), dir.path().to_path_buf()).with_limits(
+        crate::tools::graph::tool::GraphLimits {
+            output_max_bytes: Some(200),
+            ..Default::default()
+        },
+    );
+    let result = capped
+        .dispatch(&serde_json::json!({ "action": "architecture", "view": "file_tree" }))
+        .unwrap();
+    let text = text_of(&result);
+    assert!(
+        text.contains("[architecture report truncated at 200 bytes"),
+        "the answer must name the cut and the configured cap: {text}"
+    );
+    assert!(
+        !text.contains("module_23_parser.rs"),
+        "the report body must actually stop at the cap: {text}"
+    );
+}
+
+/// `graph.packSymbols` replaces the pack's compiled 12, and
+/// `graph.searchLimit` replaces the store's default for a bare `search`.
+///
+/// Red-first: with both consumers restored to the constants, the pack carries
+/// all 8 hits instead of 2 and the search returns 8 instead of 3.
+#[tokio::test]
+async fn the_configured_pack_and_search_defaults_reach_their_actions() {
+    use std::fmt::Write as _;
+    let dir = tempfile::tempdir().unwrap();
+    let mut source = String::new();
+    for n in 0..8 {
+        let _ = writeln!(source, "pub fn parse_config_{n}() -> u32 {{ {n} }}");
+    }
+    std::fs::write(dir.path().join("lib.rs"), source).unwrap();
+
+    // Unconfigured: the compiled defaults carry every hit here.
+    let defaults = tool(dir.path());
+    defaults
+        .dispatch(&serde_json::json!({ "action": "index" }))
+        .unwrap();
+    let pack = defaults
+        .dispatch(&serde_json::json!({ "action": "context", "query": "parse config" }))
+        .unwrap();
+    let default_pack = pack.details["symbols"]
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or_default();
+    assert!(
+        default_pack > 2,
+        "the fixture must offer more hits than the configured budget, or the test proves \
+         nothing: {} symbols, {}",
+        default_pack,
+        text_of(&pack)
+    );
+
+    let configured = GraphTool::new(dir.path().join("graph.db"), dir.path().to_path_buf())
+        .with_limits(crate::tools::graph::tool::GraphLimits {
+            pack_symbols: Some(2),
+            search_limit: Some(3),
+            ..Default::default()
+        });
+    let pack = configured
+        .dispatch(&serde_json::json!({ "action": "context", "query": "parse config" }))
+        .unwrap();
+    assert_eq!(
+        pack.details["symbols"].as_array().map(Vec::len),
+        Some(2),
+        "`graph.packSymbols` is the pack's default budget: {}",
+        text_of(&pack)
+    );
+
+    let search = configured
+        .dispatch(&serde_json::json!({ "action": "search", "query": "parse config" }))
+        .unwrap();
+    assert_eq!(
+        search.details["hits"].as_u64(),
+        Some(3),
+        "`graph.searchLimit` is a bare search's default limit: {}",
+        text_of(&search)
+    );
+
+    // A call's own `limit` still wins over the setting, in both actions.
+    let asked = configured
+        .dispatch(&serde_json::json!({ "action": "search", "query": "parse config", "limit": 5 }))
+        .unwrap();
+    assert_eq!(asked.details["hits"].as_u64(), Some(5));
+    let pack = configured
+        .dispatch(&serde_json::json!({ "action": "context", "query": "parse config", "limit": 4 }))
+        .unwrap();
+    assert_eq!(pack.details["symbols"].as_array().map(Vec::len), Some(4));
+}
+
 /// `confidence_floor` filters the trace, echoes its value, and refuses a
 /// value outside `[0, 1]` naming the range.
 ///

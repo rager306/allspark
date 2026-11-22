@@ -101,6 +101,62 @@ impl SettingsManager {
             .unwrap_or_default()
     }
 
+    /// The byte cap for one rendered graph report (`graph.outputMaxBytes`).
+    ///
+    /// `None` keeps the tool's compiled 50 KiB default. `Some(0)` is treated as
+    /// unset rather than "cap at zero": a zero window would mark every answer
+    /// truncated and hand the model an empty report.
+    #[must_use]
+    pub fn get_graph_output_max_bytes(&self) -> Option<usize> {
+        self.merged
+            .graph
+            .as_ref()
+            .and_then(|graph| graph.output_max_bytes)
+            .filter(|bytes| *bytes > 0)
+            .map(|bytes| usize::try_from(bytes).unwrap_or(usize::MAX))
+    }
+
+    /// Symbols a `context` evidence pack carries when the call sets no `limit`
+    /// (`graph.packSymbols`); `None` keeps the compiled default.
+    ///
+    /// Clamped to `PACK_MAX_SYMBOLS`: the pack is a bounded answer by design, and
+    /// a setting must not raise a ceiling the model already cannot raise. A zero
+    /// reads as unset, so a typo cannot shrink the pack to nothing.
+    #[must_use]
+    pub fn get_graph_pack_symbols(&self) -> Option<usize> {
+        self.merged
+            .graph
+            .as_ref()
+            .and_then(|graph| graph.pack_symbols)
+            .filter(|symbols| *symbols > 0)
+            .map(|symbols| {
+                usize::try_from(symbols)
+                    .unwrap_or(usize::MAX)
+                    .min(crate::tools::graph::reports::PACK_MAX_SYMBOLS)
+            })
+    }
+
+    /// Results a `search` returns when the call sets no `limit`
+    /// (`graph.searchLimit`); `None` keeps the store's own default.
+    ///
+    /// Clamped to `SEARCH_MAX_LIMIT` for the same reason as
+    /// [`Self::get_graph_pack_symbols`]: the limit sizes the candidate pool, and
+    /// a model-facing ceiling must hold whoever writes the setting. A zero reads
+    /// as unset.
+    #[must_use]
+    pub fn get_graph_search_limit(&self) -> Option<usize> {
+        self.merged
+            .graph
+            .as_ref()
+            .and_then(|graph| graph.search_limit)
+            .filter(|limit| *limit > 0)
+            .map(|limit| {
+                usize::try_from(limit)
+                    .unwrap_or(usize::MAX)
+                    .min(crate::tools::graph::args::SEARCH_MAX_LIMIT)
+            })
+    }
+
     /// The code-graph store path (`graph.dbPath`), resolved against `~/`
     /// when prefixed; `None` lets the caller default to `<agentDir>/graph.db`.
     #[must_use]

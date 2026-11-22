@@ -340,6 +340,14 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let graph_enabled = settings.get_graph_enabled();
     let graph_db_path = settings.get_graph_db_path();
     let graph_auto = settings.get_graph_auto();
+    // `[graph]` output/search/pack windows: the tool's compiled constants become
+    // defaults. Read here with the other graph gates, before `settings` moves
+    // into the resource loader; `None` keeps the constant for each key.
+    let graph_limits = crate::tools::graph::tool::GraphLimits {
+        output_max_bytes: settings.get_graph_output_max_bytes(),
+        pack_symbols: settings.get_graph_pack_symbols(),
+        search_limit: settings.get_graph_search_limit(),
+    };
     // The native `edit` tool's gate + mode policy (`editHybrid.*`; enabled
     // defaults ON, default mode `replace`).
     let edit_hybrid_enabled = settings.get_edit_hybrid_enabled();
@@ -717,6 +725,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             graph_enabled,
             graph_db_path,
             graph_auto,
+            graph_limits,
             jev_enabled,
             jev_graph_rerank,
             jev_graph_rerank_raw,
