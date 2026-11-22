@@ -29,9 +29,12 @@ mod window_tests;
 
 // The index concern lives in session_store::index; the facade re-imports keep the callers in scope.
 mod child_usage;
+// Foreign-row normalization for the session store: a TS-era assistant row keeps
+// its tool calls in a sibling field, and every read path must fold them.
 #[cfg(test)]
 #[path = "session_store/child_usage_tests.rs"]
 mod child_usage_tests;
+mod foreign;
 mod index;
 
 use index::fold_child_usage_attributions;

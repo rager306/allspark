@@ -110,7 +110,15 @@ impl SessionFile {
     /// The one place an entry joins the index: its `by_id` slot, its chain link, and the leaf.
     /// The link resolves the parent at push time; a parent not indexed yet starts a new chain
     /// (strict [`Self::branch`] stops at a missing parent too).
-    pub(crate) fn index_entry(&mut self, entry: SessionEntry) {
+    pub(crate) fn index_entry(&mut self, mut entry: SessionEntry) {
+        // A foreign (TypeScript-era) assistant row keeps its tool calls in a
+        // sibling `toolCalls` field; this build reads them as typed `content`
+        // blocks. Folding them HERE — the one place an entry joins the index —
+        // covers the streamed load, the windowed load and the in-memory build
+        // at once. Without it the compaction cut guard cannot see the calls, so
+        // it treats every imported `toolResult` as orphaned and refuses the
+        // compaction as "too short" (`imported_session_compacts`).
+        super::foreign::normalize_tool_calls(&mut entry);
         let position = self.entries.len();
         let link = match entry
             .parent_id

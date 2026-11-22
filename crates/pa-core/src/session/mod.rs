@@ -125,8 +125,62 @@ pub fn parse_session_entries(content: &str) -> Vec<FileEntry> {
             entries.push(entry);
         }
     }
+    for entry in &mut entries {
+        normalize_foreign_tool_calls(entry);
+    }
     apply_child_usage_attributions(&mut entries);
     entries
+}
+
+/// Fold a foreign (TypeScript-era) assistant row's `toolCalls` array into the
+/// typed `content` blocks.
+///
+/// The TS writer kept tool calls in a SIBLING field of `content`, while this
+/// build parses them as `AssistantContentBlock::ToolCall` inside `content`. An
+/// imported or resumed TS session therefore parsed into an assistant message
+/// with no calls at all, and every consumer that reads the typed shape lost
+/// them: the compaction cut guard saw a `toolResult` whose call "was not kept"
+/// and walked the cut back to the start, so the imported session reported
+/// "Session is too short to compact" (measured: 1200 imported turns, 3600
+/// rows, `imported_session_compacts`). The conversion belongs HERE, at the one
+/// boundary every reader goes through — the live loop projection and the
+/// compaction walk both read `FileEntry` values, so normalizing at each
+/// consumer would be the duplicate-source-of-truth defect this file avoids.
+pub(crate) fn normalize_foreign_tool_calls(entry: &mut FileEntry) {
+    let FileEntry::Message {
+        message: AgentMessage::Assistant(assistant),
+        ..
+    } = entry
+    else {
+        return;
+    };
+    let Some(foreign) = assistant.rest.remove("toolCalls") else {
+        return;
+    };
+    let Some(calls) = foreign.as_array() else {
+        return;
+    };
+    for call in calls {
+        let Some(arguments) = call.get("arguments").and_then(serde_json::Value::as_object) else {
+            continue;
+        };
+        let Some(id) = call.get("id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(name) = call.get("name").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let tool_call = pa_types::ai::ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: arguments.clone(),
+            thought_signature: None,
+            rest: serde_json::Map::new(),
+        };
+        assistant
+            .content
+            .push(pa_types::ai::AssistantContentBlock::ToolCall(tool_call));
+    }
 }
 
 /// Fold `child_usage_attributed` aggregates into their target assistant
@@ -587,6 +641,41 @@ mod context_tests {
             session_context.messages[1],
             AgentMessage::Assistant(_)
         ));
+    }
+
+    /// A TypeScript-era row keeps its tool calls in a sibling `toolCalls`
+    /// field; this build reads them as typed content blocks. The conversion
+    /// happens at the one parse boundary, so both the live projection and the
+    /// compaction cut guard see the call (without it the cut walk treats every
+    /// imported `toolResult` as orphaned and refuses as "too short").
+    #[test]
+    fn foreign_tool_calls_become_typed_content_blocks() {
+        let content = format!(
+            r#"{{"type":"session","id":"s","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/w","version":3}}
+{{"type":"message","id":"u1","parentId":null,"timestamp":"2024-01-01T00:00:01.000Z","message":{{"role":"user","content":[{{"type":"text","text":"go"}}],"timestamp":0}}}}
+{{"type":"message","id":"a1","parentId":"u1","timestamp":"2024-01-01T00:00:02.000Z","message":{{"role":"assistant","content":[],"api":"openai-completions","provider":"prime-inference","model":"m","usage":{{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}}},"stopReason":"tool_calls","timestamp":0,"toolCalls":[{{"id":"call-0","name":"ipython","arguments":{{"code":"print(1)"}}}}]}}}}"#
+        );
+        let entries = parse_session_entries(&content);
+        let calls = entries
+            .iter()
+            .find_map(|entry| match entry {
+                pa_types::session::FileEntry::Message {
+                    message: AgentMessage::Assistant(assistant),
+                    ..
+                } => Some(assistant),
+                _ => None,
+            })
+            .expect("the assistant row")
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                pa_types::ai::AssistantContentBlock::ToolCall(call) => Some(call.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(calls.len(), 1, "the foreign tool call became a typed block");
+        assert_eq!(calls[0].id, "call-0");
+        assert_eq!(calls[0].name, "ipython");
     }
 
     #[test]

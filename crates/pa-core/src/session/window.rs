@@ -457,7 +457,15 @@ impl WindowedSessionStore {
                                 == Some(crate::session::ANTHROPIC_WARNING_SHOWN_CUSTOM_TYPE))))
             {
                 match serde_json::from_slice::<FileEntry>(&line) {
-                    Ok(entry) => Some(entry),
+                    // The window reads the file directly, so it must apply the
+                    // same foreign-row normalization the plain loader does: a
+                    // TS-era assistant row keeps its tool calls in a sibling
+                    // `toolCalls` field, and a window that skipped the fold
+                    // reported every imported `toolResult` as an orphaned call.
+                    Ok(mut entry) => {
+                        super::normalize_foreign_tool_calls(&mut entry);
+                        Some(entry)
+                    }
                     Err(_) => return Ok(None),
                 }
             } else {
