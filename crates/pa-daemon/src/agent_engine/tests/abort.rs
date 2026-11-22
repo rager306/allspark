@@ -545,8 +545,11 @@ fn abort_in_flight_turn_cancels_a_running_kernel_cell() {
             );
         })
     };
-    // The cell started (bounded by the kernel boot).
-    let deadline = std::time::Instant::now() + std::time::Duration::from_mins(3);
+    // The cell started (bounded by the kernel boot). The bound is generous
+    // because a full-suite run builds the kernel venv while every other test
+    // binary competes for the same cores; a boot that never happens still
+    // fails here.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_mins(10);
     while !marker.exists() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }

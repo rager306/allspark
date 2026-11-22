@@ -1246,8 +1246,16 @@ mod tests {
 
         let yaml_error = serde_yaml::from_str::<serde_yaml::Value>(broken_yaml).unwrap_err();
         let settings_path = agent_dir.join("settings.json").display().to_string();
+        // Auto-discovery also reads the real user's `~/.agents/skills` (a global
+        // directory, not the fixture's), so only statuses the fixture owns are
+        // asserted. The path filter is the fixture root for that reason.
+        let owned: Vec<SkillStatus> = resources
+            .skill_statuses
+            .into_iter()
+            .filter(|entry| Path::new(&entry.path).starts_with(tmp.path()))
+            .collect();
         assert_eq!(
-            resources.skill_statuses,
+            owned,
             vec![
                 status(
                     "broken",

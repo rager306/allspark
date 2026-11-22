@@ -288,7 +288,10 @@ async fn kill_cancels_a_mid_provider_wait_turn_and_surfaces_the_aborted_row() {
     assert!(prompt.success, "prompt failed: {prompt:?}");
     // The busy flag is the runner's own admission marker (`await_session_work_settled`
     // parks on it too): no assistant message_start arrives before the kill.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // Generous admission bound: a full-suite run has every other test binary
+    // competing for the cores, and the assertion that matters is the kill
+    // below answering before the 60 s hold.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     loop {
         if worker.core.lock().unwrap().busy {
             break;
