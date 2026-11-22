@@ -697,8 +697,19 @@ fn outcome_row_and_end_event(
     (row_index, event)
 }
 
+/// A threshold that the PREFIX alone pushes over must not announce a compaction
+/// the compactor would refuse.
+///
+/// The trigger prices the next request (messages + system prompt + tool schemas
+/// + output reserve), while the compactor needs summarizable history. A short
+/// session can therefore sit over the threshold with nothing before the cut to
+/// summarize. When the trigger asked only the pricing question, every such turn
+/// boundary streamed a `compaction_start`/`compaction_end` pair whose end was
+/// "Session is too short to compact" — a warning on turns where nothing was
+/// wrong. `auto_compaction_due` now asks the compactor's own question too, so
+/// this shape produces NO threshold pair and no durable outcome row.
 #[test]
-fn threshold_skip_records_the_durable_outcome_row() {
+fn a_prefix_only_crossing_does_not_announce_a_threshold_compaction() {
     let (probe, _probe_dir) = faux_engine_with_settings(
         &serde_json::json!({ "responses": [{"text": "seed reply"}] }),
         1,
@@ -714,8 +725,8 @@ fn threshold_skip_records_the_durable_outcome_row() {
         .expect("probe turn produced usage");
     drop(probe);
 
-    // One big crossing turn whose only summarizable history is itself:
-    // the threshold fires, and the compaction skips (too short).
+    // One big crossing turn whose only summarizable history is itself: priced
+    // over the threshold, with nothing the compactor could cut.
     let big_prompt = format!("seed turn {} crossing", "x".repeat(48_000));
     let big_tokens = (48_000 + "seed turn  crossing".len() as u64).div_ceil(4);
     let headroom = baseline + big_tokens / 2;
@@ -732,22 +743,21 @@ fn threshold_skip_records_the_durable_outcome_row() {
         vec!["crossing reply".to_string()],
         "the crossing turn answered"
     );
-    let skip_message =
-        "Auto-compaction skipped: Session is too short to compact — try again once it grows";
-    let (row_index, _) =
-        outcome_row_and_end_event(&events, "threshold", "skipped", skip_message, "warning");
-    let start_index = events
-        .iter()
-        .position(|event| {
-            matches!(event, EngineEvent::CompactionStart { event } if event["reason"] == "threshold")
-        })
-        .expect("threshold compaction_start emitted");
     assert!(
-        row_index > start_index,
-        "the disclosure pair goes out after the start event"
+        !events.iter().any(|event| matches!(
+            event,
+            EngineEvent::CompactionStart { event } if event["reason"] == "threshold"
+        )),
+        "a compaction the compactor would refuse is never announced: {:?}",
+        events
+            .iter()
+            .filter(|event| matches!(event, EngineEvent::CompactionStart { .. }))
+            .collect::<Vec<_>>()
     );
-    assert!(outcome_row_in_entries(&engine));
-    assert!(outcome_row_in_live_context(&engine));
+    assert!(
+        !outcome_row_in_entries(&engine),
+        "no durable outcome row without a compaction attempt"
+    );
     let guard = engine.session.blocking_lock();
     let core = guard.as_deref().expect("session built");
     let persistence = core.session.shared_persistence();
@@ -759,10 +769,7 @@ fn threshold_skip_records_the_durable_outcome_row() {
             .iter()
             .any(|entry| matches!(entry, pa_types::session::FileEntry::Compaction { .. }))
     });
-    assert!(
-        !has_compaction_entry,
-        "a skipped compaction persists no compaction entry"
-    );
+    assert!(!has_compaction_entry, "no compaction entry was persisted");
 }
 
 #[test]

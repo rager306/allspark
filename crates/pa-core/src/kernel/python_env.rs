@@ -409,7 +409,11 @@ mod tests {
 
     #[test]
     fn executable_search_rejects_repository_sibling_paths() {
-        let root = tempfile::tempdir().unwrap();
+        // A scratch tree OUTSIDE any repository: the gate exports a repo-local
+        // `TMPDIR` (`<repo>/.tmp`), and a tempdir under the repo makes the
+        // "trusted" sibling repository-owned too, so the assertion below would
+        // fail on the very rule it checks. `/tmp` is the documented escape.
+        let root = tempfile::tempdir_in(std::path::Path::new("/tmp")).unwrap();
         let repo = root.path().join("repo");
         let project = repo.join("app");
         let sibling = repo.join("tools");
@@ -503,7 +507,10 @@ mod tests {
 
     #[test]
     fn only_the_direct_home_uv_is_trusted() {
-        let root = tempfile::tempdir().unwrap();
+        // Outside any repository: the gate's repo-local `TMPDIR` would make the
+        // fixture home repository-owned, which is exactly the condition this
+        // test distinguishes from a trusted home.
+        let root = tempfile::tempdir_in(std::path::Path::new("/tmp")).unwrap();
         let home = root.path().join("home");
         let tool_dir = home.join(".local/bin");
         let uv_name = if cfg!(windows) { "uv.exe" } else { "uv" };
