@@ -530,8 +530,13 @@ impl SupervisorChildSessionsInner {
         // "the run finished without an answer". The settle below must leave the
         // verdict unset so a later successful observation can still decide it;
         // collapsing this to `None` wrote a one-shot `done` that nothing could
-        // revise.
-        let observation_failed = observation.is_err();
+        // revise. A worker that is GONE (the daemon answers "Unknown active
+        // session") is not a transient transport failure: it will never answer,
+        // so the durable file's final row is the answer and the run settles now.
+        let observation_failed = observation
+            .as_ref()
+            .err()
+            .is_some_and(|error| super::registry::unknown_session(error).is_none());
         if let Err(error) = &observation {
             tracing::debug!(%error, "child answer observation failed; outcome stays unknown");
         }

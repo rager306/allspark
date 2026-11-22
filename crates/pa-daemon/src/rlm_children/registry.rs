@@ -15,7 +15,7 @@ use pa_core::session_engine::semantic_edges::ChildCancelledReason;
 
 /// The already-gone marker inside a close failure: a close walking a
 /// child that died earlier must not fail (a missing child session is a completed no-op).
-fn unknown_session(error: &anyhow::Error) -> Option<()> {
+pub(super) fn unknown_session(error: &anyhow::Error) -> Option<()> {
     error.chain().find_map(|cause| {
         cause
             .to_string()

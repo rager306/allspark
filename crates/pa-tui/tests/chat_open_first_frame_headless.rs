@@ -13,8 +13,8 @@ use pa_tui::interactive::{
 use serde_json::{json, Value};
 
 use support::{
-    attach_response, options, serve_connection, session_stats_response, write_json, MockSupervisor,
-    Request,
+    attach_response, create_response, options, serve_connection, session_stats_response,
+    write_json, MockSupervisor, Request,
 };
 
 /// The loaded-daemon stand-in: the dock's data requests answer this late, far past the first
@@ -284,6 +284,12 @@ fn the_two_dock_reads_are_concurrent() {
                     writer.flush().expect("flush");
                 };
             match kind.as_str() {
+                "create" => answer(
+                    &mut writer,
+                    &id,
+                    "create",
+                    create_response(&id)["data"].clone(),
+                ),
                 "attach" => answer(
                     &mut writer,
                     &id,
