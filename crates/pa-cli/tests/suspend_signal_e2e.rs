@@ -99,14 +99,24 @@ fn sigtstp_session_runner() -> bool {
 }
 
 /// Whether the runner had a controlling-terminal session, sampled before the single `setsid`.
+///
+/// The `setsid` runs ONLY when there is a terminal to drive: on a runner without a
+/// controlling terminal the suite has already decided to skip, and calling
+/// `setsid` there is not a harmless no-op — this process is often already a
+/// session leader (a CI shim, a container init, `nextest`'s process group), and
+/// the `EPERM` panicked the test that had just printed "skipping". A skip must
+/// not do work it does not need.
 fn lead_fresh_session() -> bool {
     static HAD_CTTY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *HAD_CTTY.get_or_init(|| {
         let had = sigtstp_session_runner();
+        if !had {
+            return false;
+        }
         if let Err(error) = nix::unistd::setsid() {
             panic!("the harness could not start a fresh session: {error}");
         }
-        had
+        true
     })
 }
 
