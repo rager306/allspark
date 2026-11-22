@@ -528,7 +528,8 @@ SERIAL_UNITS="pa-cli#test:slow_drain_exit_guard_e2e
 pa-cli#test:termios_process_exit_e2e
 pa-cli#test:kitty_early_typing_e2e
 pa-daemon#test:kernel_dispose_e2e
-pa-daemon#test:idle_passivation_e2e"
+pa-daemon#test:idle_passivation_e2e
+pa-tui#test:tui_rss_stability"
 
 export -f run_unit
 export OUT
