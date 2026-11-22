@@ -421,9 +421,11 @@ mod tests {
             .expect("a concurrent version write must not fail");
         let stored: String = second
             .conn
-            .query_row("SELECT v FROM read_model_meta WHERE k = 'version'", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT v FROM read_model_meta WHERE k = 'version'",
+                [],
+                |row| row.get(0),
+            )
             .expect("the version row");
         assert_eq!(stored, READ_MODEL_VERSION.to_string());
     }
