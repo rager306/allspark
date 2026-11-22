@@ -344,14 +344,24 @@ async fn repeated_branch_conflicts_fail_the_compaction_after_three_attempts() {
 async fn the_turn_boundary_prices_the_system_prompt() {
     let tmp = tempfile::tempdir().unwrap();
     let mut manager = SessionManager::in_memory(tmp.path());
-    manager
-        .append_message(user_turn("a short turn"))
-        .and_then(|_| manager.append_message(assistant_turn("a short reply")))
-        .unwrap();
+    // A history the compactor CAN cut: the trigger now also asks whether
+    // `prepare_compaction` could run, so a two-message session is never due no
+    // matter how large the prefix is (`TooShort` — the boundary would have
+    // announced a compaction that immediately skipped). Several short turns with
+    // a small `keepRecentTokens` leave summarizable history, which is what this
+    // test needs in order to isolate the PREFIX as the deciding term.
+    for index in 0..8 {
+        manager
+            .append_message(user_turn(&format!("turn {index}")))
+            .and_then(|_| manager.append_message(assistant_turn(&format!("reply {index}"))))
+            .unwrap();
+    }
     let agent = Arc::new(Agent::new(AgentOptions::default()));
     let engine = AgentSession::new(agent, manager, Vec::new()).await.unwrap();
-    engine
-        .set_compaction_settings(crate::session_engine::compaction::CompactionSettings::default());
+    engine.set_compaction_settings(crate::session_engine::compaction::CompactionSettings {
+        keep_recent_tokens: 10,
+        ..crate::session_engine::compaction::CompactionSettings::default()
+    });
 
     // A small window so the prefix is decisive rather than marginal.
     let registration =

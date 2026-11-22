@@ -1259,11 +1259,27 @@ mod tests {
             .await;
         assert!(created.success, "create failed: {created:?}");
         let mut subscription = worker.events.subscribe();
-        for (enabled, message, compacts) in [
-            (None, "first", false),
-            (Some(true), "second", true),
-            (Some(false), "third", false),
-        ] {
+        // Warm-up turns first: with the new trigger the threshold arm asks whether
+        // the compactor COULD run, and a two-message session cannot be cut
+        // (`TooShort`). The warm-up supplies summarizable history so the toggle
+        // below is what the assertion observes, not the skip pair.
+        for message in ["warm-1", "warm-2", "warm-3"] {
+            let turn = worker
+                .dispatch(
+                    "prompt_and_wait",
+                    &json!({ "activeSessionId": "switch-session", "message": message }),
+                )
+                .await;
+            assert!(turn.success, "the {message} turn failed: {turn:?}");
+            assert_eq!(
+                threshold_compaction_starts(&mut subscription),
+                0,
+                "the {message} turn compacted with the toggle off"
+            );
+        }
+        for (enabled, message, compacts) in
+            [(Some(true), "second", true), (Some(false), "third", false)]
+        {
             if let Some(enabled) = enabled {
                 let toggled = worker
                     .dispatch(

@@ -45,7 +45,7 @@ impl AgentSession {
                 .tools
                 .iter()
                 .map(|tool| compaction::estimate_tool_schema_tokens(tool.as_ref()))
-                .sum(),
+                .sum::<u64>(),
             output_reserve: 0,
             context_window: 0,
         }
@@ -86,7 +86,7 @@ impl AgentSession {
                 .tools
                 .iter()
                 .map(|tool| compaction::estimate_tool_schema_tokens(tool.as_ref()))
-                .sum(),
+                .sum::<u64>(),
         );
         // Usage BEFORE the latest compaction must not re-trigger. A retained-tail
         // assistant keeps its pre-compaction `total_tokens`, so a pass that just
