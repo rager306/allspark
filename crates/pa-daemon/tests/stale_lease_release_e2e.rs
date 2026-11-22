@@ -115,6 +115,21 @@ fn log_contains(socket: &Path, agent_dir: &Path, needle: &str) -> bool {
     std::fs::read_to_string(daemon_log(socket, agent_dir)).is_ok_and(|log| log.contains(needle))
 }
 
+/// A worker id as the daemon log prints it: the log boundary redacts worker
+/// tokens (review #40), and a worker id has the token shape, so the written
+/// line carries `<redacted..abcd>`. Rendering the expectation through the same
+/// function the writer uses keeps the two in step; asserting the raw id waits
+/// for a line the writer never produces.
+fn logged_worker_id(worker_id: &str) -> String {
+    let rendered = pa_daemon::supervisor::notes::render_log_line(&format!(
+        "session worker {worker_id} end"
+    ));
+    rendered
+        .split_once("session worker ")
+        .and_then(|(_, rest)| rest.split_once(" end"))
+        .map_or_else(|| worker_id.to_string(), |(id, _)| id.to_string())
+}
+
 #[track_caller]
 fn await_log_line(socket: &Path, agent_dir: &Path, needle: &str, budget: Duration) {
     let deadline = Instant::now() + budget;
@@ -359,7 +374,10 @@ fn the_revived_worker_stays_supervised_and_the_session_reopens() {
     await_log_line(
         &socket,
         &agent_dir,
-        &format!("adopted session worker {session_id} (was alive: false)"),
+        &format!(
+            "adopted session worker {} (was alive: false)",
+            logged_worker_id(&session_id)
+        ),
         Duration::from_secs(20),
     );
 
@@ -415,7 +433,10 @@ fn a_worker_that_fails_to_death_releases_the_session_hold() {
     // after the socket binds): a worker dying mid-replay parks the
     // relaunch on the create route's 600s budget instead of the backoff ladder.
     let worker_socket = worker_socket_of(&agent_dir, &socket, &session_id);
-    let give_up = format!("session worker {session_id} failed after 6 consecutive failures");
+    let give_up = format!(
+        "session worker {} failed after 6 consecutive failures",
+        logged_worker_id(&session_id)
+    );
     let replay_grace = Duration::from_secs(4);
     let mut serving_since: Option<Instant> = None;
     let deadline = Instant::now() + Duration::from_mins(3);
@@ -532,7 +553,10 @@ fn the_give_up_sweep_reaps_a_live_leftover_of_the_abandoned_id() {
     // past the replay window (see the fails-to-death test).
     let worker_socket = worker_socket_of(&agent_dir, &socket, &session_id);
     kill_hard(worker_pid);
-    let give_up = format!("session worker {session_id} failed after 6 consecutive failures");
+    let give_up = format!(
+        "session worker {} failed after 6 consecutive failures",
+        logged_worker_id(&session_id)
+    );
     let replay_grace = Duration::from_secs(4);
     let mut serving_since: Option<Instant> = None;
     let deadline = Instant::now() + Duration::from_mins(3);

@@ -1,4 +1,4 @@
-use super::compact_session::CompactOutcome;
+use super::compact_session::{prepare_compaction, CompactOutcome};
 use super::{
     compaction, compaction_trace, ipython_state, provider_adapter, refine, session_message_to_loop,
     standard_message, AgentMessage, AgentSession, FileEntry, SessionAgentMessage,
@@ -136,7 +136,24 @@ impl AgentSession {
             output_reserve,
             model.context_window,
         );
-        compaction::plan_compaction_due(&plan, &self.compaction_settings())
+        let settings = self.compaction_settings();
+        if !compaction::plan_compaction_due(&plan, &settings) {
+            return false;
+        }
+        // PRICING THE REQUEST IS NOT ENOUGH: the compactor can refuse what the
+        // trigger announces. `prepare_compaction` needs summarizable history, and a
+        // request priced over threshold by the PREFIX ALONE reaches it with nothing
+        // before the cut to summarize, so it answers `TooShort` while the trigger has
+        // already said "due" — the turn boundary then streams a
+        // `compaction_start`/`compaction_end` pair whose end is a skip warning, on
+        // every boundary of a short session (measured on the print json stream: four
+        // such pairs around two real turns). The two sides must agree on ONE rule, so
+        // the trigger asks the compactor's own question here.
+        //
+        // No lock is taken across the model call: this reads the retained entries the
+        // session already publishes, exactly as `compute_cut` does for `/compact`.
+        let entries = self.session.lock().await.retained_entries().to_vec();
+        prepare_compaction(&entries, settings.keep_recent_tokens).is_ok()
     }
 
     /// Remove the trailing assistant message from the loop context, so a

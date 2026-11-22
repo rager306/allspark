@@ -81,9 +81,23 @@ the merged tree, and the fork's 14 live commits (`e8731cc8a`) merged back on top
 
 ### Verification
 
-See the entry's test totals in the release notes; the gate (`fmt`, `clippy -D warnings`,
-workspace tests, doctests, `--all-features`) is green on the tagged commit, and the artifact is
-built in the `ubuntu:22.04` container so the published binary keeps the glibc 2.35 floor.
+`fmt` and `clippy -D warnings` are green workspace-wide, `cargo test --workspace --doc` is green,
+and the artifact is built in the `ubuntu:22.04` container so the published binary keeps the
+glibc 2.35 floor. Whole-suite totals on this release: `pa-core --lib` 1897, `pa-daemon --lib`
+1491, `pa-graph` 586, `pa-types` 167, plus 300 nextest units.
+
+Three test-calibration defects the full-suite run exposed are fixed here, each red-first
+verified alone: the uv safe-search fixtures built their tree inside the gate's repo-local
+`TMPDIR` (so every candidate looked repository-owned and the search correctly answered
+`None`); the abort wedge cell and the kill-path admission wait were calibrated for an
+unshared machine; and `skill_statuses_explain_every_discovered_skill` asserted a whole status
+list while auto-discovery also reads the machine's own `~/.agents/skills`.
+
+Two whole classes remain red **and reproduce on the pre-merge integration commit
+`eab651262`**, so they are not merge fallout and are not fixed here: the daemon log redactor's
+written form versus assertions on raw worker ids (fixed for the restart/stale-lease suites in
+this release, still red elsewhere), and the ACP settle e2e pair whose `outstandingSubagents`
+reads 0 on that commit too.
 
 ---
 

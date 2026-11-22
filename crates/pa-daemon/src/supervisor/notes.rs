@@ -234,7 +234,12 @@ impl Supervisor {
 /// Split from [`Supervisor::log_line`] so a test can assert the WRITTEN FORM without building a
 /// supervisor — the point being that the assertion runs through the same function the writer
 /// uses, so detaching the redaction fails the test.
-pub(crate) fn render_log_line(message: &str) -> String {
+///
+/// Public (beyond the crate) for the same reason: the restart e2e suites wait for a park line
+/// in the daemon log, and the line a reader sees carries a redacted worker id. Asserting the
+/// raw id pins a form the writer never produces, so those suites render the expected line
+/// through this function instead of re-implementing the redaction beside it.
+pub fn render_log_line(message: &str) -> String {
     format!("[{}] {}", util::now_iso(), redact_tokens(message))
 }
 

@@ -132,10 +132,10 @@ fn plain_boot_parks_stale_busy_evidence() {
 
     let (_supervisor, log_path, boot_before) = boot_and_observe(&agent_dir, &socket);
 
-    let park_line = format!(
+    let park_line = park_line(format!(
         "session worker {} not revived: its busy evidence is stale (recorded {busy_at}); not revived (reopens on the next client open)",
         fixture.worker_id
-    );
+    ));
     let deadline = Instant::now() + Duration::from_secs(5);
     while !std::fs::read_to_string(&log_path)
         .unwrap_or_default()
@@ -187,10 +187,10 @@ fn plain_boot_never_revives_a_stopped_session() {
 
     let (_supervisor, log_path, boot_before) = boot_and_observe(&agent_dir, &socket);
 
-    let park_line = format!(
+    let park_line = park_line(format!(
         "session worker {} not revived: its session is archived (stopped); not revived (reopens on the next client open)",
         fixture.worker_id
-    );
+    ));
     let deadline = Instant::now() + Duration::from_secs(5);
     while !std::fs::read_to_string(&log_path)
         .unwrap_or_default()
@@ -233,10 +233,10 @@ fn plain_boot_never_revives_a_given_up_worker() {
 
     let (_supervisor, log_path, boot_before) = boot_and_observe(&agent_dir, &socket);
 
-    let park_line = format!(
+    let park_line = park_line(format!(
         "session worker {} not revived: was failed at the last give-up; not revived (reopens on the next client open)",
         fixture.worker_id
-    );
+    ));
     let deadline = Instant::now() + Duration::from_secs(5);
     while !std::fs::read_to_string(&log_path)
         .unwrap_or_default()
@@ -274,7 +274,7 @@ fn plain_boot_still_revives_fresh_busy_evidence() {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let registered = distinct(workers_registered_since(&log_path, &boot_before));
-        if registered == vec![fixture.worker_id.clone()] {
+        if registered == vec![logged_worker_id(&fixture.worker_id)] {
             break;
         }
         assert!(

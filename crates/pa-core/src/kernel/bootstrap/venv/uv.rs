@@ -113,11 +113,21 @@ mod safe_uv_tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
+    /// A scratch tree OUTSIDE any repository. The gate exports a repo-local
+    /// `TMPDIR` (`<repo>/.tmp`), and these tests build a fixture tree beside it:
+    /// a tempdir under the repo makes every candidate look repository-owned, so
+    /// `find_executable` correctly answers `None` and the test would assert
+    /// against the very rule it is checking. `/tmp` is the documented escape
+    /// other suites in this workspace already use for that reason.
+    fn scratch_outside_a_repository() -> tempfile::TempDir {
+        tempfile::tempdir_in(std::path::Path::new("/tmp")).unwrap()
+    }
+
     #[test]
     fn uv_search_skips_repository_paths_and_allows_safe_ancestor_directory() {
         use std::os::unix::fs::symlink;
 
-        let root = tempfile::tempdir().unwrap();
+        let root = scratch_outside_a_repository();
         let project = root.path().join("project");
         let alias = root.path().join("alias");
         let trusted = root.path().join("trusted");
@@ -147,7 +157,7 @@ mod safe_uv_tests {
 
     #[test]
     fn uv_search_skips_sibling_directory_in_repository() {
-        let root = tempfile::tempdir().unwrap();
+        let root = scratch_outside_a_repository();
         let repo = root.path().join("repo");
         let project = repo.join("app");
         let sibling = repo.join("tools");
@@ -170,7 +180,7 @@ mod safe_uv_tests {
 
     #[test]
     fn uv_search_skips_enclosing_checkout_but_keeps_external_tool() {
-        let root = tempfile::tempdir().unwrap();
+        let root = scratch_outside_a_repository();
         let outer = root.path().join("outer");
         let inner = outer.join("inner");
         let outer_tools = outer.join("tools");

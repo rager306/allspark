@@ -144,7 +144,7 @@ fn plain_boot_revives_only_journal_busy_workers() {
     let deadline = Instant::now() + Duration::from_secs(15);
     let registered = loop {
         let registered = distinct(workers_registered_since(&log_path, &restart_before));
-        if registered == vec![busy_session.clone()] {
+        if registered == vec![logged_worker_id(&busy_session)] {
             break registered;
         }
         assert!(
@@ -154,9 +154,9 @@ fn plain_boot_revives_only_journal_busy_workers() {
         );
         std::thread::sleep(Duration::from_millis(100));
     };
-    assert_eq!(registered, vec![busy_session.clone()]);
+    assert_eq!(registered, vec![logged_worker_id(&busy_session)]);
 
-    let skip_line = format!("session worker {idle_session} was idle at exit; not revived");
+    let skip_line = park_line(format!("session worker {idle_session} was idle at exit; not revived"));
     let deadline = Instant::now() + Duration::from_secs(5);
     while !std::fs::read_to_string(&log_path)
         .unwrap_or_default()

@@ -152,7 +152,7 @@ fn supervisor_kill9_restart_sessions_re_register_and_survive() {
     assert_eq!(
         registered,
         {
-            let mut expected = sessions.clone();
+            let mut expected = sessions.iter().map(|id| logged_worker_id(id)).collect::<Vec<_>>();
             expected.sort();
             expected
         },

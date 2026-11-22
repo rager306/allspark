@@ -217,7 +217,7 @@ fn a_revived_user_parked_queue_stays_parked() {
     wait_socket_ready(&socket);
     let log_path = pa_daemon::paths::daemon_log_path(&socket, &agent_dir);
     wait_for("the parked session was not revived", || {
-        distinct(workers_registered_since(&log_path, &restart_before)) == vec![session.clone()]
+        distinct(workers_registered_since(&log_path, &restart_before)) == vec![logged_worker_id(&session)]
     });
     let (mut client, _hello) = Client::connect(&socket);
     let queue = call(

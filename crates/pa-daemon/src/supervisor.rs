@@ -7,7 +7,9 @@ mod accept_loop;
 mod adoption;
 mod clients;
 mod launch_budget;
-mod notes;
+// The log boundary's own renderer (redaction included), exported for the restart e2e
+// suites: they assert a line a reader sees, not the raw id the writer never prints.
+pub mod notes;
 mod options;
 mod provider_admission;
 mod root_identity;

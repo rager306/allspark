@@ -405,6 +405,40 @@ fn distinct(values: Vec<String>) -> Vec<String> {
     values
 }
 
+/// The daemon log line a park verdict produces, rendered by the writer's own
+/// boundary function.
+///
+/// The supervisor redacts worker tokens at the log boundary (review #40), and a
+/// worker id has the token shape, so the written line carries `<redacted..abcd>`
+/// and never the raw id. Asserting the raw id pinned a form the writer never
+/// prints; rendering the expectation through the same function the writer uses
+/// keeps the two in step, and detaching the redaction still fails the wait
+/// because the log line would then differ from this one.
+fn park_line(message: String) -> String {
+    let rendered = pa_daemon::supervisor::notes::render_log_line(&message);
+    rendered
+        .split_once("] ")
+        .map_or(rendered.clone(), |(_, rest)| rest.to_string())
+}
+
+/// A worker id as the daemon log prints it.
+///
+/// The supervisor redacts worker tokens at the log boundary (review #40), and
+/// a worker id has the token shape, so every id in the log is
+/// `<redacted..abcd>` — the last four characters only. The restart suites read
+/// worker ids back OUT of that log to prove which sessions re-registered, so
+/// their expectation has to be rendered by the same function; comparing the
+/// raw id made every parsed line look like a different worker. The rendering
+/// goes through `render_log_line`, so a change to the redaction shape moves the
+/// expectation with it instead of silently stopping the match.
+fn logged_worker_id(worker_id: &str) -> String {
+    let rendered = pa_daemon::supervisor::notes::render_log_line(&format!("session worker {worker_id} end"));
+    rendered
+        .split_once("session worker ")
+        .and_then(|(_, rest)| rest.split_once(" end"))
+        .map_or_else(|| worker_id.to_string(), |(id, _)| id.to_string())
+}
+
 // The restart regression families live in the child modules (same tree
 // position); every child's use-super glob resolves through this root's
 // harness, and the one test binary stays one CI shard unit.

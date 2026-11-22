@@ -103,6 +103,17 @@ unset PRIME_AGENT_SESSION_DIR PRIME_AGENT_DAEMON_SOCKET \
       PRIME_AGENT_INTERNAL_SESSION_LEASE_OWNER_ID \
       PRIME_AGENT_INTERNAL_SESSION_LEASES \
       PRIME_AGENT_INTERNAL_ORPHAN_PROCESS_JOURNAL
+# Provider credentials leak into model resolution the same way, and the leak is
+# not cosmetic: `ModelRegistry` builds its Prime-Inference and Google entries
+# from the ambient credential store, so a machine whose operator is logged into
+# Google resolves a different model than a clean CI runner. Measured 2026-11-22:
+# `an_explicit_scope_with_no_matches_does_not_warn_about_an_excluded_default`
+# expects the fixture's `battery/mock-1` and got `google-vertex/gemini-1.5-flash`
+# only while `GOOGLE_APPLICATION_CREDENTIALS` was set. Scrub them here rather
+# than teaching every model-resolution test to unset its own environment.
+unset GOOGLE_APPLICATION_CREDENTIALS GOOGLE_CLOUD_PROJECT GOOGLE_CLOUD_LOCATION \
+      ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_API_KEY \
+      OPENAI_API_KEY OPENAI_BASE_URL
 
 fail=0
 step() { printf '\n=== %s\n' "$*"; }

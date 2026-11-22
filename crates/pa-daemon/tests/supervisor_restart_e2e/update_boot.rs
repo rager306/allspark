@@ -125,7 +125,7 @@ fn update_boot_revives_only_roster_kept_workers() {
     let deadline = Instant::now() + Duration::from_secs(15);
     let registered = loop {
         let registered = distinct(workers_registered_since(&log_path, &restart_before));
-        if registered == vec![sessions[0].clone()] {
+        if registered == vec![logged_worker_id(&sessions[0])] {
             break registered;
         }
         assert!(
@@ -135,12 +135,12 @@ fn update_boot_revives_only_roster_kept_workers() {
         );
         std::thread::sleep(Duration::from_millis(100));
     };
-    assert_eq!(registered, vec![sessions[0].clone()]);
+    assert_eq!(registered, vec![logged_worker_id(&sessions[0])]);
 
-    let skip_line = format!(
+    let skip_line = park_line(format!(
         "session worker {} was idle at exit; not revived",
         sessions[1]
-    );
+    ));
     let deadline = Instant::now() + Duration::from_secs(5);
     while !std::fs::read_to_string(&log_path)
         .unwrap_or_default()
