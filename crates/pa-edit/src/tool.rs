@@ -596,7 +596,8 @@ mod tests {
             .iter()
             .filter_map(|content| match content {
                 pa_agent::types::ToolResultContent::Text(text) => Some(text.text.clone()),
-                pa_agent::types::ToolResultContent::Image(_) => None,
+                pa_agent::types::ToolResultContent::Image(_)
+                | pa_agent::types::ToolResultContent::Video(_) => None,
             })
             .collect::<Vec<_>>()
             .join("\n")

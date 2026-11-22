@@ -267,4 +267,29 @@ impl SettingsManager {
             .python_cell_timeout_ms
             .unwrap_or(crate::settings::types::DEFAULT_PYTHON_CELL_TIMEOUT_MS)
     }
+
+    /// The agent-inbox kill switch (`agentInbox.enabled`, default on):
+    /// `false` restores direct notice-row steering. Global scope only, so a
+    /// project cannot flip the daemon's delivery route.
+    #[must_use]
+    pub fn get_agent_inbox_enabled(&self) -> bool {
+        self.global
+            .agent_inbox
+            .as_ref()
+            .and_then(|inbox| inbox.enabled)
+            .unwrap_or(true)
+    }
+
+    /// The inbox reminder's repeat interval in milliseconds
+    /// (`agentInbox.reminderIntervalMs`; default 10 minutes, `0`
+    /// disables the reminder). Global scope only, so a project cannot
+    /// drive the reminder loop.
+    #[must_use]
+    pub fn get_agent_inbox_reminder_interval_ms(&self) -> u64 {
+        self.global
+            .agent_inbox
+            .as_ref()
+            .and_then(|inbox| inbox.reminder_interval_ms)
+            .unwrap_or(crate::settings::types::DEFAULT_AGENT_INBOX_REMINDER_INTERVAL_MS)
+    }
 }

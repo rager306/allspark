@@ -1157,13 +1157,7 @@ async fn run_interactive_surface(
                     }
                     UiInput::Paste(text) => {
                         session.stop_selection_auto_scroll();
-                        // The inline auth panel owns the frame: the paste lands in its field, never
-                        // in the editor.
-                        if view.auth_panel.is_some() {
-                            session.paste_to_auth_panel(&text, &mut view);
-                        } else {
-                            session.handle_paste(&text, &mut view);
-                        }
+                        session.handle_paste(&text, &mut view);
                     }
                     // A background task's warning row (the tmux probe, review #39): the
                     // tone the paint path would have given it, delivered off that path.
@@ -1770,7 +1764,7 @@ async fn run_interactive_surface(
         let animating = session.turn_active
             || view.retry.is_some()
             || view.compaction.is_some()
-            || view.share_loader.is_some();
+            || matches!(view.overlay, Some(crate::view::Overlay::ShareLoader(_)));
         if animating {
             let now = Instant::now();
             let started = *anim_started.get_or_insert(now);

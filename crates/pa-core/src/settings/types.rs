@@ -623,6 +623,17 @@ impl JevToolArbiterSetting {
     }
 }
 
+/// `agentInbox` (the machine-notification inbox): enabled by default;
+/// `enabled: false` is the kill switch that restores direct notice-row
+/// steering. `reminderIntervalMs` (default 10 minutes, `0` disables)
+/// repeats the waiting count while the inbox stays unread.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentInboxSettings {
+    pub enabled: Option<bool>,
+    pub reminder_interval_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TelemetrySettings {
@@ -709,6 +720,8 @@ pub struct SubagentModelChoice {
     pub model: String,
     pub thinking: Option<String>,
 }
+/// The default inbox reminder repeat interval: 10 minutes.
+pub const DEFAULT_AGENT_INBOX_REMINDER_INTERVAL_MS: u64 = 600_000;
 
 /// The settings document: every known field optional; unknown keys preserved.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -764,6 +777,7 @@ pub struct Settings {
     pub routing: Option<RoutingSettings>,
     /// `[agents]`: subagent admission (the per-provider AIMD ceiling).
     pub agents: Option<AgentsSettings>,
+    pub agent_inbox: Option<AgentInboxSettings>,
     pub telemetry: Option<TelemetrySettings>,
     pub branch_summary: Option<BranchSummarySettings>,
     pub retry: Option<RetrySettings>,

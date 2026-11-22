@@ -104,7 +104,7 @@ async fn settled_browser_code_wins_over_paste_cancel_and_validation_errors() {
             r#"{"access_token":"browser-access"}"#,
         ),
     ]);
-    let client = reqwest::Client::new();
+    let client = pa_ai::utils::tls::http_client_builder().build().unwrap();
     for input in [
         None,
         Some("http://localhost/callback?code=paste&state=wrong".to_string()),

@@ -363,6 +363,54 @@ mod tests {
         assert_eq!(manager.get_default_model(), Some("z-ai/glm-5.3"));
     }
 
+    /// `agentInbox.enabled` defaults ON (the kill switch is opt-out) and
+    /// `reminderIntervalMs` defaults to 10 minutes; `0` disables the
+    /// reminder.
+    #[test]
+    fn agent_inbox_settings_default_and_kill_switch() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir = dir.path().join("agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let manager = SettingsManager::create(dir.path(), agent_dir.clone());
+        assert!(manager.get_agent_inbox_enabled(), "unset reads as enabled");
+        assert_eq!(
+            manager.get_agent_inbox_reminder_interval_ms(),
+            crate::settings::types::DEFAULT_AGENT_INBOX_REMINDER_INTERVAL_MS
+        );
+        std::fs::write(
+            agent_dir.join("settings.json"),
+            r#"{"agentInbox": {"enabled": false, "reminderIntervalMs": 0}}"#,
+        )
+        .unwrap();
+        let manager = SettingsManager::create(dir.path(), agent_dir);
+        assert!(!manager.get_agent_inbox_enabled());
+        assert_eq!(manager.get_agent_inbox_reminder_interval_ms(), 0);
+    }
+
+    /// Both `agentInbox` keys read the GLOBAL scope only: a cloned repo's
+    /// project settings can neither flip the route nor set the reminder
+    /// interval.
+    #[test]
+    fn agent_inbox_settings_read_the_global_scope_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("cwd");
+        let agent_dir = dir.path().join("agent");
+        std::fs::create_dir_all(cwd.join(".prime/agent")).unwrap();
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(
+            cwd.join(".prime/agent/settings.json"),
+            r#"{"agentInbox": {"enabled": false, "reminderIntervalMs": 1}}"#,
+        )
+        .unwrap();
+
+        let manager = SettingsManager::create(&cwd, &agent_dir);
+        assert!(manager.get_agent_inbox_enabled());
+        assert_eq!(
+            manager.get_agent_inbox_reminder_interval_ms(),
+            crate::settings::types::DEFAULT_AGENT_INBOX_REMINDER_INTERVAL_MS
+        );
+    }
+
     /// `factory.enabled` reads the GLOBAL scope only (the agent-dir
     /// document the kernel's factory gate and `set_factory_enabled` use):
     /// a project-scope override can never flip the gate out from under the

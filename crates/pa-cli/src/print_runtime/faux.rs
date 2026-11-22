@@ -160,8 +160,6 @@ pub(crate) async fn build_faux_engine_with(
             tools: builtin_tools(&config.cwd),
             custom_system_prompt: config.system_prompt.clone(),
             prompt_guidelines: config.append_system_prompt.clone(),
-            generic_mcp_servers: vec![],
-            allow_recursion: None,
             session_manager,
             extra_host_handlers,
             conversation_log_path: None,
@@ -170,6 +168,8 @@ pub(crate) async fn build_faux_engine_with(
             extra_builtin_skill_overrides: vec![],
             rlm_subagent_host,
             rlm_usage_store: None,
+
+            inbox: None,
             progress_note_emit: None,
             rlm_depth,
             factory_child,

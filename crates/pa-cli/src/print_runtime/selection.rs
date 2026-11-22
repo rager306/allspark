@@ -15,6 +15,20 @@ use crate::mode::RunOptions;
 
 use super::render_selector_error;
 
+/// [`pa_core::models::resolve_cli_model`] with its warning on stderr, so an
+/// inexact selection (a typo'd `--model`) never runs silently.
+pub(crate) fn resolve_cli_model_warning_to_stderr(
+    cli_provider: Option<&str>,
+    cli_model: &str,
+    all_models: &[Model],
+) -> pa_core::models::ResolveCliModelResult {
+    let resolved = pa_core::models::resolve_cli_model(cli_provider, cli_model, all_models);
+    if let Some(warning) = &resolved.warning {
+        eprintln!("Warning: {warning}");
+    }
+    resolved
+}
+
 pub(super) async fn select_model(
     registry: &mut pa_core::models::ModelRegistry,
     config: &crate::mode::RuntimeConfig,
@@ -33,8 +47,11 @@ pub(super) async fn select_model(
                 })
                 .cloned(),
         );
-        let resolved =
-            pa_core::models::resolve_cli_model(config.provider.as_deref(), model_name, &candidates);
+        let resolved = resolve_cli_model_warning_to_stderr(
+            config.provider.as_deref(),
+            model_name,
+            &candidates,
+        );
         if let Some(error) = resolved.error {
             return Err(error);
         }

@@ -167,7 +167,8 @@ fn tool(dir: &std::path::Path) -> GraphTool {
 fn text_of(result: &AgentToolResult) -> &str {
     match &result.content[0] {
         pa_agent::types::ToolResultContent::Text(content) => &content.text,
-        other @ pa_agent::types::ToolResultContent::Image(_) => {
+        other @ (pa_agent::types::ToolResultContent::Image(_)
+        | pa_agent::types::ToolResultContent::Video(_)) => {
             panic!("expected a text block, got {other:?}")
         }
     }

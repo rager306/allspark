@@ -136,7 +136,8 @@ async fn tool_reports_diagnostics_for_a_file() {
     assert!(!result.is_error, "diagnostics must not be an error");
     let text = match &result.content[0] {
         pa_agent::types::ToolResultContent::Text(text) => text.text.clone(),
-        other @ pa_agent::types::ToolResultContent::Image(_) => {
+        other @ (pa_agent::types::ToolResultContent::Image(_)
+        | pa_agent::types::ToolResultContent::Video(_)) => {
             panic!("expected text content, got {other:?}")
         }
     };

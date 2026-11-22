@@ -30,6 +30,7 @@ pub(crate) use engine::{
     HeadlessEngine,
 };
 pub(crate) use faux::{faux_response_steps, FauxChildQueue};
+pub(crate) use selection::resolve_cli_model_warning_to_stderr;
 
 pub struct PrintRuntime;
 

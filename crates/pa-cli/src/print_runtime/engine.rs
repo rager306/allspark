@@ -431,9 +431,10 @@ pub(crate) async fn build_headless_engine_with(
             tools: builtin_tools(&config.cwd),
             custom_system_prompt: config.system_prompt.clone(),
             prompt_guidelines: config.append_system_prompt.clone(),
-            generic_mcp_servers: vec![],
-            allow_recursion: None,
             session_manager: Some(session_manager),
+            // The daemonless print mode keeps direct notice-row steering:
+            // no daemon-owned inbox, so `inbox: None`.
+            inbox: None,
             extra_host_handlers,
             conversation_log_path: None,
             additional_skill_paths: config

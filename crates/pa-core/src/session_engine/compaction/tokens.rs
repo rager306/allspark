@@ -104,6 +104,9 @@ pub fn estimate_tokens(message: &AgentMessage) -> u64 {
                     .iter()
                     .filter_map(|block| match block {
                         pa_types::ai::UserContentBlock::Text(text) => Some(chars(&text.text)),
+                        pa_types::ai::UserContentBlock::Video(_) => {
+                            Some(pa_types::ai::VIDEO_ESTIMATED_TOKENS * 4)
+                        }
                         _ => None,
                     })
                     .sum();
@@ -138,6 +141,9 @@ pub fn estimate_tokens(message: &AgentMessage) -> u64 {
                         // TS parity: custom images stay a flat 4_800 chars
                         // (1_200 tokens) — not geometry-aware like the user path.
                         pa_types::ai::UserContentBlock::Image(_) => 4_800,
+                        pa_types::ai::UserContentBlock::Video(_) => {
+                            pa_types::ai::VIDEO_ESTIMATED_TOKENS * 4
+                        }
                         // Un-modeled blocks have no modeled size; TS sizes
                         // only typed blocks, so estimate zero.
                         pa_types::ai::UserContentBlock::Raw(_) => 0,
@@ -154,6 +160,9 @@ pub fn estimate_tokens(message: &AgentMessage) -> u64 {
                     // TS parity: tool-result images stay a flat 4_800 chars
                     // (1_200 tokens) — not geometry-aware like the user path.
                     pa_types::ai::UserContentBlock::Image(_) => 4_800,
+                    pa_types::ai::UserContentBlock::Video(_) => {
+                        pa_types::ai::VIDEO_ESTIMATED_TOKENS * 4
+                    }
                     pa_types::ai::UserContentBlock::Raw(_) => 0,
                 })
                 .sum(),

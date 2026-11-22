@@ -33,7 +33,8 @@ fn run(tool: &Arc<LspTool>, params: serde_json::Value) -> pa_agent::types::Agent
 fn text_of(result: &pa_agent::types::AgentToolResult) -> String {
     match &result.content[0] {
         pa_agent::types::ToolResultContent::Text(text) => text.text.clone(),
-        other @ pa_agent::types::ToolResultContent::Image(_) => {
+        other @ (pa_agent::types::ToolResultContent::Image(_)
+        | pa_agent::types::ToolResultContent::Video(_)) => {
             panic!("expected text content, got {other:?}")
         }
     }

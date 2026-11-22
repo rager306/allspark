@@ -2,8 +2,8 @@
 //! rows, compaction aborts, and the telemetry seams.
 use super::{
     assistant_message_parts, event_to_update, pop_superseded_attempt_row, AgentView, ChatEntry,
-    CompactionReason, CompactionState, DaemonClientEvent, DaemonCommand, Map, MessageBlock, Result,
-    RetryState, SessionUi, StatusKind, ToolResultView, TurnUpdate, Value,
+    CompactionReason, CompactionState, DaemonClientEvent, DaemonCommand, Map, MessageBlock,
+    Overlay, Result, RetryState, SessionUi, StatusKind, ToolResultView, TurnUpdate, Value,
 };
 use crate::interactive::reconnect::{ConnectionEffect, ConnectionEvent};
 
@@ -283,7 +283,7 @@ impl SessionUi {
                     self.factory_list_epoch += 1;
                     self.bash_activities = serde_json::json!({"activities": []});
                     self.factory_graph = serde_json::json!({"runs": []});
-                    if let Some(factory_view) = view.factory_view.as_mut() {
+                    if let Some(Overlay::Factory(factory_view)) = view.overlay.as_mut() {
                         factory_view.apply_runs(Vec::new());
                     }
                     self.update_subagent_summary(view);
@@ -733,6 +733,7 @@ impl SessionUi {
                 follow_ups,
                 starting,
                 rlm_child_status,
+                inbox_notice,
                 injected_prompts,
             } => {
                 view.queued = crate::queued::QueuedMessages {
@@ -740,6 +741,7 @@ impl SessionUi {
                     follow_ups,
                     starting,
                     rlm_child_status,
+                    inbox_notice,
                     injected_prompts,
                 };
                 // A queue change under an active browse reconciles the selection: the cursor

@@ -189,7 +189,7 @@ pub(super) fn installed_runtime_identity(python: &Path, venv: &Path) -> String {
             None => hasher.update(b"missing"),
         }
     }
-    format!("sha256:{:x}", hasher.finalize())
+    format!("sha256:{}", hex::encode(hasher.finalize()))
 }
 
 /// The installed `rlm` package under the venv's site-packages: the Windows layout
@@ -236,7 +236,7 @@ fn hash_python_tree(dir: &Path) -> anyhow::Result<String> {
         hasher.update(&std::fs::read(file)?);
         hasher.update([0]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex::encode(hasher.finalize()))
 }
 
 /// The memo key: every input the runtime-ready probe observes.
@@ -247,8 +247,8 @@ pub(super) fn runtime_probe_key(
     installed_identity: &str,
 ) -> String {
     format!(
-        "{python}\u{0}{runtime_identity}\u{0}{installed_identity}\u{0}sha256:{:x}",
-        sha2::Sha256::digest(version_raw.as_bytes())
+        "{python}\u{0}{runtime_identity}\u{0}{installed_identity}\u{0}sha256:{}",
+        hex::encode(sha2::Sha256::digest(version_raw.as_bytes()))
     )
 }
 

@@ -224,3 +224,23 @@ fn a_stale_digest_entry_costs_nothing_in_the_walk() {
     };
     assert_eq!(estimate_entry_tokens(&digest), 0);
 }
+
+#[test]
+fn a_video_triggers_compaction_before_the_measured_clip_can_overflow() {
+    for role in ["user", "custom", "toolResult"] {
+        let video: AgentMessage = serde_json::from_value(serde_json::json!({
+            "role": role, "customType": "video", "display": false,
+            "toolCallId": "c", "toolName": "python_repl", "isError": false,
+            "content": [{"type": "video", "data": "AAAA", "mimeType": "video/mp4"}],
+            "timestamp": 1,
+        }))
+        .expect("video message");
+        let messages = vec![assistant_message(90_000, 0), video];
+        // 4,800 tokens delayed compaction past this point; the conservative fixed budget
+        // triggers before replaying the measured 12.3K clip plus the output/reserve budgets.
+        assert!(
+            threshold_compaction_due(&messages, 128_000, 8_192, &CompactionSettings::default(),),
+            "{role}"
+        );
+    }
+}

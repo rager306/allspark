@@ -53,7 +53,7 @@ pub struct CachedAnswers {
 fn state_digest(state: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(state);
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 /// One cache key component: the question's full identity on the wire.

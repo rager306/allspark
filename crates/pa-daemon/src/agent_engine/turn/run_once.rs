@@ -90,7 +90,9 @@ impl AgentSessionEngine {
         // item's first run; this subscription forwards them only once a
         // boundary frame already passed.
         let boundary_passed = std::sync::Arc::clone(boundary_passed);
+        let live = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let subscription = {
+            let live = std::sync::Arc::clone(&live);
             let tx = tx.clone();
             let pending_model_changes = pending_model_changes.clone();
             let boundary_passed = std::sync::Arc::clone(&boundary_passed);
@@ -103,6 +105,7 @@ impl AgentSessionEngine {
             );
             agent
                 .subscribe(move |event, _signal| {
+                    let live = live.load(std::sync::atomic::Ordering::SeqCst);
                     let tx = tx.clone();
                     let pending_model_changes = pending_model_changes.clone();
                     let boundary_passed = std::sync::Arc::clone(&boundary_passed);
@@ -112,6 +115,9 @@ impl AgentSessionEngine {
                     let goal_budget_crossed = goal_budget_crossed.clone();
                     Box::pin(async move {
                         use pa_agent::types::AgentEvent;
+                        if !live {
+                            return Ok(());
+                        }
                         if let AgentEvent::MessageEnd {
                             message:
                                 pa_agent::types::AgentMessage::Standard(
@@ -330,6 +336,10 @@ impl AgentSessionEngine {
                 })
                 .await
         };
+        let subscription = TurnSubscription {
+            subscription: Some(subscription),
+            live,
+        };
         // Admit the turn without blocking the forwarding loop: the admission
         // future settles only when the whole turn settles, while the loop
         // hands each streamed event to `emit` the moment it arrives (buffering
@@ -452,6 +462,12 @@ impl AgentSessionEngine {
             return Ok(TurnOnce::Aborted);
         }
         if let Some(error) = admission_error {
+            // An abort that lands before the provider stream starts fails the
+            // run with the typed abort error, after the run's failure path
+            // already settled the aborted row: the turn was aborted.
+            if pa_agent::abort::is_abort_error(&error) {
+                return Ok(TurnOnce::Aborted);
+            }
             return Err(anyhow::anyhow!("{error:#}"));
         }
         let state = agent.state().await;
@@ -470,6 +486,35 @@ impl AgentSessionEngine {
             }
         }
         Ok(TurnOnce::None)
+    }
+}
+
+/// The turn's listener, inert on every exit path: an `emit` panic unwinds
+/// past the awaited unsubscribe, and a listener left behind would forward and
+/// account (`account_message`, goal usage) every later run's events again.
+/// Drop silences it at once; the removal it spawns is only cleanup.
+struct TurnSubscription {
+    subscription: Option<pa_agent::agent::Subscription>,
+    live: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl TurnSubscription {
+    async fn unsubscribe(mut self) {
+        if let Some(subscription) = self.subscription.take() {
+            subscription.unsubscribe().await;
+        }
+    }
+}
+
+impl Drop for TurnSubscription {
+    fn drop(&mut self) {
+        self.live.store(false, std::sync::atomic::Ordering::SeqCst);
+        if let (Some(subscription), Ok(runtime)) = (
+            self.subscription.take(),
+            tokio::runtime::Handle::try_current(),
+        ) {
+            runtime.spawn(subscription.unsubscribe());
+        }
     }
 }
 

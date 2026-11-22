@@ -98,17 +98,29 @@ async fn identical_configs_canonicalize_identically() {
 
 #[tokio::test]
 async fn different_mcp_servers_diverge() {
-    let (_tmp, cwd, agent_dir) = fixture();
+    // The session's generic MCP servers now come from the GLOBAL settings via
+    // `create_session`'s `mcp_gating` (upstream removed the per-session config
+    // field), so a snapshot divergence is driven by the global document.
+    let (tmp, cwd, agent_dir) = fixture();
     let plain = create_session(config(&cwd, &agent_dir)).await.unwrap();
-    let mut with_mcp = config(&cwd, &agent_dir);
-    with_mcp.generic_mcp_servers = vec!["fixture-server".to_string()];
-    let mcp = create_session(with_mcp).await.unwrap();
+    std::fs::write(
+        agent_dir.join("settings.json"),
+        serde_json::json!({
+            "mcpServers": {
+                "fixture-server": { "type": "stdio", "command": "true" }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mcp = create_session(config(&cwd, &agent_dir)).await.unwrap();
 
     let plain_json = ContextSnapshot::capture_canonical(&plain).await;
     let mcp_json = ContextSnapshot::capture_canonical(&mcp).await;
     assert_ne!(plain_json, mcp_json);
     assert!(mcp_json.contains("fixture-server"));
     assert!(!plain_json.contains("fixture-server"));
+    drop(tmp);
 }
 
 #[tokio::test]

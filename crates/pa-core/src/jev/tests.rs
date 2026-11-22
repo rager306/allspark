@@ -837,7 +837,8 @@ fn never_signal() -> pa_agent::abort::AbortSignal {
 fn text_of(result: &pa_agent::types::AgentToolResult) -> &str {
     match &result.content[0] {
         pa_agent::types::ToolResultContent::Text(text) => &text.text,
-        pa_agent::types::ToolResultContent::Image(other) => {
+        other @ (pa_agent::types::ToolResultContent::Image(_)
+        | pa_agent::types::ToolResultContent::Video(_)) => {
             panic!("expected a text block, got {other:?}")
         }
     }

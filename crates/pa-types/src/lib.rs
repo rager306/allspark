@@ -13,6 +13,7 @@ pub use build_identity::{build_compatible, BuildCompat};
 pub mod compaction;
 pub mod daemon;
 pub mod goal;
+pub mod inbox_notice;
 pub mod incident;
 pub mod memory_release;
 pub mod platform;

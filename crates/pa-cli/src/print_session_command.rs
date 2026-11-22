@@ -316,8 +316,6 @@ mod tests {
                     tools: Vec::new(),
                     custom_system_prompt: None,
                     prompt_guidelines: Vec::new(),
-                    generic_mcp_servers: Vec::new(),
-                    allow_recursion: None,
                     session_manager: Some(session_manager),
                     extra_host_handlers: None,
                     conversation_log_path: None,
@@ -326,6 +324,8 @@ mod tests {
                     extra_builtin_skill_overrides: Vec::new(),
                     rlm_subagent_host: None,
                     rlm_usage_store: None,
+
+                    inbox: None,
                     progress_note_emit: None,
                     factory_child: false,
                     daemonless: true,

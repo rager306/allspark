@@ -38,6 +38,9 @@ pub struct RlmWiring {
     /// Announces every accepted `rlm.progress.note`; `None` keeps the store
     /// the only surface.
     pub progress_note_emit: Option<super::rlm_host::RlmProgressNoteEmit>,
+    /// The daemon-owned agent inbox whose `rlm.inbox.*` host requests
+    /// register here; `None` (daemonless) keeps the requests unregistered.
+    pub inbox: Option<Arc<super::inbox::SessionInbox>>,
 }
 
 /// The embedding's cron wiring for the kernel's `rlm_heartbeat.*` host
@@ -92,8 +95,9 @@ pub struct SessionKernelWiring {
     pub rlm_usage: Arc<super::rlm_usage::RlmChildUsageAttributions>,
 }
 
-/// Build the session runtime and register the `goal.*`, `rlm.*`, and —
-/// only when `cron_store` wiring exists — the `rlm_heartbeat.*` host
+/// Build the session runtime and register the `goal.*`, `rlm.*`, the
+/// `rlm.inbox.*` requests when an inbox store is supplied, and — only
+/// when `cron_store` wiring exists — the `rlm_heartbeat.*` host
 /// handlers; `goal_complete_purge` is the embedding's queued-goal-context purge.
 #[must_use]
 pub fn wire_session_runtime(
@@ -181,6 +185,9 @@ pub fn wire_session_runtime(
         rlm.progress_note_emit,
     ));
     register_rlm_host_handlers(&mut handlers, &rlm_bridge);
+    if let Some(inbox) = &rlm.inbox {
+        super::inbox::register_inbox_host_handlers(inbox, &mut handlers);
+    }
     SessionKernelWiring {
         session,
         handlers,
@@ -262,6 +269,10 @@ pub fn kernel_provisioner(
     excluded_apis: &[String],
     session_artifact_dir: Option<std::path::PathBuf>,
     cell_timeout_ms: Option<u64>,
+    max_output_chars: Option<usize>,
+    // `[limits] kernelBashOutputBytes`: the model's `bash()` view size (the
+    // kernel's head+tail cap). `None` keeps the runtime's compiled default.
+    bash_output_bytes: Option<usize>,
     on_restore: Option<crate::kernel::provisioner::RestoreCallback>,
     on_background_work_settled: Option<crate::kernel::shared::BackgroundWorkSettledCallback>,
     on_unavailable_skills: Option<crate::kernel::provisioner::UnavailableSkillsCallback>,
@@ -293,6 +304,7 @@ pub fn kernel_provisioner(
         }
     }
     env.extend(websearch_env);
+    env.extend(kernel_bash_cap_env(bash_output_bytes));
     if !excluded_apis.is_empty() {
         // Comma-separated facade names the kernel must refuse (`mem`,
         // `mem.onboarding`, ...). Absent or empty = nothing excluded.
@@ -317,6 +329,7 @@ pub fn kernel_provisioner(
             // The engine-resolved default cell time limit (`None`: daemonless;
             // the runtime bootstrap and state ops never arm it).
             cell_timeout_ms,
+            max_output_chars,
             evidence_dir: session_artifact_dir,
             ready_gate,
             on_restore,
@@ -325,6 +338,32 @@ pub fn kernel_provisioner(
             on_bootstrap_result,
         },
     ))
+}
+
+/// The kernel `bash()` view caps as env (`[limits] kernelBashOutputBytes`).
+///
+/// The model's `bash()` is the Python kernel tool; the runtime package is
+/// installed into the session's kernel venv, so env is the only channel a
+/// setting has into it (`prime-agent-runtime/src/rlm/bash.py` reads
+/// `PRIME_AGENT_BASH_HEAD_CAP_BYTES` / `..._TAIL_CAP_BYTES`). `None` exports
+/// nothing, leaving the runtime's compiled 512 KiB head + 1.5 MiB tail.
+#[must_use]
+fn kernel_bash_cap_env(head_bytes: Option<usize>) -> Vec<(String, String)> {
+    let Some(head) = head_bytes else {
+        return Vec::new();
+    };
+    vec![
+        (
+            "PRIME_AGENT_BASH_HEAD_CAP_BYTES".to_string(),
+            head.to_string(),
+        ),
+        // The runtime's 1:3 head:tail ratio, so a configured window keeps
+        // Python's last-printed verdict visible.
+        (
+            "PRIME_AGENT_BASH_TAIL_CAP_BYTES".to_string(),
+            head.saturating_mul(3).to_string(),
+        ),
+    ]
 }
 
 /// The websearch skill's kernel env, only when a websearch skill is loaded:
@@ -390,9 +429,7 @@ impl IpythonKernelProvisioner for KernelProvisioner {
 
     fn kill(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
         let this = self.clone();
-        Box::pin(async move {
-            this.kill();
-        })
+        Box::pin(async move { this.kill_and_wait().await })
     }
 }
 
@@ -496,6 +533,7 @@ fn convert_execute_result(
         sent_agent_messages: result.sent_agent_messages.unwrap_or_default(),
         bash_commands: result.bash_commands,
         transcript_reads: result.transcript_reads.unwrap_or_default(),
+        inbox_messages: result.inbox_messages.unwrap_or_default(),
         timed_out_after_ms: result.timed_out_after_ms,
         ended_turn: result.ended_turn,
     }

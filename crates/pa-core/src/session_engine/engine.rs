@@ -34,8 +34,6 @@ pub struct SessionEngineConfig {
     pub custom_system_prompt: Option<String>,
     /// Explicit append-system-prompt sources from the host; overrides file discovery.
     pub prompt_guidelines: Vec<String>,
-    pub generic_mcp_servers: Vec<String>,
-    pub allow_recursion: Option<bool>,
     /// In-memory when None.
     pub session_manager: Option<SessionManager>,
     /// Merged over the built-in goal/heartbeat registrations.
@@ -48,6 +46,10 @@ pub struct SessionEngineConfig {
     pub extra_builtin_skill_overrides: Vec<String>,
     pub rlm_subagent_host: Option<Arc<dyn super::rlm_host::RlmSubagentHost>>,
     pub rlm_usage_store: Option<Arc<dyn super::rlm_usage::RlmChildUsageStore>>,
+    /// The daemon-owned agent inbox whose `rlm.inbox.read`/`rlm.inbox.count`
+    /// host requests register when supplied; daemonless embeddings pass
+    /// `None` and keep their direct notice-row steering.
+    pub inbox: Option<Arc<super::inbox::SessionInbox>>,
     /// Announces every accepted `rlm.progress.note`; `None` keeps the store
     /// the only surface.
     pub progress_note_emit: Option<super::rlm_host::RlmProgressNoteEmit>,
@@ -282,12 +284,15 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             subagent_host: config.rlm_subagent_host.clone(),
             usage_store: config.rlm_usage_store.clone(),
             progress_note_emit: config.progress_note_emit.clone(),
+            inbox: config.inbox.clone(),
         },
         config.queued_goal_context_purge.clone(),
         config.goal_completion_guard.clone(),
         config.cron_store.clone(),
     );
 
+    // A handle that outlives the move into the resource loader: the
+    // refinement gate and the system prompt read it.
     let refinement_settings = settings.reopen();
     let service_tier_preference = settings.get_default_service_tier();
     // Captured before `settings` moves into the resource loader: the preferred
@@ -372,7 +377,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // default cell time limit (default 60s, `0` disables).
     let python_cell_timeout_ms = settings.get_python_cell_timeout_ms();
     let web_search_provider = settings.get_web_search_provider();
-    let (mcp_skill_overrides, mcp_generic_servers, built_manager) =
+    let (mcp_skill_overrides, generic_mcp_servers, built_manager) =
         mcp_gating(&settings, config.agent_dir.clone()).await?;
     let mcp_manager = config
         .mcp_manager
@@ -380,12 +385,6 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         .unwrap_or_else(|| std::sync::Arc::new(std::sync::Mutex::new(built_manager)));
     let mut extra_builtin_skill_overrides = config.extra_builtin_skill_overrides.clone();
     extra_builtin_skill_overrides.extend(mcp_skill_overrides);
-    let mut generic_mcp_servers = config.generic_mcp_servers.clone();
-    for server in mcp_generic_servers {
-        if !generic_mcp_servers.contains(&server) {
-            generic_mcp_servers.push(server);
-        }
-    }
     let resources = load_resources(ResourceLoaderOptions {
         cwd: cwd.clone(),
         agent_dir: config.agent_dir.clone(),
@@ -632,6 +631,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         &resolved_profile.excluded_apis,
         session_artifact_dir,
         cell_timeout_ms,
+        // The `[limits]` cells arrive on the live tip's reapply; this base has
+        // no setting yet, so the compiled defaults stand.
+        None,
+        None,
         on_restore,
         config.on_background_work_settled.clone(),
         on_unavailable_skills,
@@ -800,10 +803,8 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         });
     }
 
-    let prompt_model_selector = format!("{}/{}", model_info.provider, model_info.id);
-    let prompt_vision_capable = Some(model_info.input.contains(&pa_types::ai::ModelInput::Image));
     let model_prompts = crate::prompts::model_prompts::load_model_prompts(
-        Some(&prompt_model_selector),
+        Some(&format!("{}/{}", model_info.provider, model_info.id)),
         &config.agent_dir,
     );
     if !model_prompts.errors.is_empty() {
@@ -816,17 +817,13 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     }
     let prompt_breakdown = crate::prompts::system_prompt::system_prompt_breakdown(
         &crate::prompts::system_prompt::BuildSystemPromptOptions {
-            custom_prompt: resources.system_prompt.clone(),
+            settings: &refinement_settings,
+            resources: &resources,
             model_prompt_extras: model_prompts.extras.as_deref(),
-            vision_capable: prompt_vision_capable,
+            model_input: &model_info.input,
             cwd: cwd.display().to_string(),
             messages_path: conversation_log.clone(),
-            context_files: resources
-                .agents_files
-                .iter()
-                .map(|file| (file.path.display().to_string(), file.content.clone()))
-                .collect(),
-            skills: model_visible_skills.clone(),
+            skills: &model_visible_skills,
             selected_tools: Some(
                 active_tool_names
                     .iter()
@@ -837,10 +834,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             // session accepts instead of all five (review #28).
             edit_modes: edit_prompt_modes.as_deref(),
             edit_default_mode: edit_prompt_default,
-            allow_recursion: config.allow_recursion,
             // A spawned child's prompt must read "depth: N (not root)" with
             // the child-agent reply doctrine, never the root identity.
-            rlm_depth: config.rlm_depth,
+            rlm_depth: config.rlm_depth.unwrap_or(0),
             factory_child: config.factory_child,
             daemonless: config.daemonless,
             can_spawn: config.rlm_subagent_host.is_some(),

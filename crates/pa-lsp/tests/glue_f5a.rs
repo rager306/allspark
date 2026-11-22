@@ -219,7 +219,8 @@ fn workspace_diagnostics_with_no_project_reports_cleanly() {
     assert!(!result.is_error);
     let text = match &result.content[0] {
         pa_agent::types::ToolResultContent::Text(text) => text.text.clone(),
-        other @ pa_agent::types::ToolResultContent::Image(_) => {
+        other @ (pa_agent::types::ToolResultContent::Image(_)
+        | pa_agent::types::ToolResultContent::Video(_)) => {
             panic!("expected text content, got {other:?}")
         }
     };

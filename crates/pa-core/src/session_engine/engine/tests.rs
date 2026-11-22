@@ -120,8 +120,6 @@ async fn engine_runs_tool_loop_and_persists() {
         tools: vec![bridge_tool(echo_definition())],
         custom_system_prompt: None,
         prompt_guidelines: vec![],
-        generic_mcp_servers: vec![],
-        allow_recursion: None,
         session_manager: None,
         extra_host_handlers: None,
         conversation_log_path: None,
@@ -130,6 +128,8 @@ async fn engine_runs_tool_loop_and_persists() {
         extra_builtin_skill_overrides: vec![],
         rlm_subagent_host: None,
         rlm_usage_store: None,
+
+        inbox: None,
         progress_note_emit: None,
         rlm_depth: None,
         factory_child: false,
@@ -232,8 +232,6 @@ async fn spawned_child_prompt_stamps_its_depth() {
         tools: vec![bridge_tool(echo_definition())],
         custom_system_prompt: None,
         prompt_guidelines: vec![],
-        generic_mcp_servers: vec![],
-        allow_recursion: None,
         session_manager: None,
         extra_host_handlers: None,
         conversation_log_path: None,
@@ -242,6 +240,8 @@ async fn spawned_child_prompt_stamps_its_depth() {
         extra_builtin_skill_overrides: vec![],
         rlm_subagent_host: None,
         rlm_usage_store: None,
+
+        inbox: None,
         progress_note_emit: None,
         rlm_depth: Some(2),
         factory_child: false,
@@ -307,8 +307,6 @@ async fn oauth_creds_unlock_generic_mcp_gating_in_new_sessions() {
             tools: vec![],
             custom_system_prompt: None,
             prompt_guidelines: vec![],
-            generic_mcp_servers: vec![],
-            allow_recursion: None,
             session_manager: None,
             extra_host_handlers: None,
             conversation_log_path: None,
@@ -317,6 +315,8 @@ async fn oauth_creds_unlock_generic_mcp_gating_in_new_sessions() {
             extra_builtin_skill_overrides: vec![],
             rlm_subagent_host: None,
             rlm_usage_store: None,
+
+            inbox: None,
             progress_note_emit: None,
             rlm_depth: None,
             factory_child: false,
@@ -499,8 +499,6 @@ async fn create_session_appends_missing_resume_settings_rows() {
         tools: vec![],
         custom_system_prompt: None,
         prompt_guidelines: vec![],
-        generic_mcp_servers: vec![],
-        allow_recursion: None,
         session_manager: Some(session_manager),
         extra_host_handlers: None,
         conversation_log_path: Some(tmp.path().join("session.jsonl")),
@@ -509,6 +507,8 @@ async fn create_session_appends_missing_resume_settings_rows() {
         extra_builtin_skill_overrides: vec![],
         rlm_subagent_host: None,
         rlm_usage_store: None,
+
+        inbox: None,
         progress_note_emit: None,
         rlm_depth: None,
         factory_child: false,
@@ -748,7 +748,8 @@ async fn model_visible_skills_follow_the_embedding_wiring() {
 fn tool_text(result: &pa_agent::types::AgentToolResult) -> String {
     match &result.content[0] {
         pa_agent::types::ToolResultContent::Text(text) => text.text.clone(),
-        pa_agent::types::ToolResultContent::Image(_) => panic!("expected text content"),
+        pa_agent::types::ToolResultContent::Image(_)
+        | pa_agent::types::ToolResultContent::Video(_) => panic!("expected text content"),
     }
 }
 
@@ -1151,8 +1152,6 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
         tools: vec![bridge_tool(recording_tool)],
         custom_system_prompt: None,
         prompt_guidelines: vec![],
-        generic_mcp_servers: vec![],
-        allow_recursion: None,
         session_manager: None,
         extra_host_handlers: None,
         conversation_log_path: None,
@@ -1161,6 +1160,8 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
         extra_builtin_skill_overrides: vec![],
         rlm_subagent_host: None,
         rlm_usage_store: None,
+
+        inbox: None,
         progress_note_emit: None,
         rlm_depth: None,
         factory_child: false,
