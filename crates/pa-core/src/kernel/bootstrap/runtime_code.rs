@@ -143,6 +143,9 @@ except Exception as _prime_agent_rlm_error:
     # the instance, after `rlm` exists, so it degrades to the teaching error
     # rather than AttributeError.
     rlm.session = _PrimeAgentMissingRlmMember(rlm, "session")
+    # `rlm.inbox` is the same shape of nested namespace (upstream's durable agent
+    # inbox), so a degraded cell gets the teaching error, not AttributeError.
+    rlm.inbox = _PrimeAgentMissingRlmMember(rlm, "inbox")
 
     def bash(command, persistent=False):
         rlm._raise_missing()

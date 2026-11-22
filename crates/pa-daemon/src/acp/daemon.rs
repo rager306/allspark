@@ -1150,7 +1150,11 @@ pub(crate) async fn reserve_session_slot(
     {
         let _ = tx.send(super::internal_error(
             id,
-            "prime-agent ACP mode hosts one session per connection; start another prime-agent process for a second session",
+            &format!(
+                "{} ACP mode hosts one session per connection; start another {} process for a second session",
+                pa_types::brand::INVOCATION,
+                pa_types::brand::INVOCATION
+            ),
         ));
         return false;
     }

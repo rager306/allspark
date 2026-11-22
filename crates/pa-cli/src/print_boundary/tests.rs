@@ -1304,7 +1304,7 @@ async fn requested_refinement_failure_emits_the_refine_failed_event() {
 
 #[tokio::test]
 async fn requested_refinement_streams_rows_and_refine_complete() {
-    let plan = r#"{"summary":"note it","rationale":"repeated","expectedOutcome":"recall","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A"}]}"#;
+    let plan = r#"{"summary":"note it","rationale":"repeated","expectedOutcome":"recall","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A","metadata":{"sources":[{"kind":"turn","id":"third turn"}]}}]}"#;
     let (engine, _dir, model) = faux_engine_with_settings(
         json!({ "responses": [{"text": "seed reply"}, {"text": plan}] }),
         compactable_settings(),
@@ -1569,6 +1569,9 @@ async fn the_boundary_consumes_a_trigger_armed_on_the_session() {
         .run_at_settled_turn(&engine, &model, None)
         .await
         .unwrap();
+    // The boundary starts the review non-blockingly; await the report the way
+    // the print runtime's disposal does before reading the rows.
+    boundary.wait_for_refinement_reports().await;
     assert!(
         !engine.session.compact_auto_refine_pending(),
         "the boundary consumed the session's trigger"

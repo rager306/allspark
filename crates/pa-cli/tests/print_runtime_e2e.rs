@@ -86,7 +86,10 @@ fn print_mode_json_streams_ts_shaped_events() {
         .unwrap();
     assert_eq!(assistant["message"]["content"][0]["text"], "json answer");
     assert_eq!(assistant["message"]["stopReason"], "stop");
-    assert_eq!(*types.last().unwrap(), "agent_end");
+    // The fork's json contract prints a terminal `outcome` line after the
+    // subscription is torn down, so it trails the run's `agent_end`.
+    assert_eq!(*types.last().unwrap(), "outcome");
+    assert_eq!(types[types.len() - 2], "agent_end");
 }
 
 #[test]
@@ -374,7 +377,10 @@ fn print_mode_resume_unknown_selector_fails_with_browse_hint() {
         "stderr: {stderr}"
     );
     assert!(
-        stderr.contains("Open prime-agent and press left-arrow to browse sessions."),
+        stderr.contains(&format!(
+            "Open {} and press left-arrow to browse sessions.",
+            pa_types::brand::INVOCATION
+        )),
         "stderr: {stderr}"
     );
 }

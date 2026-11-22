@@ -255,7 +255,10 @@ fn a_foreign_lease_holder_rejects_the_create_with_the_hold_refusal() {
         "the rejection names the holder's active session: {error}"
     );
     assert!(
-        error.contains("prime-agent --daemon-socket <socket> --resume 'foreign01ab3c'"),
+        error.contains(&format!(
+            "{} --daemon-socket <socket> --resume 'foreign01ab3c'",
+            pa_types::brand::INVOCATION
+        )),
         "the continue path is the exact attach command: {error}"
     );
     assert!(
@@ -310,8 +313,8 @@ fn a_foreign_lease_holder_rejects_the_create_with_the_hold_refusal() {
         "the daemon log records the refused create: {log}"
     );
     assert!(
-        log.contains("is already active in foreign01ab3c"),
-        "the daemon log names the holder: {log}"
+        log.contains("is already active in <redacted..ab3c>"),
+        "the daemon log names the holder (token-redacted at the log boundary, review #40): {log}"
     );
     assert!(
         log.contains("This session is currently open"),

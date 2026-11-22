@@ -1251,6 +1251,13 @@ impl Agent {
         self.inner.run.lock().unwrap().is_some()
     }
 
+    /// Hold the admission mutex, so a test can keep a run inside
+    /// `claim_run`'s pre-slot window (the abort-epoch guard's coverage).
+    #[cfg(test)]
+    async fn hold_admission_for_test(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.inner.admission.lock().await
+    }
+
     /// # Panics
     ///
     /// Panics if the `run` mutex is poisoned.
@@ -1924,5 +1931,74 @@ mod tests {
             .await
             .expect("the next prompt runs");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    /// A run whose abort lands between the epoch snapshot and the slot fill
+    /// must end at the fill, not wait out a provider call the caller already
+    /// stopped (measured: a kill waited 60.31 s for a held reply, defect
+    /// ledger #29). `claim_run` holds the admission mutex across that window,
+    /// so the test takes it and lets the spawned run park there.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_abort_inside_the_start_window_ends_the_run() {
+        fn model(id: &str) -> Model {
+            Model {
+                id: id.to_string(),
+                name: id.to_string(),
+                api: "anthropic-messages".to_string(),
+                provider: "anthropic".to_string(),
+                base_url: String::new(),
+                reasoning: true,
+                cost: crate::types::UsageCost::default(),
+                context_window: 200_000,
+                max_tokens: 8_192,
+                max_tokens_explicit: false,
+            }
+        }
+
+        let stream_fn: crate::stream::StreamFn = std::sync::Arc::new(
+            |_requested: Model,
+             _context: crate::stream::LlmContext,
+             _options: crate::stream::StreamRequestOptions| {
+                Box::pin(async {
+                    std::future::pending::<()>().await;
+                    unreachable!()
+                })
+            },
+        );
+
+        let agent = Arc::new(Agent::new(AgentOptions {
+            initial_state: AgentInitialState {
+                model: Some(model("session-model")),
+                system_prompt: Some("s".to_string()),
+                ..Default::default()
+            },
+            stream_fn: Some(stream_fn),
+            ..Default::default()
+        }));
+
+        let held = agent.hold_admission_for_test().await;
+        let running = tokio::spawn({
+            let agent = Arc::clone(&agent);
+            async move { agent.prompt(AgentPromptInput::text("hi")).await }
+        });
+        // Let the run reach its first await, which the admission guard holds.
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !running.is_finished(),
+            "the run should be inside the window"
+        );
+        agent.abort();
+        drop(held);
+
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), running)
+            .await
+            .expect("an abort inside the start window must end the run, not leave it fetching")
+            .expect("the run task joins");
+        let error = outcome.expect_err("an aborted turn reports an abort");
+        assert!(
+            crate::abort::is_abort_error(&error),
+            "expected an abort error, got {error:#}"
+        );
     }
 }

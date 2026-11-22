@@ -45,6 +45,7 @@ impl AgentSession {
     ) -> anyhow::Result<PromptOutcome> {
         let state = self.agent.state().await;
         let busy = state.is_streaming;
+        let history_len = state.messages.len();
         if busy {
             return Err(anyhow::Error::new(pa_agent::agent::AgentContinueError::busy(
                 "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
@@ -77,18 +78,15 @@ impl AgentSession {
             .prompt(pa_agent::agent::AgentPromptInput::Messages(prompt_messages))
             .await
         {
-            // The rows never reached a run (the slot refusal): put them
-            // back — a lost race must not lose the harness digest or the
-            // queued restore notices (the queueing fallback then carries
-            // them into the next admission).
-            if is_busy_slot_refusal(&error) {
-                if digest_row.is_some() {
-                    self.rearm_digest_pending();
-                }
-                for row in next_turn_rows {
-                    self.queue_next_turn_row(row);
-                }
-            }
+            // The rows never reached a run (the slot refusal) or a listener
+            // refused the batch after part of it landed: put the un-carried
+            // ones back — a lost race must not lose the harness digest or the
+            // queued restore notices (review #34: only rows past this
+            // attempt's history boundary count as landed).
+            self.rearm_refused_digest_row(digest_row.as_ref(), history_len)
+                .await;
+            self.restore_refused_next_turn_rows(next_turn_rows, history_len)
+                .await;
             return Err(error);
         }
         Ok(PromptOutcome::Prompt)
@@ -288,11 +286,18 @@ impl AgentSession {
         // next-turn rows) ride the turn's prompt AND the race fallback's
         // queued batch: a lost run slot must not lose goal context or
         // restore notices.
+        let history_len = self.agent.state().await.messages.len();
         let mut aux_rows: Vec<pa_agent::types::AgentMessage> = Vec::new();
-        if let Some(digest_row) = self.pending_digest_prompt_row().await? {
-            aux_rows.push(digest_row);
+        let digest_prompt_row = self.pending_digest_prompt_row().await?;
+        if let Some(digest_row) = &digest_prompt_row {
+            aux_rows.push(digest_row.clone());
         }
-        aux_rows.extend(self.take_next_turn_rows().await);
+        let queued_raw = self.take_next_turn_rows_raw();
+        aux_rows.extend(
+            queued_raw.iter().filter_map(|row| {
+                session_message_to_loop(&SessionAgentMessage::Custom(row.clone()))
+            }),
+        );
         let mut prompt_messages = aux_rows.clone();
         prompt_messages.push(user_prompt_message(&normalized, &images));
         // Each batched action contributes its user row after the
@@ -331,6 +336,10 @@ impl AgentSession {
                         self.agent.set_model_override(None);
                     }
                 }
+                self.rearm_refused_digest_row(digest_prompt_row.as_ref(), history_len)
+                    .await;
+                self.restore_refused_next_turn_rows(queued_raw, history_len)
+                    .await;
                 return Err(error);
             }
         } else if let Err(error) = self
@@ -364,6 +373,10 @@ impl AgentSession {
                     self.agent.set_model_override(None);
                 }
             }
+            self.rearm_refused_digest_row(digest_prompt_row.as_ref(), history_len)
+                .await;
+            self.restore_refused_next_turn_rows(queued_raw, history_len)
+                .await;
             return Err(error);
         }
         Ok(PromptOutcome::Prompt)
@@ -429,5 +442,70 @@ impl AgentSession {
                 .filter_map(|row| session_message_to_loop(&SessionAgentMessage::Custom(row)))
                 .collect(),
         )
+    }
+
+    /// Re-arm the deferred first-turn digest a refused admission consumed,
+    /// unless the refused attempt actually landed it. `history_len` is the
+    /// transcript length before the attempt, so only a row past that boundary
+    /// counts as landed by THIS turn.
+    async fn rearm_refused_digest_row(
+        &self,
+        row: Option<&pa_agent::types::AgentMessage>,
+        history_len: usize,
+    ) {
+        let landed = match row {
+            Some(row) => self
+                .agent
+                .state()
+                .await
+                .messages
+                .get(history_len..)
+                .is_some_and(|landed| landed.contains(row)),
+            None => false,
+        };
+        if !landed {
+            self.rearm_digest_pending();
+        }
+    }
+
+    /// Give a refused admission's rows back, in their original order and in
+    /// front of anything queued meanwhile: the turn those rows were taken for
+    /// never started, so the next admitted turn must see them first.
+    ///
+    /// A row the losing attempt already landed is NOT re-queued: `Agent::prompt`
+    /// can fail after part of the batch reached the loop, and a second copy
+    /// would reach the provider twice. Only the transcript PAST `history_len`
+    /// (its length before the attempt) counts as landed: the rows are templated
+    /// notices, so a row equal to one an earlier turn committed would otherwise
+    /// be dropped as if this attempt had carried it (review #34).
+    async fn restore_refused_next_turn_rows(
+        &self,
+        rows: Vec<pa_types::session::CustomMessage>,
+        history_len: usize,
+    ) {
+        if rows.is_empty() {
+            return;
+        }
+        let landed = self.agent.state().await.messages;
+        let landed = landed.get(history_len..).unwrap_or_default();
+        let mut restore: Vec<pa_types::session::CustomMessage> = Vec::with_capacity(rows.len());
+        for row in rows {
+            let Some(loop_row) = session_message_to_loop(&SessionAgentMessage::Custom(row.clone()))
+            else {
+                continue;
+            };
+            if landed.contains(&loop_row) {
+                continue;
+            }
+            restore.push(row);
+        }
+        if restore.is_empty() {
+            return;
+        }
+        let mut queue = self
+            .pending_next_turn_rows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        queue.splice(0..0, restore);
     }
 }

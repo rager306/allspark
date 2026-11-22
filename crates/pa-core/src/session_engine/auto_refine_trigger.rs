@@ -78,6 +78,22 @@ impl AgentSession {
         state.pending || state.interval_pending || state.pending_review.is_some()
     }
 
+    /// Clear the armed compaction/interval trigger once a consumer has taken
+    /// it. The retained approving review (`pending_review`) is left intact: it
+    /// is a separate decision the next serviced boundary still honors.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the compact auto-refine state mutex is poisoned.
+    pub fn clear_compact_auto_refine_trigger(&self) {
+        let mut state = self
+            .compact_auto_refine
+            .lock()
+            .expect("compact auto-refine state lock");
+        state.pending = false;
+        state.interval_pending = false;
+    }
+
     /// Whether the branch version is still the one the round captured:
     /// false means a discard fired mid-round and the result is stale.
     ///

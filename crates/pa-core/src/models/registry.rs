@@ -662,6 +662,10 @@ impl ModelRegistry {
                 }
             }
         }
+        // FORK-ONLY: the native OpenCode free endpoint needs no credential of its own.
+        if api_key.is_none() {
+            api_key = native_free_api_key(model).map(str::to_string);
+        }
         // A failed OAuth refresh with nothing else to serve: fail with the re-login sentence.
         if let (None, Some(failure)) = (&api_key, &stored.refresh_failure) {
             return ResolvedRequestAuth {

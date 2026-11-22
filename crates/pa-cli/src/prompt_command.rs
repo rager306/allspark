@@ -305,7 +305,13 @@ mod tests {
         let agent_dir = tempfile::tempdir().unwrap();
         let (breakdown, _) =
             assemble_breakdown(dir.path(), agent_dir.path(), Some(TEXT_MODEL)).unwrap();
-        assert!(breakdown.assembled.ends_with("Project appendix."));
+        // The appended prompt is carried, but it is no longer the LAST segment:
+        // upstream moved `current-date` to trail the whole prompt so the cache
+        // prefix stays stable.
+        assert!(
+            breakdown.assembled.contains("Project appendix."),
+            "the discovered APPEND_SYSTEM.md reaches the dump"
+        );
     }
 
     #[test]

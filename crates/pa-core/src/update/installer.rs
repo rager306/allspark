@@ -2215,7 +2215,9 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
     #[tokio::test]
     async fn the_error_chain_is_redacted_after_rendering() {
         let url = "http://127.0.0.1:1/a?token=SECRET123&channel=beta";
-        let err = reqwest::Client::new()
+        let err = pa_ai::utils::tls::http_client_builder()
+            .build()
+            .expect("reqwest client")
             .get(url)
             .send()
             .await
@@ -2439,7 +2441,9 @@ async fn the_default_policy_would_have_followed_the_plaintext_hop() {
     // with a timeout instead of hanging the suite on a listener nobody accepts.
     let body = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        reqwest::Client::new()
+        pa_ai::utils::tls::http_client_builder()
+            .build()
+            .expect("reqwest client")
             .get(format!("http://{redirector_address}/install.sh"))
             .send(),
     )

@@ -2019,15 +2019,16 @@ async fn tui_compact_shows_the_loader_then_the_summary_and_rebuilds() {
     let supervisor = spawn_supervisor(dir.path());
 
     // The session shape (TS-binary-verified): the second turn crosses the
-    // budget at its user message, the third response is the summary, and its
-    // 1.5s delay holds the loader window; a mid-turn cut would make TWO
-    // summarizer calls, which this single-summary script does not serve.
+    // budget at its user message. The compaction joins a history summary and a
+    // turn-prefix summary, so the script serves BOTH; the delayMs holds the
+    // loader window.
     let filler = "history ".repeat(150);
     let script = serde_json::json!({
         "engine": "faux",
         "responses": [
             { "text": filler, "delayMs": 20 },
             { "text": "second turn done, kept intact" },
+            { "text": "## Summary\nthe session story", "delayMs": 1500 },
             { "text": "## Summary\nthe session story", "delayMs": 1500 },
         ],
     });

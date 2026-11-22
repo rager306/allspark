@@ -171,7 +171,7 @@ pub(crate) async fn run_prompts_and_emit(
         boundary
             .run_pre_turn(engine, model, api_key.clone())
             .await?;
-        engine
+        if let Err(error) = engine
             .session
             .prompt_with_images(
                 prompt,
@@ -179,7 +179,15 @@ pub(crate) async fn run_prompts_and_emit(
                 pa_core::session_engine::PromptOptions::default(),
             )
             .await
-            .map_err(|error| format!("{error:#}"))?;
+        {
+            // A failed prompt still drains the disposal boundary: a `/refine`
+            // started just before the failure is a background task, and its
+            // outcome rows must land before the run returns (upstream #3406).
+            boundary
+                .drain_compact_auto_refine_at_disposal(engine, model, api_key.clone())
+                .await;
+            return Err(format!("{error:#}"));
+        }
         engine.session.agent().wait_for_idle().await;
         boundary
             .run_at_settled_turn(engine, model, api_key.clone())

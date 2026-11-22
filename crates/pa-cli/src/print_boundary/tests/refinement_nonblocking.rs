@@ -565,7 +565,7 @@ async fn background_completion_replays_the_persisted_refinement_rows() {
         &model,
         started.clone(),
         release.clone(),
-        r#"{"summary":"background note","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A"}]}"#,
+        r#"{"summary":"background note","edits":[{"action":"create","kind":"memory","id":"m1","title":"Tactic","content":"Use tactic A","metadata":{"sources":[{"kind":"turn","id":"seed turn"}]}}]}"#,
     );
     let (sink, events) = capture_sink();
     let mut boundary = TurnBoundary::with_sink(true, sink);

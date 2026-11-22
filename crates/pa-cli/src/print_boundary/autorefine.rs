@@ -152,6 +152,12 @@ impl TurnBoundary {
         api_key: Option<String>,
         surface: RefineSurface,
     ) {
+        // The session owns the armed trigger (the compaction arms and the
+        // interval counter both write it); the local flag only lets a foreign
+        // caller arm one directly. Mirroring keeps a single source of truth.
+        if engine.session.compact_auto_refine_pending() {
+            self.compact_auto_refine_pending = true;
+        }
         if !self.compact_auto_refine_pending {
             return;
         }
@@ -164,11 +170,13 @@ impl TurnBoundary {
         // outright.
         if !engine.session.auto_refine_allowed() {
             self.compact_auto_refine_pending = false;
+            engine.session.clear_compact_auto_refine_trigger();
             return;
         }
         let gates = engine.session.auto_refine_gates();
         if !gates.enabled || !gates.compact {
             self.compact_auto_refine_pending = false;
+            engine.session.clear_compact_auto_refine_trigger();
             return;
         }
         let under_cooldown = self
@@ -180,6 +188,7 @@ impl TurnBoundary {
             return;
         }
         self.compact_auto_refine_pending = false;
+        engine.session.clear_compact_auto_refine_trigger();
         if under_cooldown {
             // The disposal drain clears a cooled-down trigger without a
             // review.

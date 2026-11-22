@@ -223,7 +223,14 @@ fn verifier_gate_pass_stops_the_run_with_structured_events_in_run() {
         .filter(|event| event["type"] == "agent_end")
         .count();
     assert_eq!(agent_ends, 1, "one run for the whole loop: {events:?}");
-    assert_eq!(events.last().unwrap()["type"], "agent_end");
+    // The json contract prints the fork's terminal `outcome` line after the
+    // subscription is torn down, so it trails the run's single `agent_end`.
+    assert_eq!(events.last().unwrap()["type"], "outcome");
+    assert_eq!(
+        events[events.len() - 2]["type"],
+        "agent_end",
+        "the run's single agent_end closes the streamed events: {events:?}"
+    );
     // The in-run ordering (the TS frame order): the continuation's user row
     // pair is preceded by the continuation turn's `turn_start`, which
     // follows the settled turn's `turn_end`.

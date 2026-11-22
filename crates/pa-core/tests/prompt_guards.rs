@@ -717,15 +717,18 @@ fn core_layer_documents_the_real_tool_surface() {
 // FORK-ONLY: additions must be declared without weakening the TS packaged-set check.
 const FORK_ADDED_SKILL_SET: &[&str] = &["graph"];
 
-/// The packaged skill set at TS tip `f62dae4d0` (`packages/coding-agent/skills/`): 12 skills — the
-/// generic `mcp` doc skill in, the per-service linear/notion pair out (TS removed theirs when the
-/// generic MCP surface landed).
+/// The packaged skill set at the upstream tip this tree tracks
+/// (`packages/coding-agent/skills/`): the generic `mcp` doc skill in, the
+/// per-service linear/notion pair out, plus upstream's `attach-video` (video
+/// input) and `factory` skills.
 const TS_PACKAGED_SKILL_SET: &[&str] = &[
     "agent-message",
     "agent-observe",
     "attach-image",
+    "attach-video",
     "compact",
     "edit",
+    "factory",
     "goal",
     "mcp",
     "prime-intellect",
@@ -909,6 +912,10 @@ const REVIEWED_AGENTS_SECTIONS: &[(&str, &[&str])] = &[
         &["Parallel agents share one tree"],
     ),
     ("Branding", &["Branding"]),
+    (
+        "Orchestration and capability selection",
+        &["Orchestration and capability selection"],
+    ),
     ("Tests", &["Tests"]),
     ("Formal verification", &["Formal verification"]),
 ];

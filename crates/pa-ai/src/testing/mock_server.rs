@@ -754,7 +754,13 @@ mod tests {
     use super::*;
 
     fn client() -> reqwest::Client {
-        reqwest::Client::builder().build().expect("reqwest client")
+        // `reqwest` is built with `rustls-no-provider`, so a plain builder has no
+        // crypto provider and panics. The shared builder supplies the fork's ring
+        // configuration (http://localhost needs no trust store, but the backend is
+        // constructed eagerly).
+        crate::utils_inner::tls::http_client_builder()
+            .build()
+            .expect("reqwest client")
     }
 
     #[tokio::test]

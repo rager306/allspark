@@ -1773,9 +1773,10 @@ async fn tui_update_runs_out_of_band_during_a_turn() {
         "the confirm carries the preserve invariant:\n{rendered}"
     );
     assert!(
-        rendered.contains(
-            "updated to 9.9.9-continuous.0123456789abcdef — restart prime-agent to run it"
-        ),
+        rendered.contains(&format!(
+            "updated to 9.9.9-continuous.0123456789abcdef — restart {} to run it",
+            pa_types::brand::INVOCATION
+        )),
         "the outcome note renders:\n{rendered}"
     );
     assert_eq!(
