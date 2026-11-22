@@ -235,6 +235,32 @@ pub fn kernel_python_skills(skills: &[Skill]) -> Vec<KernelPythonSkill> {
         .collect()
 }
 
+/// The kernel `bash()` view caps as env (`[limits] kernelBashOutputBytes`).
+///
+/// The model's `bash()` is the Python kernel tool; the runtime package is
+/// installed into the session's kernel venv, so env is the only channel a
+/// setting has into it (`prime-agent-runtime/src/rlm/bash.py` reads
+/// `PRIME_AGENT_BASH_HEAD_CAP_BYTES` / `..._TAIL_CAP_BYTES`). `None` exports
+/// nothing, leaving the runtime's compiled 512 KiB head + 1.5 MiB tail.
+#[must_use]
+fn kernel_bash_cap_env(head_bytes: Option<usize>) -> Vec<(String, String)> {
+    let Some(head) = head_bytes else {
+        return Vec::new();
+    };
+    vec![
+        (
+            "PRIME_AGENT_BASH_HEAD_CAP_BYTES".to_string(),
+            head.to_string(),
+        ),
+        // The runtime's 1:3 head:tail ratio, so a configured window keeps
+        // Python's last-printed verdict visible.
+        (
+            "PRIME_AGENT_BASH_TAIL_CAP_BYTES".to_string(),
+            head.saturating_mul(3).to_string(),
+        ),
+    ]
+}
+
 /// Build the kernel provisioner for a session: host handlers for the goal/heartbeat bridge
 /// plus the pre-imported skills. The session's agent dir is propagated into the kernel env
 /// (`PRIME_AGENT_CODING_AGENT_DIR`): an embedding host whose ambient env differs must not
@@ -267,6 +293,9 @@ pub fn kernel_provisioner(
     session_artifact_dir: Option<std::path::PathBuf>,
     cell_timeout_ms: Option<u64>,
     max_output_chars: Option<usize>,
+    // `[limits] kernelBashOutputBytes`: the model's `bash()` view size (the
+    // kernel's head+tail cap). `None` keeps the runtime's compiled default.
+    bash_output_bytes: Option<usize>,
     on_restore: Option<crate::kernel::provisioner::RestoreCallback>,
     on_background_work_settled: Option<crate::kernel::shared::BackgroundWorkSettledCallback>,
     on_unavailable_skills: Option<crate::kernel::provisioner::UnavailableSkillsCallback>,
@@ -298,6 +327,7 @@ pub fn kernel_provisioner(
         }
     }
     env.extend(websearch_env);
+    env.extend(kernel_bash_cap_env(bash_output_bytes));
     if !excluded_apis.is_empty() {
         // Comma-separated facade names the kernel must refuse (`mem`,
         // `mem.onboarding`, ...). Absent or empty = nothing excluded.
@@ -644,5 +674,26 @@ mod tests {
         // A zero setting is the explicit disable: it must reach the
         // executor as an armed zero budget, not fall back to a default.
         assert_eq!(arm_cell_timeout_ms(false, 0), Some(0));
+    }
+
+    /// `[limits] kernelBashOutputBytes` reaches the kernel as the two env vars
+    /// the runtime reads, at the runtime's 1:3 head:tail ratio; `None` exports
+    /// nothing (the compiled default stands).
+    #[test]
+    fn the_kernel_bash_cap_reaches_the_runtime_as_env() {
+        assert!(kernel_bash_cap_env(None).is_empty(), "None exports nothing");
+        assert_eq!(
+            kernel_bash_cap_env(Some(4096)),
+            vec![
+                (
+                    "PRIME_AGENT_BASH_HEAD_CAP_BYTES".to_string(),
+                    "4096".to_string()
+                ),
+                (
+                    "PRIME_AGENT_BASH_TAIL_CAP_BYTES".to_string(),
+                    "12288".to_string()
+                ),
+            ]
+        );
     }
 }
