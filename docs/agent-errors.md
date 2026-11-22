@@ -327,3 +327,28 @@ newline). Record the shape as a memory so the next slice does not repeat it.
 `.map(|n| format!(...)).collect::<String>()` — `writeln!` into a `String` is the
 form the lint wants. Run clippy on the new test code, not only the production
 code.
+
+## 16. A `grep` wrapper on `PATH` inverted the gate's own verdicts
+
+**Seen:** 2026-11-22, the fork.025 release gate. `scripts/fork/prepush-gate.sh`
+went RED on its own contract tests (6 failures in `scripts/test_prepush_gate.py`)
+although neither the gate nor its tests had changed in the merged tree.
+
+**Cause:** this machine's `PATH` puts `/root/.local/bin` before `/usr/bin`, and
+`/root/.local/bin/grep` is a transparent `grep` -> `rg` wrapper. The gate is
+written for GNU grep: `grep -c '^ok ' file` must print `0` when nothing matches,
+and the wrapper printed nothing and exited non-zero instead. Every count in the
+summary (`ran_ok`, `ran_skip`, `ran_no_tests`, `skipped`) read as empty, so the
+gate printed `(1 ok,  skipped:  with no tests to run)` and its tests failed on
+the shape. With `rg` absent from `PATH` entirely, `check-fork-surface.sh` lost
+every `FORK-ONLY` check and reported 9 false failures.
+
+**Caught by:** reading the failing assertion's `left` value, noticing the empty
+`grep -c` field, then `which -a grep` and reading the wrapper script.
+
+**Rule:** a gate's shell must not depend on which `grep` the caller's `PATH`
+resolves first. Two facts must hold before trusting a gate verdict on this
+machine: `grep --version` is GNU grep, and `rg` is reachable. A wrapper that
+changes `-c` semantics turns a measurement into a guess, and the gate reporting
+a false RED costs the same trust as a false GREEN. When a shell assertion fails
+on an empty field, print the field's producer before believing the assertion.

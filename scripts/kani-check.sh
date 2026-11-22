@@ -34,6 +34,19 @@ if [ -z "$BUNDLE" ] || [ ! -x "$BUNDLE/bin/kani-compiler" ]; then
   echo "kani-check: no Kani bundle under $KANI_HOME — skipping (install: cargo install --locked kani-verifier)"
   exit 0
 fi
+# A bundle that carries no `toolchain/` cannot resolve the `cargo` it runs
+# metadata through: `kani-driver` execs `<bundle>/toolchain/bin/cargo`, not the
+# `cargo` on PATH, so the lane dies with "failed to start `cargo metadata`" on a
+# machine where cargo is perfectly available. Measured 2026-11-22: the bundle
+# under an isolated HOME (`.../kani-0.68.0`) had no `toolchain/`, while the one
+# under the real home had a complete toolchain and verified 5 harnesses. The
+# lane is advisory, so an unusable bundle is a SKIP that names the repair, never
+# a RED that blames the code.
+if [ ! -x "$BUNDLE/toolchain/bin/cargo" ]; then
+  echo "kani-check: the bundle at $BUNDLE has no toolchain/bin/cargo — skipping"
+  echo "kani-check: repair with: cargo install --locked kani-verifier (a complete bundle ships toolchain/)"
+  exit 0
+fi
 if ! command -v cargo-kani >/dev/null 2>&1; then
   echo "kani-check: cargo-kani not on PATH — skipping"
   exit 0

@@ -324,6 +324,8 @@ if bash scripts/kani-check.sh >"$OUT/kani.log" 2>&1; then
     echo "kani: SKIPPED (no Kani bundle — cargo install --locked kani-verifier)"
   elif grep -q 'kani-check: the bundle needs' "$OUT/kani.log"; then
     echo "kani: SKIPPED (bundle needs a pinned rustup toolchain that is absent)"
+  elif grep -q 'kani-check: the bundle at .* has no toolchain' "$OUT/kani.log"; then
+    echo "kani: SKIPPED (the bundle carries no toolchain/bin/cargo; a verified bundle needs one)"
   else
     verified=$(grep -c 'VERIFICATION:- SUCCESSFUL' "$OUT/kani.log" 2>/dev/null || echo 0)
     echo "kani: ok ($verified harnesses)"
