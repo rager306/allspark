@@ -239,6 +239,7 @@ impl Supervisor {
 /// in the daemon log, and the line a reader sees carries a redacted worker id. Asserting the
 /// raw id pins a form the writer never produces, so those suites render the expected line
 /// through this function instead of re-implementing the redaction beside it.
+#[must_use]
 pub fn render_log_line(message: &str) -> String {
     format!("[{}] {}", util::now_iso(), redact_tokens(message))
 }

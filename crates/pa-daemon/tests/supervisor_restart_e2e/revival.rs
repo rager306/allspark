@@ -132,7 +132,7 @@ fn plain_boot_parks_stale_busy_evidence() {
 
     let (_supervisor, log_path, boot_before) = boot_and_observe(&agent_dir, &socket);
 
-    let park_line = park_line(format!(
+    let park_line = park_line(&format!(
         "session worker {} not revived: its busy evidence is stale (recorded {busy_at}); not revived (reopens on the next client open)",
         fixture.worker_id
     ));
@@ -187,7 +187,7 @@ fn plain_boot_never_revives_a_stopped_session() {
 
     let (_supervisor, log_path, boot_before) = boot_and_observe(&agent_dir, &socket);
 
-    let park_line = park_line(format!(
+    let park_line = park_line(&format!(
         "session worker {} not revived: its session is archived (stopped); not revived (reopens on the next client open)",
         fixture.worker_id
     ));
@@ -233,7 +233,7 @@ fn plain_boot_never_revives_a_given_up_worker() {
 
     let (_supervisor, log_path, boot_before) = boot_and_observe(&agent_dir, &socket);
 
-    let park_line = park_line(format!(
+    let park_line = park_line(&format!(
         "session worker {} not revived: was failed at the last give-up; not revived (reopens on the next client open)",
         fixture.worker_id
     ));

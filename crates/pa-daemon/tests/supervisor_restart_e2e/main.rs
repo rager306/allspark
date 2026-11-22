@@ -414,8 +414,8 @@ fn distinct(values: Vec<String>) -> Vec<String> {
 /// prints; rendering the expectation through the same function the writer uses
 /// keeps the two in step, and detaching the redaction still fails the wait
 /// because the log line would then differ from this one.
-fn park_line(message: String) -> String {
-    let rendered = pa_daemon::supervisor::notes::render_log_line(&message);
+fn park_line(message: &str) -> String {
+    let rendered = pa_daemon::supervisor::notes::render_log_line(message);
     rendered
         .split_once("] ")
         .map_or(rendered.clone(), |(_, rest)| rest.to_string())
@@ -432,7 +432,8 @@ fn park_line(message: String) -> String {
 /// goes through `render_log_line`, so a change to the redaction shape moves the
 /// expectation with it instead of silently stopping the match.
 fn logged_worker_id(worker_id: &str) -> String {
-    let rendered = pa_daemon::supervisor::notes::render_log_line(&format!("session worker {worker_id} end"));
+    let rendered =
+        pa_daemon::supervisor::notes::render_log_line(&format!("session worker {worker_id} end"));
     rendered
         .split_once("session worker ")
         .and_then(|(_, rest)| rest.split_once(" end"))

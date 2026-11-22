@@ -30,25 +30,23 @@ impl Drop for Daemon {
     }
 }
 
-// The timeout panic path cannot wait on the child; the test process exits
-// immediately afterwards, reaping it.
-#[allow(clippy::zombie_processes)]
-
 /// A worker id as the daemon log prints it: the log boundary redacts worker
 /// tokens (review #40), and `orphan000001` has the token shape (12 chars, a
 /// digit), so the written line carries `<redacted..0001>`. Rendering through
 /// the writer's own function keeps the expectation in step with the redaction
 /// instead of pinning text the writer never produces.
 fn logged_worker_id(worker_id: &str) -> String {
-    let rendered = pa_daemon::supervisor::notes::render_log_line(&format!(
-        "session worker {worker_id} end"
-    ));
+    let rendered =
+        pa_daemon::supervisor::notes::render_log_line(&format!("session worker {worker_id} end"));
     rendered
         .split_once("session worker ")
         .and_then(|(_, rest)| rest.split_once(" end"))
         .map_or_else(|| worker_id.to_string(), |(id, _)| id.to_string())
 }
 
+// The timeout panic path cannot wait on the child; the test process exits
+// immediately afterwards, reaping it.
+#[allow(clippy::zombie_processes)]
 fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
     let mut command = Command::new(env!("CARGO_BIN_EXE_pa-daemon"));
     command

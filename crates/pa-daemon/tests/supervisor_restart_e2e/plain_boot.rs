@@ -156,7 +156,9 @@ fn plain_boot_revives_only_journal_busy_workers() {
     };
     assert_eq!(registered, vec![logged_worker_id(&busy_session)]);
 
-    let skip_line = park_line(format!("session worker {idle_session} was idle at exit; not revived"));
+    let skip_line = park_line(&format!(
+        "session worker {idle_session} was idle at exit; not revived"
+    ));
     let deadline = Instant::now() + Duration::from_secs(5);
     while !std::fs::read_to_string(&log_path)
         .unwrap_or_default()

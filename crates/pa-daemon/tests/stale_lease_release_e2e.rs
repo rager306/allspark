@@ -121,9 +121,8 @@ fn log_contains(socket: &Path, agent_dir: &Path, needle: &str) -> bool {
 /// function the writer uses keeps the two in step; asserting the raw id waits
 /// for a line the writer never produces.
 fn logged_worker_id(worker_id: &str) -> String {
-    let rendered = pa_daemon::supervisor::notes::render_log_line(&format!(
-        "session worker {worker_id} end"
-    ));
+    let rendered =
+        pa_daemon::supervisor::notes::render_log_line(&format!("session worker {worker_id} end"));
     rendered
         .split_once("session worker ")
         .and_then(|(_, rest)| rest.split_once(" end"))
@@ -366,6 +365,7 @@ fn the_revived_worker_stays_supervised_and_the_session_reopens() {
     let (session_id, worker_pid) =
         create_session(&mut client, dir.path(), &sessions_dir, supervisor_pid);
     let session_file = session_file_of(&agent_dir, &socket, &session_id);
+    let id = logged_worker_id(&session_id);
 
     crash_daemon_and_worker(&mut daemon, worker_pid);
 
@@ -374,10 +374,7 @@ fn the_revived_worker_stays_supervised_and_the_session_reopens() {
     await_log_line(
         &socket,
         &agent_dir,
-        &format!(
-            "adopted session worker {} (was alive: false)",
-            logged_worker_id(&session_id)
-        ),
+        &format!("adopted session worker {id} (was alive: false)"),
         Duration::from_secs(20),
     );
 
@@ -427,16 +424,14 @@ fn a_worker_that_fails_to_death_releases_the_session_hold() {
     let (session_id, _worker_pid) =
         create_session(&mut client, dir.path(), &sessions_dir, supervisor_pid);
     let session_file = session_file_of(&agent_dir, &socket, &session_id);
+    let id = logged_worker_id(&session_id);
 
     // Kill the worker each time it comes back up until the cap gives up.
     // A kill must land AFTER the relaunch's create replay settles (~1s
     // after the socket binds): a worker dying mid-replay parks the
     // relaunch on the create route's 600s budget instead of the backoff ladder.
     let worker_socket = worker_socket_of(&agent_dir, &socket, &session_id);
-    let give_up = format!(
-        "session worker {} failed after 6 consecutive failures",
-        logged_worker_id(&session_id)
-    );
+    let give_up = format!("session worker {id} failed after 6 consecutive failures");
     let replay_grace = Duration::from_secs(4);
     let mut serving_since: Option<Instant> = None;
     let deadline = Instant::now() + Duration::from_mins(3);
@@ -552,11 +547,9 @@ fn the_give_up_sweep_reaps_a_live_leftover_of_the_abandoned_id() {
     // The crash loop to the give-up cap: kills pace on a serving grace
     // past the replay window (see the fails-to-death test).
     let worker_socket = worker_socket_of(&agent_dir, &socket, &session_id);
+    let id = logged_worker_id(&session_id);
     kill_hard(worker_pid);
-    let give_up = format!(
-        "session worker {} failed after 6 consecutive failures",
-        logged_worker_id(&session_id)
-    );
+    let give_up = format!("session worker {id} failed after 6 consecutive failures");
     let replay_grace = Duration::from_secs(4);
     let mut serving_since: Option<Instant> = None;
     let deadline = Instant::now() + Duration::from_mins(3);

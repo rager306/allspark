@@ -137,7 +137,7 @@ fn update_boot_revives_only_roster_kept_workers() {
     };
     assert_eq!(registered, vec![logged_worker_id(&sessions[0])]);
 
-    let skip_line = park_line(format!(
+    let skip_line = park_line(&format!(
         "session worker {} was idle at exit; not revived",
         sessions[1]
     ));
