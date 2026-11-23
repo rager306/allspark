@@ -1,3 +1,20 @@
+# AddressSanitizer lane: use-after-free / overflow on the real allocator.
+#
+# TWO THINGS THIS FILE GETS RIGHT, both measured on this tree.
+#
+# 1. THE SANITIZER FLAG IS TARGET-SCOPED, not a bare `RUSTFLAGS`. A global
+#    `RUSTFLAGS=-Zsanitizer=address` also reaches the proc-macro crates the build
+#    must compile for the HOST (`serde_derive`, `tokio-macros`), and rustc
+#    refuses those outright ("building proc macro crate with sanitizers enabled
+#    is not supported") — the lane failed before running a single test. Scoping
+#    the flag to the target triple is what CI does too.
+#
+# 2. A TIMING ASSERTION IS NOT A MEMORY-SAFETY ASSERTION. `pa-graph`'s
+#    `an_empty_pass_does_not_scale_with_unresolved_files` requires an empty
+#    inccemental pass under 200 ms; ASan slows instrumentation 10-20x, so it
+#    fails here while passing natively (measured both ways). It is a
+#    performance budget with its own native lane, so it is excluded BY NAME
+#    rather than by loosening the budget the performance lane depends on.
 name: sanitizer
 on:
   workflow_call:
@@ -8,15 +25,20 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      RUSTFLAGS: "-Zsanitizer=address"
+      # Target-scoped: a bare RUSTFLAGS would poison the host proc-macro build.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-Zsanitizer=address"
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-      - name: Install nightly with rust-src (required for -Z build-std)
-        run: rustup toolchain install nightly --component rust-src
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8
+        with:
+          toolchain: nightly
+          components: rust-src
       - name: Run tests under ASan
         run: |
-          cargo +nightly test -Z build-std \
-            -p pa-types --lib \
-            -p pa-jev --lib \
-            -p pa-graph --lib \
-            -- --test-threads=2
+          set -euo pipefail
+          cargo test -Z build-std -p pa-types -p pa-jev -p pa-graph --lib \
+            --target x86_64-unknown-linux-gnu \
+            -- --test-threads=2 \
+            --skip an_empty_pass_does_not_scale_with_unresolved_files

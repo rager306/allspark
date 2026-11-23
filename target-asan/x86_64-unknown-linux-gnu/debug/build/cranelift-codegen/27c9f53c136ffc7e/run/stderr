@@ -1,0 +1,27 @@
+Writing generated file: /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/settings.rs
+Writing generated file: /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/types.rs
+Writing generated file: /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/opcodes.rs
+Writing generated file: /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/inst_builder.rs
+Writing generated file: /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/settings-pulley.rs
+Writing generated file: /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/settings-pulley.rs
+Writing generated file: /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/settings-x86.rs
+Writing generated file: /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/numerics.isle
+Writing generated file: /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/isle_numerics.rs
+Writing generated file: /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/clif_opt.isle
+Writing generated file: /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/clif_lower.isle
+Writing generated file: /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/assembler.isle
+Writing generated file: /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/assembler-isle-macro.rs
+Rebuilding /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/isle_opt.rs
+Writing ISLE-generated Rust code to /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/isle_opt.rs
+Rebuilding /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/isle_x64.rs
+Writing ISLE-generated Rust code to /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/isle_x64.rs
+Rebuilding /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/isle_aarch64.rs
+Writing ISLE-generated Rust code to /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/isle_aarch64.rs
+Rebuilding /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/isle_s390x.rs
+Writing ISLE-generated Rust code to /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/isle_s390x.rs
+Rebuilding /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/isle_riscv64.rs
+Writing ISLE-generated Rust code to /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/isle_riscv64.rs
+Rebuilding /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/isle_pulley_shared.rs
+Writing ISLE-generated Rust code to /root/allspark/target-asan/x86_64-unknown-linux-gnu/debug/build/cranelift-codegen/27c9f53c136ffc7e/out/isle_pulley_shared.rs
+fatal: not a git repository (or any parent up to mount point /root)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
