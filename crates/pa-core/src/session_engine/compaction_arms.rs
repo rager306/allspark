@@ -1,4 +1,4 @@
-use super::compact_session::{prepare_compaction, CompactOutcome};
+use super::compact_session::CompactOutcome;
 use super::{
     compaction, compaction_trace, ipython_state, provider_adapter, refine, session_message_to_loop,
     standard_message, AgentMessage, AgentSession, FileEntry, SessionAgentMessage,
@@ -45,7 +45,7 @@ impl AgentSession {
                 .tools
                 .iter()
                 .map(|tool| compaction::estimate_tool_schema_tokens(tool.as_ref()))
-                .sum::<u64>(),
+                .sum(),
             output_reserve: 0,
             context_window: 0,
         }
@@ -86,7 +86,7 @@ impl AgentSession {
                 .tools
                 .iter()
                 .map(|tool| compaction::estimate_tool_schema_tokens(tool.as_ref()))
-                .sum::<u64>(),
+                .sum(),
         );
         // Usage BEFORE the latest compaction must not re-trigger. A retained-tail
         // assistant keeps its pre-compaction `total_tokens`, so a pass that just
@@ -136,35 +136,7 @@ impl AgentSession {
             output_reserve,
             model.context_window,
         );
-        let settings = self.compaction_settings();
-        if !compaction::plan_compaction_due(&plan, &settings) {
-            return false;
-        }
-        // PRICING THE REQUEST IS NOT ENOUGH: the compactor can refuse what the
-        // trigger announces. `prepare_compaction` needs summarizable history, and a
-        // request priced over threshold by the PREFIX ALONE reaches it with nothing
-        // before the cut to summarize, so it answers `TooShort` while the trigger has
-        // already said "due" — the turn boundary then streams a
-        // `compaction_start`/`compaction_end` pair whose end is a skip warning, on
-        // every boundary of a short session (measured on the print json stream: four
-        // such pairs around two real turns). The two sides must agree on ONE rule, so
-        // the trigger asks the compactor's own question here.
-        //
-        // No lock is taken across the model call: this reads the retained entries the
-        // session already publishes, exactly as `compute_cut` does for `/compact`.
-        // NON-BLOCKING on purpose. This runs at the turn boundary while the
-        // session lock can still be held by an in-flight run, and an `.await` on
-        // that lock makes the trigger wait out the very turn it is deciding
-        // about: measured, the held-turn abort tests went from 30 s to 61 s
-        // because `abort_and_send_queued` could not reach the queue until the
-        // 60 s provider hold expired. A held lock means "a run owns the history
-        // right now", and the boundary re-checks after it settles, so the honest
-        // answer for THIS check is "not due".
-        let Ok(session) = self.session.try_lock() else {
-            return false;
-        };
-        let entries = session.retained_entries().to_vec();
-        prepare_compaction(&entries, settings.keep_recent_tokens).is_ok()
+        compaction::plan_compaction_due(&plan, &self.compaction_settings())
     }
 
     /// Remove the trailing assistant message from the loop context, so a
