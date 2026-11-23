@@ -152,7 +152,18 @@ impl AgentSession {
         //
         // No lock is taken across the model call: this reads the retained entries the
         // session already publishes, exactly as `compute_cut` does for `/compact`.
-        let entries = self.session.lock().await.retained_entries().to_vec();
+        // NON-BLOCKING on purpose. This runs at the turn boundary while the
+        // session lock can still be held by an in-flight run, and an `.await` on
+        // that lock makes the trigger wait out the very turn it is deciding
+        // about: measured, the held-turn abort tests went from 30 s to 61 s
+        // because `abort_and_send_queued` could not reach the queue until the
+        // 60 s provider hold expired. A held lock means "a run owns the history
+        // right now", and the boundary re-checks after it settles, so the honest
+        // answer for THIS check is "not due".
+        let Ok(session) = self.session.try_lock() else {
+            return false;
+        };
+        let entries = session.retained_entries().to_vec();
         prepare_compaction(&entries, settings.keep_recent_tokens).is_ok()
     }
 
