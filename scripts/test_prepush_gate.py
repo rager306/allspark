@@ -324,7 +324,7 @@ def slice_between(body, start_marker, end_marker, what):
 def verus_lane_source():
     """The gate's advisory Verus lane, as text, so its verdicts can be run for real."""
     return slice_between(
-        GATE.read_text(), LANE_STEP, 'step "loom (pa-mem interleavings)"', "proof-lane"
+        GATE.read_text(), LANE_STEP, 'step "loom (pa-mem memory model)"', "proof-lane"
     )
 
 
