@@ -20,10 +20,29 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TOOLCHAIN="$ROOT/verus/toolchain"
+# The toolchain is probed exactly as `verus-check.sh` probes it: the documented
+# install puts the release under /root/verus-pilot/ (verus/README.md) and this
+# script used to look only at verus/toolchain, so a machine that followed the
+# docs silently skipped the proof-depth lane it had just set up.
+verus_toolchain_candidates() {
+  printf '%s\n' \
+    "$ROOT/verus/toolchain" \
+    /root/verus-pilot/verus-x86-linux \
+    "${HOME:-/root}/verus-pilot/verus-x86-linux"
+}
 
-if [ ! -x "$TOOLCHAIN/cargo-verus" ]; then
-  echo "verus-mutants: no Verus toolchain at verus/toolchain — skipping (see verus/README.md)"
+TOOLCHAIN=""
+while IFS= read -r candidate; do
+  if [ -x "$candidate/cargo-verus" ]; then
+    TOOLCHAIN="$candidate"
+    break
+  fi
+done <<EOF
+$(verus_toolchain_candidates)
+EOF
+
+if [ -z "$TOOLCHAIN" ]; then
+  echo "verus-mutants: no Verus toolchain (looked in: $(verus_toolchain_candidates | tr '\n' ' ')) — skipping (see verus/README.md)"
   exit 0
 fi
 if ! command -v cargo-verus-mutants >/dev/null 2>&1; then
@@ -33,7 +52,13 @@ fi
 
 cd "$ROOT/verus/mirrors" || exit 1
 # The toolchain ships cargo-verus; put it on PATH only for this run.
-LOG="${OUT:-$(mktemp -d)}/verus-mutants.log"
+# `mkdir -p`: `OUT` is the caller's directory and the gate creates it, but a
+# standalone run with `OUT=/some/new/dir` used to fail the redirect and then
+# report "the kill rate fell below the floor" — a failure message for a log that
+# was never written.
+LOG_DIR="${OUT:-$(mktemp -d)}"
+mkdir -p "$LOG_DIR"
+LOG="$LOG_DIR/verus-mutants.log"
 # --limit: a FULL campaign is 34 mutants x (rebuild + verify). The 16 the campaign
 # was tuned on take ~40 s; the whole set recompiles enough to hit the tool's own
 # baseline timeout on a loaded machine, and a timeout is an INFRASTRUCTURE

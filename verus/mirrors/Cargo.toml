@@ -9,7 +9,18 @@ edition = "2021"
 publish = false
 
 [dependencies]
-vstd = "=0.0.0-2026-10-18-0147"
+# PINNED TO THE TOOLCHAIN, not to a date someone once used. The Verus release
+# ships its own `libvstd.rlib`, and `rust_verify` recognises exactly the
+# `verus_items` that release was built against: a `vstd` from a DIFFERENT
+# snapshot makes `cargo verus build` abort with
+# "unexpected verus diagnostic item verus::verus_builtin::ProofFnOnce" and
+# `cargo verus-mutants` reports a baseline failure it cannot explain — the
+# proof-depth lane was dead for a version skew, not for a proof.
+#
+# The toolchain here is 0.2026.11.02.8bf68ee (verus/version.json); its vstd is
+# the 2026-11-01 snapshot. Bumping the toolchain means bumping this line in the
+# same commit, and `scripts/verus-check.sh` proves the pair still agrees.
+vstd = "=0.0.0-2026-11-01-0251"
 
 [package.metadata.verus]
 verify = true
