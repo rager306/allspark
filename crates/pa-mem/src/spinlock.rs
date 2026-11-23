@@ -28,6 +28,10 @@
 //! thread mistake the holder's token for its own and skip the wait. Give each
 //! thread its own [`Batch`].
 
+// `spin_loop` and `thread` are the non-model wait path: under the loom build the
+// wait hands the turn to loom's scheduler instead, so both imports would be
+// unused there. Gated to match the code that uses them.
+#[cfg(not(all(test, loom)))]
 use std::hint::spin_loop;
 
 // THE LOCK'S ATOMICS ARE A PARAMETER. Under `cfg(loom)` the SHIPPED protocol —
@@ -43,10 +47,18 @@ use std::hint::spin_loop;
 // has no `const fn new`, and neither is part of the ordering protocol the lane
 // proves (a batch token is an identity, not a synchronisation edge). Aliasing
 // the protocol's atomic is the smallest surface that makes the test real.
-#[cfg(loom)]
+// `all(test, loom)`, never `loom` alone: loom is a DEV-dependency, so a
+// `loom`-only cfg makes `cargo check --all-features` (which enables the feature
+// for the shipped library target too) reference a crate that is not linked —
+// E0433 on `loom::sync::atomic`. The lane's claim is that the SHIPPED protocol
+// runs under the model, and a test build compiles this same code with
+// `cfg(test)` set, so gating on `test` keeps that claim and keeps the product
+// build on `std`.
+#[cfg(all(test, loom))]
 use loom::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(not(loom))]
+#[cfg(not(all(test, loom)))]
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(not(all(test, loom)))]
 use std::thread;
 
 /// Hands out batch tokens. A process-global counter (not an address) so two
@@ -59,6 +71,11 @@ static NEXT_BATCH_TOKEN: std::sync::atomic::AtomicUsize = std::sync::atomic::Ato
 pub const UINTPTR_MAX: usize = usize::MAX;
 
 /// How many `spin_loop` rounds run before the waiter yields the thread.
+///
+/// Only the non-model wait path uses it: under the loom build `wait` hands the
+/// turn to loom's scheduler instead, so an ungated constant would be dead code
+/// in exactly the build the lane compiles.
+#[cfg(not(all(test, loom)))]
 const SPIN_ROUNDS: u32 = 64;
 
 /// A reentrant spinlock keyed on a batch token.
@@ -87,7 +104,7 @@ impl SpinLock {
     /// and the constructor takes no part in the ordering protocol the loom lane
     /// proves, so the model gets the ordinary form rather than paying for a
     /// `LazyLock` on the product path.
-    #[cfg(not(loom))]
+    #[cfg(not(all(test, loom)))]
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -96,7 +113,7 @@ impl SpinLock {
     }
 
     /// An unlocked spinlock (loom build: not `const`, see [`Self::new`]).
-    #[cfg(loom)]
+    #[cfg(all(test, loom))]
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -111,6 +128,7 @@ impl SpinLock {
     }
 
     /// Takes the lock, blocking (spinning, then yielding) until it is free.
+    #[must_use]
     pub fn lock(&self) -> SpinGuard<'_> {
         loop {
             if let Some(guard) = self.try_lock() {
@@ -140,6 +158,7 @@ impl SpinLock {
     /// acquisition returns a releasing guard.
     ///
     /// `batch` must be used by a single thread; see the module note.
+    #[must_use]
     pub fn lock_batch(&self, batch: &Batch) -> SpinGuard<'_> {
         let token = batch.token();
         loop {
@@ -172,7 +191,7 @@ impl SpinLock {
     /// The bound is what a real spinlock has too — the difference is only who
     /// decides when the waiter gives up the core.
     fn wait(&self) {
-        #[cfg(loom)]
+        #[cfg(all(test, loom))]
         {
             // `yield_now` once, not a spin: loom's model bounds the number of
             // paths, and a loop that must spin to make progress exhausts the
@@ -181,9 +200,8 @@ impl SpinLock {
             if self.state.load(Ordering::Relaxed) != 0 {
                 loom::thread::yield_now();
             }
-            return;
         }
-        #[cfg(not(loom))]
+        #[cfg(not(all(test, loom)))]
         {
             for _ in 0..SPIN_ROUNDS {
                 if self.state.load(Ordering::Relaxed) == 0 {
