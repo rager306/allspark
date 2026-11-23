@@ -1098,7 +1098,16 @@ mod tests {
         let second = next_report_seq();
         let third = next_report_seq();
         assert!(first < second && second < third, "{first} {second} {third}");
-        assert!(first >= now_ms_x1000() - 1, "seeded at now_ms*1000");
+        // Seeded from `now_ms * 1000`, in the same order of magnitude — asserted as
+        // a BAND, not as `first >= now - 1`: the seq is process-global, so a test
+        // that runs after any other reporter call sees the value seeded at THAT
+        // moment while `now` has moved on. The floor form failed under this gate's
+        // parallel load (measured) although the seq was behaving correctly.
+        let now = now_ms_x1000();
+        assert!(
+            first <= now && first >= now / 10,
+            "seq {first} is not seeded from now_ms*1000 ({now})"
+        );
     }
 
     /// A fake Herdr socket: one listener that records every request line
