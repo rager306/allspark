@@ -21,7 +21,7 @@ on:
 
 jobs:
   asan:
-    name: AddressSanitizer (pa-types, pa-jev, pa-graph)
+    name: AddressSanitizer (pa-types, pa-jev, pa-graph, pa-mem)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -42,3 +42,16 @@ jobs:
             --target x86_64-unknown-linux-gnu \
             -- --test-threads=2 \
             --skip an_empty_pass_does_not_scale_with_unresolved_files
+      # pa-mem is the crate this lane most needs and did not have: ten `unsafe`
+      # blocks in raw memory layouts (sharded maps, Robin Hood tables, 48-bit
+      # packed pointers, arenas, block-LZ4 snapshots). pa-graph was here with
+      # ZERO unsafe blocks, so the lane was paying for a crate Miri and ASan can
+      # both see through — the coverage was pointed at the wrong crate.
+      # Measured: 125 tests, 17.8 s under ASan, all green, no skip needed (its
+      # timing-sensitive simultaneity tests assert outcomes, not budgets).
+      - name: Run pa-mem under ASan
+        run: |
+          set -euo pipefail
+          cargo test -Z build-std -p pa-mem --lib \
+            --target x86_64-unknown-linux-gnu \
+            -- --test-threads=2

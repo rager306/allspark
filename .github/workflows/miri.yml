@@ -32,7 +32,16 @@ jobs:
       # NOT symbolic-alignment-check: it reports a known false positive in
       # memchr's SSE2 path ("alignment 8, but 16 is required" inside intrinsics
       # Miri models symbolically), and a lane that cries wolf gets switched off.
-      MIRIFLAGS: "-Zmiri-strict-provenance -Zmiri-disable-isolation"
+      # many-seeds: run each test under several INDEPENDENT executions rather than
+      # the one a plain run picks. Miri chooses allocation base addresses and
+      # thread interleavings at random, so a single run proves "these inputs did
+      # not break under one incidental alignment/schedule" — which is exactly the
+      # assumption a hand-written pointer or a lock protocol silently relies on.
+      # The 48-bit packed-pointer code and the spinlock are the two places here
+      # where that assumption would be load-bearing. Seeds are cheap (4 parallel
+      # interpreters, measured 1.54-1.64 s for the same subset that takes ~1.5 s
+      # once); the default sweep of 64 is skippable and is not used.
+      MIRIFLAGS: "-Zmiri-strict-provenance -Zmiri-disable-isolation -Zmiri-many-seeds=0..4"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - name: Install Miri
