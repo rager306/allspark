@@ -125,6 +125,22 @@ Two honest non-adoptions: kani's `autoharness` (the 0.68.0 bundle ships no `carg
 and the stale one either refuses `-Z autoharness` or downloads a release) and Verus's
 `--expand-errors` (needs a failing proof to be useful; no proof is failing).
 
+Three defects the ladder itself found, all in product code:
+
+- **The ACP threshold compaction's announced skip is a contract.** A pre-check added to
+  `auto_compaction_due` (so the trigger would not announce a compaction the compactor refuses)
+  silenced a `compaction` meta that `acp_mode_e2e` and `print_runtime_e2e` both pin, and the
+  test that encoded the old shape was replaced with its opposite. Reverted on both sides;
+  `pa-daemon abort_boundary + threshold` 20/20 and the acp case green again in 1.46 s.
+- **A boundary trigger must not wait out the turn it prices.** Measured on the held-turn abort
+  tests: an unbounded session-lock wait moved them 31.8 s -> 62.8 s, because the abort could
+  not reach the queue until the fixture's 60 s hold expired. Reverted with the pre-check.
+- **The gate refuses on a tool fault instead of reporting a verdict.** This machine's
+  `/root/.local/bin/grep` is a `grep` -> `rg` wrapper whose `-c` prints nothing where GNU grep
+  prints `0`, so the gate's own contract tests failed on an empty string while the tree was
+  fine. The check is behavioural (`printf 'x\n' | grep -c <no-match>` must print `0`), not
+  `grep --version` — the wrapper delegates `--version` to real grep and passes a version probe.
+
 ---
 
 ## fork.024 — upstream v0.10.6-beta.1 (the v0.10.5 release line)
