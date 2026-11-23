@@ -34,6 +34,41 @@ MIN_FREE_GB="${GATE_MIN_FREE_GB:-15}"
 # consume several GB while the gate is already running.
 UNIT_MIN_FREE_GB="${GATE_UNIT_MIN_FREE_GB:-2}"
 
+# Tool identity, checked ONCE and loudly. Two different failures announce themselves as a
+# product defect when the cause is the caller's PATH (docs/agent-errors.md §16, §18):
+#
+#   * this machine has `/root/.local/bin/grep`, a `grep` -> `rg` wrapper. The gate parses GNU
+#     grep output (`grep -c` must print `0`, `grep -E` must not rewrite the pattern), so the
+#     wrapper makes every count read as empty and the gate's own contract tests fail on shape
+#     while the tree is fine — measured: six failures, all "'' not found in ''".
+#   * `check-fork-surface.sh` calls `rg` directly. With `rg` off PATH it reports every
+#     `FORK-ONLY` marker as LOST, i.e. a clean tree reads as a broken fork.
+#
+# Neither is recoverable from inside the gate, so refuse with the reason instead of producing a
+# false verdict in either direction. The gate cannot just prepend /usr/bin: `rg` lives only in
+# `/root/.local/bin` on this machine, and both tools are required.
+tool_fault=0
+# BEHAVIOURAL, not `grep --version`: the wrapper on this machine delegates `--version` to
+# /usr/bin/grep, so it prints "grep (GNU grep) 3.11" and a version probe passes while every
+# count is still wrong. The discriminator is the one semantic the gate relies on — GNU grep
+# prints `0` for no match under `-c` and exits 1; rg-backed grep prints nothing.
+grep_no_match=$(printf 'x\n' | grep -c 'pattern-that-cannot-match' 2>/dev/null || true)
+if [[ "$grep_no_match" != "0" ]]; then
+  echo "gate: REFUSING — 'grep' resolves to $(command -v grep); \`grep -c\` printed" >&2
+  echo "      '${grep_no_match}' for no match, where GNU grep prints '0'. This machine ships a" >&2
+  echo "      grep->rg wrapper whose -c/-E semantics invert the gate's own counts. Put" >&2
+  echo "      /usr/bin ahead of it on PATH." >&2
+  tool_fault=1
+fi
+if ! command -v rg >/dev/null 2>&1; then
+  echo "gate: REFUSING — 'rg' is not on PATH; check-fork-surface.sh needs it." >&2
+  tool_fault=1
+fi
+if [[ $tool_fault -ne 0 ]]; then
+  echo "gate: tool fault, not a code fault — no verdict is claimed." >&2
+  exit 2
+fi
+
 # Target liveness: the gate shares one working tree with other agents, and a `cargo clean` or
 # a vanished worktree copy by ANY of them leaves this run compiling against a path that no
 # longer describes the sources it read. The disk floor above cannot see that: 30 GB free and
