@@ -352,3 +352,39 @@ machine: `grep --version` is GNU grep, and `rg` is reachable. A wrapper that
 changes `-c` semantics turns a measurement into a guess, and the gate reporting
 a false RED costs the same trust as a false GREEN. When a shell assertion fails
 on an empty field, print the field's producer before believing the assertion.
+
+## 17. A verification lane that skips is a lane that reports success
+
+**Seen:** 2026-11-23, restoring verus, loom, kani, miri, ASan and shuttle. Every
+one of the five was either absent or skipping, and the skip path exited 0.
+
+**Cause:** each lane probed for its tool in ONE place, and each probe was written
+against whatever path that day's install happened to use:
+
+* `scripts/verus-check.sh` and `verus-mutants.sh` looked at `verus/toolchain`;
+  the documented install (`verus/README.md`) puts the release under
+  `/root/verus-pilot/verus-x86-linux`. Both exited 0 having verified nothing.
+* `kani-check.sh` accepted a partial bundle, then failed at the first crate
+  because `KANI_HOME` was resolved from a different root than the one the driver
+  was invoked from.
+* The `loom` feature existed as a cargo feature but no `--cfg loom` was emitted
+  (`build.rs` missing), so the module compiled to nothing: `cargo test --features
+  loom` collected zero tests and printed `ok`.
+* `shuttle` and `miri` ran, but through their oldest entry point: `check_random`
+  makes no guarantee about what it missed, and a single Miri run proves one
+  incidental alignment and one thread schedule.
+
+**Caught by:** running each lane and reading its output instead of its exit code.
+`ok. 0 passed; 123 filtered out` and `skipping (see README)` are the two shapes
+that look green and mean nothing.
+
+**Rule:** a verification lane must print what it actually verified (counts, not
+just a verdict), and it must state the tool locations it probed when it skips. A
+skip is not a pass. When a feature flag gates a test module, prove the cfg was
+emitted by asserting a non-zero test count — a `0 passed` line is the failure.
+Two more consequences follow, both measured here: the version of the tool and
+the version of its companion crate must be pinned together (`vstd` two weeks
+behind the toolchain turned a proof-depth campaign into "a real survivor"), and
+the crate the lane covers is chosen by where the risk is, not by which crate was
+easy to add (ASan covered `pa-graph`, which has zero `unsafe` blocks, and
+omitted `pa-mem`, which has ten).
