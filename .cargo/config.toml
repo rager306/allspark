@@ -18,3 +18,13 @@ DO_NOT_TRACK = "1"
 TMPDIR = { value = ".tmp", relative = true }
 TEMP = { value = ".tmp", relative = true }
 TMP = { value = ".tmp", relative = true }
+
+# `cargo loom` — the memory-model lane (matrix row MUT-loom-spinlock).
+#
+# Loom's model is selected by `--cfg loom`, and `cfg` is not something a Cargo
+# FEATURE turns on: `--features loom` compiles the dependency but leaves every
+# `#[cfg(loom)]` item out, so the lane runs zero tests and reports green
+# (measured here: "running 0 tests"). The crate's `build.rs` emits the cfg for
+# the feature, so the alias below is the whole invocation a caller needs.
+[alias]
+loom = "test -p pa-mem --features loom --lib -- loom_"

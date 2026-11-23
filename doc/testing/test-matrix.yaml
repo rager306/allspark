@@ -291,14 +291,20 @@ rows:
       flow: [lock -> guard -> release]
     oracle: []
     kill_mutation: >-
-      weaken the release ordering from Release to Relaxed in SpinGuard::drop; a loom
+      weaken the release ordering from Release to Relaxed in SpinLock::unlock; a loom
       interleaving test must redden
-    status: gap
-    gate: serial-tail
+    oracle:
+      - loom_proves_mutual_exclusion_across_orderings
+      - loom_proves_the_release_publishes_writes_to_the_next_holder
+    status: killed
+    gate: prepush-gate.sh (loom step) + verify.yml (nightly)
     owner: ADR-0001
     source: >-
-      1747 lines of hand-rolled concurrency in pa-mem; 0 loom/shuttle deps; an ordering bug is
-      invisible on x86 and visible on aarch64-apple-darwin, which we ship
+      Killed since fork.025: `cargo loom` runs spinlock::loom_tests over loom's model, and the
+      named mutation (Release -> Relaxed in unlock) was verified to REDDEN
+      loom_proves_the_release_publishes_writes_to_the_next_holder, then reverted. The gate
+      fails the lane when the filter matches no test, so a cfg(loom) build that silently
+      compiled nothing cannot report green again.
 
   - id: MUT-kani-robin-hood
     plane: product

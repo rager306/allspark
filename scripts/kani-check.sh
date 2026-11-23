@@ -27,11 +27,51 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-KANI_HOME="${KANI_HOME:-$HOME/.kani}"
-BUNDLE="$(ls -d "$KANI_HOME"/kani-* 2>/dev/null | sort -V | tail -1 || true)"
+# The bundle is probed, not assumed: this machine can carry more than one
+# (`$HOME/.kani` under an isolated HOME, `/root/.kani` under the real one), and a
+# partial unpack — no `toolchain/` — sorts HIGHEST by name, so "newest bundle"
+# picked the one that cannot run at all. Candidates are equal here; the first one
+# that can actually verify wins.
+kani_homes() {
+  if [ -n "${KANI_HOME:-}" ]; then
+    printf '%s\n' "$KANI_HOME"
+    return
+  fi
+  printf '%s\n' \
+    "${HOME:-/root}/.kani" \
+    /root/.kani \
+    /root/.allspark-home/.kani
+}
 
-if [ -z "$BUNDLE" ] || [ ! -x "$BUNDLE/bin/kani-compiler" ]; then
-  echo "kani-check: no Kani bundle under $KANI_HOME — skipping (install: cargo install --locked kani-verifier)"
+BUNDLE=""
+for home in $(kani_homes); do
+  [ -d "$home" ] || continue
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    # A COMPLETE bundle wins: `kani-driver` execs `<bundle>/toolchain/bin/cargo`
+    # for `cargo metadata`, so a bundle without it cannot verify anything. The
+    # probe therefore prefers one that has both, and only falls back to a
+    # compiler-only unpack to report the repair honestly below.
+    if [ -x "$candidate/bin/kani-compiler" ] && [ -x "$candidate/toolchain/bin/cargo" ]; then
+      BUNDLE="$candidate"
+      break
+    fi
+    if [ -z "${PARTIAL_BUNDLE:-}" ] && [ -x "$candidate/bin/kani-compiler" ]; then
+      PARTIAL_BUNDLE="$candidate"
+    fi
+  done <<EOF
+$(ls -d "$home"/kani-* 2>/dev/null | sort -rV || true)
+EOF
+  [ -n "$BUNDLE" ] && break
+done
+
+if [ -z "$BUNDLE" ]; then
+  if [ -n "${PARTIAL_BUNDLE:-}" ]; then
+    echo "kani-check: the only bundle under $(kani_homes | tr '\n' ' ') is partial (no toolchain/bin/cargo): $PARTIAL_BUNDLE — skipping"
+    echo "kani-check: repair with: cargo install --locked kani-verifier (a complete bundle ships toolchain/)"
+    exit 0
+  fi
+  echo "kani-check: no Kani bundle under $(kani_homes | tr '\n' ' ') — skipping (install: cargo install --locked kani-verifier)"
   exit 0
 fi
 # A bundle that carries no `toolchain/` cannot resolve the `cargo` it runs
@@ -39,9 +79,10 @@ fi
 # `cargo` on PATH, so the lane dies with "failed to start `cargo metadata`" on a
 # machine where cargo is perfectly available. Measured 2026-11-22: the bundle
 # under an isolated HOME (`.../kani-0.68.0`) had no `toolchain/`, while the one
-# under the real home had a complete toolchain and verified 5 harnesses. The
-# lane is advisory, so an unusable bundle is a SKIP that names the repair, never
-# a RED that blames the code.
+# under the real home had a complete toolchain and verified 5 harnesses. A
+# partial unpack is skipped in favour of a complete one by the probe above; when
+# EVERY candidate is partial the lane skips with the repair named, never a RED
+# that blames the code.
 if [ ! -x "$BUNDLE/toolchain/bin/cargo" ]; then
   echo "kani-check: the bundle at $BUNDLE has no toolchain/bin/cargo — skipping"
   echo "kani-check: repair with: cargo install --locked kani-verifier (a complete bundle ships toolchain/)"
@@ -97,5 +138,11 @@ trap 'cleanup_bundle; cleanup' EXIT
 
 cd "$ROOT"
 echo "kani-check: verifying pa-core with $BUNDLE ($("$BUNDLE/bin/kani-driver" --version 2>/dev/null | head -1))"
-CARGO_HOME="$SCRATCH" RUSTC_WRAPPER= RUSTC_WORKSPACE_WRAPPER= \
+# KANI_HOME must name the bundle this script PROBED. `cargo kani` resolves the
+# bundle by itself from `$HOME/.kani` — which on an isolated HOME is the partial
+# unpack this script just refused, so the lane failed with "failed to start
+# `cargo metadata`" while the correct bundle sat one directory away (measured).
+# Handing the resolved home over is what makes the probe authoritative.
+CARGO_HOME="$SCRATCH" KANI_HOME="$(dirname "$BUNDLE")" \
+  RUSTC_WRAPPER= RUSTC_WORKSPACE_WRAPPER= \
   cargo kani -p pa-core "$@"

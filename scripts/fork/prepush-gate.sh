@@ -306,21 +306,30 @@ else
   echo "       proof that does not close never blocks a merge). See $OUT/verus-*.log."
 fi
 
-step "loom (pa-mem interleavings)"
-# The alternative lane that DOES work today is Shuttle, and it is wired
-# (`.github/workflows/shuttle.yml` runs pa-mem's DST test on a schedule). This
-# step stays for the Loom variant, which needs a `loom` dev-dependency and
-# cfg(loom) module copies -- matrix row MUT-loom-spinlock is `status: gap`.
-# Kept honest the same way as kani above: both the dependency AND a loom-gated
-# test have to exist before a run would mean anything.
+step "loom (pa-mem memory model)"
+# Matrix row MUT-loom-spinlock. The run is `cargo loom` (the alias in
+# .cargo/config.toml): a FEATURE cannot turn on `cfg(loom)`, so `crates/pa-mem/build.rs`
+# emits the cfg for the feature and the alias is the whole invocation. The filter
+# `loom_` is load-bearing — without it the unit runs the std-threaded tests too and
+# a "0 tests" result would read as green, the defect this check exists for.
+#
+# Deliberately NOT skipped when the dependency is absent: a lane that silently
+# disappears is how this row sat at `status: gap` for weeks.
 if ! cargo metadata --no-deps --format-version 1 2>/dev/null | rg -q '"loom"'; then
-  echo "loom: SKIPPED (no loom dev-dependency in pa-mem — matrix row MUT-loom-spinlock is a gap; shuttle covers this protocol)"
+  echo "loom: FAILED — no loom dev-dependency in pa-mem (matrix row MUT-loom-spinlock)"
+  fail=1
 elif ! grep -rq 'cfg(loom)' crates/pa-mem/src/ 2>/dev/null; then
-  echo "loom: SKIPPED (loom dep present but no cfg(loom) test in pa-mem — nothing to interleave)"
-elif ! cargo test -p pa-mem --features loom -- --test-threads=1 >"$OUT/loom.log" 2>&1; then
+  echo "loom: FAILED — loom dep present but no cfg(loom) test in pa-mem"
+  fail=1
+elif ! cargo loom >"$OUT/loom.log" 2>&1; then
   echo "loom: FAILED (see $OUT/loom.log)"; sed -n '1,20p' "$OUT/loom.log"; fail=1
+elif ! grep -qE '^test spinlock::loom_tests::' "$OUT/loom.log"; then
+  # The lane's own oracle, the same shape the shuttle workflow uses: a filter that
+  # matched nothing is a green lane that proved nothing.
+  echo "loom: FAILED — the loom filter ran no test (see $OUT/loom.log)"; fail=1
 else
-  echo "loom: ok"
+  verified=$(grep -cE '^test spinlock::loom_tests::.*\.\.\. ok' "$OUT/loom.log" || true)
+  echo "loom: ok ($verified memory-model tests)"
 fi
 
 step "kani (pa-core platform decisions)"
@@ -335,6 +344,8 @@ if bash scripts/kani-check.sh >"$OUT/kani.log" 2>&1; then
     echo "kani: SKIPPED (no Kani bundle — cargo install --locked kani-verifier)"
   elif grep -q 'kani-check: the bundle needs' "$OUT/kani.log"; then
     echo "kani: SKIPPED (bundle needs a pinned rustup toolchain that is absent)"
+  elif grep -q 'kani-check: the only bundle' "$OUT/kani.log"; then
+    echo "kani: SKIPPED (every bundle present is a partial unpack — repair names itself in the log)"
   elif grep -q 'kani-check: the bundle at .* has no toolchain' "$OUT/kani.log"; then
     echo "kani: SKIPPED (the bundle carries no toolchain/bin/cargo; a verified bundle needs one)"
   else

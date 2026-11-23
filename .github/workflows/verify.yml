@@ -33,3 +33,7 @@ jobs:
     uses: ./.github/workflows/sanitizer.yml
   shuttle:
     uses: ./.github/workflows/shuttle.yml
+  # The memory-model layer, which shuttle cannot reach: shuttle schedules
+  # threads on the host's atomics, loom models the orderings.
+  loom:
+    uses: ./.github/workflows/loom.yml

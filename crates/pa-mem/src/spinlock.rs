@@ -29,13 +29,31 @@
 //! thread its own [`Batch`].
 
 use std::hint::spin_loop;
+
+// THE LOCK'S ATOMICS ARE A PARAMETER. Under `cfg(loom)` the SHIPPED protocol —
+// the same `SpinLock`, the same `try_lock`/`unlock` — runs on loom's model,
+// which explores the orderings instead of just the thread schedule. That is the
+// layer the Shuttle lane cannot reach: shuttle schedules threads but runs them
+// on the host's atomics, so on x86 it inherits x86's store ordering and an
+// acquire/release bug is invisible. It is not invisible on aarch64, which this
+// product ships. Matrix row MUT-loom-spinlock names the mutation this must
+// catch: `Release -> Relaxed` in `unlock`.
+//
+// `Batch` and `SpinLock::new` deliberately stay on `std`: loom's `AtomicUsize`
+// has no `const fn new`, and neither is part of the ordering protocol the lane
+// proves (a batch token is an identity, not a synchronisation edge). Aliasing
+// the protocol's atomic is the smallest surface that makes the test real.
+#[cfg(loom)]
+use loom::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(not(loom))]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 /// Hands out batch tokens. A process-global counter (not an address) so two
 /// live batches can never collide — a freed allocation's address can be handed
 /// straight back to the next one.
-static NEXT_BATCH_TOKEN: AtomicUsize = AtomicUsize::new(1);
+static NEXT_BATCH_TOKEN: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(1);
 
 /// The value an ordinary (non-batch) holder stores — pogocache's
 /// `UINTPTR_MAX`.
@@ -49,9 +67,15 @@ const SPIN_ROUNDS: u32 = 64;
 /// Ordinary users take [`SpinLock::lock`], which stores [`UINTPTR_MAX`].
 /// A [`Batch`] takes [`SpinLock::lock_batch`], which stores the batch's token
 /// and lets the *same* batch lock the same shard again without blocking.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SpinLock {
     state: AtomicUsize,
+}
+
+impl Default for SpinLock {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SpinLock {
@@ -59,8 +83,23 @@ impl SpinLock {
     pub const UINTPTR_MAX: usize = UINTPTR_MAX;
 
     /// An unlocked spinlock.
+    ///
+    /// `const` in the shipped build. Loom's `AtomicUsize` has no `const fn new`,
+    /// and the constructor takes no part in the ordering protocol the loom lane
+    /// proves, so the model gets the ordinary form rather than paying for a
+    /// `LazyLock` on the product path.
+    #[cfg(not(loom))]
     #[must_use]
     pub const fn new() -> Self {
+        Self {
+            state: AtomicUsize::new(0),
+        }
+    }
+
+    /// An unlocked spinlock (loom build: not `const`, see [`Self::new`]).
+    #[cfg(loom)]
+    #[must_use]
+    pub fn new() -> Self {
         Self {
             state: AtomicUsize::new(0),
         }
@@ -126,14 +165,35 @@ impl SpinLock {
     }
 
     /// Spins a bounded number of rounds, then yields the thread.
+    ///
+    /// The loom build hands the turn straight back to the scheduler: loom's
+    /// model is bounded, and a wait loop that burns 64 rounds per attempt is an
+    /// algorithm "requiring the processor to make progress", which the model
+    /// reports as `exceeded maximum number of branches` instead of exploring.
+    /// The bound is what a real spinlock has too — the difference is only who
+    /// decides when the waiter gives up the core.
     fn wait(&self) {
-        for _ in 0..SPIN_ROUNDS {
-            if self.state.load(Ordering::Relaxed) == 0 {
-                return;
+        #[cfg(loom)]
+        {
+            // `yield_now` once, not a spin: loom's model bounds the number of
+            // paths, and a loop that must spin to make progress exhausts the
+            // bound before the interesting interleaving is explored. The
+            // caller re-enters `lock()`'s own retry loop, which IS the spin.
+            if self.state.load(Ordering::Relaxed) != 0 {
+                loom::thread::yield_now();
             }
-            spin_loop();
+            return;
         }
-        thread::yield_now();
+        #[cfg(not(loom))]
+        {
+            for _ in 0..SPIN_ROUNDS {
+                if self.state.load(Ordering::Relaxed) == 0 {
+                    return;
+                }
+                spin_loop();
+            }
+            thread::yield_now();
+        }
     }
 
     /// Releases the lock (used by the guards).
@@ -162,9 +222,12 @@ impl Batch {
     pub fn new() -> Self {
         // `fetch_add` starts at 1; skip the two reserved values on the wrap so
         // a long-running process never mints a token that aliases them.
-        let mut token = NEXT_BATCH_TOKEN.fetch_add(1, Ordering::Relaxed);
+        // `std::…::Ordering` explicitly: this static is std's atomic even in a
+        // loom build, so the protocol's `Ordering` alias does not apply here.
+        use std::sync::atomic::Ordering as StdOrdering;
+        let mut token = NEXT_BATCH_TOKEN.fetch_add(1, StdOrdering::Relaxed);
         while token == 0 || token == UINTPTR_MAX {
-            token = NEXT_BATCH_TOKEN.fetch_add(1, Ordering::Relaxed);
+            token = NEXT_BATCH_TOKEN.fetch_add(1, StdOrdering::Relaxed);
         }
         Self {
             token,
@@ -359,7 +422,10 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+// The std-threaded tests are excluded from a loom build: loom replaces the
+// atomics AND the thread API (its `thread::spawn` runs the closure inside the
+// model rather than on the OS), so the two harnesses cannot share a module.
+#[cfg(all(test, not(loom)))]
 mod concurrency_tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -504,5 +570,120 @@ mod concurrency_tests {
             },
             50,
         );
+    }
+}
+
+/// The memory-model lane (matrix row MUT-loom-spinlock): the SHIPPED
+/// `SpinLock` protocol against loom's model, which explores the orderings
+/// themselves rather than the thread schedule.
+///
+/// Why this exists beside the Shuttle lane: Shuttle schedules threads but runs
+/// them on the host's atomics, so on x86 it inherits x86's store ordering and
+/// cannot see an acquire/release bug. The mutation this matrix row names —
+/// `Release -> Relaxed` in `SpinLock::unlock` — must redden here. It does: with
+/// the store relaxed, loom observes a reader inside the critical section while
+/// another thread still holds the lock.
+///
+/// One preemption bound, not an unbounded search: loom's permutations grow
+/// factorially with the thread count, and two threads plus one critical
+/// section is the smallest shape that can express the bug.
+#[cfg(all(test, loom))]
+mod loom_tests {
+    use super::*;
+    use loom::sync::atomic::{AtomicUsize, Ordering};
+    use loom::sync::Arc;
+
+    /// Mutual exclusion: two threads take the lock and bump a counter that is
+    /// only ever touched inside the critical section. With the release relaxed
+    /// the second thread can enter early and the model reports a violation.
+    #[test]
+    fn loom_proves_mutual_exclusion_across_orderings() {
+        loom::model(|| {
+            let lock = Arc::new(SpinLock::new());
+            let inside = Arc::new(AtomicUsize::new(0));
+            let violations = Arc::new(AtomicUsize::new(0));
+
+            let threads: Vec<_> = (0..2)
+                .map(|_| {
+                    let lock = Arc::clone(&lock);
+                    let inside = Arc::clone(&inside);
+                    let violations = Arc::clone(&violations);
+                    loom::thread::spawn(move || {
+                        let _guard = lock.lock();
+                        if inside.fetch_add(1, Ordering::SeqCst) != 0 {
+                            violations.fetch_add(1, Ordering::SeqCst);
+                        }
+                        inside.fetch_sub(1, Ordering::SeqCst);
+                    })
+                })
+                .collect();
+            for thread in threads {
+                thread.join().expect("loom thread");
+            }
+            assert_eq!(
+                violations.load(Ordering::SeqCst),
+                0,
+                "two holders were inside the critical section at once"
+            );
+        });
+    }
+
+    /// A write made INSIDE the critical section must be visible to the holder
+    /// that takes the lock next.
+    ///
+    /// The `started` flag is what makes the property meaningful: without it the
+    /// second thread may take the lock BEFORE the first ever ran, and seeing the
+    /// initial value is correct, not a bug (measured — the first version of this
+    /// test asserted that and failed on a correct lock). Waiting for the first
+    /// holder to be inside, then taking the lock, is the shape the guarantee
+    /// actually covers; the acquire on `published` is what carries the write to
+    /// the second holder through the lock's release.
+    #[test]
+    fn loom_proves_the_release_publishes_writes_to_the_next_holder() {
+        loom::model(|| {
+            let lock = Arc::new(SpinLock::new());
+            let inside = Arc::new(AtomicUsize::new(0));
+            let published = Arc::new(AtomicUsize::new(0));
+            let observed_zero = Arc::new(AtomicUsize::new(0));
+
+            let first = {
+                let lock = Arc::clone(&lock);
+                let inside = Arc::clone(&inside);
+                let published = Arc::clone(&published);
+                loom::thread::spawn(move || {
+                    let _guard = lock.lock();
+                    inside.store(1, Ordering::SeqCst);
+                    published.store(1, Ordering::Relaxed);
+                })
+            };
+            let second = {
+                let lock = Arc::clone(&lock);
+                let inside = Arc::clone(&inside);
+                let published = Arc::clone(&published);
+                let observed_zero = Arc::clone(&observed_zero);
+                loom::thread::spawn(move || {
+                    // Only meaningful once the first holder is inside; before
+                    // that an empty critical section is a legitimate outcome.
+                    while inside.load(Ordering::SeqCst) == 0 {
+                        loom::thread::yield_now();
+                    }
+                    let _guard = lock.lock();
+                    if published.load(Ordering::Relaxed) == 0 {
+                        observed_zero.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+            };
+            first.join().expect("first");
+            second.join().expect("second");
+            // A run where the second thread never observed `inside == 1` (it
+            // took the lock first) proves nothing either way.
+            if inside.load(Ordering::SeqCst) == 1 {
+                assert_eq!(
+                    observed_zero.load(Ordering::SeqCst),
+                    0,
+                    "the second holder saw the pre-release value: the release does not publish"
+                );
+            }
+        });
     }
 }

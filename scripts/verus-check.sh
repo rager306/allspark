@@ -9,11 +9,36 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # The toolchain lives WITH the specs, inside verus/ (gitignored: it is 1.6 GB of
 # binaries). One folder holds the mirrors, their toolchain, and the runner, so a
 # reader looking for "where is the proof" finds one directory.
-VERUS_BIN="${VERUS_BIN:-$ROOT_DIR/verus/toolchain/verus}"
+#
+# The install instructions in verus/README.md put the release under
+# `/root/verus-pilot/`, and this script used to look ONLY at `verus/toolchain`, so
+# a machine that followed the documented install skipped the lane it had just set
+# up — the "documented, never wired" class. The candidates below are probed in
+# order; `$VERUS_BIN` still wins when set.
+verus_candidates() {
+  printf '%s\n' \
+    "$ROOT_DIR/verus/toolchain/verus" \
+    /root/verus-pilot/verus-x86-linux/verus \
+    "$HOME/verus-pilot/verus-x86-linux/verus"
+}
+
+if [ -n "${VERUS_BIN:-}" ]; then
+  VERUS_BIN="$VERUS_BIN"
+else
+  VERUS_BIN=""
+  while IFS= read -r candidate; do
+    if [ -x "$candidate" ]; then
+      VERUS_BIN="$candidate"
+      break
+    fi
+  done <<EOF
+$(verus_candidates)
+EOF
+fi
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../verus" && pwd)"
 
-if [ ! -x "$VERUS_BIN" ]; then
-  echo "verus-check: toolchain not found at $VERUS_BIN — skipping (install: verus/README.md)"
+if [ -z "$VERUS_BIN" ] || [ ! -x "$VERUS_BIN" ]; then
+  echo "verus-check: toolchain not found (looked in: $(verus_candidates | tr '\n' ' ')) — skipping (install: verus/README.md)"
   exit 0
 fi
 

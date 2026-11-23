@@ -19,6 +19,17 @@ crc32fast.workspace = true
 tempfile = "3"
 # The DST lane (`shuttle`) explores the sharded map's interleavings.
 shuttle.workspace = true
+# The memory-model lane (`loom`) explores the ORDERINGS shuttle cannot see: it
+# substitutes its own atomics under `cfg(loom)`, so the same protocol runs
+# against every permitted reordering and visibility outcome.
+loom.workspace = true
+
+[features]
+# Opt-in so a normal build never compiles loom's model (the crate is dev-only
+# and only the `loom` test target uses it). `build.rs` turns this feature into
+# `--cfg loom`: a feature alone cannot, and a lane whose cfg never appears runs
+# zero tests and reports green.
+loom = []
 
 [lints]
 workspace = true

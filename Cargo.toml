@@ -144,6 +144,12 @@ sha2 = "0.10"
 # scheduler explores thread interleavings instead of hoping the OS produces
 # the interesting one. Dev-only, and only compiled into the DST test.
 shuttle = "0.9"
+# The same idea at the MEMORY-MODEL layer (`.github/workflows/verify.yml`):
+# shuttle schedules threads but uses the host's atomics, so it cannot see an
+# ordering bug that x86 hides and aarch64 exposes. loom models the orderings
+# themselves, which is the layer matrix row MUT-loom-spinlock names.
+# Dev-only, behind `cfg(loom)`.
+loom = "0.7"
 # pa-mem (F9): block-LZ4 snapshot compression. Pure-Rust, safe-only
 # encode/decode; `frame` (and its twox-hash dep) is off — the snapshot
 # format is the raw LZ4 block format plus pogocache's 16-byte header.
