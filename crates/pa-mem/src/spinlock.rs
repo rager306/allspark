@@ -570,6 +570,76 @@ mod concurrency_tests {
             50,
         );
     }
+
+    /// The same protocol under PCT (Burckhardt et al., ASPLOS 2010), the
+    /// scheduler shuttle ships for its PROBABILISTIC guarantee.
+    ///
+    /// `check_random` walks random schedules and offers no statement about what
+    /// it missed. PCT fixes a priority per thread and changes it at `depth`
+    /// points, which gives a bound on the probability of finding a bug of a
+    /// given depth — the reason it is the recommended scheduler for the class
+    /// this lock belongs to. The two runs are complementary, not redundant: a
+    /// schedule random never draws can be the one PCT is built to reach.
+    #[test]
+    fn shuttle_pct_bounds_the_mutual_exclusion_search() {
+        shuttle::check_pct(
+            || {
+                use shuttle::sync::atomic::{AtomicUsize, Ordering};
+
+                struct Mirrored {
+                    state: AtomicUsize,
+                }
+
+                impl Mirrored {
+                    fn try_acquire(&self) -> bool {
+                        self.state
+                            .compare_exchange(0, usize::MAX, Ordering::Acquire, Ordering::Relaxed)
+                            .is_ok()
+                    }
+                    fn release(&self) {
+                        self.state.store(0, Ordering::Release);
+                    }
+                }
+
+                let lock = std::sync::Arc::new(Mirrored {
+                    state: AtomicUsize::new(0),
+                });
+                let inside = std::sync::Arc::new(AtomicUsize::new(0));
+                let violations = std::sync::Arc::new(AtomicUsize::new(0));
+
+                let threads: Vec<_> = (0..3)
+                    .map(|_| {
+                        let lock = std::sync::Arc::clone(&lock);
+                        let inside = std::sync::Arc::clone(&inside);
+                        let violations = std::sync::Arc::clone(&violations);
+                        shuttle::thread::spawn(move || {
+                            let acquired = lock.try_acquire();
+                            if acquired {
+                                if inside.fetch_add(1, Ordering::SeqCst) != 0 {
+                                    violations.fetch_add(1, Ordering::SeqCst);
+                                }
+                                inside.fetch_sub(1, Ordering::SeqCst);
+                                lock.release();
+                            }
+                        })
+                    })
+                    .collect();
+                for thread in threads {
+                    thread.join().expect("thread");
+                }
+                assert_eq!(
+                    violations.load(Ordering::SeqCst),
+                    0,
+                    "PCT found two holders inside the critical section at once"
+                );
+            },
+            100,
+            // Depth 2: PCT's guarantee is about bugs reachable within this many
+            // priority changes; two is the smallest depth that can separate a
+            // release from the next acquire.
+            2,
+        );
+    }
 }
 
 /// The memory-model lane (matrix row MUT-loom-spinlock): the SHIPPED
@@ -592,12 +662,44 @@ mod loom_tests {
     use loom::sync::atomic::{AtomicUsize, Ordering};
     use loom::sync::Arc;
 
+    /// One bounded model run.
+    ///
+    /// `loom::model` uses the DEFAULTS, which are deliberately generous for an
+    /// unknown workload; for a two-thread critical section they spend minutes
+    /// re-walking schedules that cannot contain the bug. `Builder` is the 0.7
+    /// API for saying what this protocol actually needs:
+    ///
+    /// * `max_threads = 2` — the smallest shape that can interleave a holder and
+    ///   a waiter (loom's search is exponential in this number);
+    /// * `preemption_bound = 2` — explore every schedule reachable with at most
+    ///   two preemptions. A lost-mutual-exclusion bug needs one switch between
+    ///   the CAS and the critical section, so the bound is complete for the class
+    ///   and stops the search from wandering past it;
+    /// * `max_duration` — a wall-clock ceiling so a future edit that makes the
+    ///   body spin cannot hang CI.
+    ///
+    /// These are the knobs this lane was not using: without them a bound is
+    /// either absent (unbounded search) or whatever the environment happens to
+    /// say, which is the opposite of a stated contract.
+    fn bounded_model(check: impl Fn() + Sync + Send + 'static) {
+        let mut builder = loom::model::Builder::new();
+        // THREE, not two: loom counts the MAIN thread that runs the model body
+        // as one of `max_threads`, so `2` admits the main thread plus ONE spawned
+        // thread and the second `spawn` aborts with
+        // `assertion failed: self.threads.len() < self.max()` (measured). Two
+        // WORKERS therefore means three threads.
+        builder.max_threads = 3;
+        builder.preemption_bound = Some(2);
+        builder.max_duration = Some(std::time::Duration::from_secs(60));
+        builder.check(check);
+    }
+
     /// Mutual exclusion: two threads take the lock and bump a counter that is
     /// only ever touched inside the critical section. With the release relaxed
     /// the second thread can enter early and the model reports a violation.
     #[test]
     fn loom_proves_mutual_exclusion_across_orderings() {
-        loom::model(|| {
+        bounded_model(|| {
             let lock = Arc::new(SpinLock::new());
             let inside = Arc::new(AtomicUsize::new(0));
             let violations = Arc::new(AtomicUsize::new(0));
@@ -639,7 +741,7 @@ mod loom_tests {
     /// the second holder through the lock's release.
     #[test]
     fn loom_proves_the_release_publishes_writes_to_the_next_holder() {
-        loom::model(|| {
+        bounded_model(|| {
             let lock = Arc::new(SpinLock::new());
             let inside = Arc::new(AtomicUsize::new(0));
             let published = Arc::new(AtomicUsize::new(0));
