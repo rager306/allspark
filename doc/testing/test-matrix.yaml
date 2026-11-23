@@ -297,7 +297,7 @@ rows:
       - loom_proves_mutual_exclusion_across_orderings
       - loom_proves_the_release_publishes_writes_to_the_next_holder
     status: killed
-    gate: prepush-gate.sh (loom step) + verify.yml (nightly)
+    gate: serial-tail
     owner: ADR-0001
     source: >-
       Killed since fork.025: `cargo loom` runs spinlock::loom_tests over loom's model, and the
