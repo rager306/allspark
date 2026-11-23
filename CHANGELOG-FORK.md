@@ -99,6 +99,32 @@ written form versus assertions on raw worker ids (fixed for the restart/stale-le
 this release, still red elsewhere), and the ACP settle e2e pair whose `outstandingSubagents`
 reads 0 on that commit too.
 
+### Verification ladder (all six lanes green, measured)
+
+Before this release every non-test lane was either skipping or silently proving nothing. The
+restored numbers, with each fix's cause stated because each one was a lane that reported green
+while doing no work:
+
+| lane | state before | state now | cause it was dead |
+|---|---|---|---|
+| verus | skipped | **2159 + 2 obligations, 0 errors** | probed `verus/toolchain` only; the documented install is `/root/verus-pilot/` |
+| verus mutants | "kill rate below floor" | **15 killed, 93.8 %** (floor 90 %) | `vstd` pinned two weeks behind the toolchain; `rust_verify` rejected its `verus_items` and the failure read as a proof survivor |
+| kani | skipped | **5/5 harnesses, 0 failures** | needed a complete bundle; a partial one passed a probe and then failed |
+| loom | not present | **2/2** | added; `cfg(loom)` swaps only the protocol atomics |
+| shuttle | 1 oracle | **2/2 incl. PCT** | `check_random` only; `check_pct` has the probabilistic guarantee |
+| miri | 2 flags | **4 seeds x platform subset** | single run proves one incidental alignment/schedule |
+| ASan | 3 crates | **+`pa-mem` 125/125** | lane covered `pa-graph` (0 unsafe) and omitted the crate with 10 |
+
+The two capacity adoptions are the point, not the count: shuttle's PCT scheduler and loom's
+`model::Builder` bounds (`max_threads`, `preemption_bound`, `max_duration`) were already in the
+pinned versions and unused, so the lanes were weaker than the tools they depend on. Loom's
+`max_threads = 3` is not a guess — `2` aborts because loom counts the model's main thread, and
+the measured run went 0.70 s -> 0.06 s while still reddening on `Release -> Relaxed`.
+
+Two honest non-adoptions: kani's `autoharness` (the 0.68.0 bundle ships no `cargo-kani` plugin
+and the stale one either refuses `-Z autoharness` or downloads a release) and Verus's
+`--expand-errors` (needs a failing proof to be useful; no proof is failing).
+
 ---
 
 ## fork.024 — upstream v0.10.6-beta.1 (the v0.10.5 release line)
