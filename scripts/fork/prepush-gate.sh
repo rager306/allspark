@@ -545,12 +545,21 @@ pa-daemon#test:persistent_shells_e2e
 pa-daemon#test:agent_family_e2e
 pa-cli#test:agents_view_flash_e2e"
 
+# The same calibration for a single test INSIDE a lib unit: the serial tail can
+# only hold a whole unit, so a lib test that times a pty/queue handshake needs its
+# own entry, run last with `--test-threads=1`. `pkg#lib:filter` is that form.
+SERIAL_LIB_TESTS="pa-daemon#lib:abort_boundary_tests"
+
 export -f run_unit
 export OUT
 
 # jobs: one unit per process, JOBS at a time; the timing-sensitive suites
 # are held back for a serial tail.
 printf '%s\n' "$SERIAL_UNITS" > "$OUT/tests/serial.txt"
+# A unit whose ONLY timing-sensitive test is named in SERIAL_LIB_TESTS still runs
+# in the parallel fleet (the rest of the lib is ordinary work); the filtered
+# re-run below covers that one test with the machine to itself. Duplicating ~44 s
+# of lib work is the price of not moving every lib test into the serial tail.
 grep -vxF -f "$OUT/tests/serial.txt" "$OUT/tests/units.txt" > "$OUT/tests/parallel.txt"
 echo "parallel: $(wc -l < "$OUT/tests/parallel.txt"), serial tail: $(wc -l < "$OUT/tests/serial.txt")"
 
@@ -567,6 +576,20 @@ while IFS= read -r unit; do
   [[ -z "$unit" ]] && continue
   run_unit "$unit" >> "$OUT/tests/summary.log" 2>&1
 done < "$OUT/tests/serial.txt"
+# The filtered lib re-runs: one test each, with the machine to itself.
+while IFS= read -r spec; do
+  [[ -z "$spec" ]] && continue
+  pkg="${spec%%#*}"
+  filter="${spec#*#lib:}"
+  log="$OUT/tests/lib-${pkg}-${filter}.log"
+  if cargo nextest run --locked --no-tests=warn --color never -p "$pkg" --lib \
+      -E "test(${filter})" >"$log" 2>&1; then
+    echo "ok   $pkg lib $filter" >> "$OUT/tests/summary.log"
+  else
+    echo "FAIL $pkg lib $filter  -> $log" >> "$OUT/tests/summary.log"
+    fail=1
+  fi
+done <<< "$SERIAL_LIB_TESTS"
 test_fail=$(grep -c '^FAIL' "$OUT/tests/summary.log" || true)
 # Every unit must have produced a verdict, and the launcher must have succeeded.
 # "No FAIL line" is not proof that a unit ran: the verdict is now the COUNT of
