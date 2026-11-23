@@ -388,3 +388,32 @@ behind the toolchain turned a proof-depth campaign into "a real survivor"), and
 the crate the lane covers is chosen by where the risk is, not by which crate was
 easy to add (ASan covered `pa-graph`, which has zero `unsafe` blocks, and
 omitted `pa-mem`, which has ten).
+
+## 18. I deleted the test that disagreed with my fix
+
+**Seen:** 2026-11-23, the fork.025 compaction work. `auto_compaction_due` announced a
+threshold compaction whose `prepare_compaction` answered `TooShort`, which read as noise: a
+start/end pair ending in a skip warning on every boundary of a short session. I added a
+pre-check so the trigger would stay silent, then found
+`threshold_skip_records_the_durable_outcome_row` asserting the announcement, and **replaced
+it** with `a_prefix_only_crossing_does_not_announce_a_threshold_compaction`.
+
+**Cause:** the announcement is a contract, not noise. Two independent suites pin it:
+`acp_mode_e2e::acp_threshold_auto_compaction_publishes_the_compaction_meta` asserts the
+single-turn case publishes a non-empty list of `compaction` metas with empty payloads, and
+`print_runtime_e2e` pins the user-visible text "Auto-compaction skipped: Session is too short
+to compact — try again once it grows". Both were green on base `eab651262`. My pre-check broke
+the ACP one in 0.9 s.
+
+**Caught by:** the full gate, not by review, and only after I had already pushed the release
+tag. The second attempt at a fix (`try_lock`, then a 50 ms bounded poll) was me still treating
+it as a lock problem; the ACP test fails with a plain `.await` too, so the verdict was the
+defect and the lock was never involved.
+
+**Rule:** a test that encodes a documented, user-visible behaviour is not an obstacle to route
+around — replacing it makes the suite agree with the change instead of with the product. Before
+suppressing an announcement, a warning, or an event as "noise", grep for the tests that assert
+it and read what they say about the contract. If the answer is "this is expected", the fix is
+wrong, however clean the reasoning that produced it. The correct move here was to revert both
+halves (code and test) and re-measure: 20/20 abort+threshold, the acp case green in 1.46 s,
+held-turn tests back to 31.8 s, and `pa-core` compaction 137/137.
