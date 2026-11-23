@@ -52,8 +52,7 @@ use std::thread;
 /// Hands out batch tokens. A process-global counter (not an address) so two
 /// live batches can never collide — a freed allocation's address can be handed
 /// straight back to the next one.
-static NEXT_BATCH_TOKEN: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(1);
+static NEXT_BATCH_TOKEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
 
 /// The value an ordinary (non-batch) holder stores — pogocache's
 /// `UINTPTR_MAX`.
